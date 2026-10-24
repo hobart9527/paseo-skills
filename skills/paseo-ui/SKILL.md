@@ -25,8 +25,46 @@ $$
 4. **字体与排版**：默认禁止修改 `tracking-*`（letter-spacing）；display 级特大字号紧缩必须在 `DESIGN.md` 中有明确条款；数据、金额、比率、计数器强制使用 `tabular-nums` 等宽对齐，金额一律右对齐。
 5. **视觉与色彩禁令**：操作型界面（Operate / Admin / Dashboard）默认禁用全屏渐变、多色渐变及纯装饰性毛玻璃；图标统一使用 `lucide-react`，严禁在生产界面直接混入 Text Emoji；状态徽章遵循「文字 + 语义底色 + 矢量微图标」三重防御。
 6. **原语与组件系统**：遵循「项目已有原语 > 参考复合组件规范手写 > 引入新依赖（需人类确认）」。严禁在未获人类授权的情况下运行 `npx shadcn add/init` 改写工程架构；表格强制使用 `<Table><TableHeader><TableBody><TableRow><TableCell>` 语义化复合组件，严禁 `div soup` 模拟；弹窗强制采用 `<Dialog>` 标准复合原语，具备 Focus-trap 与 Esc 退出。
-7. **无人值守执行规约**：所有挂载的外部 Skill 中「停下来向用户提问」的条款，在无人值守子 agent 运行时一律转为「按合理假设推进并在交接报告中显式标明假设」；走查与审计按 P0-P3 缺陷全量收录，不受「最多只报 3 条」限制。
+7. **无人值守执行规约**：外部 Skill 中「停下来向用户提问」的条款，在后台子 agent 中分两类处理——**方向性提问**（视觉方向、设计世界、是否替换既有风格）不得自行假设，按「Vendor 适配覆盖」把待选方案作为产出交回、结束本回合，由主会话转人类确认；**执行细节提问**按合理假设推进并在交接报告中显式标明假设。走查与审计按 P0-P3 缺陷全量收录，不受「最多只报 3 条」限制。
 8. **证据分级记录**：交接结论必须区分四级证据：源码静态规则核对、`capture.mjs` 多视口渲染截图、DOM 探针输出（`horizontal_overflow`, `has_active_feedback`）、`playwright-cli` 交互轨迹快照。环境工具缺失时标明「降级：未采集」，严禁静默假定合格。
+
+### 单一设计宪法与 Vendor 适配覆盖
+
+派发子 agent 时，brief 必须原样附带本节；本节优先于 vendor 原文中的同类条款。
+
+**真源分层**（每层只有一个可写真源）：
+
+| 层 | 文件 | 写什么 | 不写什么 |
+| :--- | :--- | :--- | :--- |
+| L3 产品 | `PRODUCT.md` | 用户、核心任务、为什么做 | 视觉规则 |
+| L1/L0 设计 | `DESIGN.md` | 方向、语义角色、深度策略、组件模式、禁令 | 不复抄 token 数值，只引用 token 名（写「`--muted` 用于次级文字」，不写 `#5c6064`） |
+| 数值 | 代码 token（如 `index.css`、`tailwind.config.js`） | token 具体取值 | — |
+
+**interface-design 适配**：
+1. **`system.md` 即 `DESIGN.md`**：原文凡读 `.interface-design/system.md` 处，改读项目 `DESIGN.md`；禁止创建 `.interface-design/` 目录。
+2. **保存映射**：原文「After Completing a Task」要保存的内容，按下表写入 `DESIGN.md` 对应章节（google design.md 规范章节；项目已有自定义章节时并入语义最近的一节，不新增平行文件）：
+
+   | system.md 内容 | DESIGN.md 章节 |
+   | :--- | :--- |
+   | Direction and feel、Signature、Domain | `## Overview` |
+   | Color world、palette 角色 | `## Colors` |
+   | Type scale ratio、hierarchy | `## Typography` |
+   | Spacing base unit、density | `## Layout` |
+   | Depth strategy（borders/shadows/layered） | `## Elevation & Depth` |
+   | Key component patterns | `## Components` |
+   | Rejecting 清单、反模式 | `## Do's and Don'ts` |
+
+3. **写入权限**：Full 档 Stage 1 经人类确认后，由 Builder 直接写入 `DESIGN.md`，随确认点冻结；Lite 档与返工阶段新沉淀的模式只写 `DESIGN.proposed.md`，由人类在下次确认时合并。子 agent 不得私自覆写 `DESIGN.md`。
+4. **Suggest + Ask 交回**：原文「Suggest + Ask」在主会话执行时直接向人类提问；在后台子 agent 执行时，把 Suggest 块（Domain / Color world / Signature / Rejecting / Direction，可附 specimen）作为产出写入交接报告并结束本回合，由主会话用 AskUserQuestion 转人类确认后再派 Builder 落地。Lite 档不做方向选择，跳过此步。
+
+**impeccable 适配**：
+- `<skill-base-dir>` 固定为 `~/.claude/skills/paseo-ui/vendor/impeccable`；原文 `.claude/skills/impeccable/scripts/impeccable` 一律解析为 `~/.claude/skills/paseo-ui/vendor/impeccable/scripts/impeccable`。
+- 启动器首次运行会联网下载二进制；子 agent 环境不可联网时按原文「Launcher unavailable」分支直接读 `PRODUCT.md` / `DESIGN.md` 与 `reference/craft-floor.md`，并在报告标注「降级：impeccable 启动器未运行」。
+- 原文 `document` 流程生成或刷新 `DESIGN.md`、或要求 AskUserQuestion 时，同样受上方写入权限与 Suggest 交回约束。
+
+**accessibility-scan 适配**：
+- 扫描器依赖 `npx -y @accesslint/...@latest`（联网 + 启动 Chrome），由主会话或可联网的执行角色先跑，JSON 结果落盘到 `./captures/a11y.json`；只读审计角色（如 Auditor）只读该 JSON 与源码研判，不自行安装或启动扫描器。
+- 扫描未运行或失败时，在缺陷单写「降级：a11y 扫描未采集」，不得以源码走读结论冒充扫描结果。
 
 ---
 
@@ -73,9 +111,9 @@ $$
 | :--- | :--- | :--- | :--- | :--- |
 | **视觉质感与美化** | 页面太素、想要大厂高级感、间距排版微调 | **设计营造师 Builder**<br>(`shejishi_builder`) | `interface-design/SKILL.md`<br>+ `better-typography/SKILL.md`<br>+ `better-ui/icons.md` | **改码**：微边框、分层 Depth、字阶梯度、`tabular-nums`。严禁变动业务逻辑与接口。 |
 | **色彩与暗色模式** | 对比度不足、深浅色不协调、主题色统一 | **设计营造师 Builder**<br>(`shejishi_builder`) | `better-colors/SKILL.md` | **改码**：梳理单色阶单职责，解决 15° 脏色与对比度。严禁变动布局尺寸与动效。 |
-| **时序体验与动效** | 列表过渡生硬、按钮缺乏触感反馈 | **设计营造师 Builder**<br>(`shejishi_builder`) | `to-spring/SKILL.md`<br>+ `micro-interaction/SKILL.md`<br>+ `accessible-animation/SKILL.md` | **改码**：落实 `:active:scale-0.96` 触感与退出动画。高频操作严格零动画，反馈时长 ≤200ms。 |
+| **时序体验与动效** | 列表过渡生硬、按钮缺乏触感反馈 | **设计营造师 Builder**<br>(`shejishi_builder`) | `to-spring-or-not-to-spring/SKILL.md`<br>+ `micro-interaction/SKILL.md`<br>+ `accessible-animation/SKILL.md` | **改码**：落实 `:active:scale-0.96` 触感与退出动画。高频操作严格零动画，反馈时长 ≤200ms。 |
 | **界面降噪与瘦身** | 页面视觉太杂、信息过载、装饰过剩 | **设计营造师 Builder**<br>(`shejishi_builder`) | `impeccable/reference/distill.md`<br>+ `impeccable/reference/quieter.md` | **改码**：6 维信息降噪，剔除无意义的色块、徽章与纯装饰毛玻璃。 |
-| **无障碍与工程走查** | 上线前合规检查、检查 Tab/焦点/溢出 (只读) | **设计师 Designer** (看图)<br>或 **审计员 Auditor** (代码) | `accessibility-scan/SKILL.md`<br>+ `impeccable/reference/audit.md` | **只读**：运行 Playwright + AccessLint 探针，输出客观缺陷单。严禁修改源码。 |
+| **无障碍与工程走查** | 上线前合规检查、检查 Tab/焦点/溢出 (只读) | **设计师 Designer** (看图)<br>或 **审计员 Auditor** (代码) | `accessibility-scan/SKILL.md`<br>+ `impeccable/reference/audit.md` | **只读**：主会话先跑 AccessLint 扫描与 `capture.mjs` 探针，Agent 基于结果输出客观缺陷单。严禁修改源码。 |
 
 - **快轨执行与收口流**：
   1. 派发对应单 Agent，提示词中严格限定目标文件与上述专用 Skill 绝对路径。
@@ -110,7 +148,7 @@ $$
    - 角色：`设计营造师 Builder`（`agent_profile_shejishi_builder`）。
    - 注入上下文：`vendor/impeccable/reference/shape.md` 与 `vendor/interface-design/SKILL.md`。
    - 产出：功能架构、核心动线、状态机矩阵（Idle/Loading/Empty/Error/Stressed）及两套方案对比。
-3. **★ 人类方向确认点**：人类拍板选定 A 或 B 方向，决策锁定写入 `DESIGN.md`。
+3. **★ 人类方向确认点**：Builder 交回的方向方案（含 interface-design Suggest 块）由主会话转人类拍板；确认后按「单一设计宪法」保存映射写入 `DESIGN.md`。
 
 ### Stage 2: 独立工程编码与硬化（Build & Harden）
 1. **隔离环境**：创建独立工作区 `create_workspace(isolation: "worktree", branchName: "ui/<feature>")`。
@@ -151,6 +189,7 @@ $$
 - **路 B（工程/无障碍/代码审计）**：
   - 角色：`审计员 Auditor`（`agent_profile_anchasi`，Codex 异族模型）。
   - 注入上下文：`vendor/accessibility-scan/SKILL.md` + `vendor/react-best-practices/SKILL.md`。
+  - 输入：主会话预先运行扫描器产出的 `./captures/a11y.json`（见「accessibility-scan 适配」）。
   - 职责：检查键盘 Focus-Trap、ARIA 属性、Tab 遍历、React 重渲染漏洞，对照任务边界核实 git diff。
 
 ### Stage 5: 定向返工收敛（Convergence ≤2 轮）

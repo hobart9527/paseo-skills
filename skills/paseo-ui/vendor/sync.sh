@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCK_FILE="${SCRIPT_DIR}/LOCK.json"
+export SCRIPT_DIR LOCK_FILE
 
 if [ ! -f "${LOCK_FILE}" ]; then
   echo "Error: LOCK.json not found in ${SCRIPT_DIR}" >&2
@@ -39,19 +40,6 @@ for repo, items in by_repo.items():
             break
     if not needed:
         print(f"\n--> All items for {repo} already present. Skipping clone.")
-        continue
-
-    # Special check for /tmp/imp cache for pbakaus/impeccable
-    if repo == "pbakaus/impeccable" and os.path.exists("/tmp/imp/.claude/skills/impeccable"):
-        print(f"\n--> Reusing local cache /tmp/imp for {repo}...")
-        for name, meta in items:
-            target_sub = meta["targetPath"].replace("vendor/", "")
-            target_full = os.path.join(script_dir, target_sub)
-            src_full = "/tmp/imp/.claude/skills/impeccable"
-            if os.path.exists(target_full):
-                shutil.rmtree(target_full)
-            shutil.copytree(src_full, target_full)
-            print(f"  ✓ Copied {name} from /tmp/imp to {target_full}")
         continue
 
     url = f"https://github.com/{repo}.git"
