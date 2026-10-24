@@ -1,0 +1,19 @@
+# OS and editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Backup and temp files
+*.bak
+*.bak-*
+*.local-bak
+*.tmp
+
+# Runtime and captures
+captures/
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

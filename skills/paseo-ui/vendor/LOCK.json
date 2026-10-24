@@ -1,0 +1,121 @@
+{
+  "version": "2.0.0",
+  "generatedAt": "2026-10-24",
+  "vendors": {
+    "impeccable": {
+      "repo": "pbakaus/impeccable",
+      "commit": "936867543ac2576920d663cc9803597f6044f3ac",
+      "shortSha": "936867543ac2",
+      "license": "Apache-2.0",
+      "sourcePath": ".claude/skills/impeccable",
+      "targetPath": "vendor/impeccable"
+    },
+    "better-colors": {
+      "repo": "jakubkrehel/skills",
+      "commit": "019ab7c199154f4509b55f12d84a4f5b578dc606",
+      "shortSha": "019ab7c19915",
+      "license": "MIT",
+      "sourcePath": "skills/better-colors",
+      "targetPath": "vendor/better-colors"
+    },
+    "better-typography": {
+      "repo": "jakubkrehel/skills",
+      "commit": "019ab7c199154f4509b55f12d84a4f5b578dc606",
+      "shortSha": "019ab7c19915",
+      "license": "MIT",
+      "sourcePath": "skills/better-typography",
+      "targetPath": "vendor/better-typography"
+    },
+    "better-ui": {
+      "repo": "jakubkrehel/skills",
+      "commit": "019ab7c199154f4509b55f12d84a4f5b578dc606",
+      "shortSha": "019ab7c19915",
+      "license": "MIT",
+      "sourcePath": "skills/better-ui",
+      "targetPath": "vendor/better-ui"
+    },
+    "interface-design": {
+      "repo": "Dammyjay93/interface-design",
+      "commit": "2f9be3206855bcb2d1d0af262c8bae25cba6658d",
+      "shortSha": "2f9be3206855",
+      "license": "MIT",
+      "sourcePath": ".claude/skills/interface-design",
+      "targetPath": "vendor/interface-design"
+    },
+    "baseline-ui": {
+      "repo": "ibelick/ui-skills",
+      "commit": "55363c305097d4c84487bd5f323d29b3f067bf72",
+      "shortSha": "55363c305097",
+      "license": "MIT",
+      "sourcePath": "skills/baseline-ui",
+      "targetPath": "vendor/baseline-ui"
+    },
+    "to-spring-or-not-to-spring": {
+      "repo": "raphaelsalaja/skill",
+      "commit": "dc9eef22f13635df77d9b9e67c82aa85d52a97b7",
+      "shortSha": "dc9eef22f136",
+      "license": "MIT",
+      "sourcePath": "skills/to-spring-or-not-to-spring",
+      "targetPath": "vendor/to-spring-or-not-to-spring"
+    },
+    "micro-interaction": {
+      "repo": "iart-ai/web-animation-skills",
+      "commit": "b6dba3eb759726845a44163ff0bad70dd9e7fbb6",
+      "shortSha": "b6dba3eb7597",
+      "license": "MIT",
+      "sourcePath": "skills/micro-interaction",
+      "targetPath": "vendor/micro-interaction"
+    },
+    "accessible-animation": {
+      "repo": "iart-ai/web-animation-skills",
+      "commit": "b6dba3eb759726845a44163ff0bad70dd9e7fbb6",
+      "shortSha": "b6dba3eb7597",
+      "license": "MIT",
+      "sourcePath": "skills/accessible-animation",
+      "targetPath": "vendor/accessible-animation"
+    },
+    "60fps-animation": {
+      "repo": "iart-ai/web-animation-skills",
+      "commit": "b6dba3eb759726845a44163ff0bad70dd9e7fbb6",
+      "shortSha": "b6dba3eb7597",
+      "license": "MIT",
+      "sourcePath": "skills/60fps-animation",
+      "targetPath": "vendor/60fps-animation"
+    },
+    "review-animations": {
+      "repo": "emilkowalski/skills",
+      "commit": "2d228630ba1446365f614a108cb8252f1feda202",
+      "shortSha": "2d228630ba14",
+      "license": "MIT",
+      "sourcePath": "skills/review-animations",
+      "targetPath": "vendor/review-animations"
+    },
+    "accessibility-scan": {
+      "repo": "AccessLint/claude-marketplace",
+      "commit": "2e9d7336678302d0bc08848e92542560295b34d3",
+      "shortSha": "2e9d73366783",
+      "license": "MIT",
+      "sourcePath": "plugins/accesslint/skills/accessibility-scan",
+      "extraPaths": [
+        "plugins/accesslint/skills/shared"
+      ],
+      "targetPath": "vendor/accessibility-scan"
+    },
+    "react-best-practices": {
+      "repo": "vercel-labs/agent-skills",
+      "commit": "063bee94c3f4df8453406c830b0a7df0f2860278",
+      "shortSha": "063bee94c3f4",
+      "license": "MIT",
+      "sourcePath": "skills/react-best-practices",
+      "targetPath": "vendor/react-best-practices"
+    },
+    "playwright-cli": {
+      "repo": "microsoft/playwright-cli",
+      "commit": "b1a5903c5b633b8c9f843ad7b629c2a78437040c",
+      "shortSha": "b1a5903c5b63",
+      "license": "Apache-2.0",
+      "sourcePath": "skills/playwright-cli",
+      "targetPath": "vendor/playwright-cli"
+    }
+  }
+}
