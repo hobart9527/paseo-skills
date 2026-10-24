@@ -1,12 +1,21 @@
 #!/usr/bin/env node
-// Headless multi-viewport and multi-state screenshot capture for spec-prototype evidence.
-// Uses local Playwright/Puppeteer or system Chrome/Edge. Zero extra dependencies.
+// Headless multi-viewport and multi-state screenshot capture for paseo-ui evidence.
+// Uses local/global Playwright or system Chrome/Edge. Zero extra dependencies.
 //
-// Usage: node capture.mjs <url> --out <dir> [--viewports 320,390,768,1280] [--states ideal,error,skeleton]
+// Usage: node capture.mjs <url> --out <dir> [--viewports 320,390,768,1280]
+//          [--states default,stressed,empty,error] [--mock <mocks.json>]
+//
+// States are entered either by the page itself (data-state attribute) or by
+// network mocks (--mock): each state's routes are fulfilled by Playwright, and a
+// state counts as entered only when every one of its routes was actually hit.
+// Mock file shape: { "*": [route...], "<state>": [route...] } where a route is
+//   { "url": "**/api/tasks*", "status": 200, "json": {...} | "body": "..." |
+//     "bodyFile": "relative/to/mock/file.json", "contentType": "...",
+//     "delayMs": 0, "abort": false }
 
 import fs from "node:fs";
 import path from "node:path";
-import { execFile, execFileSync, spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
@@ -92,6 +101,62 @@ export function confirmStateEntry(expectedState, dom) {
   };
 }
 
+// Mock-driven state entry. A state backed by network mocks is confirmed only
+// when every state-specific route was intercepted at least once: a route that
+// never fired means the page did not request that data, so the screenshot does
+// not show the injected state. Pure so the rule is testable without a browser.
+export function confirmMockedState(expectedState, routes, hits) {
+  const total = routes.length;
+  const hitCount = hits.filter((n) => n > 0).length;
+  const missed = routes.filter((_, i) => !(hits[i] > 0)).map((r) => r.url);
+  return {
+    expected: expectedState,
+    observed: `mock:${hitCount}/${total} routes hit`,
+    signal: "mock",
+    missed_routes: missed,
+    confirmed: total > 0 && hitCount === total,
+  };
+}
+
+// Load and validate a mock file. Body sources are resolved relative to the
+// mock file so a fixture directory can be moved as a unit.
+export function loadMocks(mockPath) {
+  const abs = path.resolve(mockPath);
+  const raw = JSON.parse(fs.readFileSync(abs, "utf-8"));
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("mock file must be an object keyed by state name (or \"*\")");
+  }
+  const mocks = {};
+  for (const [state, routes] of Object.entries(raw)) {
+    if (!Array.isArray(routes)) throw new Error(`mock state '${state}' must map to an array of routes`);
+    mocks[state] = routes.map((route, i) => {
+      if (!route || typeof route.url !== "string" || route.url.length === 0) {
+        throw new Error(`mock state '${state}' route #${i} is missing "url"`);
+      }
+      let body = null;
+      let contentType = route.contentType || null;
+      if (route.json !== undefined) {
+        body = JSON.stringify(route.json);
+        contentType = contentType || "application/json";
+      } else if (typeof route.bodyFile === "string") {
+        body = fs.readFileSync(path.resolve(path.dirname(abs), route.bodyFile), "utf-8");
+        contentType = contentType || (route.bodyFile.endsWith(".json") ? "application/json" : "text/plain");
+      } else if (typeof route.body === "string") {
+        body = route.body;
+      }
+      return {
+        url: route.url,
+        status: Number.isInteger(route.status) ? route.status : 200,
+        body: body ?? "",
+        contentType: contentType || "text/plain",
+        delayMs: Number.isFinite(route.delayMs) ? route.delayMs : 0,
+        abort: route.abort === true,
+      };
+    });
+  }
+  return mocks;
+}
+
 // Requested-vs-actual reconciliation. The page reports only what it observed;
 // the request is only a request. A preference the engine did not apply — or a
 // rendition the page never acknowledged — is `null` (unmeasured), never the
@@ -134,7 +199,8 @@ async function loadPlaywright() {
 }
 
 async function captureWithPlaywright(baseUrl, outputDir, viewports, states, schemes = ["light"], density = null,
-                                     forcedColors = "none", contrast = "no-preference", concurrency = 4) {
+                                     forcedColors = "none", contrast = "no-preference", concurrency = 4,
+                                     mocks = null) {
   try {
     const pw = await loadPlaywright();
     if (!pw) return null;
@@ -157,7 +223,10 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
     // light rendition, and dark is an additional measured rendition, not a swap.
     for (const scheme of schemes) {
       for (const state of states) {
-        const stateUrl = buildVariantUrl(baseUrl, state, scheme, density);
+        // A mock-driven state is entered through the network, not the URL: the
+        // ?state= echo would only confuse a router that does not expect it.
+        const mocked = Boolean(mocks && mocks[state] && mocks[state].length > 0);
+        const stateUrl = buildVariantUrl(baseUrl, mocked ? "default" : state, scheme, density);
         for (const vp of viewports) {
           // `state-vp` (legacy), `scheme-vp`, or `state-scheme-vp` when both vary.
           const prefix = [multiState ? state : null, multiScheme ? scheme : null, vp]
@@ -182,6 +251,21 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
         page.on("response", (res) => {
           if (res.status() >= 400) failedUrls.push(res.url());
         });
+        // Shared routes ("*") apply to every state; state routes are registered
+        // last so they take precedence (Playwright runs the newest route first).
+        const sharedRoutes = (mocks && mocks["*"]) || [];
+        const stateRoutes = (mocks && mocks[state]) || [];
+        const stateHits = stateRoutes.map(() => 0);
+        const installRoute = async (route, onHit) => {
+          await page.route(route.url, async (r) => {
+            onHit();
+            if (route.delayMs > 0) await new Promise((res) => setTimeout(res, route.delayMs));
+            if (route.abort) return r.abort("failed");
+            return r.fulfill({ status: route.status, contentType: route.contentType, body: route.body });
+          });
+        };
+        for (const route of sharedRoutes) await installRoute(route, () => {});
+        for (const [i, route] of stateRoutes.entries()) await installRoute(route, () => { stateHits[i] += 1; });
         await page.goto(stateUrl, { waitUntil: "networkidle", timeout: 15000 });
         // Collect DOM facts in-page, decide in Node: page.evaluate cannot see
         // module-scope exports, and keeping the decision in confirmStateEntry
@@ -198,7 +282,9 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
             (location.hash.match(/state=([a-z0-9_-]+)/i)?.[1] ?? ""),
           domText: document.body?.innerText || "",
         }));
-        const stateConfirmation = confirmStateEntry(state, domFacts);
+        const stateConfirmation = stateRoutes.length > 0
+          ? confirmMockedState(state, stateRoutes, stateHits)
+          : confirmStateEntry(state, domFacts);
         stateConfirmations[prefix] = stateConfirmation;
         if (!stateConfirmation.confirmed) {
           throw new Error(`state_unconfirmed: expected ${state}, observed ${stateConfirmation.observed || "none"}`);
@@ -228,7 +314,7 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
           }
 
           const failedSet = new Set(failed || []);
-          let hasActiveRule = false;
+          const activeSelectors = [];
           let stylesheetsApplied = false;
           let stylesheetsUnmeasured = false;
           try {
@@ -241,11 +327,20 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
               try {
                 if (sheet.cssRules && sheet.cssRules.length > 0) {
                   stylesheetsApplied = true;
-                  for (const rule of sheet.cssRules) {
-                    if (rule.selectorText && rule.selectorText.includes(":active")) {
-                      hasActiveRule = true;
+                  // Walk grouping rules (@media, @layer, @supports) too: utility
+                  // frameworks often emit :active variants inside them.
+                  const walk = (rules) => {
+                    for (const rule of rules) {
+                      if (rule.selectorText && rule.selectorText.includes(":active")) {
+                        for (const part of rule.selectorText.split(",")) {
+                          if (part.includes(":active")) activeSelectors.push(part.replace(/:active/g, "").trim() || "*");
+                        }
+                      } else if (rule.cssRules) {
+                        walk(rule.cssRules);
+                      }
                     }
-                  }
+                  };
+                  walk(sheet.cssRules);
                 }
               } catch (e) {
                 // A successful cross-origin response may be applied, but its
@@ -257,6 +352,19 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
             stylesheetsUnmeasured = true;
           }
           if (stylesheetsUnmeasured) stylesheetsApplied = null;
+
+          // Press feedback is measured per control, not per stylesheet: a lone
+          // `a:active` reset rule must not certify every button on the page.
+          const pressables = [...document.querySelectorAll("button, [role=button], a[href]")]
+            .filter((el) => {
+              const r = el.getBoundingClientRect();
+              return r.width > 0 && r.height > 0;
+            });
+          const matchesActive = (el) => activeSelectors.some((sel) => {
+            try { return el.matches(sel); } catch { return false; }
+          });
+          const pressCovered = pressables.filter(matchesActive).length;
+          const activeFeedback = { covered: pressCovered, total: pressables.length };
 
           let hasTabularNums = false;
           for (const el of document.querySelectorAll("td, th, span, div, p, code")) {
@@ -305,7 +413,8 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
             clientHeight: de.clientHeight,
             horizontal_overflow: hasOverflow,
             stylesheets_applied: stylesheetsApplied,
-            has_active_feedback: hasActiveRule,
+            has_active_feedback: pressables.length === 0 ? null : pressCovered > 0,
+            active_feedback_coverage: activeFeedback,
             has_tabular_nums: hasTabularNums,
             small_touch_targets: smallTargets.slice(0, 10),
             small_touch_target_count: smallTargets.length,
@@ -531,7 +640,7 @@ export function buildCaptureMetadata(result, options = {}) {
     : runtimeErrors;
 
   return {
-    schema: "loom.capture-metadata.v1",
+    schema: "paseo-ui.capture-metadata.v1",
     status,
     identity,
     environment: {
@@ -545,14 +654,6 @@ export function buildCaptureMetadata(result, options = {}) {
     evidence: {
       kind: evidenceKind,
       screenshots: screenshotCount,
-      direction_contract_checklist: [
-        "THESIS: Does the primary view resolve the authentic product tension?",
-        "OWN-WORLD: Is the sensory vocabulary distinct and appropriate for this lifeworld?",
-        "STORY: Is the end-to-end journey visible and navigable from the canvas?",
-        "FIRST VIEWPORT: Is the initial fold immediately legible with zero cognitive friction?",
-        "FORM: Does the layout geometry match the OOUX cardinality (1:1, 1:N, N:M)?",
-        "FINISH: Are the craft floors (press feedback, tabular numbers, concentric radii) delivered?"
-      ],
       paths: Object.values(captures),
       runtime_errors: evidenceRuntimeErrors,
       failures: evidenceFailures,
@@ -717,26 +818,6 @@ export function aggregateTriState(viewportMetrics, tier = "playwright") {
   };
 }
 
-// The script may live anywhere; evidence is written only into a repository that
-// actually carries the spec-prototype Skill, never into whatever tree happens to
-// contain this file.
-export function resolveEvidenceRoot(explicit) {
-  const primary = typeof explicit === "string" && explicit.length > 0 ? explicit : null;
-  // An explicit root is authoritative: if it is not a spec-prototype repository we
-  // refuse rather than silently writing into the current working tree.
-  const candidates = primary ? [primary] : [process.env.LOOM_REPO_ROOT, process.cwd()];
-  for (const candidate of candidates) {
-    if (typeof candidate !== "string" || candidate.length === 0) continue;
-    const abs = path.resolve(candidate);
-    // Accept both install layouts: the repo checkout (`<root>/skills/...`) and
-    // a host Skill install (`<root>/.claude/skills/...`). Without the `.claude`
-    // branch, envelope capture commands record evidence as no_repository_root.
-    if (fs.existsSync(path.join(abs, "skills", "spec-prototype"))) return abs;
-    if (fs.existsSync(path.join(abs, ".claude", "skills", "spec-prototype"))) return abs;
-  }
-  return null;
-}
-
 export function recordHandoffEvidence(outputDir, result, metadata, options = {}) {
   try {
     if (options.noManifest) return { written: false, reason: "manifest_disabled" };
@@ -744,20 +825,9 @@ export function recordHandoffEvidence(outputDir, result, metadata, options = {})
     if (options.manifestPath) {
       manifestPath = path.resolve(options.manifestPath);
     } else {
-      const isProbeDir = outputDir && (outputDir.includes("/probes/") || outputDir.includes("\\probes\\"));
-      // Ad-hoc captures keep their manifest beside their screenshots, so a capture
-      // run from a sandbox never overwrites the repo's handoff manifest. Only slice
-      // handoff needs a repo root.
-      // ponytail: slice handoff still targets the repo manifest unless --manifest is given.
-      if (isProbeDir && !options.isSliceHandoff) {
-        manifestPath = path.join(outputDir, "capture-manifest.json");
-      } else if (options.isSliceHandoff) {
-        const repoRoot = resolveEvidenceRoot(options.repoRoot);
-        if (!repoRoot) return { written: false, reason: "no_repository_root" };
-        manifestPath = path.join(repoRoot, "prototype/evidence/handoff-manifest.json");
-      } else {
-        manifestPath = path.join(outputDir, "handoff-manifest.json");
-      }
+      // Captures keep their manifest beside their screenshots, so a run from a
+      // worktree never writes evidence into another tree.
+      manifestPath = path.join(outputDir, "capture-manifest.json");
     }
     if (!fs.existsSync(path.dirname(manifestPath))) {
       fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
@@ -827,44 +897,6 @@ export function buildDiagnosticsSummary(result) {
   };
 }
 
-// Resolve the capture viewport ladder for a slice: declared widths win, 320
-// always stays as the fold check. The declarations are read through the one
-// design-record seam (`spec_contract_blocks.read_design_record`), never a
-// second JS parser: a single-record `discussion.md` and a layered
-// `truth.md`/`world.md`/`briefs/<slice>.md` tree resolve identically, and a
-// declaration the compiler drops cannot survive here as a divergent parse.
-// The seam's precedence mirrors the compiler: contract:viewports outranks the
-// frontmatter carrier.
-function sliceScope(root, sliceId) {
-  const script = path.join(__dirname, "spec_contract_blocks.py");
-  try {
-    const out = execFileSync("python3", [script, "--dump", root, sliceId], { encoding: "utf-8" });
-    return JSON.parse(out);
-  } catch (err) {
-    // "Nothing declared" (the helper exits 0 with nulls) is a legitimate fallback;
-    // a non-zero exit means the seam found a malformed block or a broken fragment
-    // and refused to parse it. The latter must not degrade to a default ladder —
-    // capturing the wrong viewports would record evidence that never covered the
-    // declared scope. Fail the capture with the helper's own diagnosis.
-    const diag = (err && err.stderr) ? String(err.stderr).trim() : String(err && err.message || err);
-    throw new Error(`capture: design-record scope could not be resolved (${diag})`);
-  }
-}
-
-export function resolveSliceViewports(root, sliceId) {
-  const scope = sliceScope(root, sliceId);
-  return scope && Array.isArray(scope.viewports) ? scope.viewports : null;
-}
-
-// Mirror of resolveSliceViewports for contract:required_states: the slice's
-// declared test states outrank the hardcoded fallback, exactly as declared
-// viewports outrank the default ladder. "default" stays pinned first so the
-// canonical `${vp}.png` first-impression capture keeps its source.
-export function resolveSliceStates(root, sliceId) {
-  const scope = sliceScope(root, sliceId);
-  return scope && Array.isArray(scope.required_states) ? scope.required_states : null;
-}
-
 async function main() {
   const args = process.argv.slice(2);
   let url = null;
@@ -872,20 +904,16 @@ async function main() {
   let viewports = ["320", "390", "1280"];
   let states = ["default"];
   let schemes = ["light"];
-  let viewportsExplicit = false;
-  let statesExplicit = false;
-  let schemesExplicit = false;
   let density = null;
   let forcedColors = "none";
   let contrast = "no-preference";
   let customManifest = null;
   let noManifest = false;
-  let isSliceHandoff = false;
+  let mockPath = null;
   let targetPath = null;
   let targetPlatform = "web";
   let runtime = "unknown";
   let sourceRevision = "unversioned";
-  let repoRoot = null;
   const dependencies = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -902,76 +930,16 @@ async function main() {
       const eq = raw.indexOf("=");
       if (eq > 0) dependencies.push({ ref: raw.slice(0, eq), digest: raw.slice(eq + 1) });
       else if (raw) dependencies.push({ ref: raw, digest: null });
-    } else if (args[i] === "--repo-root") {
-      repoRoot = args[++i] || null;
-    } else if (args[i] === "--slice") {
-      const sliceId = args[++i];
-      // Repo-root resolution order (SSOT): explicit --repo-root wins, then
-      // LOOM_REPO_ROOT, then a marker walk from cwd upward so a Skill
-      // installed under `<root>/.claude/skills/` still resolves correctly.
-      // The old `__dirname/../../..` fallback mis-derived the root whenever
-      // the scripts live inside a `.claude` install rather than `<root>/skills/`.
-      const scriptRoot = path.resolve(__dirname, "../..");
-      const markerIsRoot = (abs) =>
-        fs.existsSync(path.join(abs, "prototype")) &&
-        (fs.existsSync(path.join(abs, "skills", "spec-prototype")) ||
-          fs.existsSync(path.join(abs, ".claude", "skills", "spec-prototype")));
-      let resolvedRoot = repoRoot || process.env.LOOM_REPO_ROOT || null;
-      if (!resolvedRoot) {
-        for (let dir = path.resolve(process.cwd()); ; dir = path.dirname(dir)) {
-          if (markerIsRoot(dir)) { resolvedRoot = dir; break; }
-          if (dir === path.dirname(dir)) break; // filesystem root
-        }
-      }
-      if (!resolvedRoot && markerIsRoot(scriptRoot)) resolvedRoot = scriptRoot;
-      const root = resolvedRoot ? path.resolve(resolvedRoot) : path.resolve(__dirname, "../../..");
-      const candidatePaths = [
-        path.join(root, `prototype/experiments/${sliceId}/anchor/index.html`),
-        path.join(root, `prototype/experiments/${sliceId}/hero-anchor/index.html`),
-        path.join(root, `prototype/experiments/${sliceId}/r1/index.html`),
-        path.join(root, `prototype/experiments/${sliceId}/index.html`),
-        path.join(root, `prototype/surfaces/${sliceId}/index.html`),
-      ];
-      const matched = candidatePaths.find((p) => fs.existsSync(p));
-      if (!matched) {
-        process.stderr.write(`target_html_not_found: no prototype HTML found for slice '${sliceId}' under ${path.join(root, "prototype")}\n`);
-        process.exit(2);
-      }
-      url = `file://${matched}`;
-      outputDir = path.join(root, `prototype/evidence/probes/${sliceId}/`);
-      // Slice defaults are a fallback: an explicit --viewports/--states wins
-      // regardless of argument order, so the envelope's derived gates survive.
-      // Declared required_states (brief frontmatter or contract block) outrank
-      // the hardcoded triple, with "default" pinned first for the canonical
-      // `${vp}.png` first-impression capture.
-      if (!statesExplicit) {
-        const declaredStates = resolveSliceStates(root, sliceId);
-        states = declaredStates
-          ? (declaredStates.includes("default")
-              ? declaredStates
-              : ["default", ...declaredStates])
-          : ["default", "stressed", "empty"];
-      }
-      // Viewport ladder follows the slice's declared viewports when authored
-      // (brief frontmatter or contract:viewports block), keeping 320 as the
-      // fold check; otherwise the default ladder applies.
-      if (!viewportsExplicit) {
-        const declared = resolveSliceViewports(root, sliceId);
-        viewports = declared
-          ? [...new Set([...declared, 320])].sort((a, b) => a - b).map(String)
-          : ["320", "390", "1280"];
-      }
-      isSliceHandoff = true;
+    } else if (args[i] === "--mock") {
+      mockPath = args[++i] || null;
     } else if (args[i] === "--output" || args[i] === "--out" || args[i] === "-o") {
       outputDir = args[++i];
     } else if (args[i] === "--target" || args[i] === "-t") {
       url = args[++i];
     } else if (args[i] === "--viewports" || args[i] === "-v") {
       viewports = (args[++i] || "").split(",").map((s) => s.trim()).filter(Boolean);
-      viewportsExplicit = true;
     } else if (args[i] === "--states" || args[i] === "-s") {
       states = (args[++i] || "").split(",").map((s) => s.trim()).filter(Boolean);
-      statesExplicit = true;
     } else if (args[i] === "--schemes") {
       schemes = (args[++i] || "").split(",").map((s) => s.trim()).filter(Boolean);
       const unknown = schemes.filter((s) => !["light", "dark"].includes(s));
@@ -979,7 +947,6 @@ async function main() {
         process.stderr.write(`--schemes accepts light and/or dark (got: ${unknown.join(",")})\n`);
         process.exit(2);
       }
-      schemesExplicit = true;
     } else if (args[i] === "--density") {
       density = args[++i] || null;
     } else if (args[i] === "--forced-colors") {
@@ -1009,17 +976,35 @@ async function main() {
   }
 
   if (!url || !outputDir) {
-    process.stderr.write("Usage: node capture.mjs <url> --output <dir> [--viewports 320,390,1280] [--states ideal,error]\n");
+    process.stderr.write("Usage: node capture.mjs <url> --out <dir> [--viewports 320,390,1280] [--states default,stressed] [--mock mocks.json]\n");
     process.exit(1);
+  }
+
+  let mocks = null;
+  if (mockPath) {
+    try {
+      mocks = loadMocks(mockPath);
+    } catch (error) {
+      process.stderr.write(`--mock: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.exit(2);
+    }
   }
 
   fs.mkdirSync(outputDir, { recursive: true });
 
   // 1. Try Playwright
   let result = await captureWithPlaywright(url, outputDir, viewports, states, schemes, density,
-                                           forcedColors, contrast);
+                                           forcedColors, contrast, 4, mocks);
 
-  // 2. Try System Browser CLI if Playwright unavailable
+  // 2. Try System Browser CLI if Playwright unavailable. It cannot intercept
+  // requests, so mock-driven states would screenshot the live data: refuse.
+  if (!result && mocks) {
+    process.stdout.write(JSON.stringify({
+      status: "browser_unavailable",
+      reason: "--mock requires Playwright; system browser CLI cannot intercept requests",
+    }, null, 2) + "\n");
+    process.exit(2);
+  }
   if (!result) {
     const browserBin = findSystemBrowser();
     if (browserBin) {
@@ -1034,18 +1019,15 @@ async function main() {
     runtime,
     sourceRevision,
     dependencies,
-    repoRoot,
     // The requested preferences ride along so a reader can tell "captured with
     // forced colors requested" from "the page was never asked".
-    requested: { schemes, density, forcedColors, contrast },
+    requested: { schemes, density, forcedColors, contrast, mock: mockPath },
   };
 
   if (result) {
     const metadata = buildCaptureMetadata(result, metadataOptions);
     const recording = recordHandoffEvidence(outputDir, result, metadata, {
-      repoRoot,
       noManifest,
-      isSliceHandoff,
       manifestPath: customManifest,
     });
     const diagnostics_summary = buildDiagnosticsSummary(result);

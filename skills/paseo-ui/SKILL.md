@@ -2,7 +2,7 @@
 name: paseo-ui
 description: AI-Native 前端与 UI/UX 工业级交付流水线：按阶段挂载单一最佳外部成熟 Skill 提示词（vendor 独立切片），分 Lite（单页/专项优化快轨）与 Full（0→1/重构/公共组件）双档；支持颜色/排版/布局/动效/微质感/微文案等专项精准打靶；覆盖 L3 认知、L1 视觉宪法、L0 复合原语、L2 时序动效与横切技术走查；以真实代码修改、极端数据注入、多视口实测与探针为收口凭据。触发词：/paseo-ui、UI设计、界面优化、页面重构、前端走查。
 user-invocable: true
-argument-hint: "[color · typography · layout · motion · polish · distill · clarify · bolder · quieter · full] [target]"
+argument-hint: "[polish · bolder · typography · color · layout · motion · distill · quieter · clarify · audit · full] [target]"
 ---
 
 # Paseo UI Pipeline
@@ -23,10 +23,11 @@ $$
 2. **缓动与时长**：严禁引入自定义 `cubic-bezier` 曲线（Spring 物理参数除外）；触感反馈时长强制 ≤200ms；状态过渡动画超过 300ms 必须有明确设计理由，严禁任何 >300ms 的拖沓过渡。
 3. **动效属性限制**：动画与过渡仅允许作用于合成器属性（`transform`, `opacity`），严禁过渡布局属性（`width`, `height`, `top`, `left`, `margin`, `padding`）；高度折叠使用 CSS Grid `grid-template-rows: 0fr -> 1fr` 或 `framer-motion` 的 `layoutId`。
 4. **字体与排版**：默认禁止修改 `tracking-*`（letter-spacing）；display 级特大字号紧缩必须在 `DESIGN.md` 中有明确条款；数据、金额、比率、计数器强制使用 `tabular-nums` 等宽对齐，金额一律右对齐。
-5. **视觉与色彩禁令**：操作型界面（Operate / Admin / Dashboard）默认禁用全屏渐变、多色渐变及纯装饰性毛玻璃；图标统一使用 `lucide-react`，严禁在生产界面直接混入 Text Emoji；状态徽章遵循「文字 + 语义底色 + 矢量微图标」三重防御。
-6. **原语与组件系统**：遵循「项目已有原语 > 参考复合组件规范手写 > 引入新依赖（需人类确认）」。严禁在未获人类授权的情况下运行 `npx shadcn add/init` 改写工程架构；表格强制使用 `<Table><TableHeader><TableBody><TableRow><TableCell>` 语义化复合组件，严禁 `div soup` 模拟；弹窗强制采用 `<Dialog>` 标准复合原语，具备 Focus-trap 与 Esc 退出。
+5. **视觉与色彩禁令**：操作型界面（Operate / Admin / Dashboard）默认禁用全屏渐变、多色渐变及纯装饰性毛玻璃；图标沿用项目现有图标库（新项目默认 `lucide-react`），同一界面不混用多套图标，严禁在生产界面直接混入 Text Emoji；状态徽章遵循「文字 + 语义底色 + 矢量微图标」三重防御。
+6. **原语与组件系统**：遵循「项目已有原语 > 参考复合组件规范手写 > 引入新依赖（需人类确认）」。严禁在未获人类授权的情况下运行 `npx shadcn add/init` 改写工程架构；表格数据使用语义化表格结构（项目已有 Table 原语，或原生 `<table>/<thead>/<tbody>/<th scope>`），严禁 `div soup` 模拟；弹窗使用项目已有 Dialog 原语或原生 `<dialog>`，具备 Focus-trap 与 Esc 退出。
 7. **无人值守执行规约**：外部 Skill 中「停下来向用户提问」的条款，在后台子 agent 中分两类处理——**方向性提问**（视觉方向、设计世界、是否替换既有风格）不得自行假设，按「Vendor 适配覆盖」把待选方案作为产出交回、结束本回合，由主会话转人类确认；**执行细节提问**按合理假设推进并在交接报告中显式标明假设。走查与审计按 P0-P3 缺陷全量收录，不受「最多只报 3 条」限制。
-8. **证据分级记录**：交接结论必须区分四级证据：源码静态规则核对、`capture.mjs` 多视口渲染截图、DOM 探针输出（`horizontal_overflow`, `has_active_feedback`）、`playwright-cli` 交互轨迹快照。环境工具缺失时标明「降级：未采集」，严禁静默假定合格。
+8. **证据分级记录**：交接结论必须区分四级证据：源码静态规则核对、`capture.mjs` 多视口渲染截图、DOM 探针输出（`horizontal_overflow`、按控件统计的 `active_feedback_coverage`、`small_touch_target_count`）、`playwright-cli` 交互轨迹快照。环境工具缺失时标明「降级：未采集」，严禁静默假定合格。
+9. **原语优先修复**：同一视觉缺陷在 ≥2 个调用点出现时，修共享原语或 token，不逐点打补丁；改动因此触及共享原语时按 L-2 档处理（见 Lite 分级）。
 
 ### 单一设计宪法与 Vendor 适配覆盖
 
@@ -76,11 +77,12 @@ $$
 | :--- | :--- | :--- | :--- | :--- |
 | **L3 认知** | 需求塑形 | impeccable `shape` | `impeccable/reference/shape.md` | 用户核心任务提炼、主任务通道降噪、产出结构化 design brief |
 | **L3 认知** | B2B 宪法/方向 | Dammyjay93 `interface-design` | `interface-design/SKILL.md` | B2B 管理后台原生架构：字号比率三档、60/30/10 色彩权重、微质感深度 |
-| **L3 认知** | 界面降噪 | impeccable `distill` | `impeccable/reference/distill.md` | 6 维信息降噪清单，剔除杂乱装饰与冗余视觉噪音 |
+| **L3 认知** | 界面降噪 | impeccable `distill` / `quieter` | `impeccable/reference/distill.md`<br>+ `impeccable/reference/quieter.md` | 6 维信息降噪清单，剔除杂乱装饰与冗余视觉噪音 |
 | **L3 认知** | 微文案 | impeccable `clarify` | `impeccable/reference/clarify.md` | 错误提示三要素（现状/根因/解法）、按功能重写动作按钮文案 |
 | **L1 视觉** | 色彩系统 | jakubkrehel `better-colors` | `better-colors/SKILL.md` | 单色阶单职责、15° 同色异阶区分、Tailwind v3 语义映射（6 个辅助指南） |
 | **L1 视觉** | 排版系统 | jakubkrehel `better-typography` | `better-typography/SKILL.md` | 角色行高比例、字阶梯度、151 项 Before/After 核对表、iOS 16px 防缩放 |
 | **L1 视觉** | 布局节奏 | impeccable `layout` | `impeccable/reference/layout.md` | 4pt/8pt 节奏基数、Squint 模糊测试、容器自适应间距 |
+| **L1 视觉** | 层级加强 | impeccable `bolder` | `impeccable/reference/bolder.md` | 视觉层级过平时放大主次对比（仍受条款 1–5 约束） |
 | **L0 工艺** | 基础原语/底线 | ibelick `baseline-ui` | `baseline-ui/SKILL.md` | 极简工艺底线：Tailwind 缺省优先、安全区处理、禁止阻塞粘贴 |
 | **L0 工艺** | 交互触感/图标 | jakubkrehel `better-ui` | `better-ui/SKILL.md`<br>+ `better-ui/icons.md`<br>+ `better-ui/icon-transitions.md` | `:active:scale-0.96` 微触感、图标尺寸与笔触统一、状态 cross-fade 过渡 |
 | **L0 工艺** | 发布前打磨 | impeccable `polish` | `impeccable/reference/polish.md` | 功能性优先于视觉 polish，全动线走查与收尾对齐 |
@@ -93,116 +95,181 @@ $$
 | **横切** | 视觉技术审计 | impeccable `audit` | `impeccable/reference/audit.md` | 5 维技术健康度走查，结合 `impeccable detect` 本地二进制静态扫描 |
 | **横切** | 无障碍规则引擎 | AccessLint `accessibility-scan` | `accessibility-scan/SKILL.md` | 基于真实 DOM 与 selector 的 a11y 规则检测（Tab 焦点环、ARIA 标记） |
 | **横切** | React 性能规则 | vercel `react-best-practices` | `react-best-practices/SKILL.md` | 70 条规则防瀑布流、防非必要重渲染、优化 Context 与 Bundle |
-| **横切** | 深层交互捕获 | microsoft `playwright-cli` | `playwright-cli/SKILL.md` | 驱动真实浏览器点开深层 Modal/Drawer/Dropdown，输出交互快照证据 |
+| **横切** | 深层交互捕获 | microsoft `playwright-cli` | `playwright-cli/SKILL.md`<br>+ `playwright-cli/references/request-mocking.md` | 驱动真实浏览器点开深层 Modal/Drawer/Dropdown，输出交互快照证据 |
 | **扩展** | 图表与数据图形 | Claude `dataviz` | 系统内建 `dataviz` Skill | B2B 数据看板、KPI 卡片、趋势图与统计图表无障碍色板对齐 |
 | **态 C** | 设计系统生成 | `ui-ux-pro-max` | `~/.claude/skills/ui-ux-pro-max/` | 0→1 重构时通过 `search.py --design-system` 提取 50+ 风格与 10-Role Token 表 |
 
 ---
 
-## 双档分流机制
+## 证据采集工具：`capture.mjs`
 
-根据需求范围选择执行档位，轻重分明：
+```bash
+node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
+  --viewports 390,1280 [--states default,stressed,empty,error] [--mock ./captures/mocks.json]
+```
 
-### 模式 A: Lite 档（专项优化快轨与轻量通道）
-- **核心原则**：针对局部明确的优化诉求，**单独调用 1 个最匹配的实体 Agent Profile** 独立闭环，不派多 Agent、不走 A/B 方案确认、不走双路评审。
-- **5 大专项快轨表**：
+- **运行器**：优先本地或全局 Playwright（DOM 探针完整）；退回系统 Chrome CLI 时只有截图，探针记为 `unmeasured`，不得当作通过。
+- **探针字段**：`horizontal_overflow`（横向溢出）、`active_feedback_coverage: {covered, total}`（可按压控件中挂有 `:active` 规则的数量；`has_active_feedback` 为 `covered > 0`，无可按压控件时为 `null`）、`small_touch_target_count`（<44px 控件数）、`has_tabular_nums`。
+- **状态注入（Break-UI）**：`--mock` 指向 JSON，按状态名声明要拦截的接口；`"*"` 为所有状态共享的基础数据，状态路由优先级更高：
 
-| 专项快轨 | 典型需求 | 派发实体 Agent Profile | 挂载专属 Skill 切片 (`vendor/...`) | 边界纪律 |
-| :--- | :--- | :--- | :--- | :--- |
-| **视觉质感与美化** | 页面太素、想要大厂高级感、间距排版微调 | **设计营造师 Builder**<br>(`shejishi_builder`) | `interface-design/SKILL.md`<br>+ `better-typography/SKILL.md`<br>+ `better-ui/icons.md` | **改码**：微边框、分层 Depth、字阶梯度、`tabular-nums`。严禁变动业务逻辑与接口。 |
-| **色彩与暗色模式** | 对比度不足、深浅色不协调、主题色统一 | **设计营造师 Builder**<br>(`shejishi_builder`) | `better-colors/SKILL.md` | **改码**：梳理单色阶单职责，解决 15° 脏色与对比度。严禁变动布局尺寸与动效。 |
-| **时序体验与动效** | 列表过渡生硬、按钮缺乏触感反馈 | **设计营造师 Builder**<br>(`shejishi_builder`) | `to-spring-or-not-to-spring/SKILL.md`<br>+ `micro-interaction/SKILL.md`<br>+ `accessible-animation/SKILL.md` | **改码**：落实 `:active:scale-0.96` 触感与退出动画。高频操作严格零动画，反馈时长 ≤200ms。 |
-| **界面降噪与瘦身** | 页面视觉太杂、信息过载、装饰过剩 | **设计营造师 Builder**<br>(`shejishi_builder`) | `impeccable/reference/distill.md`<br>+ `impeccable/reference/quieter.md` | **改码**：6 维信息降噪，剔除无意义的色块、徽章与纯装饰毛玻璃。 |
-| **无障碍与工程走查** | 上线前合规检查、检查 Tab/焦点/溢出 (只读) | **设计师 Designer** (看图)<br>或 **审计员 Auditor** (代码) | `accessibility-scan/SKILL.md`<br>+ `impeccable/reference/audit.md` | **只读**：主会话先跑 AccessLint 扫描与 `capture.mjs` 探针，Agent 基于结果输出客观缺陷单。严禁修改源码。 |
+  ```json
+  {
+    "*":        [{ "url": "**/api/tasks*", "bodyFile": "fixtures/tasks.json" }],
+    "stressed": [{ "url": "**/api/tasks*", "json": { "items": [{ "title": "AAAA…(50+ 无空格)", "amount": 999999999 }] } }],
+    "empty":    [{ "url": "**/api/tasks*", "json": { "items": [] } }],
+    "error":    [{ "url": "**/api/tasks*", "status": 500, "json": { "message": "upstream timeout" } }]
+  }
+  ```
 
-- **快轨执行与收口流**：
-  1. 派发对应单 Agent，提示词中严格限定目标文件与上述专用 Skill 绝对路径。
-  2. 修改完成后执行本地门禁：`npm run build` 或 `npm test`。
-  3. 如有视觉变动，调用 `capture.mjs` 输出前后对比截图。
-  4. 呈报 `git diff --stat` 与截图，由人类确认后直接合入。
-
-### 模式 B: Full 档（标准工业级流水线）
-- **触发场景**：全新功能页面（0→1）、大面积业务流程重构（≥3 个交互界面）、公共组件库改造。
-- **执行方式**：全流程多角色协同闭环（见下文流水线）。
+  某状态的路由**全部被命中**才算进入该状态（`state_confirmations[*].observed = "mock:n/n routes hit"`）；有路由未命中即判 `state_unconfirmed`，说明页面没请求这份数据，截图不代表该状态。`--mock` 只在 Playwright 运行器可用，否则直接失败。
+- **无 mock 的状态**：页面自身在 `body`/`html`/应用根上写 `data-state` 时可直接确认；两者都没有时，该状态判为未确认。`capture.mjs` 等待 `networkidle` 后才截图，抓不到 loading 态；loading 态用 `playwright-cli` 按 `references/request-mocking.md` 拦住接口后手动截取。
+- **产物**：`./captures/<phase>/*.png` + `capture-manifest.json`。`captures/` 是运行时产物，不提交。
 
 ---
 
-## Full 档全流程流水线（六步闭环）
+## 参数路由与双档分流
+
+### 参数路由表
+
+| 参数 | 去向 | 挂载切片 |
+| :--- | :--- | :--- |
+| `polish` | 快轨 ① 视觉质感 | `interface-design/SKILL.md` + `impeccable/reference/polish.md` + `better-ui/SKILL.md` |
+| `bolder` | 快轨 ① 视觉质感 | `impeccable/reference/bolder.md` + `interface-design/SKILL.md` |
+| `typography` | 快轨 ① 视觉质感 | `better-typography/SKILL.md` |
+| `color` | 快轨 ② 色彩 | `better-colors/SKILL.md` |
+| `layout` | 快轨 ③ 布局与响应式 | `impeccable/reference/layout.md` + `impeccable/reference/adapt.md` |
+| `motion` | 快轨 ④ 动效 | `to-spring-or-not-to-spring/SKILL.md` + `micro-interaction/SKILL.md` + `accessible-animation/SKILL.md` |
+| `distill` / `quieter` | 快轨 ⑤ 降噪 | `impeccable/reference/distill.md` + `impeccable/reference/quieter.md` |
+| `clarify` | 快轨 ⑥ 微文案 | `impeccable/reference/clarify.md` |
+| `audit` | 快轨 ⑦ 走查（只读） | `accessibility-scan/SKILL.md` + `impeccable/reference/audit.md` |
+| `full` 或命中 Full 触发场景 | Full 档 | 见下文六阶段 |
+| 无参数 | 主会话按需求描述归入上表；跨 ≥2 条快轨时按条款 9 与影响面选 Lite 分级，仍不跨档则顺序执行多条快轨 | — |
+
+### 模式 A: Lite 档（专项快轨）
+
+**核心原则**：局部明确的优化诉求，一条快轨一个执行者闭环，不走 A/B 方向选择、不走双路评审。
+
+**快轨表**：
+
+| 快轨 | 典型需求 | 边界纪律 |
+| :--- | :--- | :--- |
+| ① 视觉质感 | 页面太素、层级过平、字阶混乱 | **改码**：微边框、分层 Depth、字阶梯度、`tabular-nums`。不动业务逻辑与接口。 |
+| ② 色彩与暗色 | 对比度不足、深浅色不协调、硬编码色值 | **改码**：单色阶单职责，消除 15° 脏色与硬编码色，接入语义 token。不动布局尺寸与动效。 |
+| ③ 布局与响应式 | 间距节奏乱、移动端挤压/溢出 | **改码**：4/8pt 节奏、容器自适应、窄屏重排。不动视觉色彩与文案。 |
+| ④ 时序与动效 | 过渡生硬、按钮缺触感反馈 | **改码**：落实 `:active:scale-0.96` 与退出动画；高频操作零动画，反馈 ≤200ms。 |
+| ⑤ 降噪瘦身 | 视觉太杂、信息过载、装饰过剩 | **改码**：6 维降噪，剔除无意义色块、徽章与纯装饰毛玻璃。 |
+| ⑥ 微文案 | 报错不可读、按钮文案含糊 | **改码**：只改用户可见文案与 `aria-label`，不改 i18n key 结构与业务逻辑。 |
+| ⑦ 走查 | 上线前合规检查、Tab/焦点/溢出 | **只读**：主会话先跑 AccessLint 扫描与 `capture.mjs` 探针，执行者基于结果输出 P0–P3 缺陷单，不改源码。 |
+
+**Lite 执行分级**（按影响面，不按快轨）：
+
+| 分级 | 判据 | 执行者 | 隔离 | 评审 |
+| :--- | :--- | :--- | :--- | :--- |
+| **L-0** | 改动 ≤2 个文件，且不触共享原语（`components/ui/`）与全局 token 文件 | 主会话直接改 | 原地 | 自动门禁 |
+| **L-1** | 多文件，但不触共享原语与全局 token | 设计营造师 Builder | worktree | 自动门禁（代替 Builder profile 默认的交叉评审） |
+| **L-2** | 触及共享原语或全局 token（影响面跨页面） | 设计营造师 Builder | worktree | 自动门禁 + 设计师 Designer 前后截图抽检一次 |
+
+走查快轨 ⑦ 的执行者：看截图选设计师 Designer，看代码与 a11y JSON 选审计员 Auditor；L-2 的 Designer 抽检同样只读。
+
+**Lite 执行流**：
+1. **基线**：确认目标文件的 `git status`。若目标文件有未提交改动，L-1/L-2 不建 worktree（会丢失这些改动），先问人类是先提交还是改为原地执行；原地执行时先把 `git diff -- <目标文件>` 存为 `./captures/baseline.patch`，交付时只报告相对基线的增量。
+2. **改前截图**：启动预览后跑 `capture.mjs … --out ./captures/before`（视口与状态参数记下，改后复用同一组）。
+3. **派发或直改**：brief 限定目标文件、快轨切片绝对路径、本 Skill「单一设计宪法与 Vendor 适配覆盖」节；L-1/L-2 在 `create_workspace(isolation: "worktree", branchName: "ui/<track>-<target>")` 中执行。
+4. **自动门禁**：从项目 `package.json` 读取实际脚本（如 `build`、`test`、`lint`），全部退出码为 0；改后跑 `capture.mjs … --out ./captures/after`，`horizontal_overflow` 不得新增、`small_touch_target_count` 不得上升。
+5. **呈报**：`git diff --stat`、before/after 截图对、探针前后对比、伴随的 `DESIGN.proposed.md`（如有），由人类确认后合入；worktree 合入后清理。
+
+### 模式 B: Full 档（标准工业级流水线）
+
+- **触发场景**：全新功能页面（0→1）、大面积业务流程重构（≥3 个交互界面）、公共组件库改造。
+- **与 paseo-pipeline 的边界**：需求同时含后端/接口改动，或拆出 ≥3 个有依赖的非 UI 任务时，整体走 `paseo-pipeline`（OpenSpec change）。此时本档六阶段作为该 change 中 UI 任务的内部流程：Stage 1 的产出并入 pipeline 确认点 1（`PRODUCT.md`、`DESIGN.md` 随 spec 冻结），Stage 6 合入 `integration/<change>` 分支，主干合入归 pipeline 确认点 2；此时不调用 `openspec` CLI。纯 UI 需求则独立运行本档。
+- **编排者**：Stage 1 由主会话直接编排（方向确认需人类在场）；Stage 2–5 预计派发 ≥4 次，按全局约定交总控 Lead 无人值守执行，主会话只守 Stage 1 与 Stage 6 两个确认点。
+
+---
+
+## Full 档全流程流水线（六阶段闭环）
 
 ```text
-[Stage 1: 意图与宪法] ──> (人类方向确认) ──> [Stage 2: 编码与硬化 (Worktree)]
-                                                    │
-                                                    ▼
-[Stage 4: 定向返工收敛] <── [Stage 3: 双路并发反证 (Designer + Auditor)]
-         │
-         ▼
-[Stage 5: 最终收口呈报] ──> (人类合入主干确认) ──> [Stage 6: 清理与归档]
+[Stage 1: 意图与宪法] ──> ★确认点 1（方向 + 宪法冻结）
+          │
+          ▼
+[Stage 2: 编码与硬化 (worktree)] ──> [Stage 3: 截图与探针] ──> [Stage 4: 双路并发反证]
+                                                                        │
+          ┌─────────────────────────────────────────────────────────────┘
+          ▼
+[Stage 5: 定向返工收敛 ≤2 轮] ──> [Stage 6: 终审呈报] ──> ★确认点 2（合入） ──> 清理归档
 ```
 
 ### Stage 1: 意图塑形与设计宪法（Grounding & Constitution）
 1. **现状扫描**：
-   - 态 A（已有 `DESIGN.md`）：直接读取锁定色彩 Token、字阶比例与既有约定。
-   - 态 B（存量工程无规范）：从 `tailwind.config.js` 与公共组件中提取既有模式，整理成手写 `DESIGN.md`。
-   - 态 C（全新 0→1 页面）：调用 `ui-ux-pro-max` 的 `search.py` 脚本生成 A/B 两种不同密度（`--density`）与版式（`--variance`）的设计系统草案。
+   - 读 `PRODUCT.md`；缺失时，Stage 1 由 `shape.md` 产出的 design brief 一并呈人类确认，确认后写入 `PRODUCT.md`（L3 层，只写用户与任务）。
+   - 态 A（已有 `DESIGN.md`）：直接读取，继承既有方向。
+   - 态 B（存量工程无规范）：从代码 token 文件与公共组件中提取既有模式，起草 `DESIGN.md`（只写语义角色，不抄数值）。
+   - 态 C（全新 0→1 页面）：调用 `ui-ux-pro-max` 的 `search.py` 生成 A/B 两种不同密度（`--density`）与版式（`--variance`）的设计系统草案。
 2. **派发 Builder 塑形**：
    - 角色：`设计营造师 Builder`（`agent_profile_shejishi_builder`）。
    - 注入上下文：`vendor/impeccable/reference/shape.md` 与 `vendor/interface-design/SKILL.md`。
-   - 产出：功能架构、核心动线、状态机矩阵（Idle/Loading/Empty/Error/Stressed）及两套方案对比。
-3. **★ 人类方向确认点**：Builder 交回的方向方案（含 interface-design Suggest 块）由主会话转人类拍板；确认后按「单一设计宪法」保存映射写入 `DESIGN.md`。
+   - 产出：功能架构、核心动线、界面展示态矩阵（Idle/Loading/Empty/Error/Stressed）；业务状态机以既有 spec 为准，不自造。**仅态 C 产出 A/B 两套方向对比**；态 A/B 只产出一套与既有方向一致的方案，若认为需要改方向，写成 Suggest 块交回。
+3. **★ 确认点 1**：Builder 交回的方案（含 interface-design Suggest 块）由主会话转人类拍板；确认后按「单一设计宪法」保存映射写入 `DESIGN.md`，与 `PRODUCT.md` 一起冻结。
 
 ### Stage 2: 独立工程编码与硬化（Build & Harden）
-1. **隔离环境**：创建独立工作区 `create_workspace(isolation: "worktree", branchName: "ui/<feature>")`。
-2. **派发 Builder 落地**：
+1. **隔离环境**：`create_workspace(isolation: "worktree", branchName: "ui/<feature>")`。主干目标文件有未提交改动时，先按 Lite 执行流第 1 步处理。
+2. **改前截图**：在 worktree 起预览，跑 `capture.mjs … --out ./captures/before`（存量页面适用；0→1 页面跳过）。
+3. **派发 Builder 落地**：
    - 注入上下文：
      - 工艺基线：`vendor/baseline-ui/SKILL.md`
-     - 界面规范：`vendor/better-colors/SKILL.md` + `vendor/better-typography/SKILL.md`
+     - 界面规范：`vendor/better-colors/SKILL.md` + `vendor/better-typography/SKILL.md` + `vendor/impeccable/reference/layout.md`
      - 复合原语：`vendor/better-ui/SKILL.md` + `vendor/better-ui/icons.md`
      - 动效规则：`vendor/to-spring-or-not-to-spring/SKILL.md` + `vendor/micro-interaction/SKILL.md`
-   - 修改真实工程源码（`packages/*/src`），遵循语义化复合原语与 `:active:scale-0.96` 触感。
-3. **极端坏数据破坏自验（Break-UI）**：
-   - 注入 50+ 字符无空格英文字符串验证不溢出；
-   - 注入 `¥999,999,999.00` 验证金额排版；
-   - 注入 0 待办验证空态渲染；
-   - 注入网络异常态验证错误条与重试入口。
-4. **本地构建与静态检测**：
-   - 执行 `impeccable detect --json` 静态扫描；
-   - 执行 `npm test` 与 `npm run build`，退出码必须为 0。
+     - 硬化：`vendor/impeccable/reference/harden.md`
+   - 修改真实工程源码，遵循语义化复合原语与 `:active:scale-0.96` 触感；同一缺陷多点出现时按条款 9 修原语。
+4. **极端坏数据破坏自验（Break-UI）**：Builder 编写 `./captures/mocks.json`（格式见「证据采集工具」），至少覆盖：
+   - `stressed`：50+ 字符无空格字符串、`¥999,999,999.00` 极值金额；
+   - `empty`：0 条数据；
+   - `error`：接口 5xx 或网络中断，验证错误条与重试入口。
+   只改输入、网络 mock 与视口，不碰生产数据与业务代码路径。
+5. **持久回归（可选）**：项目已安装 `@playwright/test` 时，为关键页及上述 mock 态补 `toHaveScreenshot()` 用例；未安装则在报告中列为建议，不自行新增依赖。
+6. **本地构建与静态检测**：
+   - `impeccable detect --json` 静态扫描（启动器不可用时标「降级：未采集」）；
+   - 项目 `package.json` 中的 `test` / `build` / `lint` 脚本，退出码必须为 0。
 
 ### Stage 3: 截图与交互证据采集（Capture & Probe）
-1. 启动本地预览或开发服务（如 `npm run preview -- --port <port>`）。
-2. 执行官方多视口截图与探针：
+1. 启动本地预览或开发服务（如 `npm run preview -- --port <port>`）；先查端口占用，不复用他人服务。
+2. 多视口 × 多状态截图与探针：
    ```bash
-   node ~/.claude/skills/paseo-ui/capture.mjs http://localhost:<port> --out ./captures --viewports 390,1280
+   node ~/.claude/skills/paseo-ui/capture.mjs http://localhost:<port> --out ./captures/after \
+     --viewports 390,1280 --states default,stressed,empty,error --mock ./captures/mocks.json
    ```
-   记录探针：`horizontal_overflow`（横向溢出）与 `has_active_feedback`（微触感）。
-3. **深层弹窗抓取**：
-   若页面包含 Dialog/Drawer/Modal，使用 `vendor/playwright-cli/` 执行点击动作并额外截取弹窗状态图片存入 `./captures/`。
+   所有状态须 `confirmed: true`；未确认的状态如实记为缺口，不得以 default 截图顶替。
+3. **深层弹窗抓取**：页面含 Dialog/Drawer/Modal 时，用 `vendor/playwright-cli/` 点击打开并截图存入 `./captures/after/`；`playwright-cli` 不可用时标「降级：未采集」。
+4. **a11y 扫描**：主会话按「accessibility-scan 适配」运行扫描器，产出 `./captures/a11y.json`。
 
 ### Stage 4: 双路并发客观反证（Concurrent Audit）
-启动两路异族 Agent 并发审查（耗时缩短 50%）：
+两路异族 Agent 并发审查：
 
+- **读图探针（前置）**：派 Designer 前，先给它一张已知截图，让它说出页面主按钮的文案；答错或含糊即判定本轮不可读图，路 A 改用 claude 家族 profile，并在报告中记录探针结果。
 - **路 A（视觉多模态走查）**：
-  - 角色：`设计师 Designer`（`agent_profile_jiangzuo`，若截图无法解析则改用 Claude 视觉）。
+  - 角色：`设计师 Designer`（`agent_profile_jiangzuo`，按读图探针结果决定是否替换）。
   - 注入上下文：`vendor/impeccable/reference/audit.md` + `vendor/review-animations/SKILL.md`。
-  - 输入：`./captures/` 下的多视口 PNG 图像与 `DESIGN.md`。
-  - 职责：对照设计宪法与动效基线，提取客观缺陷（Contract 违背条款 + Runtime 视口复现 + Correction 唯一建议），严禁输出主观打分。
+  - 输入：`./captures/before` 与 `./captures/after` 下的截图、`capture-manifest.json` 探针、`DESIGN.md`。
+  - 职责：对照设计宪法与动效基线，提取客观缺陷（Contract 违背条款 + Runtime 视口/状态复现 + Correction 唯一建议），严禁输出主观打分。
 - **路 B（工程/无障碍/代码审计）**：
   - 角色：`审计员 Auditor`（`agent_profile_anchasi`，Codex 异族模型）。
   - 注入上下文：`vendor/accessibility-scan/SKILL.md` + `vendor/react-best-practices/SKILL.md`。
-  - 输入：主会话预先运行扫描器产出的 `./captures/a11y.json`（见「accessibility-scan 适配」）。
-  - 职责：检查键盘 Focus-Trap、ARIA 属性、Tab 遍历、React 重渲染漏洞，对照任务边界核实 git diff。
+  - 输入：`./captures/a11y.json`、原始 `git diff`（比较基点为 worktree 分支与其基线分支的 merge-base）。
+  - 职责：检查键盘 Focus-Trap、ARIA 属性、Tab 遍历、React 重渲染漏洞，核对改动路径不越出任务边界。
 
 ### Stage 5: 定向返工收敛（Convergence ≤2 轮）
-1. 归并两路审查发现的阻断项（P0/P1）。
+1. 归并两路审查发现的阻断项（P0/P1）；同源缺陷按条款 9 合并为原语级修复。
 2. 在原 worktree 唤起 Builder 定向修复。
-3. 重新运行构建与截图验证，确保缺陷关闭（最多返工 2 轮即收敛）。
-4. **设计契约反哺**：若在修复过程中发现了视觉规范缺陷（如某色板在深色模式对比度不足），只允许产出 `DESIGN.proposed.md` 提案，不得私自覆写 `DESIGN.md`。
+3. 重跑 Stage 2 第 6 步门禁与 Stage 3 截图，确认缺陷关闭；2 轮后仍未关闭的阻断项原样上报，不再返工。
+4. **设计契约反哺**：修复中发现视觉规范缺陷（如某色板在深色模式对比度不足），只产出 `DESIGN.proposed.md`，不覆写 `DESIGN.md`。
 
-### Stage 6: 终审呈现与主干合入（Final Approval & Merge）
-1. 关闭本地预览服务。
-2. 向人类用户呈报完整交付报告：
-   - 移动端（390px）与桌面端（1280px）多视口渲染截图；
-   - DOM 探针检测结果（无横向滚动、触感有效）；
+### Stage 6: 终审呈报与合入（Final Approval & Merge）
+1. 关闭本 Skill 启动的预览服务。
+2. 向人类呈报交付报告：
+   - before/after 多视口、多状态截图；
+   - 探针结果（溢出、按压反馈覆盖率、触控目标）及未确认状态清单；
+   - 读图探针结果、双路审查结论与未关闭项；
    - `git diff --stat` 与核心代码变更摘要；
    - 伴随的 `DESIGN.proposed.md`（如有）。
-3. **★ 人类主干合入确认点**：用户确认后，执行 Fast-forward / squash 合入主干，安全清理临时分支与 worktree。
+3. **★ 确认点 2**：人类确认后执行 fast-forward / squash 合入（独立运行合入主干；pipeline 内运行合入 `integration/<change>`），清理临时分支、worktree 与 `./captures/`。
