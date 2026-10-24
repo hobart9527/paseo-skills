@@ -34,7 +34,7 @@ ln -sf ~/Codex/paseo-skills/skills/paseo-ui ~/.claude/skills/paseo-ui
 ```
 
 ### 3. Sync Vendored UI Skills (Paseo UI)
-Paseo UI locks 10 upstream best-of-breed skill slices locally via `LOCK.json`:
+Paseo UI locks 15 upstream best-of-breed skill slices locally via `LOCK.json`:
 ```bash
 cd ~/Codex/paseo-skills/skills/paseo-ui/vendor
 chmod +x sync.sh

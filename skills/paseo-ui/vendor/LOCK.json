@@ -116,6 +116,14 @@
       "license": "Apache-2.0",
       "sourcePath": "skills/playwright-cli",
       "targetPath": "vendor/playwright-cli"
+    },
+    "ui-ux-pro-max": {
+      "repo": "nextlevelbuilder/ui-ux-pro-max-skill",
+      "commit": "d14efff8ed1faa4187f004f79926f428c8074ec7",
+      "shortSha": "d14efff8ed1f",
+      "license": "MIT",
+      "sourcePath": ".claude/skills/ui-ux-pro-max",
+      "targetPath": "vendor/ui-ux-pro-max"
     }
   }
 }

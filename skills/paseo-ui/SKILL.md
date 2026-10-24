@@ -88,6 +88,7 @@ $$
 | **L0 工艺** | 发布前打磨 | impeccable `polish` | `impeccable/reference/polish.md` | 功能性优先于视觉 polish，全动线走查与收尾对齐 |
 | **L2 动效** | 动效决策树 | raphaelsalaja `to-spring` | `to-spring-or-not-to-spring/SKILL.md` | 动效必要性决策树：手势用 Spring、系统用 Easing、高频操作零动画 |
 | **L2 动效** | 动效实现模版 | iart-ai `micro-interaction` | `micro-interaction/SKILL.md`<br>+ `micro-interaction/references/` | `framer-motion` 与纯 CSS `@starting-style` 状态切换、列表布局补间 |
+| **L2 动效** | 动效性能 | iart-ai `60fps-animation` | `60fps-animation/SKILL.md` | 合成器属性动画、布局抖动排查、将 width/height/top/left 动画改写为 transform |
 | **L2 动效** | 减弱动效防御 | iart-ai `accessible-animation` | `accessible-animation/SKILL.md` | 三级降级策略（移除/淡入/保留）、0.01ms 安全网防 transitionend 断裂 |
 | **L2 动效** | 动效审查门禁 | emilkowalski `review-animations` | `review-animations/SKILL.md` | 10 项不可妥协审查规则，拖沓动效直接判 Block |
 | **横切** | 鲁棒硬化 | impeccable `harden` | `impeccable/reference/harden.md` | 超长字符折行、极值金额、0 数据空态、接口异常/并发状态机防御 |
@@ -96,8 +97,7 @@ $$
 | **横切** | 无障碍规则引擎 | AccessLint `accessibility-scan` | `accessibility-scan/SKILL.md` | 基于真实 DOM 与 selector 的 a11y 规则检测（Tab 焦点环、ARIA 标记） |
 | **横切** | React 性能规则 | vercel `react-best-practices` | `react-best-practices/SKILL.md` | 70 条规则防瀑布流、防非必要重渲染、优化 Context 与 Bundle |
 | **横切** | 深层交互捕获 | microsoft `playwright-cli` | `playwright-cli/SKILL.md`<br>+ `playwright-cli/references/request-mocking.md` | 驱动真实浏览器点开深层 Modal/Drawer/Dropdown，输出交互快照证据 |
-| **扩展** | 图表与数据图形 | Claude `dataviz` | 系统内建 `dataviz` Skill | B2B 数据看板、KPI 卡片、趋势图与统计图表无障碍色板对齐 |
-| **态 C** | 设计系统生成 | `ui-ux-pro-max` | `~/.claude/skills/ui-ux-pro-max/` | 0→1 重构时通过 `search.py --design-system` 提取 50+ 风格与 10-Role Token 表 |
+| **态 C** | 设计系统生成 | `ui-ux-pro-max` | `ui-ux-pro-max/SKILL.md`（脚本 `ui-ux-pro-max/scripts/search.py`） | 0→1 重构时通过 `search.py --design-system` 提取 50+ 风格与 10-Role Token 表 |
 
 ---
 
@@ -138,7 +138,7 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
 | `typography` | 快轨 ① 视觉质感 | `better-typography/SKILL.md` |
 | `color` | 快轨 ② 色彩 | `better-colors/SKILL.md` |
 | `layout` | 快轨 ③ 布局与响应式 | `impeccable/reference/layout.md` + `impeccable/reference/adapt.md` |
-| `motion` | 快轨 ④ 动效 | `to-spring-or-not-to-spring/SKILL.md` + `micro-interaction/SKILL.md` + `accessible-animation/SKILL.md` |
+| `motion` | 快轨 ④ 动效 | `to-spring-or-not-to-spring/SKILL.md` + `micro-interaction/SKILL.md` + `60fps-animation/SKILL.md` + `accessible-animation/SKILL.md` |
 | `distill` / `quieter` | 快轨 ⑤ 降噪 | `impeccable/reference/distill.md` + `impeccable/reference/quieter.md` |
 | `clarify` | 快轨 ⑥ 微文案 | `impeccable/reference/clarify.md` |
 | `audit` | 快轨 ⑦ 走查（只读） | `accessibility-scan/SKILL.md` + `impeccable/reference/audit.md` |
@@ -219,7 +219,7 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
      - 工艺基线：`vendor/baseline-ui/SKILL.md`
      - 界面规范：`vendor/better-colors/SKILL.md` + `vendor/better-typography/SKILL.md` + `vendor/impeccable/reference/layout.md`
      - 复合原语：`vendor/better-ui/SKILL.md` + `vendor/better-ui/icons.md`
-     - 动效规则：`vendor/to-spring-or-not-to-spring/SKILL.md` + `vendor/micro-interaction/SKILL.md`
+     - 动效规则：`vendor/to-spring-or-not-to-spring/SKILL.md` + `vendor/micro-interaction/SKILL.md` + `vendor/60fps-animation/SKILL.md`
      - 硬化：`vendor/impeccable/reference/harden.md`
    - 修改真实工程源码，遵循语义化复合原语与 `:active:scale-0.96` 触感；同一缺陷多点出现时按条款 9 修原语。
 4. **极端坏数据破坏自验（Break-UI）**：Builder 编写 `./captures/mocks.json`（格式见「证据采集工具」），至少覆盖：
