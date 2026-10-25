@@ -685,11 +685,12 @@ for (const [name, first, second, expectedConflict] of normalizationCases) {
   });
 }
 
-test('SCEN-DAG-02 invalid scope held by an ACTIVE writer fails closed against all candidates', (context) => {
+// 2026-10-25 冻结澄清：非法 scope 先于 ACTIVE 判 INVALID，但写入占用保留（fail closed）。
+test('SCEN-DAG-02 invalid scope held by a live writer is INVALID and fails closed against all candidates', (context) => {
   const subject = fixture(context, [{ id: 'T-01', scope: '/outside/file' }, { id: 'T-02', scope: 'docs/' }]);
   subject.runtime([agent({ id: 'writer-1' }, { 'pipeline.task': 'T-01' })]);
   const result = output(subject);
-  state(result, 'T-01', 'ACTIVE');
+  state(result, 'T-01', 'INVALID');
   conflict(result, 'T-02', 'T-01');
   dispatch(result, []);
 });

@@ -81,6 +81,31 @@ for (const e of errors) {
 }
 const byId = new Map(tasks.map((t) => [t.id, t]));
 
+// 路径合法性单一属主：normalizeScope(raw) → 规范段数组（根 scope 为 []）或 null（非法）。
+// 非法类别：POSIX 绝对路径（/ 开头，含 //host）、Windows 盘符（C:\x / C:/x / C:x）、
+// 任何反斜杠（含 UNC \\srv\share）、NUL/控制字符、`..` 越出根。
+// 合法输入仅规范化：去空段/`.` 段/尾斜杠、合并重复斜杠、根内 `..` 弹栈；
+// 规范化后为根（`.`、`a/..`）→ 段数组为空，与一切重叠（既有契约）。
+// 非法 scope 在占用集内 fail closed：overlaps 视为与一切重叠。
+const normalizeScope = (raw) => {
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  if (/[\\\0-\x1f]/.test(raw)) return null;
+  if (raw.startsWith("/")) return null;
+  if (/^[A-Za-z]:/.test(raw)) return null;
+  const parts = [];
+  for (const seg of raw.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      if (parts.length === 0) return null;
+      parts.pop();
+      continue;
+    }
+    parts.push(seg);
+  }
+  return parts;
+};
+const badScopeOf = (task) => task.scope.find((s) => normalizeScope(s) === null);
+
 // --- D4 Done 验证：first-parent 合流提交索引（secondParentSha -> trailer task ids） ---
 const mergeAcceptance = new Map();
 const mergeLog = sh("git", ["log", "--first-parent", "--merges", "--format=%H", "HEAD"]);
@@ -112,7 +137,7 @@ function expandDoneSource(abbrev) {
 }
 const doneSet = new Set();
 for (const task of tasks) {
-  if (task.done && !invalidByParse.has(task.id) && doneVerified(task)) doneSet.add(task.id);
+  if (task.done && !invalidByParse.has(task.id) && badScopeOf(task) === undefined && doneVerified(task)) doneSet.add(task.id);
 }
 
 // --- 待合流分支 ---
@@ -153,7 +178,7 @@ const agentsByTask = new Map();
 for (const a of agents ?? []) {
   const labels = a.labels ?? {};
   if (labels["pipeline.change"] !== change) continue;
-  if (a.status === "running") RUNNING.push({ id: a.id, name: a.name });
+  if (LIVE.has(a.status)) RUNNING.push({ id: a.id, name: a.name });
   const role = labels["pipeline.role"];
   const live = LIVE.has(a.status);
   if (isControl(role)) continue;
@@ -199,6 +224,17 @@ for (const task of tasks) {
   if (invalidByParse.has(task.id)) {
     out.INVALID.push({ task: label, reason: invalidByParse.get(task.id) });
     stateOf.set(task.id, "INVALID");
+    continue;
+  }
+  // 非法 Write scope 先于一切状态分类判 INVALID（含 DONE/ACTIVE/UNRESOLVED/MERGE/BLOCKED），
+  // 不进入 doneSet、不释放依赖者；但运行占用与分类分离——live 写入者仍计入 cap 并保守占位。
+  const badScope = badScopeOf(task);
+  if (badScope !== undefined) {
+    out.INVALID.push({ task: label, reason: `BAD_SCOPE_PATH: Write scope 非法 ${JSON.stringify(badScope)}（须为仓库根内相对路径）` });
+    stateOf.set(task.id, "INVALID");
+    const liveWriters = live.filter((m) => m.writer);
+    liveWriterCount += liveWriters.length;
+    if (liveWriters.length) held.push({ id: task.id, label, scope: task.scope });
     continue;
   }
   if (task.done) {
@@ -254,29 +290,6 @@ for (const task of tasks) {
 }
 
 // --- 资源串行（按文件顺序；路径段前缀重叠即冲突） ---
-// 路径合法性单一属主：normalizeScope(raw) → 规范段数组（根 scope 为 []）或 null（非法）。
-// 非法类别：POSIX 绝对路径（/ 开头，含 //host）、Windows 盘符（C:\x / C:/x / C:x）、
-// 任何反斜杠（含 UNC \\srv\share）、NUL/控制字符、`..` 越出根。
-// 合法输入仅规范化：去空段/`.` 段/尾斜杠、合并重复斜杠、根内 `..` 弹栈；
-// 规范化后为根（`.`、`a/..`）→ 段数组为空，与一切重叠（既有契约）。
-// 非法 scope 在占用集内 fail closed：overlaps 视为与一切重叠。
-const normalizeScope = (raw) => {
-  if (typeof raw !== "string" || raw.length === 0) return null;
-  if (/[\\\0-\x1f]/.test(raw)) return null;
-  if (raw.startsWith("/")) return null;
-  if (/^[A-Za-z]:/.test(raw)) return null;
-  const parts = [];
-  for (const seg of raw.split("/")) {
-    if (seg === "" || seg === ".") continue;
-    if (seg === "..") {
-      if (parts.length === 0) return null;
-      parts.pop();
-      continue;
-    }
-    parts.push(seg);
-  }
-  return parts;
-};
 const overlaps = (a, b) => {
   const as = normalizeScope(a);
   const bs = normalizeScope(b);
@@ -288,12 +301,6 @@ const overlaps = (a, b) => {
   return true;
 };
 for (const c of candidates) {
-  const bad = c.scope.find((s) => normalizeScope(s) === null);
-  if (bad !== undefined) {
-    out.INVALID.push({ task: c.label, reason: `BAD_SCOPE_PATH: Write scope 非法 ${JSON.stringify(bad)}（须为仓库根内相对路径）` });
-    stateOf.set(c.id, "INVALID");
-    continue;
-  }
   const holder = held.find((h) => h.scope.some((s) => c.scope.some((t) => overlaps(s, t))));
   if (holder) {
     out.BLOCKED_RESOURCE.push({ task: c.label, conflict: holder.label });
