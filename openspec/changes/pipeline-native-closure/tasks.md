@@ -66,7 +66,8 @@
   - Verify with: bash skills/paseo-pipeline/test/run-all.sh
   - Scenarios: SCEN-VER-01, SCEN-VER-02, SCEN-VER-03
 
-- [ ] 2.3 T-08 原生 MCP 回调冒烟（真实 create_agent+notifyOnFinish，含 grandchild→Lead→parent 显式接力案例，独立于 mock）
+- [x] 2.3 T-08 原生 MCP 回调冒烟（真实 create_agent+notifyOnFinish，含 grandchild→Lead→parent 显式接力案例，独立于 mock）
+  - Done: source=011b167 review=pass(fc4f8926@011b167/c82c202)
   - Depends on: T-06, T-07
   - Write scope: openspec/changes/pipeline-native-closure/evidence/native-smoke.md
   - Risk-surface: [none]
