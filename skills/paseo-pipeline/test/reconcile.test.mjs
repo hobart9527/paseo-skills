@@ -700,3 +700,85 @@ test('blank Write scope field is INVALID via MISSING_SCOPE', (context) => {
   state(result, 'T-01', 'INVALID');
   dispatch(result, []);
 });
+
+for (const scope of ['../outside', '/abs']) {
+  for (const [name, expected, worker, ahead, done, depends] of [
+    ['verified Done evidence', 'DONE', null, false, true],
+    ['initializing writer', 'ACTIVE', agent({ status: 'initializing' })],
+    ['running writer', 'ACTIVE', agent()],
+    ['initializing read-only Auditor', 'ACTIVE', agent({ status: 'initializing' }, { 'pipeline.role': 'anchasi', 'pipeline.phase': 'audit' })],
+    ['running read-only Auditor', 'ACTIVE', agent({}, { 'pipeline.role': 'anchasi', 'pipeline.phase': 'audit' })],
+    ...['error', 'idle', 'closed'].map((status) => [
+      `${status} without disposition`, 'UNRESOLVED', agent({ status }),
+    ]),
+    ...['error', 'idle', 'closed'].map((status) => [
+      `${status} with disposition`, 'READY', agent({ status }, { 'pipeline.disposition': 'rejected' }),
+    ]),
+    ['pending permission', 'UNRESOLVED', agent({ status: 'idle', pendingPermission: true })],
+    ['pending permission with disposition', 'UNRESOLVED', agent({ status: 'idle', pendingPermission: true }, { 'pipeline.disposition': 'abandoned' })],
+    ['ahead task branch', 'MERGE', null, true],
+    ['unmet dependency', 'BLOCKED', null, false, false, 'T-02'],
+    ['ordinary READY task', 'READY'],
+  ]) {
+    test(`SCEN-REC-13 scope ${scope} is INVALID before ${name}`, (context) => {
+      const tasks = [{ id: 'T-01', depends }, { id: 'T-02', scope: 'docs/' }];
+      const subject = fixture(context, tasks);
+      if (done) {
+        const source = subject.taskBranch();
+        tasks[0] = doneTask(source);
+        subject.mergeTask(source, tasks);
+      } else if (ahead) {
+        subject.taskBranch();
+      }
+      if (worker) subject.runtime([worker]);
+      state(output(subject), 'T-01', expected);
+      subject.writeTasks([{ ...tasks[0], scope }, tasks[1]]);
+      const result = output(subject);
+      state(result, 'T-01', 'INVALID');
+      assert.ok(!ids(result, 'canDispatchNow').includes('T-01'));
+    });
+  }
+
+  test(`SCEN-REC-13 verified Done evidence with scope ${scope} cannot release a dependent`, (context) => {
+    const dependent = { id: 'T-02', depends: 'T-01' };
+    const subject = fixture(context, [{ id: 'T-01' }, dependent]);
+    const source = subject.taskBranch();
+    const completed = doneTask(source);
+    subject.mergeTask(source, [completed, dependent]);
+    const accepted = output(subject);
+    state(accepted, 'T-01', 'DONE');
+    state(accepted, 'T-02', 'READY');
+    subject.writeTasks([{ ...completed, scope }, dependent]);
+    const result = output(subject);
+    state(result, 'T-02', 'BLOCKED');
+    assert.ok(!ids(result, 'DONE').includes('T-01'));
+    dispatch(result, []);
+    state(result, 'T-01', 'INVALID');
+  });
+
+  for (const status of ['initializing', 'running']) {
+    for (const cap of [1, 3]) {
+      test(`SCEN-REC-14 INVALID scope ${scope} retains ${status} writer occupancy at cap=${cap}`, (context) => {
+        const candidates = [
+          { id: 'T-02', scope: 'docs/' },
+          { id: 'T-03', scope: 'src/unrelated.mjs' },
+          { id: 'T-04', scope: 'assets/' },
+        ];
+        const subject = fixture(context, [{ id: 'T-01', scope }, ...candidates]);
+        const args = ['--cap', String(cap)];
+        const available = output(subject, args);
+        state(available, 'T-01', 'INVALID');
+        for (const candidate of candidates) state(available, candidate.id, 'READY');
+        dispatch(available, candidates.slice(0, cap).map((candidate) => candidate.id));
+        subject.runtime([agent({ id: 'invalid-scope-writer', status })]);
+        const result = output(subject, args);
+        assert.equal(result.cap, cap);
+        assert.equal(result.RUNNING.length, 1);
+        assert.equal(result.RUNNING[0].id, 'invalid-scope-writer');
+        for (const candidate of candidates) conflict(result, candidate.id, 'T-01');
+        dispatch(result, []);
+        state(result, 'T-01', 'INVALID');
+      });
+    }
+  }
+}
