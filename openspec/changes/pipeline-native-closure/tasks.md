@@ -4,13 +4,14 @@
 
 ## 1. 基础与机械脚本
 
-- [ ] 1.1 T-01 共享 tasks.md 解析、图校验与 Done 行解析库
+- [x] 1.1 T-01 共享 tasks.md 解析、图校验与 Done 行解析库
   - Depends on: none
   - Write scope: skills/paseo-pipeline/lib/tasks.mjs, skills/paseo-pipeline/test/tasks.test.mjs
   - Risk-surface: [error-handling]
   - Review: strict
   - Verify with: node --test skills/paseo-pipeline/test/tasks.test.mjs
   - Scenarios: SCEN-REC-01, SCEN-REC-02
+  - Done: source=4f1e39b review=pass(fc4f8926@4f1e39b/8043d33)
 
 - [ ] 1.2 T-02 reconcile 重写（角色识别、attempt/phase/disposition、DAG 释放、Done first-parent 验证、资源冲突、fail-closed）
   - Depends on: T-01
