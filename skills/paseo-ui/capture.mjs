@@ -1271,6 +1271,12 @@ export function buildDiagnosticsSummary(result) {
       numeric_cells_aligned: numericCellMisalignedCount === null ? null : numericCellMisalignedCount === 0,
     },
     craft_health_index,
+    craft_gate: {
+      // Stage 6 entry gate: CHI >= 90 (Grade A). Probe-unavailable dims are
+      // excluded (null), never counted as pass.
+      threshold: 90,
+      passed: craft_health_index.score >= 90,
+    },
     max_cls_score: maxClsScore,
     small_touch_targets_count: touchCount,
     button_text_wrap_count: buttonWrapCount,
@@ -1525,6 +1531,14 @@ async function main() {
         manifestPath: customManifest,
       });
       process.stdout.write(JSON.stringify({ ...result, diagnostics_summary, metadata, evidence_record: recording }, null, 2) + "\n");
+      // Mechanical craft gate: exit 3 when CHI < 90 so Stage 5 rework is
+      // script-decidable (skill docs promise probe-based enforcement, not LLM
+      // judgment). Probe-unmeasured capture keeps exit 0; its report already
+      // marks unmeasured dims which reviewers must treat as gaps.
+      const chiGate = diagnostics_summary?.craft_gate;
+      if (chiGate && chiGate.passed === false) {
+        process.exit(3);
+      }
       process.exit(0);
     } else {
       const failure = {

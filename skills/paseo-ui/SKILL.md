@@ -71,7 +71,7 @@ $$
 
 ## 能力槽与 Vendor 独立切片全景表
 
-所有外部能力统一通过 `~/.claude/skills/paseo-ui/vendor/` 进行版本锁定（由 `LOCK.json` 与 `sync.sh` 管理），派发子 agent 时只注入目标 `.md` 绝对路径，杜绝上下文暴涨：
+所有外部能力统一通过 `~/.claude/skills/paseo-ui/vendor/` 进行版本锁定（由 `LOCK.json` 与 `sync.sh` 管理）。**严禁将 17 个切片全量注入子 agent 上下文（实测 137KB / ~35k tokens，触发 Lost-in-the-Middle）**；装配一律走下方「三层渐进式装配」，全量 vendor 原文只作为第三层只读手册：
 
 | 层级 | 能力槽位 | 选定最佳 Skill / 文件 | 绝对路径 (`~/.claude/skills/paseo-ui/vendor/...`) | 核心职责与标准 |
 | :--- | :--- | :--- | :--- | :--- |
@@ -103,6 +103,31 @@ $$
 | **横切** | 坏数据注入目录 | emilkowalski `break-ui` (Catalog) | `break-ui/CATALOG.md` | 极端坏数据字典（非破坏性注入 `mocks.json`，验证长无空格、极值金额、特殊符号、空态、乱码） |
 | **态 C** | 设计系统生成 | `ui-ux-pro-max` | `ui-ux-pro-max/SKILL.md`（脚本 `ui-ux-pro-max/scripts/search.py`） | 0→1 重构时通过 `search.py --design-system` 提取 50+ 风格与 10-Role Token 表 |
 
+### 三层渐进式装配（Layered Progressive Mounting，派发唯一合法方式）
+
+上表是**第三层只读手册的总索引**，不是注入清单。派发子 agent 时按以下三层装配：
+
+1. **第一层 · 硬禁令紧凑胶囊（常驻注入）**：
+   - 文件：`~/.claude/skills/paseo-ui/brief-rules.md`（约 4KB / ~1.2k tokens）。
+   - 内容：从 20 个切片压缩出的不可妥协 Don'ts/Musts（动效、排版、语义结构、表单、色彩、防位移、React 性能、破坏态自验）。
+   - 每个编码角色（Builder / Lite 执行者 / Stage 5 返工）的 brief 必须原样附带全文。
+2. **第二层 · 任务特征动态路由（按需指针注入）**：
+   - 由 Stage 1 产出（或 Lite 入参决定）任务特征掩码，只把**命中特征**的切片路径写入 brief（每个 ≤2 个文件，标注「实现前通读」）：
+     | 特征 | 追加注入（绝对路径，省略 `~/.claude/skills/paseo-ui/vendor/` 前缀） |
+     | :--- | :--- |
+     | 含数据表格/树表 | `semantic-html-first/SKILL.md` |
+     | 含复杂表单/校验 | `web-interface-guidelines/command.md` |
+     | 含列表动效/手势 | `micro-interaction/SKILL.md` |
+     | 含 0→1 设计系统 | `ui-ux-pro-max/scripts/search.py`（CLI 执行）+ `interface-design/SKILL.md` |
+     | 含异步媒体/动态注入内容 | `core-web-vitals/CLS.md` |
+   - 无命中的特征不注入对应切片；纯静态页面不注入任何动效切片。
+3. **第三层 · 深层手册按需查阅（不主动注入）**：
+   - 上表全部路径保留为只读手册。brief 末尾附一句：「遇到胶囊未覆盖的边界场景（特殊组件模板、渐变插值空间、Spring 参数选择），到 `~/.claude/skills/paseo-ui/vendor/` 对应切片精准查阅后再写码」。
+4. **机械门禁兜底（不靠 Agent 自觉）**：
+   - 胶囊与切片只是提示层约束；最终判定一律以 Stage 3 `capture.mjs` CHI 探针（≥90 才可进终审）与 Stage 4 `accesslint` WCAG 报告为准，违规机械打回。
+
+**注入预算**：第一层 + 第二层合计 ≤21KB（胶囊 3.9KB + 至多 2 个切片；最差组合实测 20.5KB / 约 6k tokens），对比旧方案 A 全量注入 137KB 缩减 ≥85%；超出预算即视为装配失败，重新收窄特征掩码。
+
 ---
 
 ## 证据采集工具：`capture.mjs`
@@ -131,7 +156,7 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
   - `numeric_cell_misaligned_count`（包含数值/金额但未声明右对齐或缺失 `tabular-nums` 的数据单元格数）。
 - **工艺健康指数（Craft Health Index, CHI）**：由 `capture.mjs` 基于真实 DOM 探针计算出的客观度量分（0-100，非 LLM 幻觉评分）：
   - 满分 100 分，按客观探针扣分：横向溢出扣 30 分；CLS 抖动扣至多 20 分（$\min(20, \text{CLS} \times 100)$）；触控尺寸不足 44px 每处扣 3 分（上限 15 分）；表单控件无标签每处扣 5 分（上限 15 分）；表格 `th` 缺 `scope` 每处扣 2 分（上限 6 分）；数值列未等宽右对齐每处扣 3 分（上限 6 分）；低对比度每处扣 2 分（上限 10 分）；`:active` 触感覆盖率不足 60% 扣 5 分，不足 30% 扣 10 分。
-  - 等级评定：$\ge 95$ 为 A+，$\ge 90$ 为 A，$\ge 80$ 为 B，$\ge 70$ 为 C，$\ge 60$ 为 D，$<60$ 为 F。评分明细与扣分条目自动注入 `capture-manifest.json`。
+  - 等级评定：$\ge 95$ 为 A+，$\ge 90$ 为 A，$\ge 80$ 为 B，$\ge 70$ 为 C，$\ge 60$ 为 D，$<60$ 为 F。评分明细、扣分条目与 `craft_gate`（`threshold: 90`）自动注入 `capture-manifest.json`。
 - **状态注入与场景捕获（Break-UI & Deep Modal Actions）**：`--mock` 指向 JSON，按状态名声明要拦截的接口及深度交互动作；`"*"` 为所有状态共享的基础数据，状态路由优先级更高：
 
   ```json
@@ -206,7 +231,7 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
 **Lite 执行流**：
 1. **基线**：确认目标文件的 `git status`。若目标文件有未提交改动，L-1/L-2 不建 worktree（会丢失这些改动），先问人类是先提交还是改为原地执行；原地执行时先把 `git diff -- <目标文件>` 存为 `./captures/baseline.patch`，交付时只报告相对基线的增量。
 2. **改前截图**：启动预览后跑 `capture.mjs … --out ./captures/before`（视口与状态参数记下，改后复用同一组）。
-3. **派发或直改**：brief 限定目标文件、快轨切片绝对路径、本 Skill「单一设计宪法与 Vendor 适配覆盖」节；L-1/L-2 在 `create_workspace(isolation: "worktree", branchName: "ui/<track>-<target>")` 中执行。
+3. **派发或直改**：brief = 第一层硬禁令胶囊 `~/.claude/skills/paseo-ui/brief-rules.md` 全文 + 本快轨切片绝对路径（即第二层路由，Lite 天然单特征）+ 本 Skill「单一设计宪法与 Vendor 适配覆盖」节；L-1/L-2 在 `create_workspace(isolation: "worktree", branchName: "ui/<track>-<target>")` 中执行。
 4. **自动门禁**：从项目 `package.json` 读取实际脚本（如 `build`、`test`、`lint`），全部退出码为 0；改后跑 `capture.mjs … --out ./captures/after`，`horizontal_overflow` 不得新增、`small_touch_target_count` 不得上升。
 5. **呈报**：`git diff --stat`、before/after 截图对、探针前后对比、伴随的 `DESIGN.proposed.md`（如有），由人类确认后合入；worktree 合入后清理。
 
@@ -247,15 +272,7 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
 1. **隔离环境**：`create_workspace(isolation: "worktree", branchName: "ui/<feature>")`。主干目标文件有未提交改动时，先按 Lite 执行流第 1 步处理。
 2. **改前截图**：在 worktree 起预览，跑 `capture.mjs … --out ./captures/before`（存量页面适用；0→1 页面跳过）。
 3. **派发 Builder 落地**：
-   - 注入上下文（全量对称挂载，统一使用绝对路径）：
-     - 工艺与语义基线：`~/.claude/skills/paseo-ui/vendor/baseline-ui/SKILL.md` + `~/.claude/skills/paseo-ui/vendor/semantic-html-first/SKILL.md`（原生语义结构优先、`<table/thead/th scope>` 与 `<dialog>`，严禁 div 拼凑）
-     - 界面与排版规范：`~/.claude/skills/paseo-ui/vendor/better-colors/SKILL.md` + `~/.claude/skills/paseo-ui/vendor/better-typography/SKILL.md` + `~/.claude/skills/paseo-ui/vendor/impeccable/reference/layout.md`
-     - 复合原语与触感：`~/.claude/skills/paseo-ui/vendor/better-ui/SKILL.md` + `~/.claude/skills/paseo-ui/vendor/better-ui/icons.md`（`:active:scale-[0.96~0.98]` 微触感、统一图标笔触）
-     - 表单交互与焦点环：`~/.claude/skills/paseo-ui/vendor/web-interface-guidelines/command.md`（可见焦点环、失焦即时校验、保留原生粘贴、autoComplete）
-     - 动效与减弱动效防御：`~/.claude/skills/paseo-ui/vendor/to-spring-or-not-to-spring/SKILL.md` + `~/.claude/skills/paseo-ui/vendor/micro-interaction/SKILL.md` + `~/.claude/skills/paseo-ui/vendor/60fps-animation/SKILL.md` + `~/.claude/skills/paseo-ui/vendor/accessible-animation/SKILL.md`（动效 ≤200ms、合成器属性加速、落实 prefers-reduced-motion）
-     - React 工程最佳实践：`~/.claude/skills/paseo-ui/vendor/react-best-practices/SKILL.md`（防瀑布流渲染、避免非必要 Context 重绘、组件职能收敛）
-     - 防布局位移（Anti-CLS）：`~/.claude/skills/paseo-ui/vendor/core-web-vitals/CLS.md`（预留 aspect-ratio 与骨架屏几何占位）
-     - 鲁棒硬化与破坏态：`~/.claude/skills/paseo-ui/vendor/impeccable/reference/harden.md` + `~/.claude/skills/paseo-ui/vendor/break-ui/SKILL.md` + `~/.claude/skills/paseo-ui/vendor/break-ui/CATALOG.md`
+   - 注入上下文 = **第一层硬禁令胶囊 `~/.claude/skills/paseo-ui/brief-rules.md` 全文** + **第二层特征路由切片**（按 Stage 1 产出的任务特征掩码选取：表格→`semantic-html-first/SKILL.md`；表单→`web-interface-guidelines/command.md`；列表动效→`micro-interaction/SKILL.md`；异步媒体→`core-web-vitals/CLS.md`；每个 ≤2 文件）+ 第三层按需查阅指引一句。**不再全量注入 17 个切片**。
    - 修改真实工程源码，遵循语义化复合原语与 `:active:scale-0.96` 触感；金额/数值强制 `tabular-nums text-right`；同一缺陷多点出现时按条款 9 修原语。
 4. **极端坏数据破坏自验（Break-UI）**：Builder 参考 `~/.claude/skills/paseo-ui/vendor/break-ui/CATALOG.md` 极端坏数据字典编写 `./captures/mocks.json`（格式见「证据采集工具」），至少覆盖：
    - `stressed`：参考 break-ui 注入恶劣真实数据（杜绝无意义假数据；注入超长真实实体名称、多音节国际化字符串、`¥999,999,999.00` 极值金额、特殊符号破折号）；
@@ -274,7 +291,7 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
    node ~/.claude/skills/paseo-ui/capture.mjs http://localhost:<port> --out ./captures/after \
      --viewports 390,1280 --states default,stressed,empty,error,modal --mock ./captures/mocks.json
    ```
-   所有状态须 `confirmed: true`；DOM 探针自动计算并输出 Craft Health Index (CHI: 0-100)。
+   所有状态须 `confirmed: true`；DOM 探针自动计算并输出 Craft Health Index (CHI: 0-100)。**CHI <90 时 `capture.mjs` 以退出码 3 结束**——此为机械门禁，不依赖任何 LLM 判断；exit 3 即直接进 Stage 5 返工，探针未采集（`unmeasured`）的维度按缺口处理不得视为通过。
 3. **深层弹窗抓取**：页面含 Dialog/Drawer/Modal 时，优先在 `capture.mjs --mock` 中声明 `actions: [{ click: "...", waitMs: ... }]` 序列自动化触发截取；或调用 `playwright-cli` 手动驱动截取。
 4. **a11y 权威扫描**：主会话直接运行全局预装的 `accesslint-chrome ensure` 与 `accesslint scan`，毫秒级生成 WCAG 2.2 报告 `./captures/a11y.json`（带精确 `file:line` 源码映射）。
 
@@ -296,13 +313,14 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
 ### Stage 5: 定向返工收敛（Convergence ≤2 轮）
 1. 归并两路审查发现的阻断项（P0/P1）；同源缺陷按条款 9 合并为原语级修复。
 2. 在原 worktree 唤起 Builder 定向修复。
-3. 重跑 Stage 2 第 6 步门禁与 Stage 3 截图，确认缺陷关闭；2 轮后仍未关闭的阻断项原样上报，不再返工。
+3. 重跑 Stage 2 第 6 步门禁与 Stage 3 截图，确认缺陷关闭（`capture.mjs` 退出码归 0，即 CHI ≥90）；2 轮后仍未关闭的阻断项原样上报，不再返工。返工 brief 同样走三层装配（胶囊全文 + 命中缺陷对应的切片）。
 4. **设计契约反哺**：修复中发现视觉规范缺陷（如某色板在深色模式对比度不足），只产出 `DESIGN.proposed.md`，不覆写 `DESIGN.md`。
 
 ### Stage 6: 终审呈报与合入（Final Approval & Merge）
 1. 关闭本 Skill 启动的预览服务。
 2. 向人类呈报交付报告：
    - before/after 多视口、多状态截图；
+   - **CHI 工艺健康指数与扣分明细（终审门禁 ≥90，须 `capture.mjs` 退出码 0）**；
    - 探针结果（溢出、按压反馈覆盖率、触控目标）及未确认状态清单；
    - 读图探针结果、双路审查结论与未关闭项；
    - `git diff --stat` 与核心代码变更摘要；
