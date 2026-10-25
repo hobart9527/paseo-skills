@@ -158,7 +158,7 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
 - **探针字段**：
   - `horizontal_overflow`（横向溢出）；
   - `active_feedback_coverage: {covered, total}`（可按压控件中挂有 `:active` 规则的数量；`has_active_feedback` 为 `covered > 0`，无可按压控件时为 `null`）；
-  - `small_touch_target_count`（<44px 控件数）；
+  - `small_touch_target_count`（按视口自适应控件数：移动端 $\le 768\text{px}$ 适用 44px 移动触控底线；桌面端 $> 768\text{px}$ 适用 WCAG 2.2 2.5.8 Level AA 的 24px 目标尺寸底线）；
   - `has_tabular_nums`（等宽数字）；
   - `button_text_wrap`（按钮内行内文字非预期多行竖排折行检测，`button_text_wrap_count`）；
   - `low_contrast_count`（基于真实 DOM 计算前背景色 sRGB 相对亮度比，检测未达 WCAG 4.5:1 / 3.0:1 的低对比度文本）；
@@ -168,8 +168,9 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
   - `th_without_scope_count`（数据表格 `<th>` 表头未声明 `scope="col|row"` 数量）；
   - `numeric_cell_misaligned_count`（包含数值/金额但未声明右对齐或缺失 `tabular-nums` 的数据单元格数）。
 - **工艺健康指数（Craft Health Index, CHI）**：由 `capture.mjs` 基于真实 DOM 探针计算出的客观度量分（0-100，非 LLM 幻觉评分）：
-  - 满分 100 分，按客观探针扣分：横向溢出扣 30 分；CLS 抖动扣至多 20 分（$\min(20, \text{CLS} \times 100)$）；触控尺寸不足 44px 每处扣 3 分（上限 15 分）；表单控件无标签每处扣 5 分（上限 15 分）；表格 `th` 缺 `scope` 每处扣 2 分（上限 6 分）；数值列未等宽右对齐每处扣 3 分（上限 6 分）；低对比度每处扣 2 分（上限 10 分）；`:active` 触感覆盖率不足 60% 扣 5 分，不足 30% 扣 10 分。
-  - 等级评定：$\ge 95$ 为 A+，$\ge 90$ 为 A，$\ge 80$ 为 B，$\ge 70$ 为 C，$\ge 60$ 为 D，$<60$ 为 F。评分明细、扣分条目与 `craft_gate`（`threshold: 90`）自动注入 `capture-manifest.json`。
+  - 满分 100 分，按客观探针扣分：横向溢出扣 30 分；CLS 抖动在 $[0.05, 0.1)$ 扣 5 分，$\ge 0.1$ 扣至多 20 分（$<0.05$ 极微位移不扣分）；触控目标跨视口去重后每处不足门槛扣 3 分（上限 15 分，移动端 <44px，桌面端 <24px）；表单控件无标签每处扣 5 分（上限 15 分）；表格 `th` 缺 `scope` 每处扣 2 分（上限 6 分）；数值列未等宽右对齐每处扣 3 分（上限 6 分）；低对比度每处扣 2 分（上限 10 分）；`:active` 触感覆盖率不足 60% 扣 5 分，不足 30% 扣 10 分。
+  - **运行时崩溃一票熔断（Fail-Closed）**：若捕获到未捕获页面脚本异常（`pageerror`）或动作执行失败，CHI 强制记 0 分（Grade F），`craft_gate.passed` 直接判 `false` 并以退出码 3 坚决阻断，绝不允许白屏带病通关。
+  - 等级评定：$\ge 95$ 为 A+，$\ge 90$ 为 A，$\ge 80$ 为 B，$\ge 70$ 为 C，$\ge 60$ 为 D，$<60$ 为 F。评分明细、扣分条目与 `craft_gate`（`threshold: 90`, `passed: boolean`）自动持久化至 `capture-manifest.json` 的 `metadata.evidence` 与 `metadata.validation`。
 - **状态注入与场景捕获（Break-UI & Deep Modal Actions）**：`--mock` 指向 JSON，按状态名声明要拦截的接口及深度交互动作；`"*"` 为所有状态共享的基础数据，状态路由优先级更高：
 
   ```json
@@ -185,7 +186,7 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
   }
   ```
 
-  某状态的路由**全部被命中**才算进入该状态（`state_confirmations[*].observed = "mock:n/n routes hit"`）；有路由未命中即判 `state_unconfirmed`，说明页面没请求这份数据，截图不代表该状态。若状态声明了 `actions`，Playwright 将自动按序模拟点击/输入并等待过渡，直接产出弹窗或抽屉的渲染快照（顶层简写 `"modal:actions": [{…}]` 等价于对象内 `actions`）。`--mock` 只在 Playwright 运行器可用，否则直接失败。
+  某状态的路由**全部被命中**且声明的 `actions` **全部成功执行**才算进入该状态（`state_confirmations[*].observed = "mock:n/n routes hit"`）；有路由未命中或动作执行超时/失败即判 `state_unconfirmed`，说明页面未真正呈现目标状态，截图不代表该状态。若状态声明了 `actions`，Playwright 将自动按序模拟点击/输入并等待过渡，直接产出弹窗或抽屉的渲染快照（顶层简写 `"modal:actions": [{…}]` 等价于对象内 `actions`）。`--mock` 只在 Playwright 运行器可用，否则直接失败。
 - **无 mock 的状态**：页面自身在 `body`/`html`/应用根上写 `data-state` 时可直接确认；两者都没有时，该状态判为未确认。`capture.mjs` 等待 `networkidle` 后才截图，抓不到 loading 态；loading 态用 `playwright-cli` 按 `references/request-mocking.md` 拦住接口后手动截取。
 - **产物**：`./captures/<phase>/*.png` + `capture-manifest.json`。`captures/` 是运行时产物，不提交。
 
@@ -307,7 +308,7 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
      --states default,stressed,empty,error,modal --mock ./captures/mocks.json
    ```
    端口由 `--port auto` 自动挑空闲，从源头消除「误连他人服务」与「服务属主不明」两类事故。
-   所有状态须 `confirmed: true`；DOM 探针自动计算并输出 Craft Health Index (CHI: 0-100)。**CHI <90 时 `capture.mjs` 以退出码 3 结束**——此为机械门禁，不依赖任何 LLM 判断；exit 3 即直接进 Stage 5 返工，探针未采集（`unmeasured`）的维度按缺口处理不得视为通过。
+   所有状态须 `confirmed: true`；DOM 探针自动计算并输出 Craft Health Index (CHI: 0-100)。**CHI <90 或存在未捕获页面脚本异常（pageerror）/交互动作失败时 `capture.mjs` 以退出码 3 结束**——此为机械门禁，不依赖任何 LLM 判断；exit 3 即直接进 Stage 5 返工，探针未采集（`unmeasured`）的维度按缺口处理不得视为通过。
 3. **深层弹窗抓取**：页面含 Dialog/Drawer/Modal 时，优先在 `capture.mjs --mock` 中声明 `actions: [{ click: "...", waitMs: ... }]` 序列自动化触发截取；或调用 `playwright-cli` 手动驱动截取。
 4. **a11y 权威扫描**：编排者直接运行全局预装的 `accesslint-chrome ensure` 与 `accesslint scan`，毫秒级生成 WCAG 2.2 报告 `./captures/a11y.json`（带精确 `file:line` 源码映射）；收尾用 `accesslint-chrome stop -p <port>` **精确停杀本扫描启动的实例**，严禁 `stop --all`（会连带杀掉并行流水线的托管 Chrome）。
 

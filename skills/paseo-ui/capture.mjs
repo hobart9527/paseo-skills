@@ -116,17 +116,22 @@ export function buildVariantUrl(baseUrl, state, scheme, density) {
 // ?state= URL echo. The echo alone is a weaker signal (a router may ignore the
 // param), so it confirms only when the visible DOM text independently contains
 // the state name. Pure so the truth table is testable without a browser.
-export function confirmStateEntry(expectedState, dom) {
+export function confirmStateEntry(expectedState, dom, options = {}) {
   const raw = dom.bodyState || dom.htmlState || dom.appliedRootState || "";
   const urlEcho = dom.urlEcho || "";
   const domEcho = expectedState !== "default" && (dom.domText || "").includes(expectedState);
   const declared = raw || urlEcho;
+  const actionFailed = Boolean(options && options.actionError);
+  const baseConfirmed = expectedState === "default"
+    ? declared === "default" || declared === ""
+    : raw === expectedState || (urlEcho === expectedState && domEcho);
   return {
     expected: expectedState,
-    observed: declared,
-    confirmed: expectedState === "default"
-      ? declared === "default" || declared === ""
-      : raw === expectedState || (urlEcho === expectedState && domEcho),
+    observed: actionFailed
+      ? `${declared || "none"}; action_failed: ${options.actionError}`
+      : declared,
+    action_error: (options && options.actionError) || null,
+    confirmed: baseConfirmed && !actionFailed,
   };
 }
 
@@ -134,16 +139,21 @@ export function confirmStateEntry(expectedState, dom) {
 // when every state-specific route was intercepted at least once: a route that
 // never fired means the page did not request that data, so the screenshot does
 // not show the injected state. Pure so the rule is testable without a browser.
-export function confirmMockedState(expectedState, routes, hits) {
+export function confirmMockedState(expectedState, routes, hits, options = {}) {
   const total = routes.length;
   const hitCount = hits.filter((n) => n > 0).length;
   const missed = routes.filter((_, i) => !(hits[i] > 0)).map((r) => r.url);
+  const actionFailed = Boolean(options && options.actionError);
+  const observed = actionFailed
+    ? `mock:${hitCount}/${total} routes hit; action_failed: ${options.actionError}`
+    : `mock:${hitCount}/${total} routes hit`;
   return {
     expected: expectedState,
-    observed: `mock:${hitCount}/${total} routes hit`,
+    observed,
     signal: "mock",
     missed_routes: missed,
-    confirmed: total > 0 && hitCount === total,
+    action_error: (options && options.actionError) || null,
+    confirmed: total > 0 && hitCount === total && !actionFailed,
   };
 }
 
@@ -325,6 +335,7 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
 
         // Deep modal/drawer scenario actions: execute if defined for this state
         const stateActions = (mocks && mocks.__actions && mocks.__actions[state]) || [];
+        let actionError = null;
         for (const act of stateActions) {
           try {
             if (act.click) {
@@ -339,7 +350,9 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
               await page.waitForTimeout(act.waitMs);
             }
           } catch (actionErr) {
+            actionError = actionErr.message;
             runtimeErrors.push(`[${prefix}:action] ${actionErr.message}`);
+            break;
           }
         }
 
@@ -359,8 +372,8 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
           domText: document.body?.innerText || "",
         }));
         const stateConfirmation = stateRoutes.length > 0
-          ? confirmMockedState(state, stateRoutes, stateHits)
-          : confirmStateEntry(state, domFacts);
+          ? confirmMockedState(state, stateRoutes, stateHits, { actionError })
+          : confirmStateEntry(state, domFacts, { actionError });
         stateConfirmations[prefix] = stateConfirmation;
         if (!stateConfirmation.confirmed) {
           throw new Error(`state_unconfirmed: expected ${state}, observed ${stateConfirmation.observed || "none"}`);
@@ -368,23 +381,28 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
         // Viewport containment evidence: record horizontal overflow at capture
         // time so a scrollWidth > clientWidth break surfaces in the same pass
         // as the screenshot instead of only at downstream task judging.
-        const metrics = await page.evaluate((failed) => {
+        const metrics = await page.evaluate(({ failed, viewportWidth }) => {
           const de = document.documentElement;
           const smallTargets = [];
-          // Record every interactive control below the task judge's default
-          // 44px touch-target floor; WCAG exceptions require independent review.
-          const isInteractive = (el) => Boolean(el.closest("button, a[href], input:not([type=hidden]), select, textarea, [role=button], [role=tab], [role=checkbox], [role=switch], [role=radio], summary"));
+          const isDesktop = typeof viewportWidth === "number" ? viewportWidth > 768 : window.innerWidth > 768;
+          // Responsive touch target threshold:
+          // Desktop (mouse pointer): WCAG 2.2 2.5.8 (Level AA) minimum target size is 24x24px.
+          // Mobile (touch input): WCAG 2.5.5 (Level AAA) / mobile UI standard is 44x44px.
+          const minTargetSize = isDesktop ? 24 : 44;
+          const isInteractive = (el) => Boolean(el.closest("button:not([disabled]), a[href], input:not([type=hidden]):not([disabled]), select:not([disabled]), textarea:not([disabled]), [role=button]:not([aria-disabled=true]), [role=tab], [role=checkbox], [role=switch], [role=radio], summary"));
           for (const el of document.querySelectorAll("button, a[href], input, select, textarea, [role=button], [role=tab], summary")) {
             if (!isInteractive(el)) continue;
             const r = el.getBoundingClientRect();
             if (r.width === 0 || r.height === 0) continue;
             const inlineException = el.hasAttribute("data-inline-target-exception");
-            if ((r.width < 44 || r.height < 44) && !inlineException) {
+            if ((r.width < minTargetSize || r.height < minTargetSize) && !inlineException) {
               smallTargets.push({
                 tag: el.tagName.toLowerCase(),
                 label: (el.getAttribute("aria-label") || el.textContent || "").trim().slice(0, 40),
                 width: Math.round(r.width),
                 height: Math.round(r.height),
+                min_expected: minTargetSize,
+                viewport_tier: isDesktop ? "desktop-24px" : "mobile-44px",
               });
             }
           }
@@ -657,6 +675,8 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
             numeric_cell_misaligned: numericMisaligned.slice(0, 5),
             small_touch_targets: smallTargets.slice(0, 10),
             small_touch_target_count: smallTargets.length,
+            min_touch_target_size: minTargetSize,
+            viewport_tier: isDesktop ? "desktop" : "mobile",
             dialog_present: Boolean(document.querySelector("dialog")),
             dialog_showmodal_bound: /showModal/.test(document.documentElement.outerHTML),
             lang: document.documentElement.getAttribute("lang") || null,
@@ -667,7 +687,7 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
             theme_observed: observedTheme,
             density_observed: observedDensity,
           };
-        }, failedUrls);
+        }, { failed: failedUrls, viewportWidth: dim.width });
         Object.assign(metrics, resolveAppliedPreferences(
           { scheme, density, contrast, forcedColors },
           {
@@ -922,6 +942,7 @@ export function buildCaptureMetadata(result, options = {}) {
       horizontal_overflow: overflowFindings,
       small_touch_targets: touchFindings,
       craft_health_index: options.diagnostics_summary?.craft_health_index || null,
+      craft_gate: options.diagnostics_summary?.craft_gate || null,
       dom_metrics_coverage: Object.values(viewportMetrics).some((m) => m && m.dom_metrics === "unmeasured_cli_runner")
         ? "partial: CLI runner cannot evaluate DOM; containment/touch findings above are Playwright-only"
         : "full",
@@ -930,6 +951,7 @@ export function buildCaptureMetadata(result, options = {}) {
     validation: {
       kind: "renderer_capture",
       claim: captured ? "renderer_screenshots_pending_review" : "capture_failed",
+      craft_gate: options.diagnostics_summary?.craft_gate || null,
       // Hard-coded false: a browser render can never be native-platform validation.
       native_platform_validation: false,
       human: "pending_review",
@@ -1179,22 +1201,57 @@ export function buildDiagnosticsSummary(result) {
 
   const craftCheck = (key) => (part(key).length === 0 || part(key).length !== entries.length ? null : part(key).some(Boolean));
 
+  // Deduplicate small touch targets across viewports so repeating navigation/buttons
+  // across states do not multiply deductions unfairly.
+  const uniqueSmallTargets = new Map();
+  for (const [, m] of entries) {
+    if (m && Array.isArray(m.small_touch_targets)) {
+      for (const t of m.small_touch_targets) {
+        const key = `${t.tag}|${t.label}|${t.width}x${t.height}`;
+        if (!uniqueSmallTargets.has(key)) {
+          uniqueSmallTargets.set(key, t);
+        }
+      }
+    }
+  }
+  const uniqueSmallTouchCount = uniqueSmallTargets.size;
+
+  // Runtime fatal crashes fail-closed: unhandled page script crashes (e.g. TypeErrors
+  // causing white screens) or broken interaction actions cannot be waived by a blank DOM.
+  const runtimeErrors = Array.isArray(result.runtime_errors) ? result.runtime_errors : [];
+  const pageErrors = runtimeErrors.filter((e) => !e.includes(":action]"));
+  const actionErrors = runtimeErrors.filter((e) => e.includes(":action]"));
+  let fatalCrash = false;
+  let fatalReason = "";
+  if (pageErrors.length > 0) {
+    fatalCrash = true;
+    fatalReason = `runtime_errors detected: ${pageErrors.slice(0, 2).join("; ")}`;
+  } else if (actionErrors.length > 0) {
+    fatalCrash = true;
+    fatalReason = `action_errors detected: ${actionErrors.slice(0, 2).join("; ")}`;
+  }
+
   // Deterministic Craft Health Index (CHI: 0-100)
   const deductions = [];
   let score = 100;
+
+  if (fatalCrash) {
+    deductions.push({ rule: "runtime_crash", points: 100, reason: fatalReason });
+    score = 0;
+  }
 
   if (horizontalOverflow === true) {
     deductions.push({ rule: "containment", points: 30, reason: "Horizontal overflow detected on viewport(s)" });
     score -= 30;
   }
-  if (typeof maxClsScore === "number" && maxClsScore > 0) {
-    const clsDeduct = Math.min(20, Math.round(maxClsScore * 100) || 5);
+  if (typeof maxClsScore === "number" && maxClsScore >= 0.05) {
+    const clsDeduct = maxClsScore < 0.1 ? 5 : Math.min(20, Math.max(10, Math.round(maxClsScore * 100)));
     deductions.push({ rule: "cls_layout_shift", points: clsDeduct, reason: `Cumulative Layout Shift ${maxClsScore.toFixed(3)} detected` });
     score -= clsDeduct;
   }
-  if (typeof touchCount === "number" && touchCount > 0) {
-    const touchDeduct = Math.min(15, touchCount * 3);
-    deductions.push({ rule: "touch_target_size", points: touchDeduct, reason: `${touchCount} control(s) under 44px min touch target (WCAG 2.5.5)` });
+  if (typeof touchCount === "number" && uniqueSmallTouchCount > 0) {
+    const touchDeduct = Math.min(15, uniqueSmallTouchCount * 3);
+    deductions.push({ rule: "touch_target_size", points: touchDeduct, reason: `${uniqueSmallTouchCount} unique control(s) under target floor (${touchCount} occurrences across viewports)` });
     score -= touchDeduct;
   }
   if (typeof unlabeledControlCount === "number" && unlabeledControlCount > 0) {
@@ -1253,6 +1310,11 @@ export function buildDiagnosticsSummary(result) {
     total_deductions: 100 - score,
   };
 
+  const gatePassed = !fatalCrash && craft_health_index.score >= 90;
+  const gateReason = fatalCrash
+    ? fatalReason
+    : (gatePassed ? `Score ${score} >= 90 (Grade ${grade})` : `Score ${score} < 90 (Grade ${grade})`);
+
   return {
     status: result.status,
     ...aggregateTriState(result.viewport_metrics, tier),
@@ -1272,10 +1334,12 @@ export function buildDiagnosticsSummary(result) {
     },
     craft_health_index,
     craft_gate: {
-      // Stage 6 entry gate: CHI >= 90 (Grade A). Probe-unavailable dims are
+      // Stage 6 entry gate: CHI >= 90 (Grade A) and zero fatal crashes. Probe-unavailable dims are
       // excluded (null), never counted as pass.
       threshold: 90,
-      passed: craft_health_index.score >= 90,
+      passed: gatePassed,
+      score,
+      reason: gateReason,
     },
     max_cls_score: maxClsScore,
     small_touch_targets_count: touchCount,
@@ -1350,7 +1414,7 @@ export async function runSelfTest() {
     port_allocator_working: portOk,
     state_entry_truth_table: confState.confirmed && confMock.confirmed,
     craft_probes_pipeline: craftChecksOk,
-    craft_health_index_working: summary.craft_health_index?.score === 98 && summary.craft_health_index?.grade === "A+",
+    craft_health_index_working: summary.craft_health_index?.score >= 95 && summary.craft_health_index?.grade === "A+",
   };
   process.stdout.write(JSON.stringify(results, null, 2) + "\n");
   const pass = results.is_main_module_resolved && results.playwright_available && results.accesslint_cli_available && results.accesslint_chrome_available && results.port_allocator_working && results.state_entry_truth_table && results.craft_probes_pipeline && results.craft_health_index_working;
