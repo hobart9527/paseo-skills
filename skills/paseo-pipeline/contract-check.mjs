@@ -303,13 +303,13 @@ if (undeclared.length) {
   console.log(`[建议] 把下列行补进对应 Requirement 的 Scenario（类型按实际抛出的 Error 子类调整）：`);
   for (const m of undeclared) console.log(`  - THEN throws Error(${JSON.stringify(m)})`);
 }
-if (!PARTIAL) for (const m of untested) console.log(`spec 声明但无测试覆盖: ${m}`);
-else if (untested.length) console.log(`(--partial：${untested.length} 条 spec 声明尚未被本任务覆盖，留待阶段 2 全量对账)`);
+if (!PARTIAL) for (const m of untested) console.log(`spec 声明但测试中未见静态引用: ${m}`);
+else if (untested.length) console.log(`(--partial：${untested.length} 条 spec 声明尚未在本任务测试中静态引用，留待阶段 2 全量对账)`);
 
 if (declaredScens.size > 0) {
   for (const s of phantomScens) console.log(`测试引用但 spec 未声明的场景 (phantom): ${s}`);
-  if (!PARTIAL) for (const s of untestedScens) console.log(`spec 声明但无测试引用的场景: ${s}`);
-  else if (untestedScens.length) console.log(`(--partial：${untestedScens.length} 条场景尚未被本任务覆盖，留待阶段 2 全量对账)`);
+  if (!PARTIAL) for (const s of untestedScens) console.log(`spec 声明但测试中未见静态引用的场景: ${s}`);
+  else if (untestedScens.length) console.log(`(--partial：${untestedScens.length} 条场景尚未在本任务测试中静态引用，留待阶段 2 全量对账)`);
 }
 
 const scenSummary = declaredScens.size > 0 ? ` scens=${testedScens.size}/${declaredScens.size} phantom_scens=${phantomScens.length} untested_scens=${untestedScens.length}` : "";

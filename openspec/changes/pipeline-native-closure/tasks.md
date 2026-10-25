@@ -37,12 +37,13 @@
   - Verify with: node --test skills/paseo-pipeline/test/dispatch.test.mjs
   - Scenarios: SCEN-DISP-02, SCEN-DISP-03
 
-- [ ] 1.5 T-05 contract-check 措辞核对（静态引用≠行为覆盖），既有测试保持通过（Verify 的 contract-check.test.sh 为既存测试，只读消费，不在写范围）
+- [x] 1.5 T-05 contract-check 措辞核对（静态引用≠行为覆盖），既有测试保持通过（Verify 的 contract-check.test.sh 为既存测试，只读消费，不在写范围）
   - Depends on: none
   - Write scope: skills/paseo-pipeline/contract-check.mjs
   - Risk-surface: [none]
   - Verify with: bash skills/paseo-pipeline/contract-check.test.sh
   - Scenarios: SCEN-VER-01
+  - Done: source=595f9bf review=pass(5655b44a@595f9bf/7ff5bbb)
 
 ## 2. 文档与验证
 
