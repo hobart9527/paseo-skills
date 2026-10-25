@@ -30,13 +30,14 @@
   - Scenarios: SCEN-MRG-01, SCEN-MRG-02, SCEN-MRG-03, SCEN-MRG-04, SCEN-MRG-05, SCEN-MRG-06, SCEN-MRG-07, SCEN-MRG-08, SCEN-MRG-09, SCEN-MRG-10
   - Done: source=6537e37 review=pass(8e64cf21@6537e37/c9c3568)
 
-- [ ] 1.4 T-04 dispatch.mjs / hotfix.sh legacy 化并保留 pi 与可选字段意图
+- [x] 1.4 T-04 dispatch.mjs / hotfix.sh legacy 化并保留 pi 与可选字段意图
   - Depends on: none
   - Write scope: skills/paseo-pipeline/dispatch.mjs, skills/paseo-pipeline/hotfix.sh, skills/paseo-pipeline/test/dispatch.test.mjs
   - Risk-surface: [error-handling]
   - Review: strict
   - Verify with: node --test skills/paseo-pipeline/test/dispatch.test.mjs
   - Scenarios: SCEN-DISP-02, SCEN-DISP-03
+  - Done: source=9822b30 review=pass(469cf60d@9822b30/7823523)
 
 - [x] 1.5 T-05 contract-check 措辞核对（静态引用≠行为覆盖），既有测试保持通过（Verify 的 contract-check.test.sh 为既存测试，只读消费，不在写范围）
   - Depends on: none
