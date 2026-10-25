@@ -29,14 +29,14 @@ TITLE="[Pipeline] Runner hotfix ${TID} ${CHANGE}"; TITLE="${TITLE:0:60}"
 # mode/thinking 缺省不发明默认值：读不到即输出 none 并省略对应参数；pi provider 不支持 --mode，一律省略。
 read -r PROVIDER MODE THINK < <(node -e '
 const c=require(process.env.HOME+"/.paseo/config.json");
-const p=c.daemon.agentProfiles.find(x=>x.id==="agent_profile_qingqibing");
+const p=c.daemon.agentProfiles.find(x=>x.id==="agent_profile_gongbu") || c.daemon.agentProfiles.find(x=>x.id==="agent_profile_qingqibing");
 console.log(`${p.provider}/${p.model} ${p.modeId||"none"} ${p.thinkingOptionId||"none"}`)')
 
 CLI=(run --no-wait -q --title "$TITLE" --provider "$PROVIDER")
 if [[ "$PROVIDER" != pi* ]] && [ "$MODE" != "none" ]; then CLI+=(--mode "$MODE"); fi
 if [ "$THINK" != "none" ]; then CLI+=(--thinking "$THINK"); fi
 CLI+=(--new-workspace worktree --new-branch "$BRANCH" --base "$BASE")
-CLI+=(--label "pipeline.change=${CHANGE}" --label "pipeline.role=qingqibing")
+CLI+=(--label "pipeline.change=${CHANGE}" --label "pipeline.role=gongbu")
 
 AGENT_ID="$(paseo "${CLI[@]}" "$(cat "$TMP")")"
 echo "[hotfix] agent=$AGENT_ID branch=$BRANCH"

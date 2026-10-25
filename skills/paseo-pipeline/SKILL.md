@@ -19,16 +19,13 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 | 阶段 / 职责 | profile | 说明 |
 |---|---|---|
 | 总控编排 | 主会话 / `agent_profile_shangshu` | 预计派发 ≥6 次或预计 >30 分钟时交 Shangshu 无人值守，主会话只守确认点 1 与 2；微型 Pod 任务（通常 ≤3 次派发）主会话直接编排 |
-| 需求转写 | `agent_profile_chanpin` | 输入已含可照抄验收条件时由 Lead 直接转写，不派 |
-| 契约制宪 | `agent_profile_hanlin` | 仅大型任务使用；微型/中型由编排者（Lead）起草 |
-| 契约评审 | `agent_profile_yushi` | 审查 tasks.md 正交性与反例；中型 1 轮，大型 ≤2 轮；微型 Pod 不派 |
-| 现状调研 | `agent_profile_mige` | 仅修改已有代码且有非 `(new)` 锚点时派，提取 <100 行 Codebase Digest；全新模块不派 |
+| 需求调研 | `agent_profile_chanpin` | 产品需求规划与现状调研（吸收原 Scout 侦察兵职能，提取 Codebase Digest） |
+| 契约制宪 | `agent_profile_hanlin` | 架构与契约设计；微型/中型由编排者起草；兼任架构争议裁决（吸收原 Arbiter 仲裁官职能） |
 | 测试先行 | `agent_profile_ceshi` | 严格档（`Review: strict`）任务使用，先写 Red 测试；数学类任务写差分对拍或小定义域穷举 |
-| 实现 | `agent_profile_gongbu` | 默认实现角色；复杂/打回升级 `agent_profile_gaogong`；单文件小活 `agent_profile_qingqibing` |
-| 代码审计 | `agent_profile_anchasi` | 审 diff 与契约，只报 Blocker；Pod 级合并审查或按需单任务派发；深度按风险调节 |
-| UI 走查 | `agent_profile_jiangzuo` | UI 任务走查体验与设计规范 |
-| 僵持裁决 | `agent_profile_dalisi_gemini` / `agent_profile_dalisi` | 排除争议双方家族的中立仲裁 |
-| 巡检值班 | `agent_profile_xunjian` | 进程与超时清理 |
+| 代码实现 | `agent_profile_gongbu` | 默认实现角色；兼顾极速轻量执行（吸收原 Pi-Runner 轻骑兵职能） |
+| 复杂攻坚 | `agent_profile_gaogong` | 复杂任务（跨模块、并发、状态机）实现与打回升级重做 |
+| 代码审计 | `agent_profile_anchasi` | 审 diff、spec 场景与 tasks.md 正交性，只报 Blocker；吸收原 Critic 挑刺官职能 |
+| UI/原型 | `agent_profile_jiangzuo` | UI/UX 方案原型构建与多视口截图走查（吸收原 Builder 营造师职能） |
 
 **原生 MCP 派发（默认路径）**：
 派发通过 agent 作用域原生 MCP `create_agent`/`send_agent_prompt` 执行：
@@ -58,8 +55,12 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 
 ## 事件驱动、信封纪律与系统限制
 
-### 系统局限与惰性对账
-常规运行不创建周期性的 watchdog、heartbeat 或 schedule。**无已验证计时器或外部事件源时，回调静默丢失无法自唤醒空闲 Lead**。流水线依赖**惰性对账（lazy reconcile）**：在下一次真实外部输入（用户消息、其他 Agent 通知或会话恢复）时，运行 `reconcile.mjs` 重新扫描 tasks.md、git 与 paseo 运行态并恢复调度。
+### 系统局限与双轨自愈
+常规微型运行不默认启用周期性后台看门狗。**纯事件驱动在缺少外部计时器源时，回调静默丢失无法自唤醒空闲 Lead**。
+流水线实施**双轨自愈机制**：
+1. **主轨（事件瞬时响应）**：子 Agent 完成通过 `notifyOnFinish: true` 毫秒级唤醒父 Agent 处理合流与下游派发。
+2. **副轨（Paseo 原生 Heartbeat 兜底脉冲）**：长程无人值守时，Lead 开工调用 Paseo 原生 `create_heartbeat`（建议 3 分钟，设置 `expiresIn: "2h"` 超时自毁防泄露）。
+3. **惰性对账（lazy reconcile）**：心跳或外部唤醒时运行 `node skills/paseo-pipeline/reconcile.mjs <change>`，按 tasks.md + git + paseo 运行态幂等对账，发现 MERGE/READY 即刻推进，消除丢包停摆。任务全量完成后 Lead 调 `delete_heartbeat` 销毁。
 
 ### 信封规范 (≤20 行)
 Agent 完成后提交结构化信封：

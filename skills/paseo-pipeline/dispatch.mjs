@@ -16,9 +16,10 @@ const ALIAS = {
   lead: "shangshu", shangshu: "shangshu", pm: "chanpin", chanpin: "chanpin",
   runner: "gongbu", gongbu: "gongbu", tester: "ceshi", ceshi: "ceshi",
   auditor: "anchasi", anchasi: "anchasi", senior: "gaogong", gaogong: "gaogong",
-  scout: "mige", mige: "mige", critic: "yushi", yushi: "yushi", architect: "hanlin", hanlin: "hanlin",
-  arbiter: "dalisi", dalisi: "dalisi", light: "qingqibing", qingqibing: "qingqibing",
-  sentry: "xunjian", xunjian: "xunjian",
+  scout: "chanpin", mige: "chanpin", critic: "anchasi", yushi: "anchasi",
+  architect: "hanlin", hanlin: "hanlin", arbiter: "hanlin", dalisi: "hanlin", dalisi_gemini: "hanlin",
+  light: "gongbu", qingqibing: "gongbu", sentry: "shangshu", xunjian: "shangshu",
+  designer: "jiangzuo", jiangzuo: "jiangzuo", builder: "jiangzuo", shejishi_builder: "jiangzuo",
 };
 const ROLE_LABEL = {
   shangshu: "总控", chanpin: "产品", gongbu: "Runner", ceshi: "Tester", anchasi: "Auditor",
@@ -45,10 +46,15 @@ if (!roleArg || !action || !change || !briefFile) {
   process.exit(1);
 }
 
-const key = (ALIAS[roleArg] || roleArg.replace(/^agent_profile_/, ""));
+const rawKey = roleArg.replace(/^agent_profile_/, "");
+const mappedKey = ALIAS[roleArg] || rawKey;
 const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".paseo", "config.json"), "utf8"));
 const profiles = cfg?.daemon?.agentProfiles || [];
-const p = profiles.find((x) => x.id === `agent_profile_${key}`);
+let p = profiles.find((x) => x.id === `agent_profile_${mappedKey}`);
+if (!p && rawKey) {
+  p = profiles.find((x) => x.id === `agent_profile_${rawKey}`);
+}
+const key = p ? p.id.replace("agent_profile_", "") : mappedKey;
 if (!p) {
   console.error(`[dispatch] 未知角色 '${roleArg}'。可用: ${profiles.map((x) => x.id.replace("agent_profile_", "")).join(", ")}`);
   process.exit(1);
