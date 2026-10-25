@@ -17,6 +17,8 @@ BASE="$(git rev-parse --abbrev-ref HEAD)"
 [ -f "$BRIEF" ] || { echo "[hotfix] brief 不存在: $BRIEF" >&2; exit 1; }
 [ -z "$(git status --porcelain)" ] || { echo "[hotfix] 工作区不干净，先提交或清理" >&2; exit 1; }
 
+echo "[hotfix] LEGACY: completion callback not verified for this path (paseo run --no-wait)." >&2
+
 # 固定带上集成分支 HEAD，避免子 agent 读到旧快照（实测：Auditor 因分支 tasks.md 旧快照误判）
 HEAD_SHA="$(git rev-parse --short HEAD)"
 TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
