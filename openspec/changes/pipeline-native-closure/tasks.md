@@ -13,7 +13,8 @@
   - Scenarios: SCEN-REC-01, SCEN-REC-02
   - Done: source=4f1e39b review=pass(fc4f8926@4f1e39b/8043d33)
 
-- [ ] 1.2 T-02 reconcile 重写（角色识别、attempt/phase/disposition、DAG 释放、Done first-parent 验证、资源冲突、fail-closed）
+- [x] 1.2 T-02 reconcile 重写（角色识别、attempt/phase/disposition、DAG 释放、Done first-parent 验证、资源冲突、fail-closed）
+  - Done: source=fe4240f review=pass(dfa79d7b@fe4240f/fe0a598)
   - Depends on: T-01
   - Write scope: skills/paseo-pipeline/reconcile.mjs, skills/paseo-pipeline/test/reconcile.test.mjs
   - Risk-surface: [error-handling, concurrency]
