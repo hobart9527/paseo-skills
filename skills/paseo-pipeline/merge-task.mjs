@@ -1,137 +1,199 @@
 #!/usr/bin/env node
-import { execSync, execFileSync } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { parseTasks } from './lib/tasks.mjs';
 
-// Usage: node merge-task.mjs <branch> <task-id(s)> [review-result] [test-cmd]
-// Examples:
-//   node merge-task.mjs task/integer-set-partition-ops/T-04 T-04 "pass(mechanical)"
-//   node merge-task.mjs pod/integer-set-partition-ops T-01,T-02,T-03 "pass(agent_profile_anchasi)" "npm test"
+const usage = [
+  'Usage: node merge-task.mjs <branch> <task-ids> <review-tag> <test-cmd>',
+  'review-tag: pass(<reviewer-id8>@<tip7>/<base7>)',
+  'Note: this validates tag/SHA consistency only; it cannot prove a review occurred.',
+].join('\n');
 
-const branch = process.argv[2];
-const taskIdsArg = process.argv[3];
-const reviewResult = process.argv[4] || "pass(mechanical)";
-const testCmd = process.argv[5] || (fs.existsSync("package.json") ? "npm test" : "true");
-
-if (!branch || !taskIdsArg) {
-  console.error("Usage: node merge-task.mjs <branch> <task-id(s)> [review-result] [test-cmd]");
-  process.exit(1);
+function fail(message, code = 1) {
+  console.error(`[merge-task] Error: ${message}`);
+  process.exit(code);
 }
 
-// Resolve change name from branch (pod/<name>, task/<name>/<task>, integration/<name>);
-// fall back to the sole active change. Multiple active changes without a match: fail closed.
-function findTasksFile() {
-  const changesDir = path.join(process.cwd(), "openspec", "changes");
-  if (!fs.existsSync(changesDir)) return null;
-  const active = fs.readdirSync(changesDir, { withFileTypes: true })
-    .filter((e) => e.isDirectory() && e.name !== "archive" && fs.existsSync(path.join(changesDir, e.name, "tasks.md")))
-    .map((e) => e.name);
-  const fromBranch = branch.split("/")[1];
-  if (fromBranch && active.includes(fromBranch)) return path.join(changesDir, fromBranch, "tasks.md");
-  if (active.length === 1) return path.join(changesDir, active[0], "tasks.md");
-  if (active.length > 1) {
-    console.error(`[merge-task] Error: cannot resolve change from branch '${branch}' among [${active.join(", ")}]`);
-    process.exit(30);
+function git(args) {
+  const result = spawnSync('git', args, { encoding: 'utf8' });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(' ')} failed (${result.status})\n${result.stdout}${result.stderr}`);
   }
+  return result.stdout.trim();
+}
+
+function gitMaybe(args) {
+  const result = spawnSync('git', args, { encoding: 'utf8' });
+  if (result.error) throw result.error;
+  return result;
+}
+
+function parseSourceBranch(branch) {
+  let match = branch.match(/^task\/([^/]+)\/([A-Za-z]+-\d+)(?:-a\d+)?$/);
+  if (match) return { change: match[1], taskId: match[2] };
+  match = branch.match(/^pod\/([^/]+)$/);
+  if (match) return { change: match[1], taskId: null };
   return null;
 }
 
-try {
-  // 1. Check clean working directory
-  const porcelain = execSync("git status --porcelain", { encoding: "utf8" }).trim();
-  if (porcelain) {
-    console.error("[merge-task] Error: Working tree is not clean before merge:\n" + porcelain);
-    process.exit(1);
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function changedFiles(fromRef, toRef) {
+  const output = git(['diff', '--name-only', `${fromRef}..${toRef}`]);
+  return output === '' ? [] : output.split('\n');
+}
+
+function abortMerge() {
+  const mergeHead = gitMaybe(['rev-parse', '-q', '--verify', 'MERGE_HEAD']);
+  if (mergeHead.status !== 0) return;
+  const abort = gitMaybe(['merge', '--abort']);
+  if (abort.status !== 0) {
+    console.error(`[merge-task] Error: git merge --abort failed (${abort.status})\n${abort.stdout}${abort.stderr}`);
+    process.exit(40);
   }
+}
 
-  // 2. Capture pre-merge HEAD and target branch metadata
-  const preHead = execSync("git rev-parse HEAD", { encoding: "utf8" }).trim();
-  const taskSha = execSync(`git rev-parse --short "${branch}"`, { encoding: "utf8" }).trim();
-  const commitSubject = execSync(`git log -1 --pretty=%s "${branch}"`, { encoding: "utf8" }).trim();
+function markTasksDone(tasksFile, requestedTasks, tip7, reviewTag) {
+  const lines = fs.readFileSync(tasksFile, 'utf8').split('\n');
 
-  // 3. Perform merge without committing
-  try {
-    execSync(`git merge --no-ff --no-commit "${branch}"`, { stdio: "pipe" });
-  } catch (mergeErr) {
-    console.error(`[merge-task] Error: Git merge failed for branch ${branch}`);
-    try {
-      execSync("git merge --abort", { stdio: "ignore" });
-    } catch {
-      execSync(`git reset --hard ${preHead}`, { stdio: "ignore" });
-    }
-    process.exit(10);
-  }
-
-  // 4. Run tests while in merged working tree
-  const t0 = Date.now();
-  try {
-    execSync(testCmd, { stdio: "inherit" });
-  } catch (testErr) {
-    console.error(`[merge-task] Error: Test execution failed (${testCmd})`);
-    try {
-      execSync("git merge --abort", { stdio: "ignore" });
-    } catch {
-      execSync(`git reset --hard ${preHead}`, { stdio: "ignore" });
-    }
-    process.exit(20);
-  }
-  const testDuration = Date.now() - t0;
-
-  // 5. Update tasks.md if present
-  const tasksFile = findTasksFile();
-  const targetTaskIds = taskIdsArg.split(",").map((s) => s.trim()).filter(Boolean);
-
-  if (tasksFile && targetTaskIds.length > 0) {
-    const content = fs.readFileSync(tasksFile, "utf8");
-    const lines = content.split("\n");
-    let modified = false;
-
-    for (const tid of targetTaskIds) {
-      const taskPattern = new RegExp(`^(\\s*-\\s*\\[)[ xX](\\]\\s*.*?\\b${tid.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b(?!-).*)$`);
-      for (let i = 0; i < lines.length; i++) {
-        const m = lines[i].match(taskPattern);
-        if (m) {
-          lines[i] = `${m[1]}x${m[2]}`;
-          modified = true;
-          // Check if Done line already exists on next line
-          if (i + 1 < lines.length && /^\s*-\s*Done:/.test(lines[i + 1])) {
-            lines[i + 1] = `  - Done: merge=${taskSha} review=${reviewResult}`;
-          } else {
-            lines.splice(i + 1, 0, `  - Done: merge=${taskSha} review=${reviewResult}`);
-          }
-          break;
-        }
-      }
-    }
-
-    if (modified) {
-      fs.writeFileSync(tasksFile, lines.join("\n"), "utf8");
-      execSync(`git add "${tasksFile}"`);
-    }
-  }
-
-  // 6. Complete atomic merge commit
-  const taskList = targetTaskIds.join(",");
-  const commitMsg = `merge(${taskList}): ${commitSubject}`;
-  execFileSync("git", ["commit", "-m", commitMsg], { stdio: "inherit" });
-  const mergeSha = execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
-
-  // 自动度量：把实测耗时追加进 run-log（独立小提交，不污染合流提交），消除「耗时未采集」。
-  const logFile = tasksFile ? path.join(path.dirname(tasksFile), "run-log.md") : null;
-  if (logFile && fs.existsSync(logFile)) {
-    fs.appendFileSync(
-      logFile,
-      `- ${new Date().toISOString()} merge ${taskList} branch=${branch} task_sha=${taskSha} merge_sha=${mergeSha} review=${reviewResult} test_cmd="${testCmd}" test_duration=${testDuration}ms\n`
+  for (const task of requestedTasks) {
+    const taskPattern = new RegExp(
+      `^(\\s*[-*]\\s*\\[) (\\]\\s+${escapeRegExp(task.num)}\\s+${escapeRegExp(task.id)}(?:\\s+|$).*)$`
     );
-    try {
-      execFileSync("git", ["add", logFile], { stdio: "ignore" });
-      execFileSync("git", ["commit", "-m", `docs(run-log): merge ${taskList} 实测耗时 ${testDuration}ms`], { stdio: "ignore" });
-    } catch { /* 记账失败不影响已完成的合流 */ }
+    const index = lines.findIndex((line) => taskPattern.test(line));
+    if (index === -1) throw new Error(`无法在 tasks.md 精确定位未完成任务 ${task.id}`);
+    const match = lines[index].match(taskPattern);
+    lines[index] = `${match[1]}x${match[2]}`;
+    lines.splice(index + 1, 0, `  - Done: source=${tip7} review=${reviewTag}`);
   }
 
-  console.log(`[merge-task] Success: tasks=[${taskList}] branch=${branch} task_sha=${taskSha} merge_sha=${mergeSha} test_duration=${testDuration}ms`);
-  process.exit(0);
-} catch (err) {
-  console.error(`[merge-task] Unexpected error: ${err.message}`);
+  fs.writeFileSync(tasksFile, lines.join('\n'), 'utf8');
+}
+
+function appendRunLog(logFile, entry) {
+  const previous = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '';
+  const separator = previous !== '' && !previous.endsWith('\n') ? '\n' : '';
+  fs.writeFileSync(logFile, `${previous}${separator}${entry}\n`, 'utf8');
+}
+
+if (process.argv.length !== 6) {
+  console.error(usage);
   process.exit(1);
 }
+
+const [branch, taskIdsArg, reviewTag, testCommand] = process.argv.slice(2);
+const source = parseSourceBranch(branch);
+if (!source) fail(`branch must be task/<change>/<task-id>[-aN] or pod/<change>: ${branch}`);
+
+const currentBranch = git(['branch', '--show-current']);
+if (currentBranch !== `integration/${source.change}`) {
+  fail(`current branch must be integration/${source.change}, got ${currentBranch || '(detached HEAD)'}`);
+}
+
+const dirty = git(['status', '--porcelain']);
+if (dirty !== '') fail(`working tree is not clean before merge:\n${dirty}`);
+
+const preMergeHead = git(['rev-parse', 'HEAD']);
+const tip = git(['rev-parse', '--verify', `${branch}^{commit}`]);
+const tip7 = tip.slice(0, 7);
+
+const reviewMatch = reviewTag.match(/^pass\((mechanical|[0-9a-f]{8})@([0-9a-f]{7})\/([0-9a-f]{7})\)$/);
+if (!reviewMatch) fail(`malformed review tag: ${reviewTag}`);
+const [, reviewer, reviewedTip7, reviewedBase7] = reviewMatch;
+if (reviewedTip7 !== tip7) {
+  fail(`review tip mismatch: tag=${reviewedTip7} branch=${tip7}`);
+}
+
+const reviewedBase = gitMaybe(['rev-parse', '--verify', `${reviewedBase7}^{commit}`]);
+if (reviewedBase.status !== 0) {
+  fail(`review base does not resolve to a commit: ${reviewedBase7}\n${reviewedBase.stderr}`);
+}
+const reviewedBaseSha = reviewedBase.stdout.trim();
+
+const changeDir = path.join('openspec', 'changes', source.change);
+const tasksFile = path.join(changeDir, 'tasks.md');
+const logFile = path.join(changeDir, 'run-log.md');
+if (!fs.existsSync(tasksFile)) fail(`missing tasks ledger: ${tasksFile}`);
+
+const taskIds = taskIdsArg.split(',').map((id) => id.trim());
+if (taskIds.length === 0 || taskIds.some((id) => id === '')) fail('task IDs must be a non-empty comma-separated list');
+if (new Set(taskIds).size !== taskIds.length) fail(`duplicate task IDs requested: ${taskIdsArg}`);
+if (source.taskId !== null && (taskIds.length !== 1 || taskIds[0] !== source.taskId)) {
+  fail(`task branch ${branch} may merge only exact task ID ${source.taskId}`);
+}
+
+const parsed = parseTasks(fs.readFileSync(tasksFile, 'utf8'));
+if (parsed.errors.length > 0) {
+  fail(`invalid tasks ledger:\n${parsed.errors.map((error) => `${error.code}: ${error.message}`).join('\n')}`);
+}
+
+const tasksById = new Map(parsed.tasks.map((task) => [task.id, task]));
+const requestedTasks = taskIds.map((id) => {
+  const task = tasksById.get(id);
+  if (!task) fail(`unknown task ID: ${id}`);
+  if (task.done) fail(`task is already Done: ${id}`);
+  return task;
+});
+
+if (reviewer === 'mechanical' && requestedTasks.some((task) => task.review !== 'mechanical')) {
+  fail('mechanical review requires Review: mechanical on every requested task');
+}
+
+let drifted = false;
+if (reviewedBaseSha !== preMergeHead) {
+  const integrationFiles = new Set(changedFiles(reviewedBaseSha, preMergeHead));
+  const overlap = changedFiles(reviewedBaseSha, tip).filter((file) => integrationFiles.has(file));
+  if (overlap.length > 0) {
+    fail(`baseline drift overlaps branch changes; re-review required: ${overlap.join(', ')}`);
+  }
+  drifted = true;
+}
+
+const merge = gitMaybe(['merge', '--no-ff', '--no-commit', branch]);
+if (merge.status !== 0) {
+  console.error(`[merge-task] Error: git merge failed (${merge.status})\n${merge.stdout}${merge.stderr}`);
+  abortMerge();
+  process.exit(10);
+}
+
+const startedAt = Date.now();
+const test = spawnSync(testCommand, { shell: true, stdio: 'inherit' });
+if (test.error) {
+  console.error(`[merge-task] Error: test command could not start: ${test.error.message}`);
+  abortMerge();
+  process.exit(20);
+}
+if (test.status !== 0 || test.signal !== null) {
+  console.error(`[merge-task] Error: test command failed: ${testCommand}`);
+  abortMerge();
+  process.exit(20);
+}
+const testDuration = Date.now() - startedAt;
+
+try {
+  markTasksDone(tasksFile, requestedTasks, tip7, reviewTag);
+  const driftNote = drifted ? ` baseline-drift=${reviewedBase7}..${preMergeHead.slice(0, 7)}` : '';
+  appendRunLog(
+    logFile,
+    `- ${new Date().toISOString()} merge tasks=${taskIds.join(',')} branch=${branch} source=${tip} review=${reviewTag} test_cmd=${JSON.stringify(testCommand)} test_duration=${testDuration}ms${driftNote}`
+  );
+  git(['add', tasksFile, logFile]);
+  git([
+    'commit',
+    '-m',
+    `merge(${taskIds.join(',')}): ${branch}`,
+    '-m',
+    `Pipeline-Task: ${taskIds.join(',')}\nPipeline-Source: ${tip}`,
+  ]);
+} catch (error) {
+  console.error(`[merge-task] Error: ${error.stack || error.message}`);
+  abortMerge();
+  process.exit(1);
+}
+
+const mergeSha = git(['rev-parse', 'HEAD']);
+console.log(`[merge-task] Success: tasks=${taskIds.join(',')} branch=${branch} source=${tip} merge=${mergeSha} test_duration=${testDuration}ms`);
