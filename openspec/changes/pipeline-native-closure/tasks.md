@@ -50,7 +50,8 @@
 
 ## 2. 文档与验证
 
-- [ ] 2.1 T-06 SKILL.md 与 LESSONS.md 一致性改写（原生派发、DAG、合流、事件驱动限制、信封/重复/过期/权限/重试/保留）
+- [x] 2.1 T-06 SKILL.md 与 LESSONS.md 一致性改写（原生派发、DAG、合流、事件驱动限制、信封/重复/过期/权限/重试/保留）
+  - Done: source=98c3388 review=pass(fc4f8926@98c3388/528c691)
   - Depends on: T-02, T-03, T-04
   - Write scope: skills/paseo-pipeline/SKILL.md, skills/paseo-pipeline/LESSONS.md, skills/paseo-pipeline/test/docs.test.mjs
   - Risk-surface: [public-api]

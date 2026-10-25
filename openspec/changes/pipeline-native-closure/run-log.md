@@ -5,3 +5,4 @@
 - 2026-10-25T05:40:48Z budget-exception: human authorized one extra T-02 attempt 4 (a1-a3 BLOCK on path scope policy); further Blocker => stop, no auto-append
 - 2026-10-25T05:57:38Z budget-exception-2: human approved scope-validation clarification + T-02 attempt 5 (final; ordering precedes all states, live-writer occupancy retained, no DEL/C1 ban); further Blocker => stop
 - 2026-10-25T06:29:41.562Z merge tasks=T-02 branch=task/pipeline-native-closure/T-02 source=fe4240fa1d722dcbe1dcc327b914c311515041c4 review=pass(dfa79d7b@fe4240f/fe0a598) test_cmd="node --test skills/paseo-pipeline/test/reconcile.test.mjs" test_duration=80587ms
+- 2026-10-25T06:33:37.986Z merge tasks=T-06 branch=task/pipeline-native-closure/T-06 source=98c3388f21c9c31b39beb414a8bd9281ed09e37e review=pass(fc4f8926@98c3388/528c691) test_cmd="node --test skills/paseo-pipeline/test/docs.test.mjs" test_duration=232ms
