@@ -571,6 +571,51 @@ test('SCEN-DAG-02 directory overlaps nested file: src/a/ vs src/a/b/c.mjs', (con
   dispatch(result, ['T-04']);
 });
 
+test('SCEN-DAG-02 leading-dot segments are normalized: src/a/ vs ./src/a/file.mjs', (context) => {
+  const subject = fixture(context, [{ id: 'T-01', scope: 'src/a/' }, { id: 'T-02', scope: './src/a/file.mjs' }]);
+  const result = output(subject);
+  state(result, 'T-01', 'READY');
+  conflict(result, 'T-02', 'T-01');
+  dispatch(result, ['T-01']);
+});
+
+test('SCEN-DAG-02 duplicate slashes are normalized: src/a//b vs src/a/b/c', (context) => {
+  const subject = fixture(context, [{ id: 'T-01', scope: 'src/a//b' }, { id: 'T-02', scope: 'src/a/b/c' }]);
+  const result = output(subject);
+  state(result, 'T-01', 'READY');
+  conflict(result, 'T-02', 'T-01');
+  dispatch(result, ['T-01']);
+});
+
+test('SCEN-DAG-02 dot-dot pops a segment: src/x/../a vs src/a/f', (context) => {
+  const subject = fixture(context, [{ id: 'T-01', scope: 'src/x/../a' }, { id: 'T-02', scope: 'src/a/f' }]);
+  const result = output(subject);
+  state(result, 'T-01', 'READY');
+  conflict(result, 'T-02', 'T-01');
+  dispatch(result, ['T-01']);
+});
+
+test('SCEN-DAG-02 dot-dot escaping root fails closed as INVALID', (context) => {
+  const subject = fixture(context, [
+    { id: 'T-02', scope: '../escape' },
+    { id: 'T-01', scope: 'src/a/' },
+    { id: 'T-03', scope: 'docs/' },
+  ]);
+  const result = output(subject, ['--cap', '3']);
+  state(result, 'T-01', 'READY');
+  state(result, 'T-02', 'INVALID');
+  state(result, 'T-03', 'READY');
+  dispatch(result, ['T-01', 'T-03']);
+});
+
+test('SCEN-DAG-06 normalization is case-preserving: SRC/A vs src/a stay disjoint', (context) => {
+  const subject = fixture(context, [{ id: 'T-01', scope: 'SRC/A' }, { id: 'T-02', scope: 'src/a' }]);
+  const result = output(subject, ['--cap', '2']);
+  state(result, 'T-01', 'READY');
+  state(result, 'T-02', 'READY');
+  dispatch(result, ['T-01', 'T-02']);
+});
+
 test('SCEN-DAG-03 Done source that cannot expand to a unique commit is INVALID', (context) => {
   const subject = fixture(context);
   const source = subject.taskBranch();

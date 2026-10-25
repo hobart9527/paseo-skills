@@ -254,10 +254,25 @@ for (const task of tasks) {
 }
 
 // --- 资源串行（按文件顺序；路径段前缀重叠即冲突） ---
-const segments = (p) => p.replace(/\/+$/, "").split("/").filter(Boolean);
+// 规范化：去空段/`.` 段/尾斜杠，统一重复斜杠，`..` 弹出上一段；
+// `..` 越出根 → null，overlaps fail closed 视为与一切重叠。
+const segments = (p) => {
+  const parts = [];
+  for (const seg of p.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      if (parts.length === 0) return null;
+      parts.pop();
+      continue;
+    }
+    parts.push(seg);
+  }
+  return parts;
+};
 const overlaps = (a, b) => {
   const as = segments(a);
   const bs = segments(b);
+  if (as === null || bs === null) return true;
   const shared = Math.min(as.length, bs.length);
   for (let i = 0; i < shared; i += 1) {
     if (as[i] !== bs[i]) return false;
@@ -265,6 +280,11 @@ const overlaps = (a, b) => {
   return true;
 };
 for (const c of candidates) {
+  if (c.scope.some((s) => segments(s) === null)) {
+    out.INVALID.push({ task: c.label, reason: "Write scope 含越出根的 '..' 段，fail closed" });
+    stateOf.set(c.id, "INVALID");
+    continue;
+  }
   const holder = held.find((h) => h.scope.some((s) => c.scope.some((t) => overlaps(s, t))));
   if (holder) {
     out.BLOCKED_RESOURCE.push({ task: c.label, conflict: holder.label });
