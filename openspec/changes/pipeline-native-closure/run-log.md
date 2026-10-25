@@ -2,3 +2,4 @@
 - 2026-10-25T05:19:28Z merge T-05 source=595f9bf test_cmd="bash skills/paseo-pipeline/contract-check.test.sh" result=19/0 exit=0 auditor=5655b44a verdict=PASS
 - 2026-10-25T05:21:56Z merge T-03 source=6537e37 test_cmd="node --test merge-task.test.mjs tasks.test.mjs" result=57/57 exit=0 auditor=8e64cf21 verdict=PASS attempts=2
 - 2026-10-25T05:40:14Z merge T-04 source=9822b30 test_cmd="node --test dispatch+merge-task+tasks" result=77/77 exit=0 auditor=469cf60d verdict=PASS attempts=2
+- 2026-10-25T05:40:48Z budget-exception: human authorized one extra T-02 attempt 4 (a1-a3 BLOCK on path scope policy); further Blocker => stop, no auto-append
