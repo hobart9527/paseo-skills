@@ -17,7 +17,7 @@ function fail(message, code = 1) {
 
 function git(args) {
   const result = spawnSync('git', args, { encoding: 'utf8' });
-  if (result.error) throw result.error;
+  if (result.error) fail(`git ${args.join(' ')} could not start: ${result.error.message}`);
   if (result.status !== 0) {
     throw new Error(`git ${args.join(' ')} failed (${result.status})\n${result.stdout}${result.stderr}`);
   }
@@ -25,9 +25,7 @@ function git(args) {
 }
 
 function gitMaybe(args) {
-  const result = spawnSync('git', args, { encoding: 'utf8' });
-  if (result.error) throw result.error;
-  return result;
+  return spawnSync('git', args, { encoding: 'utf8' });
 }
 
 function parseSourceBranch(branch) {
@@ -49,12 +47,25 @@ function changedFiles(fromRef, toRef) {
 
 function abortMerge() {
   const mergeHead = gitMaybe(['rev-parse', '-q', '--verify', 'MERGE_HEAD']);
-  if (mergeHead.status !== 0) return;
+  if (!mergeHead.error && mergeHead.status !== 0) return;
   const abort = gitMaybe(['merge', '--abort']);
-  if (abort.status !== 0) {
-    console.error(`[merge-task] Error: git merge --abort failed (${abort.status})\n${abort.stdout}${abort.stderr}`);
-    process.exit(40);
-  }
+  if (!abort.error && abort.status === 0) return;
+  const detail = abort.error
+    ? `git merge --abort could not start: ${abort.error.message}`
+    : `git merge --abort failed (status=${abort.status}${abort.signal ? ` signal=${abort.signal}` : ''})\n${abort.stdout}${abort.stderr}`;
+  const status = gitMaybe(['status', '--porcelain']);
+  const site = status.error
+    ? `git status could not start: ${status.error.message}`
+    : status.stdout || '(working tree clean)';
+  console.error([
+    `[merge-task] Error: ${detail}`,
+    '[merge-task] On-site state (git status --porcelain):',
+    site,
+    '[merge-task] Manual guidance: the repository may still be mid-merge (MERGE_HEAD present).',
+    '[merge-task] Inspect with `git status`, resolve the blocker, then run `git merge --abort` by hand.',
+    '[merge-task] Do NOT discard the working tree with a hard reset: uncommitted work would be lost.',
+  ].join('\n'));
+  process.exit(40);
 }
 
 function markTasksDone(tasksFile, requestedTasks, tip7, reviewTag) {
@@ -109,6 +120,9 @@ if (reviewedTip7 !== tip7) {
 }
 
 const reviewedBase = gitMaybe(['rev-parse', '--verify', `${reviewedBase7}^{commit}`]);
+if (reviewedBase.error) {
+  fail(`git rev-parse could not start: ${reviewedBase.error.message}`);
+}
 if (reviewedBase.status !== 0) {
   fail(`review base does not resolve to a commit: ${reviewedBase7}\n${reviewedBase.stderr}`);
 }
@@ -154,6 +168,11 @@ if (reviewedBaseSha !== preMergeHead) {
 }
 
 const merge = gitMaybe(['merge', '--no-ff', '--no-commit', branch]);
+if (merge.error) {
+  console.error(`[merge-task] Error: git merge could not start: ${merge.error.message}`);
+  abortMerge();
+  process.exit(10);
+}
 if (merge.status !== 0) {
   console.error(`[merge-task] Error: git merge failed (${merge.status})\n${merge.stdout}${merge.stderr}`);
   abortMerge();

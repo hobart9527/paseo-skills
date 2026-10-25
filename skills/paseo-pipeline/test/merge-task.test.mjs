@@ -333,3 +333,40 @@ test('pod mechanical review rejects a mixed strict/mechanical task list', (conte
   });
   assertRejected(repo, invoke(repo, { ids: 'T-1,T-2', tag: reviewTag(repo, { reviewer: 'mechanical' }) }));
 });
+
+test('SCEN-MRG-06 abort failure exits 40 with on-site dump and manual guidance', (context) => {
+  const repo = fixture(context, { sharedChange: true });
+  write(repo.cwd, 'src/shared.txt', 'integration version\n');
+  git(repo.cwd, 'add', '.');
+  git(repo.cwd, 'commit', '-qm', 'conflicting integration change');
+  const head = git(repo.cwd, 'rev-parse', 'HEAD');
+  const binDir = mkdtempSync(path.join(tmpdir(), 'pipeline-merge-fake-git-'));
+  context.after(() => rmSync(binDir, { recursive: true, force: true }));
+  const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+  assert.notEqual(realGit, '', 'test requires a resolvable real git');
+  writeFileSync(path.join(binDir, 'git'), [
+    '#!/bin/sh',
+    'if [ "$1" = "merge" ] && [ "$2" = "--abort" ]; then',
+    '  echo "fake git: merge --abort disabled" >&2',
+    '  exit 1',
+    'fi',
+    `exec ${JSON.stringify(realGit)} "$@"`,
+    '',
+  ].join('\n'), { mode: 0o755 });
+  const result = spawnSync(process.execPath, [mergeScript, repo.branch, 'T-1', reviewTag(repo, { base: head }), passCommand], {
+    cwd: repo.cwd,
+    env: { ...gitEnv, PATH: `${binDir}${path.delimiter}${gitEnv.PATH}` },
+    encoding: 'utf8',
+    timeout: 15000,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.signal, null, result.stderr);
+  assert.equal(result.status, 40, `${result.stdout}${result.stderr}`);
+  assert.match(result.stderr, /merge --abort/);
+  assert.match(result.stderr, /MERGE_HEAD/);
+  assert.match(result.stderr, /hard reset/);
+  assert.ok(!/throw|Unhandled/i.test(result.stderr), 'must not surface an unhandled exception');
+  assert.notEqual(git(repo.cwd, 'rev-parse', '-q', '--verify', 'MERGE_HEAD'), '', 'merge state must remain for manual recovery');
+  git(repo.cwd, 'merge', '--abort');
+  assertUnchanged(repo, head);
+});
