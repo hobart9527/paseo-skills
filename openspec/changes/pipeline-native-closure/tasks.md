@@ -74,7 +74,8 @@
   - Verify with: node skills/paseo-pipeline/test/check-evidence.mjs openspec/changes/pipeline-native-closure/evidence/native-smoke.md
   - Scenarios: SCEN-VER-02
 
-- [ ] 2.4 T-09 终审：Auditor 对 `main...integration/pipeline-native-closure` 整体 diff 审计并留证
+- [x] 2.4 T-09 终审：Auditor 对 `main...integration/pipeline-native-closure` 整体 diff 审计并留证
+  - Done: source=4ca6c21 review=pass(fc4f8926@4ca6c21/79ab6d8)
   - Depends on: T-06, T-07, T-08
   - Write scope: openspec/changes/pipeline-native-closure/evidence/final-audit.md
   - Risk-surface: [none]
