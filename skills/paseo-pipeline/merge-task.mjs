@@ -116,6 +116,19 @@ try {
   execFileSync("git", ["commit", "-m", commitMsg], { stdio: "inherit" });
   const mergeSha = execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
 
+  // 自动度量：把实测耗时追加进 run-log（独立小提交，不污染合流提交），消除「耗时未采集」。
+  const logFile = tasksFile ? path.join(path.dirname(tasksFile), "run-log.md") : null;
+  if (logFile && fs.existsSync(logFile)) {
+    fs.appendFileSync(
+      logFile,
+      `- ${new Date().toISOString()} merge ${taskList} branch=${branch} task_sha=${taskSha} merge_sha=${mergeSha} review=${reviewResult} test_cmd="${testCmd}" test_duration=${testDuration}ms\n`
+    );
+    try {
+      execFileSync("git", ["add", logFile], { stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", `docs(run-log): merge ${taskList} 实测耗时 ${testDuration}ms`], { stdio: "ignore" });
+    } catch { /* 记账失败不影响已完成的合流 */ }
+  }
+
   console.log(`[merge-task] Success: tasks=[${taskList}] branch=${branch} task_sha=${taskSha} merge_sha=${mergeSha} test_duration=${testDuration}ms`);
   process.exit(0);
 } catch (err) {

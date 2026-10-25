@@ -34,11 +34,17 @@ ln -sf ~/Codex/paseo-skills/skills/paseo-ui ~/.claude/skills/paseo-ui
 ```
 
 ### 3. Sync Vendored UI Skills (Paseo UI)
-Paseo UI locks 15 upstream best-of-breed skill slices locally via `LOCK.json`:
+Paseo UI locks 20 upstream best-of-breed skill slices locally via `LOCK.json`:
 ```bash
 cd ~/Codex/paseo-skills/skills/paseo-ui/vendor
 chmod +x sync.sh
 ./sync.sh
+```
+
+### 4. Deterministic Toolchain Prerequisites
+Global tools required for automated a11y source-mapping audits and deep probe capture:
+```bash
+npm install -g @accesslint/cli @accesslint/chrome playwright @playwright/cli
 ```
 
 ---

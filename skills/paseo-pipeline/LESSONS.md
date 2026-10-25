@@ -73,3 +73,25 @@
 - **编排权属重新划线**：将交由 `agent_profile_shangshu` 无人值守的判据修正为"预计派发 ≥6 次或预计 >30 分钟"；日常微型 Pod 任务（通常仅需 2–3 次派发）由主会话直接编排，主会话保持"只读信封、不读业务代码全文"的纪律。
 - **派发参数严格机械化**：禁止为了满足格式而编造 `features: {"reason": "..."}` 等虚假字段；严格从 `list_profiles` 逐字段复制，profile 未声明字段直接省略。派发后一次快照核对并采集时间戳。
 - **分支清理与模板闭环**：禁止使用 `git branch -D`（强制删除），允许使用 `git branch -d` 安全清理已合入主干的临时分支；`proposal.md` 转写时必须包含 `## What Changes` 章节以消除 `openspec archive` 告警；归档命令统一附加 `--yes` 杜绝终端交互阻塞。
+
+---
+
+## 8. 2026-10-23~25 session-lifecycle-hardening 复盘：赋能优先
+
+实测反例（出处：会话 d29375cd 转录）：
+- 派发手拼 MCP JSON：4 次缺 title、1 次 INVALID_MODEL_ID、short-ID UUID 错误；参数出错后曾 `ps aux` 抓凭据直连 API（越线，建议轮换 Paseo token）。
+- 通知断链：`notifyOnFinish` 只通知派发者，Lead 被归档（a441201a、0035def3，查明为 Paseo 移动/桌面客户端 UI 触发 archive_agent_request）后无人接收；改用无状态对账。
+- spec 2 分钟冻结，无 Critic/Scout/接口清单 → 冻结后 11 项决策、4 次范围扩张。
+- 弱模型（gemini-flash）接管后同位置 306 次重复 Read、停滞 6h16m；流水线中途不换模型，同位置连续 Read ≥5 次视为空转，停手。
+- 收尾无独立审计就合入；contract-check 报 undeclared=14 且 declared=0（spec 未用 `Error("…")` 字面量）被搁置。
+- run-log 全「未采集」。
+
+对应赋能工具（脚本做机械活，不加新门禁）：
+- `dispatch.mjs <role> <action> <change> <brief>`：profile 字段机械复制、title 自动 ≤60、agentId/时间写 run-log。
+- `merge-task.mjs`：合流后自动追加 sha/测试命令/test_duration 到 run-log。
+- `reconcile.mjs <change>`：tasks.md + git + `paseo ls` 对账，输出 MERGE/READY/RUNNING/BLOCKED/canDispatchNow；Lead 失联后任何人重跑即可接力。
+- `hotfix.sh`：小修一条命令走 qingqibing worktree → merge-task，主会话不改产品代码。
+- `contract-check.mjs`：undeclared>0 时直接给出可粘贴的 spec 声明行。
+
+硬底线仅三条：不抓凭据/直连 API/冒用身份；push、`rm -rf`、`--amend` 先问；两个人类确认点。
+成功判据看结果：用户追进度、主会话改产品代码、compact、「未采集」、确认点 2 后新增 diff，均应为 0。

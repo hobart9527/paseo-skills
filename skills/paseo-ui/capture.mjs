@@ -15,12 +15,41 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { execFile, spawnSync } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import net from "node:net";
 
 const pExecFile = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+export async function findFreePort(preferred = 0) {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.listen(preferred, "127.0.0.1", () => {
+      const port = srv.address().port;
+      srv.close(() => resolve(port));
+    });
+    srv.on("error", reject);
+  });
+}
+
+export async function waitForServer(url, timeoutMs = 15000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const res = await fetch(url, { method: "HEAD" });
+      if (res.status >= 200 && res.status < 500) return true;
+    } catch {
+      try {
+        const res = await fetch(url, { method: "GET" });
+        if (res.status >= 200 && res.status < 500) return true;
+      } catch {}
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return false;
+}
 
 const VIEWPORT_PRESETS = {
   "320": { width: 320, height: 640 },
@@ -119,7 +148,8 @@ export function confirmMockedState(expectedState, routes, hits) {
 }
 
 // Load and validate a mock file. Body sources are resolved relative to the
-// mock file so a fixture directory can be moved as a unit.
+// mock file so a fixture directory can be moved as a unit. Supports scenario
+// actions for deep interaction capture (e.g. click modal/drawer triggers).
 export function loadMocks(mockPath) {
   const abs = path.resolve(mockPath);
   const raw = JSON.parse(fs.readFileSync(abs, "utf-8"));
@@ -127,8 +157,20 @@ export function loadMocks(mockPath) {
     throw new Error("mock file must be an object keyed by state name (or \"*\")");
   }
   const mocks = {};
-  for (const [state, routes] of Object.entries(raw)) {
-    if (!Array.isArray(routes)) throw new Error(`mock state '${state}' must map to an array of routes`);
+  const actions = {};
+  for (const [state, value] of Object.entries(raw)) {
+    if (state.endsWith(":actions")) {
+      const targetState = state.replace(/:actions$/, "");
+      actions[targetState] = Array.isArray(value) ? value : [value];
+      continue;
+    }
+    const routes = Array.isArray(value)
+      ? value
+      : (value && Array.isArray(value.routes) ? value.routes : null);
+    if (!routes) throw new Error(`mock state '${state}' must map to an array of routes or { routes: [...] }`);
+    if (value && Array.isArray(value.actions)) {
+      actions[state] = value.actions;
+    }
     mocks[state] = routes.map((route, i) => {
       if (!route || typeof route.url !== "string" || route.url.length === 0) {
         throw new Error(`mock state '${state}' route #${i} is missing "url"`);
@@ -154,6 +196,7 @@ export function loadMocks(mockPath) {
       };
     });
   }
+  mocks.__actions = actions;
   return mocks;
 }
 
@@ -241,6 +284,18 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
     await mapConcurrent(tasks, concurrency, async ({ state, scheme, vp, prefix, targetFile, dim, stateUrl }) => {
       try {
         const page = await browser.newPage({ viewport: dim, colorScheme: scheme });
+        await page.addInitScript(() => {
+          window.__layoutShiftScore = 0;
+          try {
+            new PerformanceObserver((list) => {
+              for (const entry of list.getEntries()) {
+                if (!entry.hadRecentInput) {
+                  window.__layoutShiftScore += entry.value;
+                }
+              }
+            }).observe({ type: "layout-shift", buffered: true });
+          } catch {}
+        });
         // Emulated preferences are declared to the page, not merely rendered: a
         // `prefers-contrast` or `forced-colors` stylesheet is only exercised when
         // the engine actually reports the media feature as matching.
@@ -267,6 +322,27 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
         for (const route of sharedRoutes) await installRoute(route, () => {});
         for (const [i, route] of stateRoutes.entries()) await installRoute(route, () => { stateHits[i] += 1; });
         await page.goto(stateUrl, { waitUntil: "networkidle", timeout: 15000 });
+
+        // Deep modal/drawer scenario actions: execute if defined for this state
+        const stateActions = (mocks && mocks.__actions && mocks.__actions[state]) || [];
+        for (const act of stateActions) {
+          try {
+            if (act.click) {
+              await page.waitForSelector(act.click, { timeout: act.timeoutMs || 5000 });
+              await page.click(act.click);
+            }
+            if (act.fill && act.selector) {
+              await page.waitForSelector(act.selector, { timeout: act.timeoutMs || 5000 });
+              await page.fill(act.selector, act.fill);
+            }
+            if (act.waitMs) {
+              await page.waitForTimeout(act.waitMs);
+            }
+          } catch (actionErr) {
+            runtimeErrors.push(`[${prefix}:action] ${actionErr.message}`);
+          }
+        }
+
         // Collect DOM facts in-page, decide in Node: page.evaluate cannot see
         // module-scope exports, and keeping the decision in confirmStateEntry
         // makes its truth table testable without a browser. body/html
@@ -406,6 +482,155 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
             .find((q) => window.matchMedia(`(prefers-contrast: ${q})`).matches) || "no-preference";
           const observedForced = window.matchMedia("(forced-colors: active)").matches ? "active" : "none";
 
+          // Button text wrap probe: detect accidental multi-line text wrapping inside buttons
+          const buttonWraps = [];
+          for (const btn of document.querySelectorAll("button, [role=button]")) {
+            const r = btn.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue;
+            const textNodes = [];
+            const walk = (node) => {
+              if (node.nodeType === 3 && node.textContent.trim()) textNodes.push(node);
+              else if (node.nodeType === 1 && !["SVG", "svg", "IMG", "img"].includes(node.tagName)) {
+                for (const c of node.childNodes) walk(c);
+              }
+            };
+            walk(btn);
+            for (const tn of textNodes) {
+              const range = document.createRange();
+              range.selectNodeContents(tn);
+              const rects = range.getClientRects();
+              if (rects.length > 1) {
+                buttonWraps.push({
+                  tag: btn.tagName.toLowerCase(),
+                  label: (btn.getAttribute("aria-label") || btn.textContent || "").trim().slice(0, 30),
+                  lines: rects.length,
+                });
+                break;
+              }
+            }
+          }
+
+          // Realtime DOM contrast probe: WCAG AA check (4.5:1 normal, 3.0:1 large/bold)
+          function parseRgb(str) {
+            if (!str) return null;
+            const m = str.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+            if (!m) return null;
+            return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)];
+          }
+          function calcLuminance(rgb) {
+            const a = rgb.map((v) => {
+              v /= 255;
+              return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+            });
+            return a[0] * 0.2126 + a[1] * 0.7152 + a[2] * 0.0722;
+          }
+          function calcContrast(rgb1, rgb2) {
+            const l1 = calcLuminance(rgb1);
+            const l2 = calcLuminance(rgb2);
+            return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+          }
+          const lowContrastElements = [];
+          for (const el of document.querySelectorAll("p, span, h1, h2, h3, h4, h5, h6, button, a, label, td, th")) {
+            const r = el.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue;
+            const text = (el.textContent || "").trim();
+            if (!text || el.children.length > 3) continue;
+            const comp = window.getComputedStyle(el);
+            const fg = parseRgb(comp.color);
+            if (!fg) continue;
+            let bg = null;
+            let cur = el;
+            while (cur) {
+              const bgComp = window.getComputedStyle(cur);
+              if (bgComp.backgroundColor && bgComp.backgroundColor !== "transparent" && !bgComp.backgroundColor.includes("rgba(0, 0, 0, 0)")) {
+                bg = parseRgb(bgComp.backgroundColor);
+                break;
+              }
+              cur = cur.parentElement;
+            }
+            if (!bg) bg = [255, 255, 255];
+            const ratio = calcContrast(fg, bg);
+            const fontSize = parseFloat(comp.fontSize) || 14;
+            const isBold = parseInt(comp.fontWeight, 10) >= 700 || comp.fontWeight === "bold";
+            const threshold = (fontSize >= 18 || (fontSize >= 14 && isBold)) ? 3.0 : 4.5;
+            if (ratio < threshold) {
+              lowContrastElements.push({
+                tag: el.tagName.toLowerCase(),
+                text: text.slice(0, 30),
+                ratio: Number(ratio.toFixed(2)),
+                expected: threshold,
+              });
+            }
+          }
+
+          // Form controls label probe (WCAG 2.1 / Vercel guidelines)
+          const unlabeledControls = [];
+          for (const fc of document.querySelectorAll("input:not([type=hidden]):not([type=button]):not([type=submit]):not([type=reset]), select, textarea")) {
+            const r = fc.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue;
+            const hasAriaLabel = Boolean(fc.getAttribute("aria-label")?.trim());
+            const hasAriaLabelledBy = Boolean(fc.getAttribute("aria-labelledby")?.trim());
+            const id = fc.id;
+            const hasExplicitLabel = id ? Boolean(document.querySelector(`label[for="${id}"]`)) : false;
+            const hasWrappingLabel = Boolean(fc.closest("label"));
+            if (!hasAriaLabel && !hasAriaLabelledBy && !hasExplicitLabel && !hasWrappingLabel) {
+              unlabeledControls.push({
+                tag: fc.tagName.toLowerCase(),
+                name: fc.getAttribute("name") || fc.id || null,
+                type: fc.getAttribute("type") || null,
+              });
+            }
+          }
+
+          // Autocomplete probe for textual inputs
+          const missingAutocompletes = [];
+          for (const ti of document.querySelectorAll('input[type="text"], input[type="email"], input[type="password"], input[type="tel"], input[type="url"]')) {
+            const r = ti.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue;
+            const auto = ti.getAttribute("autocomplete");
+            if (!auto || !auto.trim()) {
+              missingAutocompletes.push({
+                name: ti.getAttribute("name") || ti.id || null,
+                type: ti.getAttribute("type") || "text",
+              });
+            }
+          }
+
+          // Table header scope probe
+          const thWithoutScopes = [];
+          for (const th of document.querySelectorAll("table th")) {
+            const r = th.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue;
+            const scope = (th.getAttribute("scope") || "").toLowerCase().trim();
+            if (!["col", "row", "colgroup", "rowgroup"].includes(scope)) {
+              thWithoutScopes.push({
+                text: (th.textContent || "").trim().slice(0, 30),
+              });
+            }
+          }
+
+          // Numeric cell alignment and tabular-nums probe
+          const numericMisaligned = [];
+          const numericPattern = /^[¥$€£]?\s*-?\d[\d,]*(\.\d+)?%?$/;
+          for (const td of document.querySelectorAll("table td")) {
+            const r = td.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue;
+            const text = (td.textContent || "").trim();
+            if (numericPattern.test(text)) {
+              const comp = window.getComputedStyle(td);
+              const isRight = comp.textAlign === "right" || comp.textAlign === "end";
+              const isTabular = (comp.fontVariantNumeric && comp.fontVariantNumeric.includes("tabular-nums")) ||
+                (comp.fontFeatureSettings && (comp.fontFeatureSettings.includes("tnum") || comp.fontFeatureSettings.includes('"tnum" 1')));
+              if (!isRight || !isTabular) {
+                numericMisaligned.push({
+                  text: text.slice(0, 20),
+                  textAlign: comp.textAlign,
+                  hasTabular: Boolean(isTabular),
+                });
+              }
+            }
+          }
+
           return {
             scrollWidth: de.scrollWidth,
             clientWidth: de.clientWidth,
@@ -416,6 +641,20 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
             has_active_feedback: pressables.length === 0 ? null : pressCovered > 0,
             active_feedback_coverage: activeFeedback,
             has_tabular_nums: hasTabularNums,
+            button_text_wrap: buttonWraps.length > 0,
+            button_text_wraps: buttonWraps.slice(0, 5),
+            button_text_wrap_count: buttonWraps.length,
+            low_contrast_count: lowContrastElements.length,
+            low_contrast_elements: lowContrastElements.slice(0, 5),
+            cls_score: Number((window.__layoutShiftScore || 0).toFixed(4)),
+            unlabeled_control_count: unlabeledControls.length,
+            unlabeled_controls: unlabeledControls.slice(0, 5),
+            missing_autocomplete_count: missingAutocompletes.length,
+            missing_autocompletes: missingAutocompletes.slice(0, 5),
+            th_without_scope_count: thWithoutScopes.length,
+            th_without_scopes: thWithoutScopes.slice(0, 5),
+            numeric_cell_misaligned_count: numericMisaligned.length,
+            numeric_cell_misaligned: numericMisaligned.slice(0, 5),
             small_touch_targets: smallTargets.slice(0, 10),
             small_touch_target_count: smallTargets.length,
             dialog_present: Boolean(document.querySelector("dialog")),
@@ -682,6 +921,7 @@ export function buildCaptureMetadata(result, options = {}) {
       ),
       horizontal_overflow: overflowFindings,
       small_touch_targets: touchFindings,
+      craft_health_index: options.diagnostics_summary?.craft_health_index || null,
       dom_metrics_coverage: Object.values(viewportMetrics).some((m) => m && m.dom_metrics === "unmeasured_cli_runner")
         ? "partial: CLI runner cannot evaluate DOM; containment/touch findings above are Playwright-only"
         : "full",
@@ -880,7 +1120,139 @@ export function buildDiagnosticsSummary(result) {
   } else {
     touchCount = touchKnown.reduce((acc, [, m]) => acc + m.small_touch_target_count, 0);
   }
+
+  const wrapKnown = entries.filter(([, m]) => measured(m) && typeof m.button_text_wrap_count === "number");
+  let buttonWrapCount = null;
+  if (wrapKnown.length === 0 || wrapKnown.length !== entries.length) {
+    unmeasured.push("button_text_wrap_count");
+  } else {
+    buttonWrapCount = wrapKnown.reduce((acc, [, m]) => acc + m.button_text_wrap_count, 0);
+  }
+
+  const contrastKnown = entries.filter(([, m]) => measured(m) && typeof m.low_contrast_count === "number");
+  let lowContrastCount = null;
+  if (contrastKnown.length === 0 || contrastKnown.length !== entries.length) {
+    unmeasured.push("low_contrast_count");
+  } else {
+    lowContrastCount = contrastKnown.reduce((acc, [, m]) => acc + m.low_contrast_count, 0);
+  }
+
+  const clsKnown = entries.filter(([, m]) => measured(m) && typeof m.cls_score === "number");
+  let maxClsScore = null;
+  if (clsKnown.length === 0 || clsKnown.length !== entries.length) {
+    unmeasured.push("cls_score");
+  } else {
+    maxClsScore = Math.max(...clsKnown.map(([, m]) => m.cls_score));
+  }
+
+  const unlabeledKnown = entries.filter(([, m]) => measured(m) && typeof m.unlabeled_control_count === "number");
+  let unlabeledControlCount = null;
+  if (unlabeledKnown.length === 0 || unlabeledKnown.length !== entries.length) {
+    unmeasured.push("unlabeled_control_count");
+  } else {
+    unlabeledControlCount = unlabeledKnown.reduce((acc, [, m]) => acc + m.unlabeled_control_count, 0);
+  }
+
+  const autocompleteKnown = entries.filter(([, m]) => measured(m) && typeof m.missing_autocomplete_count === "number");
+  let missingAutocompleteCount = null;
+  if (autocompleteKnown.length === 0 || autocompleteKnown.length !== entries.length) {
+    unmeasured.push("missing_autocomplete_count");
+  } else {
+    missingAutocompleteCount = autocompleteKnown.reduce((acc, [, m]) => acc + m.missing_autocomplete_count, 0);
+  }
+
+  const thScopeKnown = entries.filter(([, m]) => measured(m) && typeof m.th_without_scope_count === "number");
+  let thWithoutScopeCount = null;
+  if (thScopeKnown.length === 0 || thScopeKnown.length !== entries.length) {
+    unmeasured.push("th_without_scope_count");
+  } else {
+    thWithoutScopeCount = thScopeKnown.reduce((acc, [, m]) => acc + m.th_without_scope_count, 0);
+  }
+
+  const numericMisalignedKnown = entries.filter(([, m]) => measured(m) && typeof m.numeric_cell_misaligned_count === "number");
+  let numericCellMisalignedCount = null;
+  if (numericMisalignedKnown.length === 0 || numericMisalignedKnown.length !== entries.length) {
+    unmeasured.push("numeric_cell_misaligned_count");
+  } else {
+    numericCellMisalignedCount = numericMisalignedKnown.reduce((acc, [, m]) => acc + m.numeric_cell_misaligned_count, 0);
+  }
+
   const craftCheck = (key) => (part(key).length === 0 || part(key).length !== entries.length ? null : part(key).some(Boolean));
+
+  // Deterministic Craft Health Index (CHI: 0-100)
+  const deductions = [];
+  let score = 100;
+
+  if (horizontalOverflow === true) {
+    deductions.push({ rule: "containment", points: 30, reason: "Horizontal overflow detected on viewport(s)" });
+    score -= 30;
+  }
+  if (typeof maxClsScore === "number" && maxClsScore > 0) {
+    const clsDeduct = Math.min(20, Math.round(maxClsScore * 100) || 5);
+    deductions.push({ rule: "cls_layout_shift", points: clsDeduct, reason: `Cumulative Layout Shift ${maxClsScore.toFixed(3)} detected` });
+    score -= clsDeduct;
+  }
+  if (typeof touchCount === "number" && touchCount > 0) {
+    const touchDeduct = Math.min(15, touchCount * 3);
+    deductions.push({ rule: "touch_target_size", points: touchDeduct, reason: `${touchCount} control(s) under 44px min touch target (WCAG 2.5.5)` });
+    score -= touchDeduct;
+  }
+  if (typeof unlabeledControlCount === "number" && unlabeledControlCount > 0) {
+    const labelDeduct = Math.min(15, unlabeledControlCount * 5);
+    deductions.push({ rule: "form_a11y_labels", points: labelDeduct, reason: `${unlabeledControlCount} interactive control(s) missing label / aria-label` });
+    score -= labelDeduct;
+  }
+  if (typeof thWithoutScopeCount === "number" && thWithoutScopeCount > 0) {
+    const thDeduct = Math.min(6, thWithoutScopeCount * 2);
+    deductions.push({ rule: "table_semantics", points: thDeduct, reason: `${thWithoutScopeCount} <th> header(s) missing scope="col|row"` });
+    score -= thDeduct;
+  }
+  if (typeof numericCellMisalignedCount === "number" && numericCellMisalignedCount > 0) {
+    const numDeduct = Math.min(6, numericCellMisalignedCount * 3);
+    deductions.push({ rule: "numeric_alignment", points: numDeduct, reason: `${numericCellMisalignedCount} numeric table cell(s) not right-aligned with tabular-nums` });
+    score -= numDeduct;
+  }
+  if (typeof lowContrastCount === "number" && lowContrastCount > 0) {
+    const contrastDeduct = Math.min(10, lowContrastCount * 2);
+    deductions.push({ rule: "text_contrast", points: contrastDeduct, reason: `${lowContrastCount} element(s) with contrast ratio below WCAG AA` });
+    score -= contrastDeduct;
+  }
+
+  let activeCovered = 0;
+  let activeTotal = 0;
+  for (const [, m] of entries) {
+    if (m && m.active_feedback_coverage && typeof m.active_feedback_coverage.total === "number") {
+      activeCovered += m.active_feedback_coverage.covered || 0;
+      activeTotal += m.active_feedback_coverage.total || 0;
+    }
+  }
+  if (activeTotal > 0) {
+    const activeRate = activeCovered / activeTotal;
+    if (activeRate < 0.3) {
+      deductions.push({ rule: "tactile_feedback", points: 10, reason: `Active feedback coverage critically low (${Math.round(activeRate * 100)}% < 30%)` });
+      score -= 10;
+    } else if (activeRate < 0.6) {
+      deductions.push({ rule: "tactile_feedback", points: 5, reason: `Active feedback coverage suboptimal (${Math.round(activeRate * 100)}% < 60%)` });
+      score -= 5;
+    }
+  }
+
+  score = Math.max(0, Math.min(100, score));
+  let grade = "A+";
+  if (score < 60) grade = "F";
+  else if (score < 70) grade = "D";
+  else if (score < 80) grade = "C";
+  else if (score < 90) grade = "B";
+  else if (score < 95) grade = "A";
+  else grade = "A+";
+
+  const craft_health_index = {
+    score,
+    grade,
+    deductions,
+    total_deductions: 100 - score,
+  };
+
   return {
     status: result.status,
     ...aggregateTriState(result.viewport_metrics, tier),
@@ -890,15 +1262,101 @@ export function buildDiagnosticsSummary(result) {
     craft_checks: {
       has_active_feedback: craftCheck("has_active_feedback"),
       has_tabular_nums: craftCheck("has_tabular_nums"),
+      button_text_wrap_free: buttonWrapCount === null ? null : buttonWrapCount === 0,
+      contrast_compliant: lowContrastCount === null ? null : lowContrastCount === 0,
+      cls_compliant: maxClsScore === null ? null : maxClsScore < 0.1,
+      form_controls_labeled: unlabeledControlCount === null ? null : unlabeledControlCount === 0,
+      autocomplete_compliant: missingAutocompleteCount === null ? null : missingAutocompleteCount === 0,
+      table_headers_scoped: thWithoutScopeCount === null ? null : thWithoutScopeCount === 0,
+      numeric_cells_aligned: numericCellMisalignedCount === null ? null : numericCellMisalignedCount === 0,
     },
+    craft_health_index,
+    max_cls_score: maxClsScore,
     small_touch_targets_count: touchCount,
+    button_text_wrap_count: buttonWrapCount,
+    low_contrast_count: lowContrastCount,
+    unlabeled_control_count: unlabeledControlCount,
+    missing_autocomplete_count: missingAutocompleteCount,
+    th_without_scope_count: thWithoutScopeCount,
+    numeric_cell_misaligned_count: numericCellMisalignedCount,
     unmeasured_viewports: unmeasuredViewports,
     unmeasured: [...new Set([...aggregateTriState(result.viewport_metrics, tier).unmeasured, ...unmeasured])],
   };
 }
 
+export async function runSelfTest() {
+  process.stdout.write("Running paseo-ui capture.mjs self-test...\n");
+  const isMain = isMainModule();
+  const pw = await loadPlaywright();
+  const sysBrowser = findSystemBrowser();
+  let portOk = false;
+  try {
+    const port = await findFreePort();
+    portOk = typeof port === "number" && port > 1024;
+  } catch {}
+  let accesslintOk = false;
+  let accesslintChromeOk = false;
+  try {
+    const res = spawnSync("accesslint", ["--version"], { encoding: "utf8", timeout: 3000 });
+    accesslintOk = res.status === 0;
+  } catch {}
+  try {
+    const res = spawnSync("accesslint-chrome", ["--help"], { encoding: "utf8", timeout: 3000 });
+    accesslintChromeOk = res.status === 0;
+  } catch {}
+  const searchPyPath = path.resolve(__dirname, "vendor/ui-ux-pro-max/scripts/search.py");
+  const searchPyExists = fs.existsSync(searchPyPath);
+
+  const dummyDom = { bodyState: "stressed", domText: "stressed error" };
+  const confState = confirmStateEntry("stressed", dummyDom);
+  const confMock = confirmMockedState("empty", [{ url: "**/api" }], [1]);
+
+  const dummyResult = {
+    status: "ok",
+    viewport_metrics: {
+      "390": {
+        small_touch_target_count: 0,
+        button_text_wrap_count: 0,
+        low_contrast_count: 0,
+        cls_score: 0.02,
+        unlabeled_control_count: 0,
+        missing_autocomplete_count: 0,
+        th_without_scope_count: 0,
+        numeric_cell_misaligned_count: 0,
+        horizontal_overflow: false,
+        stylesheets_applied: true,
+      },
+    },
+  };
+  const summary = buildDiagnosticsSummary(dummyResult, "standard");
+  const craftChecksOk = summary.craft_checks.cls_compliant === true &&
+    summary.craft_checks.form_controls_labeled === true &&
+    summary.craft_checks.table_headers_scoped === true &&
+    summary.craft_checks.numeric_cells_aligned === true;
+
+  const results = {
+    is_main_module_resolved: isMain,
+    playwright_available: Boolean(pw),
+    accesslint_cli_available: accesslintOk,
+    accesslint_chrome_available: accesslintChromeOk,
+    ui_ux_pro_max_available: searchPyExists,
+    system_browser: sysBrowser,
+    port_allocator_working: portOk,
+    state_entry_truth_table: confState.confirmed && confMock.confirmed,
+    craft_probes_pipeline: craftChecksOk,
+    craft_health_index_working: summary.craft_health_index?.score === 98 && summary.craft_health_index?.grade === "A+",
+  };
+  process.stdout.write(JSON.stringify(results, null, 2) + "\n");
+  const pass = results.is_main_module_resolved && results.playwright_available && results.accesslint_cli_available && results.accesslint_chrome_available && results.port_allocator_working && results.state_entry_truth_table && results.craft_probes_pipeline && results.craft_health_index_working;
+  process.exit(pass ? 0 : 1);
+}
+
 async function main() {
   const args = process.argv.slice(2);
+  if (args.includes("--self-test")) {
+    return await runSelfTest();
+  }
+
   let url = null;
   let outputDir = null;
   let viewports = ["320", "390", "1280"];
@@ -914,10 +1372,16 @@ async function main() {
   let targetPlatform = "web";
   let runtime = "unknown";
   let sourceRevision = "unversioned";
+  let serveCmd = null;
+  let portArg = null;
   const dependencies = [];
 
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--target-path") {
+    if (args[i] === "--serve") {
+      serveCmd = args[++i] || null;
+    } else if (args[i] === "--port") {
+      portArg = args[++i] || null;
+    } else if (args[i] === "--target-path") {
       targetPath = args[++i] || null;
     } else if (args[i] === "--target-platform") {
       targetPlatform = args[++i] || "web";
@@ -975,78 +1439,123 @@ async function main() {
     }
   }
 
+  let serverProcess = null;
+  let allocatedPort = null;
+  if (serveCmd) {
+    if (!portArg || portArg === "auto") {
+      allocatedPort = await findFreePort();
+    } else {
+      allocatedPort = parseInt(portArg, 10);
+    }
+    if (!url) {
+      url = `http://127.0.0.1:${allocatedPort}`;
+    } else {
+      url = url.replace(/\{port\}|PORT/g, String(allocatedPort));
+    }
+  }
+
   if (!url || !outputDir) {
-    process.stderr.write("Usage: node capture.mjs <url> --out <dir> [--viewports 320,390,1280] [--states default,stressed] [--mock mocks.json]\n");
+    process.stderr.write("Usage: node capture.mjs <url> --out <dir> [--viewports 320,390,1280] [--states default,stressed] [--mock mocks.json] [--serve <cmd>] [--port auto]\n");
     process.exit(1);
   }
 
-  let mocks = null;
-  if (mockPath) {
-    try {
-      mocks = loadMocks(mockPath);
-    } catch (error) {
-      process.stderr.write(`--mock: ${error instanceof Error ? error.message : String(error)}\n`);
+  if (serveCmd) {
+    const finalCmd = serveCmd.replace(/\{port\}|PORT/g, String(allocatedPort));
+    serverProcess = spawn(finalCmd, {
+      shell: true,
+      stdio: "ignore",
+      env: { ...process.env, PORT: String(allocatedPort) },
+    });
+    const ready = await waitForServer(url, 20000);
+    if (!ready) {
+      if (serverProcess && !serverProcess.killed) serverProcess.kill("SIGKILL");
+      process.stderr.write(`--serve: timed out waiting for server at ${url}\n`);
       process.exit(2);
     }
   }
 
-  fs.mkdirSync(outputDir, { recursive: true });
-
-  // 1. Try Playwright
-  let result = await captureWithPlaywright(url, outputDir, viewports, states, schemes, density,
-                                           forcedColors, contrast, 4, mocks);
-
-  // 2. Try System Browser CLI if Playwright unavailable. It cannot intercept
-  // requests, so mock-driven states would screenshot the live data: refuse.
-  if (!result && mocks) {
-    process.stdout.write(JSON.stringify({
-      status: "browser_unavailable",
-      reason: "--mock requires Playwright; system browser CLI cannot intercept requests",
-    }, null, 2) + "\n");
-    process.exit(2);
-  }
-  if (!result) {
-    const browserBin = findSystemBrowser();
-    if (browserBin) {
-      result = await captureWithCli(browserBin, url, outputDir, viewports, states, schemes, density);
+  try {
+    let mocks = null;
+    if (mockPath) {
+      try {
+        mocks = loadMocks(mockPath);
+      } catch (error) {
+        process.stderr.write(`--mock: ${error instanceof Error ? error.message : String(error)}\n`);
+        process.exit(2);
+      }
     }
-  }
 
-  const metadataOptions = {
-    targetPath,
-    targetUri: url,
-    targetPlatform,
-    runtime,
-    sourceRevision,
-    dependencies,
-    // The requested preferences ride along so a reader can tell "captured with
-    // forced colors requested" from "the page was never asked".
-    requested: { schemes, density, forcedColors, contrast, mock: mockPath },
-  };
+    fs.mkdirSync(outputDir, { recursive: true });
 
-  if (result) {
-    const metadata = buildCaptureMetadata(result, metadataOptions);
-    const recording = recordHandoffEvidence(outputDir, result, metadata, {
-      noManifest,
-      manifestPath: customManifest,
-    });
-    const diagnostics_summary = buildDiagnosticsSummary(result);
-    process.stdout.write(JSON.stringify({ ...result, diagnostics_summary, metadata, evidence_record: recording }, null, 2) + "\n");
-    process.exit(0);
-  } else {
-    // A failed capture is a result, not silence: emit explicit metadata and never
-    // record it as usable evidence.
-    const failure = {
-      status: "browser_unavailable",
-      reason: "No browser runner found (Playwright package or system Chrome/Chromium/Edge)",
-      metadata: buildCaptureMetadata({ status: "browser_unavailable" }, metadataOptions),
+    // 1. Try Playwright
+    let result = await captureWithPlaywright(url, outputDir, viewports, states, schemes, density,
+                                             forcedColors, contrast, 4, mocks);
+
+    // 2. Try System Browser CLI if Playwright unavailable. It cannot intercept
+    // requests, so mock-driven states would screenshot the live data: refuse.
+    if (!result && mocks) {
+      process.stdout.write(JSON.stringify({
+        status: "browser_unavailable",
+        reason: "--mock requires Playwright; system browser CLI cannot intercept requests",
+      }, null, 2) + "\n");
+      process.exit(2);
+    }
+    if (!result) {
+      const browserBin = findSystemBrowser();
+      if (browserBin) {
+        result = await captureWithCli(browserBin, url, outputDir, viewports, states, schemes, density);
+      }
+    }
+
+    const metadataOptions = {
+      targetPath,
+      targetUri: url,
+      targetPlatform,
+      runtime,
+      sourceRevision,
+      dependencies,
+      requested: { schemes, density, forcedColors, contrast, mock: mockPath },
     };
-    process.stdout.write(JSON.stringify(failure, null, 2) + "\n");
-    process.exit(2);
+
+    if (result) {
+      const diagnostics_summary = buildDiagnosticsSummary(result);
+      const metadata = buildCaptureMetadata(result, { ...metadataOptions, diagnostics_summary });
+      const recording = recordHandoffEvidence(outputDir, result, metadata, {
+        noManifest,
+        manifestPath: customManifest,
+      });
+      process.stdout.write(JSON.stringify({ ...result, diagnostics_summary, metadata, evidence_record: recording }, null, 2) + "\n");
+      process.exit(0);
+    } else {
+      const failure = {
+        status: "browser_unavailable",
+        reason: "No browser runner found (Playwright package or system Chrome/Chromium/Edge)",
+        metadata: buildCaptureMetadata({ status: "browser_unavailable" }, metadataOptions),
+      };
+      process.stdout.write(JSON.stringify(failure, null, 2) + "\n");
+      process.exit(2);
+    }
+  } finally {
+    if (serverProcess && !serverProcess.killed) {
+      try {
+        process.kill(-serverProcess.pid, "SIGTERM");
+      } catch {
+        serverProcess.kill("SIGTERM");
+      }
+    }
   }
 }
 
 // Importable seam: the module is inert unless executed directly (`node capture.mjs`).
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+function isMainModule() {
+  if (!process.argv[1]) return false;
+  try {
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+  }
+}
+
+if (isMainModule()) {
   main();
 }

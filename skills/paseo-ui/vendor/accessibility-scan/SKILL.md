@@ -7,15 +7,15 @@ allowed-tools: Bash, Read, Glob, Grep, Skill, Task
 
 Audit a live page and report each violation and where it is. Locate; don't fix.
 
-Shared grounding and honesty conventions: [`../shared/methodology.md`](../shared/methodology.md).
+Shared grounding and honesty conventions: [`./shared/methodology.md`](./shared/methodology.md).
 
-`$ARGUMENTS` is a URL, a config target name (`dev`, `storybook`, …), or empty to audit the default target from `accesslint.config.json`. If it's empty and no config exists, ask for a URL or suggest `npx @accesslint/cli init`.
+`$ARGUMENTS` is a URL, a config target name (`dev`, `storybook`, …), or empty to audit the default target from `accesslint.config.json`. If it's empty and no config exists, ask for a URL or suggest `accesslint init`.
 
 ## 1. Audit
 
 ```bash
-PORT=$(npx -y @accesslint/chrome@latest ensure | node -e 'process.stdin.on("data",d=>process.stdout.write(""+JSON.parse(d).port))')
-npx -y @accesslint/cli@latest scan <target> --port "$PORT" --format json
+PORT=$(accesslint-chrome ensure | node -e 'process.stdin.on("data",d=>process.stdout.write(""+JSON.parse(d).port))')
+accesslint scan <target> --port "$PORT" --format json
 ```
 
 `<target>` is the URL or config target name from `$ARGUMENTS`. Omit it (don't pass `""`) to audit the config's default target. Add flags as needed: `--selector`, `--wait-for "<selector>"`, `--include-aaa`, `--disable <rules>`, or pin them per-target in `accesslint.config.json`.
@@ -33,7 +33,7 @@ Don't edit. For fixes, apply the mechanical ones and re-run to verify; for bulk 
 ## 3. Tear down
 
 ```bash
-npx -y @accesslint/chrome@latest stop --all  # skip if ensure reported "managed":false
+accesslint-chrome stop --all  # skip if ensure reported "managed":false
 ```
 
 ## Notes

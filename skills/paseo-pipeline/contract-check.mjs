@@ -298,6 +298,11 @@ const undeclared = [...tested].filter((m) => !declared.has(m)).sort();
 const untested = [...declared].filter((m) => !covered.has(m)).sort();
 
 for (const m of undeclared) console.log(`测试断言但 spec 未声明: ${m}`);
+if (undeclared.length) {
+  // 赋能：给可直接粘进 spec Scenario 的逐字声明行（解析器认的形态），不只报红。
+  console.log(`[建议] 把下列行补进对应 Requirement 的 Scenario（类型按实际抛出的 Error 子类调整）：`);
+  for (const m of undeclared) console.log(`  - THEN throws Error(${JSON.stringify(m)})`);
+}
 if (!PARTIAL) for (const m of untested) console.log(`spec 声明但无测试覆盖: ${m}`);
 else if (untested.length) console.log(`(--partial：${untested.length} 条 spec 声明尚未被本任务覆盖，留待阶段 2 全量对账)`);
 

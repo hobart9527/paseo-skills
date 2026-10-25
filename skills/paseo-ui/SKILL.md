@@ -2,7 +2,7 @@
 name: paseo-ui
 description: AI-Native 前端与 UI/UX 工业级交付流水线：按阶段挂载单一最佳外部成熟 Skill 提示词（vendor 独立切片），分 Lite（单页/专项优化快轨）与 Full（0→1/重构/公共组件）双档；支持颜色/排版/布局/动效/微质感/微文案等专项精准打靶；覆盖 L3 认知、L1 视觉宪法、L0 复合原语、L2 时序动效与横切技术走查；以真实代码修改、极端数据注入、多视口实测与探针为收口凭据。触发词：/paseo-ui、UI设计、界面优化、页面重构、前端走查。
 user-invocable: true
-argument-hint: "[polish · bolder · typography · color · layout · motion · distill · quieter · clarify · audit · full] [target]"
+argument-hint: "[polish · bolder · typography · color · layout · motion · distill · quieter · clarify · audit · table · form · skeleton · full] [target]"
 ---
 
 # Paseo UI Pipeline
@@ -60,11 +60,11 @@ $$
 
 **impeccable 适配**：
 - `<skill-base-dir>` 固定为 `~/.claude/skills/paseo-ui/vendor/impeccable`；原文 `.claude/skills/impeccable/scripts/impeccable` 一律解析为 `~/.claude/skills/paseo-ui/vendor/impeccable/scripts/impeccable`。
-- 启动器首次运行会联网下载二进制；子 agent 环境不可联网时按原文「Launcher unavailable」分支直接读 `PRODUCT.md` / `DESIGN.md` 与 `reference/craft-floor.md`，并在报告标注「降级：impeccable 启动器未运行」。
+- 启动器首次运行会联网下载二进制；子 agent 环境不可联网时按原文「Launcher unavailable」分支直接读 `PRODUCT.md` / `DESIGN.md` 与 `~/.claude/skills/paseo-ui/vendor/impeccable/reference/craft-floor.md`，并在报告标注「降级：impeccable 启动器未运行」。
 - 原文 `document` 流程生成或刷新 `DESIGN.md`、或要求 AskUserQuestion 时，同样受上方写入权限与 Suggest 交回约束。
 
 **accessibility-scan 适配**：
-- 扫描器依赖 `npx -y @accesslint/...@latest`（联网 + 启动 Chrome），由主会话或可联网的执行角色先跑，JSON 结果落盘到 `./captures/a11y.json`；只读审计角色（如 Auditor）只读该 JSON 与源码研判，不自行安装或启动扫描器。
+- 扫描器依赖全局预装的原生 `accesslint-chrome` 与 `accesslint`，由主会话或执行角色先跑（`accesslint-chrome ensure` + `accesslint scan`），JSON 结果落盘到 `./captures/a11y.json`；只读审计角色（如 Auditor）只读该 JSON 与源码研判，不自行启动扫描器。
 - 扫描未运行或失败时，在缺陷单写「降级：a11y 扫描未采集」，不得以源码走读结论冒充扫描结果。
 
 ---
@@ -97,6 +97,10 @@ $$
 | **横切** | 无障碍规则引擎 | AccessLint `accessibility-scan` | `accessibility-scan/SKILL.md` | 基于真实 DOM 与 selector 的 a11y 规则检测（Tab 焦点环、ARIA 标记） |
 | **横切** | React 性能规则 | vercel `react-best-practices` | `react-best-practices/SKILL.md` | 70 条规则防瀑布流、防非必要重渲染、优化 Context 与 Bundle |
 | **横切** | 深层交互捕获 | microsoft `playwright-cli` | `playwright-cli/SKILL.md`<br>+ `playwright-cli/references/request-mocking.md` | 驱动真实浏览器点开深层 Modal/Drawer/Dropdown，输出交互快照证据 |
+| **L0 原语** | 密集表格/树表 | kemiljk `semantic-html-first` + impeccable `operate` | `semantic-html-first/SKILL.md`<br>+ `impeccable/reference/operate.md`<br>+ `impeccable/reference/adapt.md`<br>+ `better-typography/SKILL.md`<br>+ `ui-ux-pro-max/references/quick-reference.md` | 原生语义表格（`<table/thead/tbody/th scope>`）、表头吸顶、`tabular-nums` 数值列右对齐、移动端卡片化降级；树表与半选对齐 W3C WAI-ARIA APG 标准 |
+| **L0 原语** | 表单与内联校验 | Vercel `web-interface-guidelines` + kemiljk `interaction-contracts` | `web-interface-guidelines/command.md`<br>+ `interaction-contracts/SKILL.md`<br>+ `ui-ux-pro-max/references/quick-reference.md`<br>+ `impeccable/reference/clarify.md`<br>+ `impeccable/reference/harden.md` | 字段解剖、2px 语义焦点环、失焦校验+输入即清时序、错误三要素排版、禁止阻止粘贴、防重复提交状态机 |
+| **L0 原语** | 骨架屏/防跳动 | addyosmani `core-web-vitals` (CLS) | `core-web-vitals/CLS.md`<br>+ `ui-ux-pro-max/references/quick-reference.md`<br>+ `impeccable/reference/optimize.md`<br>+ `baseline-ui/SKILL.md` | 1:1 几何占位防御布局抖动 (Anti-CLS)、预设容器高度、局部骨架替代全屏 Spinner、减弱动效回退 |
+| **横切** | 坏数据注入目录 | emilkowalski `break-ui` (Catalog) | `break-ui/CATALOG.md` | 极端坏数据字典（非破坏性注入 `mocks.json`，验证长无空格、极值金额、特殊符号、空态、乱码） |
 | **态 C** | 设计系统生成 | `ui-ux-pro-max` | `ui-ux-pro-max/SKILL.md`（脚本 `ui-ux-pro-max/scripts/search.py`） | 0→1 重构时通过 `search.py --design-system` 提取 50+ 风格与 10-Role Token 表 |
 
 ---
@@ -105,23 +109,45 @@ $$
 
 ```bash
 node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
-  --viewports 390,1280 [--states default,stressed,empty,error] [--mock ./captures/mocks.json]
+  --viewports 390,1280 [--states default,stressed,empty,error] [--mock ./captures/mocks.json] \
+  [--serve "npm run preview"] [--port auto] [--self-test]
 ```
 
 - **运行器**：优先本地或全局 Playwright（DOM 探针完整）；退回系统 Chrome CLI 时只有截图，探针记为 `unmeasured`，不得当作通过。
-- **探针字段**：`horizontal_overflow`（横向溢出）、`active_feedback_coverage: {covered, total}`（可按压控件中挂有 `:active` 规则的数量；`has_active_feedback` 为 `covered > 0`，无可按压控件时为 `null`）、`small_touch_target_count`（<44px 控件数）、`has_tabular_nums`。
-- **状态注入（Break-UI）**：`--mock` 指向 JSON，按状态名声明要拦截的接口；`"*"` 为所有状态共享的基础数据，状态路由优先级更高：
+- **服务托管与自检**：
+  - `--self-test`：一键校验 Playwright 运行器、符号链接主入口解析及状态机真值表。
+  - `--serve "<cmd>"` 与 `--port auto`：自动分配空闲端口、拉起本地预览进程，待健康响应后开始采集，采集结束后在 `finally` 阶段安全清理进程，杜绝孤儿服务与端口冲突。
+- **探针字段**：
+  - `horizontal_overflow`（横向溢出）；
+  - `active_feedback_coverage: {covered, total}`（可按压控件中挂有 `:active` 规则的数量；`has_active_feedback` 为 `covered > 0`，无可按压控件时为 `null`）；
+  - `small_touch_target_count`（<44px 控件数）；
+  - `has_tabular_nums`（等宽数字）；
+  - `button_text_wrap`（按钮内行内文字非预期多行竖排折行检测，`button_text_wrap_count`）；
+  - `low_contrast_count`（基于真实 DOM 计算前背景色 sRGB 相对亮度比，检测未达 WCAG 4.5:1 / 3.0:1 的低对比度文本）；
+  - `cls_score`（累计布局位移 Cumulative Layout Shift 评分，检测异步加载与状态切换时的布局跳动，门禁 <0.1）；
+  - `unlabeled_control_count`（表单控件缺失 `<label>`、`aria-label` 或 `aria-labelledby` 的违规数）；
+  - `missing_autocomplete_count`（文本/邮箱/电话输入控件缺失 `autocomplete` 属性数）；
+  - `th_without_scope_count`（数据表格 `<th>` 表头未声明 `scope="col|row"` 数量）；
+  - `numeric_cell_misaligned_count`（包含数值/金额但未声明右对齐或缺失 `tabular-nums` 的数据单元格数）。
+- **工艺健康指数（Craft Health Index, CHI）**：由 `capture.mjs` 基于真实 DOM 探针计算出的客观度量分（0-100，非 LLM 幻觉评分）：
+  - 满分 100 分，按客观探针扣分：横向溢出扣 30 分；CLS 抖动扣至多 20 分（$\min(20, \text{CLS} \times 100)$）；触控尺寸不足 44px 每处扣 3 分（上限 15 分）；表单控件无标签每处扣 5 分（上限 15 分）；表格 `th` 缺 `scope` 每处扣 2 分（上限 6 分）；数值列未等宽右对齐每处扣 3 分（上限 6 分）；低对比度每处扣 2 分（上限 10 分）；`:active` 触感覆盖率不足 60% 扣 5 分，不足 30% 扣 10 分。
+  - 等级评定：$\ge 95$ 为 A+，$\ge 90$ 为 A，$\ge 80$ 为 B，$\ge 70$ 为 C，$\ge 60$ 为 D，$<60$ 为 F。评分明细与扣分条目自动注入 `capture-manifest.json`。
+- **状态注入与场景捕获（Break-UI & Deep Modal Actions）**：`--mock` 指向 JSON，按状态名声明要拦截的接口及深度交互动作；`"*"` 为所有状态共享的基础数据，状态路由优先级更高：
 
   ```json
   {
     "*":        [{ "url": "**/api/tasks*", "bodyFile": "fixtures/tasks.json" }],
-    "stressed": [{ "url": "**/api/tasks*", "json": { "items": [{ "title": "AAAA…(50+ 无空格)", "amount": 999999999 }] } }],
+    "stressed": [{ "url": "**/api/tasks*", "json": { "items": [{ "title": "新疆维吾尔自治区伊犁哈萨克自治州塔城地区裕民县某某物资储备中心有限公司", "amount": 999999999.00 }] } }],
     "empty":    [{ "url": "**/api/tasks*", "json": { "items": [] } }],
-    "error":    [{ "url": "**/api/tasks*", "status": 500, "json": { "message": "upstream timeout" } }]
+    "error":    [{ "url": "**/api/tasks*", "status": 500, "json": { "message": "upstream timeout" } }],
+    "modal":    {
+      "routes": [{ "url": "**/api/tasks*", "json": { "items": [...] } }],
+      "actions": [{ "click": "[data-modal-trigger]", "waitMs": 300 }]
+    }
   }
   ```
 
-  某状态的路由**全部被命中**才算进入该状态（`state_confirmations[*].observed = "mock:n/n routes hit"`）；有路由未命中即判 `state_unconfirmed`，说明页面没请求这份数据，截图不代表该状态。`--mock` 只在 Playwright 运行器可用，否则直接失败。
+  某状态的路由**全部被命中**才算进入该状态（`state_confirmations[*].observed = "mock:n/n routes hit"`）；有路由未命中即判 `state_unconfirmed`，说明页面没请求这份数据，截图不代表该状态。若状态声明了 `actions`，Playwright 将自动按序模拟点击/输入并等待过渡，直接产出弹窗或抽屉的渲染快照。`--mock` 只在 Playwright 运行器可用，否则直接失败。
 - **无 mock 的状态**：页面自身在 `body`/`html`/应用根上写 `data-state` 时可直接确认；两者都没有时，该状态判为未确认。`capture.mjs` 等待 `networkidle` 后才截图，抓不到 loading 态；loading 态用 `playwright-cli` 按 `references/request-mocking.md` 拦住接口后手动截取。
 - **产物**：`./captures/<phase>/*.png` + `capture-manifest.json`。`captures/` 是运行时产物，不提交。
 
@@ -142,6 +168,9 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
 | `distill` / `quieter` | 快轨 ⑤ 降噪 | `impeccable/reference/distill.md` + `impeccable/reference/quieter.md` |
 | `clarify` | 快轨 ⑥ 微文案 | `impeccable/reference/clarify.md` |
 | `audit` | 快轨 ⑦ 走查（只读） | `accessibility-scan/SKILL.md` + `impeccable/reference/audit.md` |
+| `table` | 快轨 ⑧ 密集表格与树表 | `semantic-html-first/SKILL.md` + `impeccable/reference/operate.md` + `impeccable/reference/adapt.md` + `better-typography/SKILL.md` + `ui-ux-pro-max/references/quick-reference.md`（树表与半选对齐 W3C WAI-ARIA APG 标准） |
+| `form` | 快轨 ⑨ 表单与校验 | `web-interface-guidelines/command.md` + `interaction-contracts/SKILL.md` + `ui-ux-pro-max/references/quick-reference.md` + `impeccable/reference/clarify.md` + `impeccable/reference/harden.md` |
+| `skeleton` | 快轨 ⑩ 骨架屏防跳动 | `core-web-vitals/CLS.md` + `ui-ux-pro-max/references/quick-reference.md` + `impeccable/reference/optimize.md` + `baseline-ui/SKILL.md` |
 | `full` 或命中 Full 触发场景 | Full 档 | 见下文六阶段 |
 | 无参数 | 主会话按需求描述归入上表；跨 ≥2 条快轨时按条款 9 与影响面选 Lite 分级，仍不跨档则顺序执行多条快轨 | — |
 
@@ -160,6 +189,9 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
 | ⑤ 降噪瘦身 | 视觉太杂、信息过载、装饰过剩 | **改码**：6 维降噪，剔除无意义色块、徽章与纯装饰毛玻璃。 |
 | ⑥ 微文案 | 报错不可读、按钮文案含糊 | **改码**：只改用户可见文案与 `aria-label`，不改 i18n key 结构与业务逻辑。 |
 | ⑦ 走查 | 上线前合规检查、Tab/焦点/溢出 | **只读**：主会话先跑 AccessLint 扫描与 `capture.mjs` 探针，执行者基于结果输出 P0–P3 缺陷单，不改源码。 |
+| ⑧ 密集表格与树表 | 数据表格挤压、滚动表头丢失、数值列未对齐 | **改码**：吸顶表头、`tabular-nums` 数值右对齐、长文本截断与 tooltip、半选操作条与窄屏卡片化。 |
+| ⑨ 表单与校验 | 报错突兀、缺少辅助说明、聚焦态丢失 | **改码**：字段解剖五构件对齐、2px 焦点环、失焦校验+输入即清时序、错误三要素排版。 |
+| ⑩ 骨架屏防跳动 | 接口慢导致首屏白屏、数据到达时严重跳动 | **改码**：1:1 几何占位骨架屏替代全屏 Spinner，预设容器最小高度消除 CLS。 |
 
 **Lite 执行分级**（按影响面，不按快轨）：
 
@@ -204,10 +236,10 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
    - 读 `PRODUCT.md`；缺失时，Stage 1 由 `shape.md` 产出的 design brief 一并呈人类确认，确认后写入 `PRODUCT.md`（L3 层，只写用户与任务）。
    - 态 A（已有 `DESIGN.md`）：直接读取，继承既有方向。
    - 态 B（存量工程无规范）：从代码 token 文件与公共组件中提取既有模式，起草 `DESIGN.md`（只写语义角色，不抄数值）。
-   - 态 C（全新 0→1 页面）：调用 `ui-ux-pro-max` 的 `search.py` 生成 A/B 两种不同密度（`--density`）与版式（`--variance`）的设计系统草案。
+   - 态 C（全新 0→1 页面）：调用 `python3 ~/.claude/skills/paseo-ui/vendor/ui-ux-pro-max/scripts/search.py "<domain-keyword>" --design-system` 生成 A/B 两种不同密度（`--density`）与版式（`--variance`）的设计系统草案。
 2. **派发 Builder 塑形**：
    - 角色：`设计营造师 Builder`（`agent_profile_shejishi_builder`）。
-   - 注入上下文：`vendor/impeccable/reference/shape.md` 与 `vendor/interface-design/SKILL.md`。
+   - 注入上下文（统一使用绝对路径，免疫 worktree 隔离）：`~/.claude/skills/paseo-ui/vendor/impeccable/reference/shape.md`、`~/.claude/skills/paseo-ui/vendor/interface-design/SKILL.md` 与 `~/.claude/skills/paseo-ui/vendor/interaction-contracts/SKILL.md`（明确交互契约：触发/状态/反馈/中断/失败恢复/焦点）。
    - 产出：功能架构、核心动线、界面展示态矩阵（Idle/Loading/Empty/Error/Stressed）；业务状态机以既有 spec 为准，不自造。**仅态 C 产出 A/B 两套方向对比**；态 A/B 只产出一套与既有方向一致的方案，若认为需要改方向，写成 Suggest 块交回。
 3. **★ 确认点 1**：Builder 交回的方案（含 interface-design Suggest 块）由主会话转人类拍板；确认后按「单一设计宪法」保存映射写入 `DESIGN.md`，与 `PRODUCT.md` 一起冻结。
 
@@ -215,21 +247,24 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
 1. **隔离环境**：`create_workspace(isolation: "worktree", branchName: "ui/<feature>")`。主干目标文件有未提交改动时，先按 Lite 执行流第 1 步处理。
 2. **改前截图**：在 worktree 起预览，跑 `capture.mjs … --out ./captures/before`（存量页面适用；0→1 页面跳过）。
 3. **派发 Builder 落地**：
-   - 注入上下文：
-     - 工艺基线：`vendor/baseline-ui/SKILL.md`
-     - 界面规范：`vendor/better-colors/SKILL.md` + `vendor/better-typography/SKILL.md` + `vendor/impeccable/reference/layout.md`
-     - 复合原语：`vendor/better-ui/SKILL.md` + `vendor/better-ui/icons.md`
-     - 动效规则：`vendor/to-spring-or-not-to-spring/SKILL.md` + `vendor/micro-interaction/SKILL.md` + `vendor/60fps-animation/SKILL.md`
-     - 硬化：`vendor/impeccable/reference/harden.md`
-   - 修改真实工程源码，遵循语义化复合原语与 `:active:scale-0.96` 触感；同一缺陷多点出现时按条款 9 修原语。
-4. **极端坏数据破坏自验（Break-UI）**：Builder 编写 `./captures/mocks.json`（格式见「证据采集工具」），至少覆盖：
-   - `stressed`：50+ 字符无空格字符串、`¥999,999,999.00` 极值金额；
-   - `empty`：0 条数据；
+   - 注入上下文（全量对称挂载，统一使用绝对路径）：
+     - 工艺与语义基线：`~/.claude/skills/paseo-ui/vendor/baseline-ui/SKILL.md` + `~/.claude/skills/paseo-ui/vendor/semantic-html-first/SKILL.md`（原生语义结构优先、`<table/thead/th scope>` 与 `<dialog>`，严禁 div 拼凑）
+     - 界面与排版规范：`~/.claude/skills/paseo-ui/vendor/better-colors/SKILL.md` + `~/.claude/skills/paseo-ui/vendor/better-typography/SKILL.md` + `~/.claude/skills/paseo-ui/vendor/impeccable/reference/layout.md`
+     - 复合原语与触感：`~/.claude/skills/paseo-ui/vendor/better-ui/SKILL.md` + `~/.claude/skills/paseo-ui/vendor/better-ui/icons.md`（`:active:scale-[0.96~0.98]` 微触感、统一图标笔触）
+     - 表单交互与焦点环：`~/.claude/skills/paseo-ui/vendor/web-interface-guidelines/command.md`（可见焦点环、失焦即时校验、保留原生粘贴、autoComplete）
+     - 动效与减弱动效防御：`~/.claude/skills/paseo-ui/vendor/to-spring-or-not-to-spring/SKILL.md` + `~/.claude/skills/paseo-ui/vendor/micro-interaction/SKILL.md` + `~/.claude/skills/paseo-ui/vendor/60fps-animation/SKILL.md` + `~/.claude/skills/paseo-ui/vendor/accessible-animation/SKILL.md`（动效 ≤200ms、合成器属性加速、落实 prefers-reduced-motion）
+     - React 工程最佳实践：`~/.claude/skills/paseo-ui/vendor/react-best-practices/SKILL.md`（防瀑布流渲染、避免非必要 Context 重绘、组件职能收敛）
+     - 防布局位移（Anti-CLS）：`~/.claude/skills/paseo-ui/vendor/core-web-vitals/CLS.md`（预留 aspect-ratio 与骨架屏几何占位）
+     - 鲁棒硬化与破坏态：`~/.claude/skills/paseo-ui/vendor/impeccable/reference/harden.md` + `~/.claude/skills/paseo-ui/vendor/break-ui/SKILL.md` + `~/.claude/skills/paseo-ui/vendor/break-ui/CATALOG.md`
+   - 修改真实工程源码，遵循语义化复合原语与 `:active:scale-0.96` 触感；金额/数值强制 `tabular-nums text-right`；同一缺陷多点出现时按条款 9 修原语。
+4. **极端坏数据破坏自验（Break-UI）**：Builder 参考 `~/.claude/skills/paseo-ui/vendor/break-ui/CATALOG.md` 极端坏数据字典编写 `./captures/mocks.json`（格式见「证据采集工具」），至少覆盖：
+   - `stressed`：参考 break-ui 注入恶劣真实数据（杜绝无意义假数据；注入超长真实实体名称、多音节国际化字符串、`¥999,999,999.00` 极值金额、特殊符号破折号）；
+   - `empty`：0 条数据真实空态；
    - `error`：接口 5xx 或网络中断，验证错误条与重试入口。
    只改输入、网络 mock 与视口，不碰生产数据与业务代码路径。
 5. **持久回归（可选）**：项目已安装 `@playwright/test` 时，为关键页及上述 mock 态补 `toHaveScreenshot()` 用例；未安装则在报告中列为建议，不自行新增依赖。
 6. **本地构建与静态检测**：
-   - `impeccable detect --json` 静态扫描（启动器不可用时标「降级：未采集」）；
+   - `~/.claude/skills/paseo-ui/vendor/impeccable/scripts/impeccable detect --json` 静态扫描（启动器不可用时标「降级：未采集」）；
    - 项目 `package.json` 中的 `test` / `build` / `lint` 脚本，退出码必须为 0。
 
 ### Stage 3: 截图与交互证据采集（Capture & Probe）
@@ -237,26 +272,26 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
 2. 多视口 × 多状态截图与探针：
    ```bash
    node ~/.claude/skills/paseo-ui/capture.mjs http://localhost:<port> --out ./captures/after \
-     --viewports 390,1280 --states default,stressed,empty,error --mock ./captures/mocks.json
+     --viewports 390,1280 --states default,stressed,empty,error,modal --mock ./captures/mocks.json
    ```
-   所有状态须 `confirmed: true`；未确认的状态如实记为缺口，不得以 default 截图顶替。
-3. **深层弹窗抓取**：页面含 Dialog/Drawer/Modal 时，用 `vendor/playwright-cli/` 点击打开并截图存入 `./captures/after/`；`playwright-cli` 不可用时标「降级：未采集」。
-4. **a11y 扫描**：主会话按「accessibility-scan 适配」运行扫描器，产出 `./captures/a11y.json`。
+   所有状态须 `confirmed: true`；DOM 探针自动计算并输出 Craft Health Index (CHI: 0-100)。
+3. **深层弹窗抓取**：页面含 Dialog/Drawer/Modal 时，优先在 `capture.mjs --mock` 中声明 `actions: [{ click: "...", waitMs: ... }]` 序列自动化触发截取；或调用 `playwright-cli` 手动驱动截取。
+4. **a11y 权威扫描**：主会话直接运行全局预装的 `accesslint-chrome ensure` 与 `accesslint scan`，毫秒级生成 WCAG 2.2 报告 `./captures/a11y.json`（带精确 `file:line` 源码映射）。
 
 ### Stage 4: 双路并发客观反证（Concurrent Audit）
 两路异族 Agent 并发审查：
 
 - **读图探针（前置）**：派 Designer 前，先给它一张已知截图，让它说出页面主按钮的文案；答错或含糊即判定本轮不可读图，路 A 改用 claude 家族 profile，并在报告中记录探针结果。
-- **路 A（视觉多模态走查）**：
+- **路 A（视觉多模态走查 - 看图）**：
   - 角色：`设计师 Designer`（`agent_profile_jiangzuo`，按读图探针结果决定是否替换）。
-  - 注入上下文：`vendor/impeccable/reference/audit.md` + `vendor/review-animations/SKILL.md`。
-  - 输入：`./captures/before` 与 `./captures/after` 下的截图、`capture-manifest.json` 探针、`DESIGN.md`。
-  - 职责：对照设计宪法与动效基线，提取客观缺陷（Contract 违背条款 + Runtime 视口/状态复现 + Correction 唯一建议），严禁输出主观打分。
-- **路 B（工程/无障碍/代码审计）**：
+  - 注入上下文：`~/.claude/skills/paseo-ui/vendor/impeccable/reference/audit.md`。
+  - 输入：`./captures/before` 与 `./captures/after` 下的截图、`capture-manifest.json` 探针（CHI 指数）、`DESIGN.md`。
+  - 职责：对照设计宪法与工艺基线，提取客观缺陷（Contract 违背条款 + Runtime 视口/状态复现 + Correction 唯一建议），严禁输出主观打分。
+- **路 B（工程/无障碍/动效代码审计 - 读码）**：
   - 角色：`审计员 Auditor`（`agent_profile_anchasi`，Codex 异族模型）。
-  - 注入上下文：`vendor/accessibility-scan/SKILL.md` + `vendor/react-best-practices/SKILL.md`。
+  - 注入上下文：`~/.claude/skills/paseo-ui/vendor/accessibility-scan/SKILL.md` + `~/.claude/skills/paseo-ui/vendor/react-best-practices/SKILL.md` + `~/.claude/skills/paseo-ui/vendor/review-animations/SKILL.md`。
   - 输入：`./captures/a11y.json`、原始 `git diff`（比较基点为 worktree 分支与其基线分支的 merge-base）。
-  - 职责：检查键盘 Focus-Trap、ARIA 属性、Tab 遍历、React 重渲染漏洞，核对改动路径不越出任务边界。
+  - 职责：检查键盘 Focus-Trap、ARIA 属性、Tab 遍历、React 重渲染漏洞；**依据 `review-animations` 审查 CSS 动效代码合法性**（合成器硬件加速、贝塞尔曲线、prefers-reduced-motion 降级安全网），核对改动路径不越出任务边界。
 
 ### Stage 5: 定向返工收敛（Convergence ≤2 轮）
 1. 归并两路审查发现的阻断项（P0/P1）；同源缺陷按条款 9 合并为原语级修复。

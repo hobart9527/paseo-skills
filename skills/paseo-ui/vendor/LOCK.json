@@ -124,6 +124,46 @@
       "license": "MIT",
       "sourcePath": ".claude/skills/ui-ux-pro-max",
       "targetPath": "vendor/ui-ux-pro-max"
+    },
+    "core-web-vitals": {
+      "repo": "addyosmani/web-quality-skills",
+      "commit": "afa8da942115f2961fdbfa80807ea0b232ff6c00",
+      "shortSha": "afa8da942115",
+      "license": "MIT",
+      "sourcePath": "skills/core-web-vitals/references/CLS.md",
+      "targetPath": "vendor/core-web-vitals/CLS.md"
+    },
+    "web-interface-guidelines": {
+      "repo": "vercel-labs/web-interface-guidelines",
+      "commit": "434b7f91364665f2f733b310ec54809bf8f37937",
+      "shortSha": "434b7f913646",
+      "license": "MIT",
+      "sourcePath": "command.md",
+      "targetPath": "vendor/web-interface-guidelines/command.md"
+    },
+    "semantic-html-first": {
+      "repo": "kemiljk/skills",
+      "commit": "87129c9747468e380adc28a98226fdffcd55ce9b",
+      "shortSha": "87129c974746",
+      "license": "MIT",
+      "sourcePath": "skills/semantic-html-first",
+      "targetPath": "vendor/semantic-html-first"
+    },
+    "interaction-contracts": {
+      "repo": "kemiljk/skills",
+      "commit": "87129c9747468e380adc28a98226fdffcd55ce9b",
+      "shortSha": "87129c974746",
+      "license": "MIT",
+      "sourcePath": "skills/interaction-contracts",
+      "targetPath": "vendor/interaction-contracts"
+    },
+    "break-ui": {
+      "repo": "emilkowalski/skills",
+      "commit": "2d228630ba1446365f614a108cb8252f1feda202",
+      "shortSha": "2d228630ba14",
+      "license": "MIT",
+      "sourcePath": "skills/break-ui",
+      "targetPath": "vendor/break-ui"
     }
   }
 }

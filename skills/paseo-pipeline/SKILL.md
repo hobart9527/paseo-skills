@@ -28,10 +28,15 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 | 僵持裁决 | `agent_profile_dalisi_gemini` / `agent_profile_dalisi` | 排除争议双方家族的中立仲裁 |
 | 巡检值班 | `agent_profile_xunjian` | 进程与超时清理 |
 
-**派发规范**：
-1. **机械物化**：从 `list_profiles` 逐字段直接复制：`provider/model`、`modeId`、`thinkingOptionId`、`features`。profile 未声明的字段一律省略，严禁编造结构（如 `features: {"reason": "..."}`）。
-2. **Title 防呆**：必填且限制 ≤60 字符（Paseo Schema 硬边界）。统一表达式：`title = `[Pipeline] ${role} ${action} ${change}`.slice(0, 60)`。
-3. **核对与缓存**：派发后用 `get_agent_status` 读一次快照比对并采集启动时间戳。同 change 内已核对 profile 走配置指纹缓存跳过重复核对。核对一次即转入等待完成通知（`notifyOnFinish: true`），严禁轮询。
+**派发规范**：统一用脚本，不手拼参数——
+`node ~/.claude/skills/paseo-pipeline/dispatch.mjs <role> <action> <change> <brief-file> [--workspace id] [--wait]`
+脚本从 `~/.paseo/config.json` 机械复制 provider/model/mode/thinking，自动生成 title(≤60)、打 `pipeline.change/role` 标签、写 run-log、为只读角色追加静默约束。通知丢失或 Lead 失联时，任何人跑 `node reconcile.mjs <change>` 即可按 tasks.md+git+`paseo ls` 接力。流水线中途不换模型；同位置连续 Read ≥5 次视为空转，停手回报。
+
+**硬底线（仅三条）**：不抓凭据/直连 API/冒用身份；push、`rm -rf`、`--amend` 先问；两个人类确认点。
+
+**小修快轨**：合规小修用 `bash hotfix.sh <change> <task-id> <brief> [test-cmd]`（qingqibing worktree → merge-task），主会话不改产品代码；涉及 Risk-surface 的走正常 Auditor。
+
+**Scout 接口清单**：改已有代码时，Scout 把公开接口签名清单写入 design.md；brief 固定带集成分支 HEAD sha。实现层决策记入 run-log 并注入后续 brief；规范层决策回确认点 1。
 
 ## Workspace 生命周期（全交 Paseo）
 
@@ -127,8 +132,7 @@ bash ~/.claude/skills/paseo-pipeline/merge-task.sh <branch> <task-id(s)> [review
 5. 一次性原子提交：`feat/merge(<task-ids>): <commit-message>`。
 6. 合流完成后，Lead 立即重算 Ready，释放并派发已就绪下游任务，随后归档刚合流的工作区。
 
-**运行记录**：
-每次 agent 结束当场追加实际采集值（有效 profile、起止时间、耗时、返工数、原始测试输出）。未采集字段如实写"未采集"，严禁估算填充。
+**运行记录**：dispatch.mjs 与 merge-task.mjs 自动写 run-log（派发 profile/agentId/时间、sha、测试耗时）；采集不到的字段写"未采集"，不估算。
 
 ## 失败处置与恢复
 
