@@ -6,11 +6,11 @@
 
 ## 1. 角色与派发
 
-- **Tester 能力误判**：旧版 `SKILL.md` 曾把测试工程师写成"只写单测"，而 profile `notes` 中其实支持 E2E 与跨模块集成测试。角色职责必须以 `list_profiles` 的 `notes` 为唯一真源，禁止在 skill 中硬编码或自创边界。
+- **Tester 能力误判**：旧版曾把测试工程师写成"只写单测"，而 profile `notes` 中其实支持 E2E 与跨模块集成测试。角色职责必须以 `list_profiles` 的 `notes` 为唯一真源，禁止在 skill 中硬编码或自创边界。
 - **配置指纹与核对**：实测 9 次派发里 6 次是同一 profile 的重复确认。改用配置指纹缓存：change 开始时解析 `list_profiles`，同 profile 已核对无偏差时跳过重复核对，兼顾安全性与减少冗余调用。
 - **只读角色静音**：2026-10-23 `vector-ops` 实测中，dot 的 Auditor 因调用 memory MCP 工具被安全策略拦截，停在等待权限状态，导致整条完成通知链挂起数分钟。所有只读角色（Auditor、Critic、Arbiter、Scout）brief 中必须显式声明禁调 memory/MCP/网络工具。
-- **编排者不留在主会话**：2026-10-23 `vector-ops` 和 2026-10-24 `number-theory-factors` 两次实测，主会话亲自编排均遭遇 2–3 次上下文压缩。任务数 ≥4 或预计 >30 分钟的任务，必须交由总控 Lead (`agent_profile_shangshu`) 无人值守执行，主会话只守人类确认点。
-- **create_agent 参数防御**：2026-10-24 `integer-sequence-ops` 实测中曾因漏传 `title` 触发 `MCP error -32602`。`title` 字段为 Schema 必填且有 ≤60 字符硬约束，派发前必须统一格式并截断 `[Pipeline] ${role} ${action} ${change}`.slice(0, 60)。
+- **编排者不留在主会话**：2026-10-23 `vector-ops` 和 2026-10-24 `number-theory-factors` 两次实测，主会话亲自编排均遭遇上下文压缩。任务数 ≥4 或预计 >30 分钟的任务，交由总控 Lead (`agent_profile_shangshu`) 无人值守执行，主会话只守人类确认点。
+- **create_agent 参数防御**：2026-10-24 `integer-sequence-ops` 实测中曾因漏传 `title` 触发 `MCP error -32602`。`title` 字段为 Schema 必填且有 ≤60 字符硬约束，派发前必须统一格式并截断 `[Pipeline] ${role} ${task} ${change}`.slice(0, 60)。
 - **tasks.md 标题序号漂移**：任务标题如果在 DAG 设计中调整过层级序号（如从 `1.4` 变成 `2.1`），按带序号的长字符串查找替换会报 `String to replace not found`。Done 行标记必须基于任务 ID 锚点（`T-NN:`）定位。
 
 ---
@@ -21,6 +21,7 @@
 - **Base branch not found 竞态**：以新创建的分支为 baseBranch 时，daemon 本地引用可能尚未就绪，首建会报 `Base branch not found`（实测延迟达 48 秒）。优化方案：spec workspace 基点用主干；任务 workspace 创建时一律带 `path: <主仓库路径>`，确保直接定位本地仓库。
 - **Spec workspace 归档时机**：实测曾发生在 08:24 spec 冻结后漏归档 spec workspace，一直滞留到 08:43:56 收尾才归档，晚了约 19 分钟。冻结确认点 1 的三步动作必须固定：合流 -> 立即归档 spec workspace -> 再派首个任务。
 - **Workspace 对账合并**：实测归档 6 次对应 6 次独立 `list_workspaces` 调用。收到完成通知时，同轮对账共用一次列表快照，避免反复扫描。
+- **故障工作区保留现场**：实测打回或失败的任务如果自动归档，会导致日志与现场丢失，无法定位根因。打回或 Blocked 任务的工作区应予保留，由人工介入诊断。
 
 ---
 
@@ -30,9 +31,10 @@
   - scale 的 Runner 08:27:42 完成，Auditor 08:32:57 派出（空等 5m15s）；
   - dot 的 Tester 完成后空等 4m09s；
   - norm 的 Runner 完成后空等 3m06s。
-  空等期间主模型仅在整理长上下文，且两次上下文压缩均发生在此间隙。
-- **极简信封驱动**：收到通知后必须在 100ms 内完成"验状态 -> 记意图 -> 派下游"，合流与记账排在派发后或等待空档，严禁在派发下游前深入推理解读长篇日志。
-- **禁止跨任务批量合流记账**：2026-10-24 `integer-sequence-ops` 实测中，T-01、T-02、T-03 并发完成后，Lead 将三者统一批处理合流记账为一个 commit，导致仅依赖 T-01 的 T-04 从 11:04 等到 11:06，产生了约 2 分钟的无谓排队。规范明确：单任务合流记账提交后，立即重算 Ready 并派发就绪的下游任务，消除批量屏障。
+  空等期间主模型仅在整理长上下文，且上下文压缩多发生在此间隙。
+- **极简信封驱动**：收到通知后快速完成"验状态 -> 记意图 -> 派下游"，合流与记账排在派发后或等待空档，严禁在派发下游前深入推理解读长篇日志。
+- **禁止跨任务批量合流记账**：2026-10-24 `integer-sequence-ops` 实测中，T-01、T-02、T-03 并发完成后，Lead 将三者统一批处理合流记账为一个 commit，导致仅依赖 T-01 的 T-04 从 11:04 等到 11:06，产生了约 2 分钟的无谓排队。单任务合流记账提交后，立即重算 Ready 并派发就绪的下游任务，消除批量屏障。
+- **通知静默丢失与惰性对账**：2026-10-25 pipeline-native-closure 实测证明，子 Agent 终态后原生完成通知偶发丢失或未唤醒父 Lead，系统在无外部计时器时无法自愈，必须依赖外部消息或手工触发 `reconcile.mjs` 进行惰性对账。
 
 ---
 
@@ -53,7 +55,7 @@
 - **covered = tested 原则**：不能仅以"文件中出现过错误字面量"判断覆盖，必须以真实断言引用为准，防止删除断言后因残留字面量而假通过。
 - **fail-closed 判定时序**：测试侧若存在 throws 却提取不到有效消息，必须在 spec 判空之前报错退出，避免动态拼接消息被误判为 SKIPPED。
 - **zsh 分词与 --tasks 自动解析**：在 zsh 中传递变量 `$T` 不会自动 word-split，导致多个测试路径被当成单个参数传递，触发假 SKIPPED。通过增加 `--tasks <tasks.md> [--task <id>]` 参数，由脚本直接从 `Verify with:` 与 `Write scope:` 解析路径，彻底消除 shell 分词风险。
-- **Scenario 编号双向静态对账 (SCEN-*)**：在 `contract-check.mjs` 中引入 spec 声明的 `#### Scenario: SCEN-*` 与测试侧引用的场景编号双向静态比对。无需大模型介入（耗时 <10ms），即可对正常分支与边界测试实现 100% 机械覆盖（`phantom_scens=0 untested_scens=0`），杜绝假覆盖与场景错别字。
+- **Scenario 编号双向静态对账 (SCEN-*)**：在 `contract-check.mjs` 中引入 spec 声明的 `#### Scenario: SCEN-*` 与测试侧引用的场景编号双向静态比对。对正常分支与边界测试实现机械覆盖（`phantom_scens=0 untested_scens=0`），杜绝假覆盖与场景错别字。
 
 ---
 
@@ -67,31 +69,30 @@
 
 ## 7. 2026-10-24 integer-set-partition-ops 复盘与流水线精简
 
-- **微型算子过度施压与 Task Pod**：69 行核心实现消耗了 14 个 agent、7 个 worktree 和 10 次集成分支提交（5 次 merge + 5 次记账）。流程按最坏情况统一施压造成严重摩擦。对同域微型任务必须采用 Task Pod 模式（`pod/<name>`）：单 workspace、Tester/Runner 批量接力、Auditor 单次复核合并 diff、单次合流，派发次数和提交数减少 70% 以上。
-- **合流记账原子化与脚本门禁 (`merge-task.sh`)**：旧流程将 merge 与更新 `tasks.md` 拆为两步提交，且依赖人工记忆执行全量测试与退出码捕获，实测中曾多次漏跑全量测试。现改由 `merge-task.mjs` 脚本自动化执行：工作区干净检查 -> `merge --no-commit` -> 跑全量测试 -> 自动更新 `tasks.md` 标记 `[x]` 与 Done 行 -> 一次性原子提交。测试失败或合并冲突时自动 abort 并回滚至合并前，消灭脏状态与重复提交。
-- **审计分级而非豁免**：静态三门门禁不能替代独立审计（Goodhart 陷阱：过分迁就测试用例可能掩盖边界漏洞）。优化方向是合并审计批次（Pod 级审一次），并根据风险动态调整深度（strict 或改共享入口用 high thinking，其余普通任务用 low thinking）。数学/算法类算子由 Tester 补充差分对拍与小定义域穷举，从测试源头筑牢防线。
-- **编排权属重新划线**：将交由 `agent_profile_shangshu` 无人值守的判据修正为"预计派发 ≥6 次或预计 >30 分钟"；日常微型 Pod 任务（通常仅需 2–3 次派发）由主会话直接编排，主会话保持"只读信封、不读业务代码全文"的纪律。
-- **派发参数严格机械化**：禁止为了满足格式而编造 `features: {"reason": "..."}` 等虚假字段；严格从 `list_profiles` 逐字段复制，profile 未声明字段直接省略。派发后一次快照核对并采集时间戳。
-- **分支清理与模板闭环**：禁止使用 `git branch -D`（强制删除），允许使用 `git branch -d` 安全清理已合入主干的临时分支；`proposal.md` 转写时必须包含 `## What Changes` 章节以消除 `openspec archive` 告警；归档命令统一附加 `--yes` 杜绝终端交互阻塞。
+- **微型算子过度施压与 Task Pod**：69 行核心实现消耗了 14 个 agent、7 个 worktree 和 10 次集成分支提交。对同域微型任务必须采用 Task Pod 模式（`pod/<name>`）：单 workspace、Tester/Runner 批量接力、Auditor 单次复核合并 diff、单次合流，派发次数和提交数显著精简。
+- **合流记账原子化与脚本门禁 (`merge-task.mjs`)**：旧流程将 merge 与更新 `tasks.md` 拆为两步提交，且依赖人工记忆执行全量测试与退出码捕获，实测中曾多次漏跑全量测试。现改由 `merge-task.mjs` 脚本自动化执行：工作区干净检查 -> 合流测试 -> 自动更新 `tasks.md` 标记 `[x]` 与 Done 行 -> 一次性原子提交。测试失败或合并冲突时自动 abort 恢复，消灭脏状态与重复提交。
+- **审计分级而非豁免**：静态门禁不能替代独立审计。优化方向是合并审计批次（Pod 级审一次），并根据风险动态调整深度（strict 或改共享入口用 high thinking，其余普通任务用 low thinking）。数学/算法类算子由 Tester 补充差分对拍与小定义域穷举。
+- **编排权属重新划线**：将交由 `agent_profile_shangshu` 无人值守的判据修正为"预计派发 ≥6 次或预计 >30 分钟"；日常微型 Pod 任务（通常仅需 2–3 次派发）由主会话直接编排。
+- **派发参数严格机械化**：从 `list_profiles` 逐字段复制，profile 未声明字段直接省略。派发后一次快照核对并采集时间戳。
+- **分支清理与模板闭环**：禁止使用 `git branch -D`，允许使用 `git branch -d` 安全清理已合入主干的临时分支；`proposal.md` 必须包含 `## What Changes` 章节；归档命令统一附加 `--yes` 杜绝终端交互阻塞。
 
 ---
 
 ## 8. 2026-10-23~25 session-lifecycle-hardening 复盘：赋能优先
 
-实测反例（出处：会话 d29375cd 转录）：
-- 派发手拼 MCP JSON：4 次缺 title、1 次 INVALID_MODEL_ID、short-ID UUID 错误；参数出错后曾 `ps aux` 抓凭据直连 API（越线，建议轮换 Paseo token）。
-- 通知断链：`notifyOnFinish` 只通知派发者，Lead 被归档（a441201a、0035def3，查明为 Paseo 移动/桌面客户端 UI 触发 archive_agent_request）后无人接收；改用无状态对账。
-- spec 2 分钟冻结，无 Critic/Scout/接口清单 → 冻结后 11 项决策、4 次范围扩张。
-- 弱模型（gemini-flash）接管后同位置 306 次重复 Read、停滞 6h16m；流水线中途不换模型，同位置连续 Read ≥5 次视为空转，停手。
-- 收尾无独立审计就合入；contract-check 报 undeclared=14 且 declared=0（spec 未用 `Error("…")` 字面量）被搁置。
-- run-log 全「未采集」。
+实测反例：
+- 派发手拼 MCP JSON：参数出错后曾试图抓凭据直连 API。
+- 通知断链：`notifyOnFinish` 丢失或父 Agent 未唤醒；改用无状态对账。
+- spec 未充分评审导致后续决策频繁漂移。
+- 弱模型陷入死循环；限制同位置连续 Read ≥5 次视为空转并停手。
+- 合流无独立审计；门禁报错被搁置。
+- run-log 存在估算数据。
 
-对应赋能工具（脚本做机械活，不加新门禁）：
-- `dispatch.mjs <role> <action> <change> <brief>`：profile 字段机械复制、title 自动 ≤60、agentId/时间写 run-log。
+对应赋能工具：
+- 原生 MCP `create_agent`/`send_agent_prompt`：profile 字段机械复制、title 自动 ≤60。
 - `merge-task.mjs`：合流后自动追加 sha/测试命令/test_duration 到 run-log。
-- `reconcile.mjs <change>`：tasks.md + git + `paseo ls` 对账，输出 MERGE/READY/RUNNING/BLOCKED/canDispatchNow；Lead 失联后任何人重跑即可接力。
-- `hotfix.sh`：小修一条命令走 qingqibing worktree → merge-task，主会话不改产品代码。
+- `reconcile.mjs <change>`：tasks.md + git + `paseo ls` 对账，输出 MERGE/READY/RUNNING/BLOCKED/canDispatchNow；Lead 失联后重跑即可接力。
+- `hotfix.sh`：小修走 qingqibing worktree → merge-task。
 - `contract-check.mjs`：undeclared>0 时直接给出可粘贴的 spec 声明行。
 
-硬底线仅三条：不抓凭据/直连 API/冒用身份；push、`rm -rf`、`--amend` 先问；两个人类确认点。
-成功判据看结果：用户追进度、主会话改产品代码、compact、「未采集」、确认点 2 后新增 diff，均应为 0。
+硬底线：不抓凭据/直连 API/冒用身份；push、`rm -rf`、`--amend` 先问；两个人类确认点。
