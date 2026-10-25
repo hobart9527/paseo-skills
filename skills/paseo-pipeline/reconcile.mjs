@@ -4,7 +4,7 @@
 //
 // 判定顺序（互斥）：
 //   INVALID  图/行非法（仅 MISSING_SCOPE/BAD_DONE_LINE 到任务级；其余图错误直接退 1），
-//            或已勾选但 Done 无法按 D4 验证（账本失配）
+//            已勾选但 Done 无法按 D4 验证（账本失配），或 Write scope 路径非法（BAD_SCOPE_PATH）
 //   DONE     已勾选且 first-parent 合流提交 M 满足 M^2 == Done.source 展开的 tip
 //            且 M 的 Pipeline-Task trailer 含该 task
 //   ACTIVE   任务面 agent 处于 initializing/running（终止性前置，无视 attempt/phase/disposition）
@@ -254,11 +254,19 @@ for (const task of tasks) {
 }
 
 // --- 资源串行（按文件顺序；路径段前缀重叠即冲突） ---
-// 规范化：去空段/`.` 段/尾斜杠，统一重复斜杠，`..` 弹出上一段；
-// `..` 越出根 → null，overlaps fail closed 视为与一切重叠。
-const segments = (p) => {
+// 路径合法性单一属主：normalizeScope(raw) → 规范段数组（根 scope 为 []）或 null（非法）。
+// 非法类别：POSIX 绝对路径（/ 开头，含 //host）、Windows 盘符（C:\x / C:/x / C:x）、
+// 任何反斜杠（含 UNC \\srv\share）、NUL/控制字符、`..` 越出根。
+// 合法输入仅规范化：去空段/`.` 段/尾斜杠、合并重复斜杠、根内 `..` 弹栈；
+// 规范化后为根（`.`、`a/..`）→ 段数组为空，与一切重叠（既有契约）。
+// 非法 scope 在占用集内 fail closed：overlaps 视为与一切重叠。
+const normalizeScope = (raw) => {
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  if (/[\\\0-\x1f]/.test(raw)) return null;
+  if (raw.startsWith("/")) return null;
+  if (/^[A-Za-z]:/.test(raw)) return null;
   const parts = [];
-  for (const seg of p.split("/")) {
+  for (const seg of raw.split("/")) {
     if (seg === "" || seg === ".") continue;
     if (seg === "..") {
       if (parts.length === 0) return null;
@@ -270,8 +278,8 @@ const segments = (p) => {
   return parts;
 };
 const overlaps = (a, b) => {
-  const as = segments(a);
-  const bs = segments(b);
+  const as = normalizeScope(a);
+  const bs = normalizeScope(b);
   if (as === null || bs === null) return true;
   const shared = Math.min(as.length, bs.length);
   for (let i = 0; i < shared; i += 1) {
@@ -280,8 +288,9 @@ const overlaps = (a, b) => {
   return true;
 };
 for (const c of candidates) {
-  if (c.scope.some((s) => segments(s) === null)) {
-    out.INVALID.push({ task: c.label, reason: "Write scope 含越出根的 '..' 段，fail closed" });
+  const bad = c.scope.find((s) => normalizeScope(s) === null);
+  if (bad !== undefined) {
+    out.INVALID.push({ task: c.label, reason: `BAD_SCOPE_PATH: Write scope 非法 ${JSON.stringify(bad)}（须为仓库根内相对路径）` });
     stateOf.set(c.id, "INVALID");
     continue;
   }

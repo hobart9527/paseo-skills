@@ -624,3 +624,79 @@ test('SCEN-DAG-03 Done source that cannot expand to a unique commit is INVALID',
   state(result, 'T-01', 'INVALID');
   dispatch(result, []);
 });
+
+// T-02 写范围路径合法性：输入类别 → 期望（表驱动）。
+// 非法类别一律 BAD_SCOPE_PATH → INVALID 且不可派发；合法类别仅做规范化比较。
+const invalidScopeCases = [
+  ['POSIX absolute path', '/x'],
+  ['POSIX absolute multi-segment', '/outside/file'],
+  ['double-slash UNC form', '//srv/share'],
+  ['windows drive absolute with backslash', 'C:\\x'],
+  ['windows drive absolute with slash', 'C:/x'],
+  ['drive-relative path', 'C:x'],
+  ['UNC with backslashes', '\\\\srv\\share'],
+  ['backslash dot-dot escape', '..\\outside'],
+  ['embedded backslash separator', 'src\\a'],
+  ['leading dot-dot escapes root', '..'],
+  ['mid-path pop past root', 'a/../../b'],
+  ['trailing dot-dot escapes root', 'a/../..'],
+  ['NUL character', 'src/\0x'],
+  ['control character', 'src/\x01x'],
+];
+
+for (const [name, scope] of invalidScopeCases) {
+  test(`SCEN-DAG-02 invalid scope (${name}) is BAD_SCOPE_PATH INVALID and not dispatchable`, (context) => {
+    const subject = fixture(context, [{ id: 'T-01', scope }, { id: 'T-02', scope: 'docs/' }]);
+    const result = output(subject, ['--cap', '2']);
+    state(result, 'T-01', 'INVALID');
+    const entry = result.INVALID.find((item) => taskId(item) === 'T-01');
+    assert.match(entry.reason, /BAD_SCOPE_PATH/);
+    state(result, 'T-02', 'READY');
+    dispatch(result, ['T-02']);
+  });
+}
+
+// 合法输入只规范化；expected = 两个 scope 是否冲突（段前缀重叠）。
+const normalizationCases = [
+  ['trailing slash equivalence', 'src/a/', 'src/a', true],
+  ['dot segment removed', 'src/a/', './src/a/f.mjs', true],
+  ['duplicate slashes collapse', 'src/a//b', 'src/a/b/c', true],
+  ['dot-dot pops within root', 'src/x/../a', 'src/a/f', true],
+  ['file and directory prefix overlap', 'src/a', 'src/a/b.mjs', true],
+  ['root scope overlaps everything', '.', 'docs/', true],
+  ['normalizes-to-root overlaps everything', 'a/..', 'docs/', true],
+  ['adjacent segment prefixes stay disjoint', 'src/a/b', 'src/a/bc', false],
+  ['glob characters are literal segments', 'src/*', 'src/a', false],
+  ['case is preserved', 'SRC/A', 'src/a', false],
+];
+
+for (const [name, first, second, expectedConflict] of normalizationCases) {
+  test(`SCEN-DAG-02/06 scope normalization (${name})`, (context) => {
+    const subject = fixture(context, [{ id: 'T-01', scope: first }, { id: 'T-02', scope: second }]);
+    const result = output(subject, ['--cap', '2']);
+    state(result, 'T-01', 'READY');
+    if (expectedConflict) {
+      conflict(result, 'T-02', 'T-01');
+      dispatch(result, ['T-01']);
+    } else {
+      state(result, 'T-02', 'READY');
+      dispatch(result, ['T-01', 'T-02']);
+    }
+  });
+}
+
+test('SCEN-DAG-02 invalid scope held by an ACTIVE writer fails closed against all candidates', (context) => {
+  const subject = fixture(context, [{ id: 'T-01', scope: '/outside/file' }, { id: 'T-02', scope: 'docs/' }]);
+  subject.runtime([agent({ id: 'writer-1' }, { 'pipeline.task': 'T-01' })]);
+  const result = output(subject);
+  state(result, 'T-01', 'ACTIVE');
+  conflict(result, 'T-02', 'T-01');
+  dispatch(result, []);
+});
+
+test('blank Write scope field is INVALID via MISSING_SCOPE', (context) => {
+  const subject = fixture(context, '- [ ] 1.1 T-01 Task T-01\n  - Depends on: none\n  - Write scope:   \n');
+  const result = output(subject);
+  state(result, 'T-01', 'INVALID');
+  dispatch(result, []);
+});
