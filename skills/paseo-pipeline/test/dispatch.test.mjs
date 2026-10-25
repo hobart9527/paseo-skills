@@ -183,6 +183,21 @@ function paseoCalls(setup) {
   return fs.readFileSync(setup.callsFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
 }
 
+test("SCEN-DISP-02: hotfix announces unverified legacy callback at runtime", (context) => {
+  const setup = hotfixFixture(context, { provider: "pi", model: "fixture-pi" });
+  const git = run("sh", ["-c", "command -v git"], setup);
+  assert.equal(git.status, 0, git.stderr);
+  const bin = setup.env.PATH.split(path.delimiter)[0];
+  fs.writeFileSync(path.join(bin, "git"), `#!/bin/sh
+if [ "$1" = "worktree" ]; then exit 73; fi
+exec "${git.stdout.trim()}" "$@"
+`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "paseo"), "#!/bin/sh\nexit 73\n", { mode: 0o755 });
+  const result = run("bash", [hotfixPath, "fixture-change", "T-04", setup.brief, "true"], setup);
+  assert.match(`${result.stdout}\n${result.stderr}`,
+    /LEGACY: completion callback not verified for this path/);
+});
+
 for (const { name, profile, mode, thinking } of profileCases) {
   test(`SCEN-DISP-03: hotfix ${name}`, (context) => {
     const setup = hotfixFixture(context, profile);
