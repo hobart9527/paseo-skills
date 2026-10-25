@@ -1,8 +1,9 @@
 # Builder 硬禁令紧凑胶囊（常驻注入层）
 
-> 本胶囊是 20 个 vendor 切片的不可妥协禁令/契约压缩层（~3KB），常驻注入所有编码角色的 brief。
+> 本胶囊是 20 个 vendor 切片的不可妥协禁令/契约压缩层（~4KB），常驻注入所有编码角色的 brief。
 > 它只负责「不许做」与「必须做」；「为什么」与复杂场景模板在第三层 vendor 手册按需查阅。
 > 上游切片锁定于 `~/.claude/skills/paseo-ui/vendor/`（LOCK.json 管理），冲突时以本 Skill「规则裁决链」为最高裁决。
+> **裁决链内嵌**：本胶囊条款位于「业务真实需求 > 项目既有代码与 DESIGN.md」之下、「impeccable 通用规范」之上；当胶囊条款与项目既有代码约定冲突时（如项目无 `index.css` token 体系、既有表格组件已定列宽方案），以项目既有约定优先，并在交接报告中记录差异。
 
 ## 动效（baseline-ui / to-spring / 60fps / accessible-animation / review-animations）
 

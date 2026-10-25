@@ -33,8 +33,10 @@ Don't edit. For fixes, apply the mechanical ones and re-run to verify; for bulk 
 ## 3. Tear down
 
 ```bash
-accesslint-chrome stop --all  # skip if ensure reported "managed":false
+accesslint-chrome stop -p "$PORT"  # skip if ensure reported "managed":false
 ```
+
+Stop by the port `ensure` allocated for this run. Never `stop --all` on a shared host — it kills managed Chrome instances belonging to other concurrent pipelines.
 
 ## Notes
 
