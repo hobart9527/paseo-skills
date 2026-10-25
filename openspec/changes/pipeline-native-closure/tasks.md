@@ -21,13 +21,14 @@
   - Verify with: node --test skills/paseo-pipeline/test/reconcile.test.mjs
   - Scenarios: SCEN-REC-03, SCEN-REC-04, SCEN-REC-05, SCEN-REC-06, SCEN-REC-07, SCEN-REC-08, SCEN-REC-09, SCEN-REC-10, SCEN-REC-11, SCEN-REC-12, SCEN-DAG-01, SCEN-DAG-02, SCEN-DAG-03, SCEN-DAG-04, SCEN-DAG-05, SCEN-DAG-06
 
-- [ ] 1.3 T-03 merge-task 安全合流（review-tag 漂移检查、trailers、Done source 表示）
+- [x] 1.3 T-03 merge-task 安全合流（review-tag 漂移检查、trailers、Done source 表示）
   - Depends on: T-01
   - Write scope: skills/paseo-pipeline/merge-task.mjs, skills/paseo-pipeline/merge-task.sh, skills/paseo-pipeline/test/merge-task.test.mjs
   - Risk-surface: [error-handling, persistence]
   - Review: strict
   - Verify with: node --test skills/paseo-pipeline/test/merge-task.test.mjs
   - Scenarios: SCEN-MRG-01, SCEN-MRG-02, SCEN-MRG-03, SCEN-MRG-04, SCEN-MRG-05, SCEN-MRG-06, SCEN-MRG-07, SCEN-MRG-08, SCEN-MRG-09, SCEN-MRG-10
+  - Done: source=6537e37 review=pass(8e64cf21@6537e37/c9c3568)
 
 - [ ] 1.4 T-04 dispatch.mjs / hotfix.sh legacy 化并保留 pi 与可选字段意图
   - Depends on: none
