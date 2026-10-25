@@ -554,3 +554,28 @@ test('zero cap leaves READY classification intact without dispatch', (context) =
   state(result, 'T-01', 'READY');
   dispatch(result, []);
 });
+
+test('SCEN-DAG-06 segment-prefix lookalikes do not conflict: src/a/b vs src/a/bc', (context) => {
+  const subject = fixture(context, [{ id: 'T-01', scope: 'src/a/b' }, { id: 'T-02', scope: 'src/a/bc' }]);
+  const result = output(subject, ['--cap', '2']);
+  state(result, 'T-01', 'READY');
+  state(result, 'T-02', 'READY');
+  dispatch(result, ['T-01', 'T-02']);
+});
+
+test('SCEN-DAG-02 directory overlaps nested file: src/a/ vs src/a/b/c.mjs', (context) => {
+  const subject = fixture(context, [{ id: 'T-04', scope: 'src/a/' }, { id: 'T-05', scope: 'src/a/b/c.mjs' }]);
+  const result = output(subject);
+  state(result, 'T-04', 'READY');
+  conflict(result, 'T-05', 'T-04');
+  dispatch(result, ['T-04']);
+});
+
+test('SCEN-DAG-03 Done source that cannot expand to a unique commit is INVALID', (context) => {
+  const subject = fixture(context);
+  const source = subject.taskBranch();
+  subject.mergeTask(source, [doneTask({ ...source, tip: 'ffffffffffffffffffffffffffffffffffffffff' })]);
+  const result = output(subject);
+  state(result, 'T-01', 'INVALID');
+  dispatch(result, []);
+});

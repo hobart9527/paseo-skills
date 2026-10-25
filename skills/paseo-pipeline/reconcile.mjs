@@ -99,9 +99,16 @@ for (const commit of (mergeLog ?? "").split("\n").filter(Boolean)) {
 }
 function doneVerified(task) {
   if (!task.doneLine) return false;
-  const source = sh("git", ["rev-parse", "--verify", `${task.doneLine.source}^{commit}`]);
+  const source = expandDoneSource(task.doneLine.source);
   if (!source) return false;
   return mergeAcceptance.get(source)?.has(task.id) === true;
+}
+// Done.source（7 位）须唯一展开为 commit；歧义或无法展开 → INVALID。
+function expandDoneSource(abbrev) {
+  const candidates = (sh("git", ["rev-parse", `--disambiguate=${abbrev}`]) ?? "")
+    .split("\n").filter(Boolean)
+    .filter((sha) => sh("git", ["cat-file", "-t", sha]) === "commit");
+  return candidates.length === 1 ? candidates[0] : null;
 }
 const doneSet = new Set();
 for (const task of tasks) {
@@ -246,8 +253,17 @@ for (const task of tasks) {
   candidates.push({ id: task.id, label, scope: task.scope });
 }
 
-// --- 资源串行（按文件顺序；路径前缀重叠即冲突） ---
-const overlaps = (a, b) => a === b || a.startsWith(b) || b.startsWith(a);
+// --- 资源串行（按文件顺序；路径段前缀重叠即冲突） ---
+const segments = (p) => p.replace(/\/+$/, "").split("/").filter(Boolean);
+const overlaps = (a, b) => {
+  const as = segments(a);
+  const bs = segments(b);
+  const shared = Math.min(as.length, bs.length);
+  for (let i = 0; i < shared; i += 1) {
+    if (as[i] !== bs[i]) return false;
+  }
+  return true;
+};
 for (const c of candidates) {
   const holder = held.find((h) => h.scope.some((s) => c.scope.some((t) => overlaps(s, t))));
   if (holder) {
