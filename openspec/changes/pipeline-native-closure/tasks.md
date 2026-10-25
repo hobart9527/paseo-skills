@@ -58,7 +58,8 @@
   - Verify with: node --test skills/paseo-pipeline/test/docs.test.mjs
   - Scenarios: SCEN-DISP-01, SCEN-EVT-01, SCEN-EVT-02, SCEN-DOC-01, SCEN-DOC-02
 
-- [ ] 2.2 T-07 run-all 入口与证据结构化校验器（check-evidence.mjs）
+- [x] 2.2 T-07 run-all 入口与证据结构化校验器（check-evidence.mjs）
+  - Done: source=f666330 review=pass(fc4f8926@f666330/e0ddeef)
   - Depends on: T-01, T-02, T-03, T-04, T-05, T-06
   - Write scope: skills/paseo-pipeline/test/run-all.sh, skills/paseo-pipeline/test/check-evidence.mjs, skills/paseo-pipeline/test/check-evidence.test.mjs
   - Risk-surface: [none]
