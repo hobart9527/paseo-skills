@@ -12,6 +12,8 @@
 
 **D3 reconcile：只读、单一策略属主。** 判定顺序（互斥）：`INVALID`（图/行非法，或已勾选但 Done 无法按 D4 验证——账本失配）→ `DONE`（已勾选且 Done 验证通过）→ `ACTIVE` → `UNRESOLVED` → `MERGE_CANDIDATE` → `BLOCKED_DEP` → `BLOCKED_RESOURCE` → `READY`。
 
+*2026-10-25 人类批准的 scope 校验澄清（T-02 attempt 5 限定范围）。* `Write scope` 必须为仓库根内相对路径；沿用 a4 的路径规范化规则，不新增 DEL/C1 禁令。非法 scope 在所有任务状态分类前判 INVALID，包括原本可判 DONE、ACTIVE、UNRESOLVED、MERGE_CANDIDATE 或 BLOCKED_DEP 的任务。任务分类与实际运行占用分开：非法任务的 initializing/running 写入者仍计入 cap，未知写范围保守占位，并清空 `canDispatchNow`；不得因 INVALID 提前返回而丢失运行事实。DEL/C1 原 Blocker 经原 Auditor 澄清为 Advisory，不作为本次修复目标。再次审计有 Blocker 则停止，不自动追加重试。
+
 *运行态角色识别（控制面 vs 执行面）。* 同 `pipeline.change=<c>` 的 agent 按 `pipeline.role` 分类：
 - 控制面（不持写范围、不要求 task 标签）：`shangshu`(Lead)、`xunjian`(Watcher)、`yushi`(spec 阶段 Critic，phase=spec-review)、`dalisi*`(Arbiter)、`mige`(Scout)。
 - 任务面只读（要求 task/attempt/phase，不持写范围）：`anchasi`(Auditor)。

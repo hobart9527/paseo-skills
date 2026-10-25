@@ -3,3 +3,4 @@
 - 2026-10-25T05:21:56Z merge T-03 source=6537e37 test_cmd="node --test merge-task.test.mjs tasks.test.mjs" result=57/57 exit=0 auditor=8e64cf21 verdict=PASS attempts=2
 - 2026-10-25T05:40:14Z merge T-04 source=9822b30 test_cmd="node --test dispatch+merge-task+tasks" result=77/77 exit=0 auditor=469cf60d verdict=PASS attempts=2
 - 2026-10-25T05:40:48Z budget-exception: human authorized one extra T-02 attempt 4 (a1-a3 BLOCK on path scope policy); further Blocker => stop, no auto-append
+- 2026-10-25T05:57:38Z budget-exception-2: human approved scope-validation clarification + T-02 attempt 5 (final; ordering precedes all states, live-writer occupancy retained, no DEL/C1 ban); further Blocker => stop

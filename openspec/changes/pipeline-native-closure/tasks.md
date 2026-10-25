@@ -19,7 +19,7 @@
   - Risk-surface: [error-handling, concurrency]
   - Review: strict
   - Verify with: node --test skills/paseo-pipeline/test/reconcile.test.mjs
-  - Scenarios: SCEN-REC-03, SCEN-REC-04, SCEN-REC-05, SCEN-REC-06, SCEN-REC-07, SCEN-REC-08, SCEN-REC-09, SCEN-REC-10, SCEN-REC-11, SCEN-REC-12, SCEN-DAG-01, SCEN-DAG-02, SCEN-DAG-03, SCEN-DAG-04, SCEN-DAG-05, SCEN-DAG-06
+  - Scenarios: SCEN-REC-03, SCEN-REC-04, SCEN-REC-05, SCEN-REC-06, SCEN-REC-07, SCEN-REC-08, SCEN-REC-09, SCEN-REC-10, SCEN-REC-11, SCEN-REC-12, SCEN-REC-13, SCEN-REC-14, SCEN-DAG-01, SCEN-DAG-02, SCEN-DAG-03, SCEN-DAG-04, SCEN-DAG-05, SCEN-DAG-06
 
 - [x] 1.3 T-03 merge-task 安全合流（review-tag 漂移检查、trailers、Done source 表示）
   - Depends on: T-01

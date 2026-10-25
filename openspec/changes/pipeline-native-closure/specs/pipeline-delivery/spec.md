@@ -22,6 +22,16 @@ Pipeline SHALL delegate through agent-scoped Paseo MCP (`create_agent`/`send_age
 ### Requirement: Reconciliation validates the task graph, runtime and agent identity
 `reconcile.mjs` SHALL parse `tasks.md` via a single shared parser and classify every task into exactly one state, evaluated in order: INVALID (including ledger mismatch), DONE, ACTIVE, UNRESOLVED, MERGE_CANDIDATE, BLOCKED_DEP, BLOCKED_RESOURCE, READY. It SHALL exit non-zero on malformed task lines, duplicate IDs, unknown dependency references, cycles, or when HEAD is not `integration/<change>`. If runtime state is unavailable or unparsable, `canDispatchNow` SHALL be empty. Agents SHALL be classified by `pipeline.role` as control-plane (Lead, Watcher, spec Critic, Arbiter, Scout; no task label required, hold no write scope), task-plane read-only (Auditor) or task-plane writer (Runner, Senior, Light, Tester); a running agent with a missing/unknown role, a task-plane role lacking task/attempt/phase, or a task absent from tasks.md SHALL be UNMAPPED and SHALL empty `canDispatchNow`.
 
+`Write scope` SHALL be a repository-root-relative path that does not escape the root after normalization. Invalid scopes SHALL classify the task INVALID before every other task state. Runtime occupancy SHALL be accounted independently of classification: initializing/running writers on INVALID tasks SHALL still consume cap slots and conservatively hold unknown scope, and SHALL empty `canDispatchNow`. This clarification retains the existing a4 normalization rules and adds no DEL/C1 prohibition.
+
+#### Scenario: SCEN-REC-13 scope validation precedes task state classification
+- **WHEN** a task has `Write scope: ../outside`, regardless of whether it has Done evidence, a live writer, an unresolved terminal agent, an ahead branch or unmet dependencies
+- **THEN** it is INVALID rather than DONE, ACTIVE, UNRESOLVED, MERGE_CANDIDATE or BLOCKED_DEP, and cannot release dependents.
+
+#### Scenario: SCEN-REC-14 invalid task retains live writer occupancy
+- **WHEN** an INVALID-scope task has an initializing/running writer and another unrelated task is otherwise READY
+- **THEN** that writer still consumes a cap slot, its unknown scope is conservatively held, and `canDispatchNow` is empty.
+
 #### Scenario: SCEN-REC-01 unknown dependency rejected
 - **WHEN** T-02 declares `Depends on: T-99` and T-99 does not exist
 - **THEN** reconcile exits non-zero reporting INVALID unknown dependency.
