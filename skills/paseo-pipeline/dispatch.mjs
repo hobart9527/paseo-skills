@@ -58,7 +58,7 @@ let brief = fs.readFileSync(briefFile, "utf8");
 if (READ_ONLY.has(key) && !brief.includes(SILENT)) brief += `\n\nConstraints: ${SILENT}\n`;
 
 const cli = ["run", "--no-wait", "--title", title, "--provider", `${p.provider}/${p.model}`];
-if (p.modeId) cli.push("--mode", p.modeId);
+if (p.modeId && p.provider !== "pi") cli.push("--mode", p.modeId);
 if (p.thinkingOptionId) cli.push("--thinking", p.thinkingOptionId);
 if (workspace) cli.push("--workspace", workspace);
 cli.push("--label", `pipeline.change=${change}`, "--label", `pipeline.role=${key}`);

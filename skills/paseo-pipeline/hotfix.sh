@@ -24,11 +24,15 @@ TITLE="[Pipeline] Runner hotfix ${TID} ${CHANGE}"; TITLE="${TITLE:0:60}"
 read -r PROVIDER MODE THINK < <(node -e '
 const c=require(process.env.HOME+"/.paseo/config.json");
 const p=c.daemon.agentProfiles.find(x=>x.id==="agent_profile_qingqibing");
-console.log(`${p.provider}/${p.model} ${p.modeId||"auto"} ${p.thinkingOptionId||"medium"}`)')
+console.log(`${p.provider}/${p.model} ${p.modeId||"none"} ${p.thinkingOptionId||"none"}`)')
 
-AGENT_ID="$(paseo run --no-wait -q --title "$TITLE" --provider "$PROVIDER" --mode "$MODE" --thinking "$THINK" \
-  --new-workspace worktree --new-branch "$BRANCH" --base "$BASE" \
-  --label "pipeline.change=${CHANGE}" --label "pipeline.role=qingqibing" "$(cat "$TMP")")"
+CLI=(run --no-wait -q --title "$TITLE" --provider "$PROVIDER")
+[[ "$PROVIDER" != pi* ]] && [ -n "$MODE" ] && [ "$MODE" != "none" ] && CLI+=(--mode "$MODE")
+[ -n "$THINK" ] && [ "$THINK" != "none" ] && CLI+=(--thinking "$THINK")
+CLI+=(--new-workspace worktree --new-branch "$BRANCH" --base "$BASE")
+CLI+=(--label "pipeline.change=${CHANGE}" --label "pipeline.role=qingqibing")
+
+AGENT_ID="$(paseo "${CLI[@]}" "$(cat "$TMP")")"
 echo "[hotfix] agent=$AGENT_ID branch=$BRANCH"
 paseo wait "$AGENT_ID"
 
