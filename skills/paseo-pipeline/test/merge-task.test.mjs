@@ -111,9 +111,15 @@ function invoke(repo, {
   env = {},
   args = [branch, ids, tag, command],
 } = {}) {
+  // `gitEnv` 是白名单，本不带继承变量；但这是**唯一**保证测试不受外层环境影响的点，
+  // 必须显式写出来：`--allow-legacy-author` 的二次确认走 PIPELINE_ALLOW_LEGACY_AUTHOR，
+  // 外层 shell 里若恰好设了它，下面的「无确认应被拒」断言就会直接失效（实测：在
+  // PIPELINE_ALLOW_LEGACY_AUTHOR=1 的会话里跑全量，本用例期望 31 却得到 0）。
+  const base = { ...gitEnv };
+  delete base.PIPELINE_ALLOW_LEGACY_AUTHOR;
   const result = spawnSync(shell ? 'bash' : process.execPath, [shell ? shellScript : mergeScript, ...args], {
     cwd: repo.cwd,
-    env: { ...gitEnv, ...env },
+    env: { ...base, ...env },
     encoding: 'utf8',
     timeout: 15000,
   });
