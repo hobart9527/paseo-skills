@@ -4,7 +4,7 @@
 - 输入：R1《paseo-pipeline-review-2026-10-25.md》（基线公开提交 `ae0ca49`）
 - 本次基线：本地工作区 = HEAD `ae0ca49` + 未提交改动（`git status --porcelain` 23 行；`git diff --stat` 15 文件 +2561/−458；未跟踪文件含 `lib/paseo-state.mjs`、`lib/roles.mjs`、`lib/run-state.mjs`、`lib/ledger.mjs`、`lib/lock.mjs`、`run-state.mjs`）
 - 本机：`paseo 0.12.0`；`paseo ls --json --all` 1604 行，字段 `id,shortId,name,provider,thinking,status,cwd,created`（无 labels）
-- 回归实测（2026-10-26 本轮收口，在仓库根目录执行 `bash skills/paseo-pipeline/test/run-all.sh`）：Node `tests 400 / pass 400 / fail 0`，`duration_ms 112192.486958`；contract-check（`bash skills/paseo-pipeline/test/contract-check.test.sh`）`通过 19 / 失败 0`。R1 的 244、本文初版的 349、上一轮的 378/390/391/392/397 都是历史计数。
+- 回归实测（2026-10-26 本轮收口，在仓库根目录执行 `bash skills/paseo-pipeline/test/run-all.sh`）：Node `tests 404 / pass 404 / fail 0`，`duration_ms 111424.753542`；contract-check（`bash skills/paseo-pipeline/test/contract-check.test.sh`）`通过 19 / 失败 0`。R1 的 244、本文初版的 349、上一轮的 378/390/391/392/397 都是历史计数。
 - 原生 Paseo 冒烟（包 0）：**已执行**，5 任务全流程一次跑通，采集值与覆盖缺口见 §8。真实业务试点**未执行**。
 - 行号对应 2026-10-26 00:21 的工作区（`reconcile.mjs` 在走查期间仍被改动过一次，结论已按最新文件重核）。
 
@@ -190,7 +190,7 @@
 - 心跳：**已按「撤销 SKILL 中的强制要求」收敛**（不需要改 spec）。SKILL 现在写明常规运行不创建周期性 heartbeat/schedule、无外部计时器源时对账只在下次真实调用发生；`run-state.mjs heartbeat` 降为「确证来源才登记」，并给出停摆处置 `BLOCKED_ON_WAKE`。`~/.paseo/task-routing.md` 与 shangshu notes 中的强制表述**未改**（属活态配置，需另行授权）。
 - hotfix：**已收敛为两种明确用途**——`hotfix.sh` 是 L1 小修正式入口（自带 `paseo wait`，不依赖未验证回调），`dispatch.mjs` 是纯调试用的 Legacy 兜底；两者共用同一套合流门禁，不再有互相矛盾的两句话。
 - OpenSpec：**已按「主会话独占、Lead 只读产物」收敛**——`openspec status` 由主会话执行后把结论交给 Lead，Lead 只读 `openspec/changes/<name>/` 下的文件，需要时走交回点。
-- 新增 `templates/`，4 个 ≤30 行 brief：writer / tester / auditor / lead。固定字段：目标与不变式、base SHA、Write scope、Verify 命令、必填 trailers、信封格式（≤20 行，`kind=phase-complete|blocked`，含 `conflicting_tests`、`BLOCKED_ON_CONFLICT`）。Auditor 输出 `verdict ∈ {PASS, PASS_WITH_NITS, BLOCK}` + `reviewed_sha` + blocker ID 列表；review-tag 由 Lead 机械拼接，不由 Auditor 手写。
+- 新增 `templates/`，4 份 brief：writer / tester / auditor / lead。固定字段：目标与不变式、base SHA、Write scope、Verify 命令、必填 trailers、信封格式（≤20 行，`kind=phase-complete|blocked`，含 `conflicting_tests`、`BLOCKED_ON_CONFLICT`）。Auditor 输出 `verdict ∈ {PASS, PASS_WITH_NITS, BLOCK}` + `reviewed_sha` + blocker ID 列表；review-tag 由 Lead 机械拼接，不由 Auditor 手写。**已实施**（2026-10-26）：`skills/paseo-pipeline/templates/{writer,tester,auditor,lead}.md` 共 255 行。原计划的「每份 ≤30 行」**未实现也不打算实现**——四份实测分别为 49/50/57/99 行，冒烟里跑通的 Lead brief 本身是 100 行；砍行数就要砍字段，而缺字段正是冒烟暴露的头号摩擦点。以字段完备为准，行数不是判据。
 - SKILL 与 LESSONS 去重：LESSONS 只留事故与教训，规则只在 SKILL 出现一次；删除 §3-P2-18 所列过度承诺。
 
 ### 4.6 分流（降低流程税）

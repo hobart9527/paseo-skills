@@ -201,3 +201,66 @@ test('SCEN-DOC-11: 派发指令取自活态 profile，不硬编码模型名', ()
   assert.doesNotMatch(dispatch, /claude-\d|claude-opus|gpt-\d|glm-\d|qwen-?\d/i,
     '角色与派发一节不得硬编码模型名');
 });
+
+// --- 派发 brief 模板 ---
+//
+// 模板存在的理由是可证伪的：2026-10-26 的 5 任务冒烟里，Lead 因为 brief 没写
+// `pipeline.disposition` 的生产者契约，只能从 `lib/roles.mjs` 反推，T-1 被
+// `UNRESOLVED` 锁死一轮。模板漏掉一个字段 = 每个 change 重犯一次同样的摩擦，
+// 所以这里有断言，而不只是「文档里提了一句 templates/」。
+const templateDir = path.join(skillDir, 'templates');
+const TEMPLATES = ['writer', 'tester', 'auditor', 'lead'];
+
+function template(name) {
+  const file = path.join(templateDir, `${name}.md`);
+  assert.ok(fs.existsSync(file), `缺少 brief 模板：templates/${name}.md`);
+  return fs.readFileSync(file, 'utf8');
+}
+
+test('SCEN-DOC-13: 四份 brief 模板齐备且被 SKILL 引用', () => {
+  for (const name of TEMPLATES) template(name);
+  // SKILL 必须指向模板目录，否则模板存在也不会被用上。
+  assert.match(skillText, /`?templates\/`?/, 'SKILL.md 必须指向 templates/');
+  for (const name of TEMPLATES) {
+    assert.ok(skillText.includes(name) || /templates\/\)/.test(skillText),
+      `SKILL.md 应让调用方能定位到 ${name} 模板`);
+  }
+});
+
+test('SCEN-DOC-14: 每份模板都锁定必填字段，缺一个就红', () => {
+  // 固定字段集来自 SKILL §1：目标与不变式、base SHA、Write scope、Verify 命令、
+  // 必填 trailers、信封格式。少任何一项，下游就无法机械消费上游产出。
+  const REQUIRED = {
+    writer: [/目标/, /base SHA/, /Write scope/, /Verify/, /Pipeline-Author/, /信封/, /next_action/],
+    tester: [/base SHA/, /Write scope/, /Verify/, /Pipeline-Author/, /信封/, /conflicting_tests/],
+    auditor: [/base SHA/, /tip SHA/, /verdict/, /reviewed_sha/, /closing_criteria/, /信封/],
+    lead: [/paseo wait/, /status/, /reconcile\.mjs/, /merge-task\.mjs/, /信封/, /wall_clock/],
+  };
+  for (const [name, patterns] of Object.entries(REQUIRED)) {
+    const text = template(name);
+    for (const pattern of patterns) {
+      assert.match(text, pattern, `${name}.md 必须包含 ${pattern}`);
+    }
+  }
+});
+
+test('SCEN-DOC-15: Lead 模板写明 disposition 生产者契约与 wait 退出码陷阱', () => {
+  const lead = template('lead');
+  // 这两条是冒烟里真实付出代价的两点，不能只写在 SKILL 里。
+  assert.match(lead, /pipeline\.disposition|disposition/,
+    'lead.md 必须写明阶段完成后由 Lead 打 disposition');
+  assert.match(lead, /handed-off/, 'lead.md 必须给出 disposition 的合法取值');
+  assert.match(lead, /退出码恒为\s*0|恒为\s*0/,
+    'lead.md 必须警告 paseo wait 退出码恒为 0');
+  assert.match(lead, /timeout/, 'lead.md 必须写明 status=timeout 时不重派');
+});
+
+test('SCEN-DOC-16: Auditor 模板禁止自拼 review-tag，且只接受 4 类 Blocker', () => {
+  const auditor = template('auditor');
+  assert.match(auditor, /不要自己拼\s*review-tag|review-tag 由\s*Lead/);
+  for (const cls of ['SPEC_VIOLATION', 'CORRECTNESS_BUG', 'SECURITY_DEFECT', 'SCOPE_VIOLATION']) {
+    assert.ok(auditor.includes(cls), `auditor.md 必须列入 Blocker 类别 ${cls}`);
+  }
+  // R2 不得引入新的风格挑剔——否则「2 轮熔断」变成无限延长。
+  assert.match(auditor, /禁止在\s*R2\s*提新的风格挑剔/);
+});

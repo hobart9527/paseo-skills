@@ -42,6 +42,8 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 
 **原生 MCP 派发（默认路径）**：派发通过 agent 作用域原生 MCP `create_agent`/`send_agent_prompt` 执行。
 
+**派发 brief 用模板，不要临时拼**：`templates/` 下四份（`writer` / `tester` / `auditor` / `lead`），固定字段为「目标与不变式、base SHA、Write scope、Verify 命令、必填 trailers、信封格式」。模板只保证**字段齐备**，行数按字段需要写，不做行数上限——2026-10-26 冒烟里跑通的那份 Lead brief 是 100 行。省略字段的后果是实测过的：brief 漏写 `pipeline.disposition` 生产者契约，Lead 只能从源码反推，T-1 被 `UNRESOLVED` 锁死一轮。
+
 - 参数源头：`provider`、`settings.modeId`、`settings.thinkingOptionId`、`settings.features` 均取自当前活态 `list_profiles`（其中的 `featureValues→settings.features` 逐字复制）。缺省字段直接省略，禁止编造默认值。
 - 通知约束：`notifyOnFinish: true`（默认启用，不可关闭），通知到达驱动后续流转。
 - 标签体系：必须打齐 `pipeline.change`、`pipeline.task`、`pipeline.attempt`、`pipeline.phase`、`pipeline.role`。这五个标签是 `reconcile` 做归属、cap 计数与 phase 排序的唯一依据，缺一即该 agent 被判 `UNMAPPED`。
