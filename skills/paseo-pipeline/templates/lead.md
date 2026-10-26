@@ -19,6 +19,43 @@ paseo wait <agent-id> --timeout 540 --json; echo "EXIT=$?"
 
 **`paseo wait ... && 推进` 会把超时当成完成。** 每次等待记开始/结束 UTC 时间。
 
+## 并行 DAG：必须并发 wait，不能串行轮流等
+
+**`paseo wait` 一次只等一个 id**（`Usage: paseo wait [options] <id>`，不是可变参数）。
+多个子 agent 同时在跑时，**串行轮流 wait 会浪费 cap 名额**——先等的那个没回来，另一个早已完成的
+子 agent 就占着名额不释放，后续 READY 任务派不出去。
+
+实测（2026-10-26 并行冒烟，cap=2）：T-2 于 `05:56:14Z` 完成，T-3 直到 `05:58:04Z` 才开工，
+**110 秒里只有 1 个写手在跑，cap=2 空闲一半**。Lead 当时自报「零空转」，git 时间戳证明不成立。
+
+**正确做法：同一轮里并发起多个 wait，以先返回者为准。**
+
+```bash
+# 每个在跑的 id 起一个后台 wait，全部写入独立文件
+for id in "$A" "$B"; do
+  ( paseo wait "$id" --timeout 540 --json > "/tmp/wait-$id.json" 2>&1; \
+    echo "RETURN=$(node -e 'console.log(new Date().toISOString())')" >> "/tmp/wait-$id.json" ) &
+done
+wait          # 等全部返回；也可以只 poll 文件，谁先有 status 就先处理谁
+```
+
+`wait`（不带参数的内建命令）会阻塞到**全部**返回——这不是最优。更好的形态是**先返回先处理**：
+起后台 wait 后，用一个轮询循环检查哪个 `/tmp/wait-*.json` 已写出 `status`，
+立刻处理那个任务并**马上派发新的 READY 任务补位**，然后继续等剩下的。
+
+实测并发 wait 独立性（同一 shell，一个等已 idle、一个等真在跑）：
+
+| 探针 | 返回时刻 | 相对起点 |
+|---|---|---|
+| 已 idle 的 agent | `06:24:13.550Z` | +0.41s |
+| 真实在跑的 agent | `06:24:32.925Z` | +19.8s |
+
+两者互不阻塞，各自按自身完成时刻返回。机制可用。
+
+> 注意：给子 agent 下「空转等 N 秒」的指令会被拒（`sleep`、`setTimeout`、大规模空循环都会被判为
+> 空等或资源耗尽型负载）。要制造耗时任务，必须是真实工作。
+
+
 ## 每轮动作
 
 1. 在集成 workspace 里跑对账：

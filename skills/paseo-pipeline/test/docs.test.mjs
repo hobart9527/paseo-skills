@@ -244,6 +244,16 @@ test('SCEN-DOC-14: 每份模板都锁定必填字段，缺一个就红', () => {
   }
 });
 
+test('SCEN-DOC-18: Lead 模板强制并行 DAG 用并发 wait，而非串行轮流', () => {
+  // 2026-10-26 并行冒烟实测：串行 wait 造成 110 秒 cap 空闲（T-2 已完成但不释放名额）。
+  // 并发 wait 独立性已验证（idle 探针 +0.41s 返回，busy 探针 +19.8s 返回）。
+  const lead = template('lead');
+  assert.match(lead, /并发\s*wait|并发起多个/, 'lead.md 必须要求并发 wait');
+  assert.match(lead, /一次只(?:接受|等)一个\s*id/, 'lead.md 必须说明 paseo wait 只接受单个 id');
+  assert.match(lead, /串行轮流|串行\s*wait/, 'lead.md 必须点名串行等待是错的');
+  assert.match(lead, /空转|名额/, 'lead.md 必须说明串行的代价（浪费 cap 名额）');
+});
+
 test('SCEN-DOC-17: writer 模板警告 trailer 必须是最后一段（否则 merge exit 31）', () => {
   // 2026-10-26 并行冒烟实测：5 个写手里 2 个把 Co-Authored-By 用空行另起一段，
   // 前面 Pipeline-* trailer 全部失效，merge-task 以 exit 31 拒绝。

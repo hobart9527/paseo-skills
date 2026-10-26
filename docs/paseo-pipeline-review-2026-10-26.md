@@ -4,7 +4,7 @@
 - 输入：R1《paseo-pipeline-review-2026-10-25.md》（基线公开提交 `ae0ca49`）
 - 本次基线：本地工作区 = HEAD `ae0ca49` + 未提交改动（`git status --porcelain` 23 行；`git diff --stat` 15 文件 +2561/−458；未跟踪文件含 `lib/paseo-state.mjs`、`lib/roles.mjs`、`lib/run-state.mjs`、`lib/ledger.mjs`、`lib/lock.mjs`、`run-state.mjs`）
 - 本机：`paseo 0.12.0`；`paseo ls --json --all` 1604 行，字段 `id,shortId,name,provider,thinking,status,cwd,created`（无 labels）
-- 回归实测（2026-10-26 并行冒烟收口，在仓库根目录执行）：Node `tests 406 / pass 406 / fail 0 / duration_ms 114061.29475`（`bash skills/paseo-pipeline/test/run-all.sh`）；contract-check `通过 19 / 失败 0`（`bash skills/paseo-pipeline/contract-check.test.sh`）。R1 的 244、本文初版的 349、上一轮的 378/390/391/392/397/405 都是历史计数。
+- 回归实测（2026-10-26 并行等待策略复核收口，在仓库根目录执行）：Node `tests 407 / pass 407 / fail 0 / duration_ms 111204.023708`（`bash skills/paseo-pipeline/test/run-all.sh`）；contract-check `通过 19 / 失败 0`（`bash skills/paseo-pipeline/contract-check.test.sh`）。R1 的 244、本文初版的 349、上一轮的 378/390/391/392/397/405/406 都是历史计数。
 - 原生 Paseo 冒烟（包 0）：**已执行**，5 任务全流程一次跑通，采集值与覆盖缺口见 §8。真实业务试点**未执行**。
 - 行号对应 2026-10-26 00:21 的工作区（`reconcile.mjs` 在走查期间仍被改动过一次，结论已按最新文件重核）。
 
@@ -377,7 +377,7 @@ canDispatchNow:  T-1 整数向量运算, T-2 整数统计
 ### 9.5 结论
 
 1. **并行 DAG 通过。** cap=2 真实饱和、scope 冲突确定性串行化（T-4 `BLOCKED_RESOURCE` 持续 3 轮，T-3 合流后第 4 轮自动转 `READY`）、依赖释放正确（T-5 等 4 个上游全 Done）。§8.5 的第一个缺口闭合。
-2. **并行等待策略：串行前台 `paseo wait` 可行，但本次没测出空转。** Lead 在 T-1/T-2 并行段先 `wait` T-1，35s 返回 `idle` 时 T-2 已完成——**零空转**。但这属运气好（两个任务工作量接近），不是机制保证。若 T-1 早于 T-2 完成 10 分钟，串行 wait 会产生纯空转窗口。**并发 `paseo wait`（后台多起）本次未测。**
+2. ~~**并行等待策略：串行前台 `paseo wait` 可行，但本次没测出空转。**~~ **此条判断错误，已由 §10 推翻。** Lead 自报「零空转」，但 git commit 时间戳证明：T-2 于 `05:56:14Z` 完成，T-3 直到 `05:58:04Z` 才开工，**110 秒里只有 1 个写手在跑，cap=2 空闲一半**。串行 wait 是真实损耗源，不是运气好坏问题。正确做法见 §10。
 3. **`review-attestation` 修复生效。** run-log 5 条合并记录全部带 `review-attestation=mechanical-review`，不再有静默跳过的行。上一轮那次「门禁跳过与通过长得一样」的缺陷，在本轮可观测。
 4. **并行合并产生 `baseline-drift` 记录。** T-2、T-3 的 run-log 带 `baseline-drift=dbf8af7..6a4261d` / `dbf8af7..8c6ca03`——任务分支拉出后集成基线上又合了别的任务。门禁如实记录而没有拒绝，这是对的（并行合流本就该允许基线前进），但**说明「审查基线」与「合流基线」在并行下必然分叉**，审查员看到的 diff 与最终合流点的 diff 不是一回事。
 
@@ -415,6 +415,67 @@ OAuth access token has expired. Re-authenticate to continue. (reset after 1m 24s
 ### 9.8 本轮仍未覆盖的
 
 - **`paseo wait` 超时分支在真实任务上的行为**：5 次 wait 全部 `status: idle`，0 次 timeout，540s 上限仍未触及。
-- **并发 `paseo wait`**：只验证了串行等待；多起后台 wait 的可行性与代价未测。
-- **真正的不均衡并行**：本次两个并行任务工作量接近，掩盖了串行等待的空转风险。
+- ~~**并发 `paseo wait`**：只验证了串行等待；多起后台 wait 的可行性与代价未测。~~ → **已由 §10 验证**：并发 wait 独立性成立（idle 探针 +0.41s、busy 探针 +19.8s 返回），已写入 `templates/lead.md` 并由 SCEN-DOC-18 锁死。
+- ~~**真正的不均衡并行**：本次两个并行任务工作量接近，掩盖了串行等待的空转风险。~~ → **已量化**：实际并不接近（T-2 早 T-1 **3m47s** 完成），正因如此才暴露出 110 秒 cap 空闲。§10 用 45s/170s 双探针另行验证了并发 wait 的独立返回。
 - **打回路径**：0 次打回，预算与升级升级路径仍未压测。
+
+## 10. 并行等待策略复核：串行 wait 是真实损耗源（2026-10-26）
+
+§9.5 第 2 条曾写「串行 wait 可行、本次零空转」。**该判断错误**，本节给出反证与修正。
+
+### 10.1 反证：110 秒 cap 空闲
+
+用 git commit 时间戳（硬采集，非自报）还原上一轮的并发曲线：
+
+| 时刻 (UTC) | 事件 | 当时写手数 |
+|---|---|---|
+| `05:55:41` | T-1 worktree 创建 | 1 |
+| `05:55:50` | T-2 worktree 创建 | **2（饱和）** |
+| `05:56:14` | T-2 commit 完成 | 2 |
+| `05:56:14`–`05:58:04` | **T-2 已完成但名额未释放** | **1（cap 空一半）** |
+| `05:58:04` | T-3 worktree 创建 | **2（回饱和）** |
+| `06:00:01` | T-1 commit 完成 | 2 |
+| `06:00:31` | T-1 merge | 1 |
+| `06:00:58` | T-2 merge | 0 |
+
+**空闲窗口 = `05:58:04Z − 05:56:14Z` = 110 秒。** 此间 T-2 早已 Done，T-3 完全具备派发条件（`reconcile` 会给出 READY），却因为 Lead 正阻塞在 `wait T-1` 上而无法处理。
+
+T-2 比 T-1 早 **3m47s** 完成。上一轮 §9.5 说「两个任务工作量接近」也不对——恰恰是不接近，才让这个缺陷暴露出来。Lead 自报的「零空转」与 git 证据矛盾，以 git 为准。
+
+### 10.2 并发 wait 独立性验证
+
+在同一 shell 里并发起两个 `paseo wait`，一个等已 idle 的 agent、一个等真实在跑的 agent：
+
+| 探针 | 返回时刻 | 相对 t0（`06:24:13.144Z`） |
+|---|---|---|
+| 已 idle 的 agent | `06:24:13.550Z` | **+0.41s** |
+| 真实在跑的 agent | `06:24:32.925Z` | **+19.8s** |
+
+两者互不阻塞，各自按自身完成时刻返回。**并发 wait 机制可用**，可作为并行 DAG 的正确等待形态。
+
+### 10.3 正确策略
+
+```bash
+for id in "$A" "$B"; do
+  ( paseo wait "$id" --timeout 540 --json > "/tmp/wait-$id.json" 2>&1; \
+    echo "RETURN=$(node -e 'console.log(new Date().toISOString())')" >> "/tmp/wait-$id.json" ) &
+done
+```
+
+关键不是「等全部返回」，而是**先返回先处理**：起后台 wait 后轮询哪个 `/tmp/wait-*.json` 已写出
+`status`，立刻处理那个任务、**马上派发新的 READY 任务补位**，再继续等剩下的。这样 cap 名额在
+有 READY 任务时始终不会被已完成的 agent 占着。
+
+### 10.4 一个负面发现：无法制造「纯耗时」探针
+
+尝试让子 agent 执行 `sleep 45` / `node -e 'setTimeout(...)'` / 260 亿次累加循环来构造可控时长探针，**全部被 agent 拒绝**：
+
+- `sleep` / `setTimeout` → 被环境拦截，且 agent 判定为「空等」
+- 大规模空循环 → agent 判定为「本地资源耗尽型负载，会阻塞会话并影响同机其他任务」
+
+这是**正确的行为**，但意味着耗时探针只能用真实工作构造。§10.2 的对照实验因此改用「一个真实分析任务 + 一个已 idle agent」，而不是人为拉长的假任务。
+
+### 10.5 落地
+
+- `templates/lead.md` 新增「并行 DAG：必须并发 wait，不能串行轮流等」整节，含实测数据与正确代码形态。
+- `test/docs.test.mjs` 新增 SCEN-DOC-18 锁死该要求（负向对照：删掉该节 → 红，恢复 → 绿）。
