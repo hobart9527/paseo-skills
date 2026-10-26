@@ -4,6 +4,7 @@
 // 用法:
 //   node run-state.mjs begin    <change> --owner <owner-id>
 //   node run-state.mjs status   <change> [--json]
+//   node run-state.mjs report   <change> [--json]
 //   node run-state.mjs claim    <change> --task T-01 [--attempt 1] [--phase impl] [--role gongbu] [--action dispatch]
 //   node run-state.mjs record   <change> --key <key> --agent <agent-id> [--workspace <id>] [--owner <id>]
 //   node run-state.mjs fail     <change> --key <key> --reason <text> [--owner <id>]
@@ -27,6 +28,33 @@ import {
   readRunState, updateRunState, intentKey, findByKey, openIntents, leaseStatus,
   isFailed, intentAgeMs, DEFAULT_LEASE_TTL_MS,
 } from './lib/run-state.mjs';
+import { normalizePhase } from './lib/roles.mjs';
+import { execFileSync } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const SKILL_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * 当前 Skill 的 git 身份。读不到就返回 null——**不猜、不伪造**。
+ *
+ * 只用于「这批任务是用哪份编排逻辑跑出来的」留痕与不一致提示。版本不一致时不拦，
+ * 因为拦会让一台机器上升级 Skill 后的每一次诊断都失败；但静默不记会让复盘无从判断
+ * 某条规则在当时是否存在。
+ */
+function captureSkill() {
+  const git = (args) => execFileSync('git', ['-C', SKILL_DIR, ...args], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000,
+  }).trim();
+  try {
+    const head = git(['rev-parse', 'HEAD']);
+    if (!/^[0-9a-f]{40}$/.test(head)) return null;
+    const dirty = git(['status', '--porcelain', '--', SKILL_DIR]) !== '';
+    return { head, dirty, dir: SKILL_DIR, at: new Date().toISOString() };
+  } catch {
+    return null;
+  }
+}
 
 function fail(code, message) {
   console.error(`[run-state] ${message}`);
@@ -38,7 +66,7 @@ const json = argv.includes('--json');
 const command = argv[0];
 const change = argv[1];
 if (!command || !change) {
-  console.error('Usage: node run-state.mjs <begin|status|claim|record|fail> <change> [flags]');
+  console.error('Usage: node run-state.mjs <begin|status|report|claim|record|fail> <change> [flags]');
   process.exit(1);
 }
 
@@ -109,6 +137,8 @@ switch (command) {
           expiresAt,
           ttlMs: DEFAULT_LEASE_TTL_MS,
         };
+        // 领取新代际时记录本次编排使用的 Skill 版本（覆盖上一次：账本属于当前 run）。
+        draft.skill = captureSkill();
         return draft.lease;
       }
       // 租约仍有效且属于别人：不抢，直接拒绝（需人工或前任显式交回）。
@@ -141,6 +171,16 @@ switch (command) {
       ? `LEASE owner=${lease.owner} gen=${lease.generation} ${lease.valid ? '有效' : '已过期'} 到期=${lease.expiresAt}`
       : 'LEASE (未启用)');
     console.log(`INTENTS 未回执 ${open.length} / 共 ${state.intents.length}`);
+    // 版本漂移只警告，不拦：一台机器升级 Skill 之后，旧账本仍然应该可读。
+    // 但「这批任务是用哪份编排逻辑跑出来的」不能默默丢掉，否则复盘无法判断规则是否存在。
+    if (state.skill) {
+      const current = captureSkill();
+      const drift = current !== null && current.head !== state.skill.head;
+      console.log(`SKILL head=${state.skill.head.slice(0, 7)}${state.skill.dirty ? ' (dirty)' : ''}`
+        + `${drift ? `  ⚠ 与当前 ${current.head.slice(0, 7)} 不同：本账本的动作由旧版编排逻辑产生` : ''}`);
+    } else {
+      console.log('SKILL 未采集（账本无版本记录，可能是旧代际开始）');
+    }
     for (const intent of open) {
       const age = intentAgeMs(intent, now.getTime());
       console.log(`  - ${intent.key}  ${intent.task ?? ''} ${intent.role ?? ''} 龄=${age === null ? '未采集' : `${Math.round(age / 1000)}s`}`);
@@ -148,6 +188,49 @@ switch (command) {
     for (const beat of state.heartbeats) {
       console.log(`HEARTBEAT ${beat.id} ${beat.status ?? 'unknown'} 到期=${beat.expiresAt ?? '未采集'}`);
     }
+    break;
+  }
+
+  case 'report': {
+    // 度量只从账本里**已经记下的时间戳**推导，采不到就写「未采集」。
+    // 不估算、不用文件时间戳冒充事件时间：一份看起来精确的估算比「未采集」更有害，
+    // 它会被当成实测值写进复盘。
+    const { present, state, error, file } = readRunState(change);
+    const dispatches = state.intents.filter((intent) => typeof intent.agentId === 'string' && intent.agentId !== '');
+    const perTask = new Map();
+    for (const intent of dispatches) {
+      const task = intent.task ?? '(unknown)';
+      if (!perTask.has(task)) perTask.set(task, []);
+      perTask.get(task).push(intent);
+    }
+    const attempts = [...perTask.values()].map((list) =>
+      Math.max(...list.map((intent) => (Number.isFinite(intent.attempt) ? intent.attempt : 0))));
+    const auditRounds = state.intents.filter((intent) => normalizePhase(intent.phase) === 'audit');
+    // READY 等待时长要求「进入 READY 的时刻」，账本不记状态迁移，因此只能是「未采集」。
+    const report = {
+      change,
+      present,
+      file,
+      error,
+      dispatches: dispatches.length,
+      tasksDispatched: perTask.size,
+      maxAttempt: attempts.length > 0 ? Math.max(...attempts) : null,
+      voidedIntents: state.intents.filter((intent) => isFailed(intent)).length,
+      auditDispatches: auditRounds.length,
+      firstPassUnknown: '未采集：账本不记审查结论，首次通过与否须从 Done 行的 review 值反查',
+      readyWaitUnknown: '未采集：账本不记状态迁移时刻，无 READY 进入时间',
+    };
+    if (json) {
+      console.log(JSON.stringify(report, null, 2));
+      break;
+    }
+    console.log(`[run-state] ${change} 报告 ${present ? file : '（无账本）'}`);
+    if (error) console.log(`  WARN ${error}`);
+    console.log(`派发 ${report.dispatches} 次 / ${report.tasksDispatched} 个任务`);
+    console.log(`同任务最大 attempt ${report.maxAttempt ?? '未采集'}`);
+    console.log(`审查派发 ${report.auditDispatches} 次；作废意图 ${report.voidedIntents} 条`);
+    console.log(`首次审查通过 ${report.firstPassUnknown}`);
+    console.log(`READY 等待时长 ${report.readyWaitUnknown}`);
     break;
   }
 
@@ -235,11 +318,23 @@ switch (command) {
       if (refusal !== null) return { refusal, skipWrite: true };
       const intent = findByKey(draft, key);
       if (!intent) return { missing: true };
+      // 已有真实回执的意图不得作废。作废的语义是「这次派发确认没有发生」，而回执证明它
+      // **发生过**并且指向一个具体 agent。旧实现在这里放行，于是 claim → record → fail
+      // 可以用同一幂等键重派一个仍然活着的 agent：账本上写着「上次失败」，实际上出了两个
+      // 写手。agent 中途死掉的处置是 reconcile 的 rework，不是抹掉派发痕迹。
+      if (intent.resolvedAt !== null && typeof intent.agentId === 'string' && intent.agentId !== '') {
+        return { recorded: true, agentId: intent.agentId, resolvedAt: intent.resolvedAt };
+      }
       intent.failedAt = nowIso;
       intent.reason = reason;
       return { intent };
     });
     if (result.missing) fail(1, `未知意图键：${key}`);
+    if (result.recorded) {
+      fail(2, `意图已有真实回执（agent=${result.agentId}，${result.resolvedAt}），`
+        + '不得作废：作废只用于「派发确认没有发生」。该 agent 已失联请走 reconcile 的 rework 处置，'
+        + '用新的 attempt 键派发，不要抹掉这次派发的痕迹');
+    }
     console.log(json ? JSON.stringify({ change, intent: result.intent }) : `[run-state] fail ok ${key} reason=${reason}`);
     break;
   }
