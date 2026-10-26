@@ -8,6 +8,7 @@
 // 判定前先剥注释：注释里出现的字面量既不算断言，也不算覆盖。
 import fs from "node:fs";
 import path from "node:path";
+import { parseTasks } from "./lib/tasks.mjs";
 
 const CODE_EXT = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]);
 const DOC_EXT = new Set([".md", ".markdown"]);
@@ -59,56 +60,37 @@ const assertWindows = (src) => {
   return windows;
 };
 
-// 提取 tasks.md 中声明的测试路径（优先从 Verify with 提取，兜底 Write scope）
+// 提取 tasks.md 中声明的测试路径（优先从 Verify with 提取，兜底 Write scope）。
+// 任务解析属主是 lib/tasks.mjs：这里不再自带一套行匹配，否则 check-evidence / merge-task /
+// reconcile / contract-check 会各自演进，同一份 tasks.md 在不同入口解析出不同结果（L1-09）。
 const extractTestsFromTasks = (tasksContent, targetTask) => {
-  const lines = tasksContent.split("\n");
+  const { tasks, errors } = parseTasks(tasksContent);
+  // 本用途只取「测试路径」，所以只有会改变任务集合或字段归属的错误才是致命的。
+  // 账本完整性类错误（BAD_DONE_LINE / MISSING_SCOPE / UNKNOWN_REVIEW / 风险与 Review 冲突、
+  // 依赖缺失或成环）由 reconcile 与 merge-task 负责，不在这里重复判，否则同一份 tasks.md
+  // 会在文档抽取阶段被合流门禁的规则误拒。
+  const FATAL_HERE = new Set(["MALFORMED_LINE", "DUPLICATE_ID"]);
+  const fatal = errors.filter((error) => FATAL_HERE.has(error.code));
+  if (fatal.length > 0) {
+    console.error(`tasks 解析失败: ${fatal.map((error) => `${error.code}: ${error.message}`).join("; ")}`);
+    process.exit(1);
+  }
+  const selected = targetTask
+    ? tasks.filter((task) => task.id.toLowerCase() === targetTask.toLowerCase())
+    : tasks;
+  if (targetTask && selected.length === 0) {
+    console.error(`tasks.md 中没有任务 ${targetTask}`);
+    process.exit(2);
+  }
   const tests = [];
-  let inTargetTask = !targetTask;
-  let currentTaskVerifyTests = [];
-  let currentTaskWriteTests = [];
-
-  const flushTask = () => {
-    const chosen = currentTaskVerifyTests.length > 0 ? currentTaskVerifyTests : currentTaskWriteTests;
-    for (const t of chosen) {
-      if (!tests.includes(t)) tests.push(t);
-    }
-    currentTaskVerifyTests = [];
-    currentTaskWriteTests = [];
-  };
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (/^\s*(?:-\s*\[[ xX]\]|#{2,4})\s+/.test(line)) {
-      if (inTargetTask) flushTask();
-      if (targetTask) {
-        inTargetTask = line.toLowerCase().includes(targetTask.toLowerCase());
-      }
-    }
-    if (!inTargetTask) continue;
-
-    const verifyMatch = line.match(/\bVerify with:\s*(.*)/i);
-    if (verifyMatch) {
-      const cleaned = verifyMatch[1].replace(/[`"'\\]/g, " ");
-      const tokens = cleaned.split(/\s+/).map((t) => t.replace(/^[([{]+|[)\]},;:]+$/g, ""));
-      for (const t of tokens) {
-        if (CODE_EXT.has(path.extname(t).toLowerCase()) && (t.includes("test") || t.includes("spec"))) {
-          if (!currentTaskVerifyTests.includes(t)) currentTaskVerifyTests.push(t);
-        }
-      }
-    }
-
-    const writeMatch = line.match(/\bWrite scope:\s*(.*)/i);
-    if (writeMatch) {
-      const cleaned = writeMatch[1].replace(/[`"'\\\[\]]/g, " ");
-      const tokens = cleaned.split(/[\s,]+/).map((t) => t.replace(/#.*$/, "").replace(/^[([{]+|[)\]},;:]+$/g, "").trim());
-      for (const t of tokens) {
-        if (CODE_EXT.has(path.extname(t).toLowerCase()) && (t.includes("test") || t.includes("spec"))) {
-          if (!currentTaskWriteTests.includes(t)) currentTaskWriteTests.push(t);
-        }
-      }
+  for (const task of selected) {
+    // Verify with 里被识别为测试文件的 token 优先；没有就退回 Write scope 里声明的测试文件。
+    const fromVerify = task.verify?.tests ?? [];
+    const fromScope = task.scope.filter((entry) => CODE_EXT.has(path.extname(entry).toLowerCase()));
+    for (const candidate of (fromVerify.length > 0 ? fromVerify : fromScope)) {
+      if (!tests.includes(candidate)) tests.push(candidate);
     }
   }
-  flushTask();
   return tests;
 };
 

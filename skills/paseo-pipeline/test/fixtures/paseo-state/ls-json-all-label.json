@@ -1,0 +1,137 @@
+{
+  "recordedAt": "2026-10-25T12:10:00.000Z",
+  "paseoVersion": "0.12.0",
+  "command": "paseo ls --json --all --label pipeline.change=eas-substitute-phase3-phase4",
+  "rowKeys": [
+    "created",
+    "cwd",
+    "id",
+    "name",
+    "provider",
+    "shortId",
+    "status",
+    "thinking"
+  ],
+  "rows": [
+    {
+      "id": "f6d689d4-7729-4f11-9c47-85fb782643af",
+      "shortId": "f6d689d",
+      "name": "[Pipeline] Auditor T-01 审查R3 eas-substitute-phase3-phase4",
+      "provider": "codex/codex",
+      "thinking": "high",
+      "status": "idle",
+      "cwd": "~/.paseo/worktrees/3j0rvshz/task-eas-substitute-phase3-phase4-t-01",
+      "created": "2 hours ago"
+    },
+    {
+      "id": "a98527a6-adb5-4689-8792-f3bb0059c45d",
+      "shortId": "a98527a",
+      "name": "[Pipeline] ceshi T-05 eas-substitute-phase3-phase4",
+      "provider": "codex/gpt",
+      "thinking": "high",
+      "status": "closed",
+      "cwd": "~/.paseo/worktrees/3j0rvshz/task-eas-substitute-phase3-phase4-t-05",
+      "created": "26 minutes ago"
+    },
+    {
+      "id": "17a6d307-3e16-4255-8b19-62830c51a025",
+      "shortId": "17a6d30",
+      "name": "[Pipeline] anchasi T-04 R2 eas-substitute-phase3-phase4",
+      "provider": "codex/codex",
+      "thinking": "high",
+      "status": "closed",
+      "cwd": "~/.paseo/worktrees/3j0rvshz/task-eas-substitute-phase3-phase4-t-04",
+      "created": "30 minutes ago"
+    },
+    {
+      "id": "a3d26332-6f30-488f-80d5-1603063ab891",
+      "shortId": "a3d2633",
+      "name": "[Pipeline] Auditor T-02 审查R2 eas-substitute-phase3-phase4",
+      "provider": "codex/codex",
+      "thinking": "high",
+      "status": "closed",
+      "cwd": "~/.paseo/worktrees/3j0rvshz/task-eas-substitute-phase3-phase4-t-02",
+      "created": "2 hours ago"
+    },
+    {
+      "id": "cd6d589b-4ff3-446f-ade5-08645d7e6574",
+      "shortId": "cd6d589",
+      "name": "[Pipeline] Auditor T-02 审查 eas-substitute-phase3-phase4",
+      "provider": "codex/codex",
+      "thinking": "high",
+      "status": "closed",
+      "cwd": "~/.paseo/worktrees/3j0rvshz/task-eas-substitute-phase3-phase4-t-02",
+      "created": "2 hours ago"
+    },
+    {
+      "id": "e59fb9ac-ce13-46d3-b00a-4376f0331026",
+      "shortId": "e59fb9a",
+      "name": "[Pipeline] Auditor T-01 审查R2 eas-substitute-phase3-phase4",
+      "provider": "codex/codex",
+      "thinking": "high",
+      "status": "closed",
+      "cwd": "~/.paseo/worktrees/3j0rvshz/task-eas-substitute-phase3-phase4-t-01",
+      "created": "2 hours ago"
+    },
+    {
+      "id": "97e0ff09-04b5-40f7-b987-ec32eebb7620",
+      "shortId": "97e0ff0",
+      "name": "[Pipeline] Auditor T-01 审查 eas-substitute-phase3-phase4",
+      "provider": "codex/codex",
+      "thinking": "high",
+      "status": "closed",
+      "cwd": "~/.paseo/worktrees/3j0rvshz/task-eas-substitute-phase3-phase4-t-01",
+      "created": "2 hours ago"
+    },
+    {
+      "id": "20fdabaf-9f25-4e73-a8c8-f1b44fab0d70",
+      "shortId": "20fdaba",
+      "name": "[Pipeline] Auditor 契约复核R5 eas-substitute-phase3-phase4",
+      "provider": "codex/codex",
+      "thinking": "high",
+      "status": "closed",
+      "cwd": "~/Codex/approval-hub",
+      "created": "2 hours ago"
+    },
+    {
+      "id": "60399e16-c95f-46a9-8899-a6b6348a2d49",
+      "shortId": "60399e1",
+      "name": "[Pipeline] Auditor 契约复核R4 eas-substitute-phase3-phase4",
+      "provider": "codex/codex",
+      "thinking": "high",
+      "status": "closed",
+      "cwd": "~/Codex/approval-hub",
+      "created": "2 hours ago"
+    },
+    {
+      "id": "007e9f0f-35e8-4371-9b1a-5dcaf41f24b2",
+      "shortId": "007e9f0",
+      "name": "[Pipeline] Auditor 契约复核R3 eas-substitute-phase3-phase4",
+      "provider": "codex/codex",
+      "thinking": "high",
+      "status": "closed",
+      "cwd": "~/Codex/approval-hub",
+      "created": "3 hours ago"
+    },
+    {
+      "id": "cb7577aa-746e-4a72-9acc-2448cdcb8727",
+      "shortId": "cb7577a",
+      "name": "[Pipeline] Auditor 契约复核R2 eas-substitute-phase3-phase4",
+      "provider": "codex/codex",
+      "thinking": "high",
+      "status": "closed",
+      "cwd": "~/Codex/approval-hub",
+      "created": "3 hours ago"
+    },
+    {
+      "id": "ae7fc9a7-3fe7-4c67-9b24-c4ade695aeb6",
+      "shortId": "ae7fc9a",
+      "name": "[Pipeline] Auditor 契约评审 eas-substitute-phase3-phase4",
+      "provider": "codex/codex",
+      "thinking": "high",
+      "status": "closed",
+      "cwd": "~/Codex/approval-hub",
+      "created": "3 hours ago"
+    }
+  ]
+}

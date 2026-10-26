@@ -1,0 +1,31 @@
+{
+  "attentionReason": null,
+  "attentionTimestamp": null,
+  "createdAt": "2026-10-25T10:30:31.719Z",
+  "cwd": "~/Codex",
+  "features": [],
+  "id": "fade8881-c8f2-4915-b46a-95d3f45a12f1",
+  "internal": false,
+  "labels": {},
+  "lastActivityAt": "2026-10-25T12:13:38.376Z",
+  "lastModeId": "bypassPermissions",
+  "lastStatus": "running",
+  "lastUserMessageAt": "2026-10-25T11:59:53.553Z",
+  "persistence": {
+    "metadata": null,
+    "nativeHandle": "<redacted>",
+    "provider": "claude",
+    "sessionId": "<redacted>"
+  },
+  "provider": "claude",
+  "requiresAttention": false,
+  "runtimeInfo": {
+    "modeId": "bypassPermissions",
+    "model": "flash",
+    "provider": "claude",
+    "thinkingOptionId": null
+  },
+  "title": "对整个的Paseo杠Pipeline Skill进行完整的真正的复核，按照实际整个任务执行场景。然后你看一下今天下午开始",
+  "updatedAt": "2026-10-25T12:13:38.376Z",
+  "workspaceId": "wks_b6c8d0eea17c8445"
+}

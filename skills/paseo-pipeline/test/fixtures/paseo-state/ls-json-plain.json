@@ -1,0 +1,107 @@
+{
+  "recordedAt": "2026-10-25T12:10:00.000Z",
+  "paseoVersion": "0.12.0",
+  "command": "paseo ls --json",
+  "rowKeys": [
+    "created",
+    "cwd",
+    "id",
+    "name",
+    "provider",
+    "shortId",
+    "status",
+    "thinking"
+  ],
+  "rows": [
+    {
+      "id": "fade8881-c8f2-4915-b46a-95d3f45a12f1",
+      "shortId": "fade888",
+      "name": "对整个的Paseo杠Pipeline Skill进行完整的真正的复核，按照实际整个任务执行场景。然后你看一下今天下午开始",
+      "provider": "claude/flash",
+      "thinking": "high",
+      "status": "running",
+      "cwd": "~/Codex",
+      "created": "1 hours ago"
+    },
+    {
+      "id": "53c4928e-9b2b-47fa-88eb-40424a9c9da6",
+      "shortId": "53c4928",
+      "name": "你查找一下本个项目当中，还有哪些其实的任务是没有被落地实现的。尤其是我记得之前有一个任务，我们其实只实施了第一阶段和第二",
+      "provider": "claude/gemini",
+      "thinking": "high",
+      "status": "running",
+      "cwd": "~/Codex/approval-hub",
+      "created": "7 hours ago"
+    },
+    {
+      "id": "ed31d53d-3d68-46fe-a219-7f058013c6d9",
+      "shortId": "ed31d53",
+      "name": "整理目前其实整个的产品功能和实现整个情况的话，我希望能完全替代整个金蝶的整个审批流的操作和整个报销表单和请款表单的这个操",
+      "provider": "claude/gemini",
+      "thinking": "high",
+      "status": "running",
+      "cwd": "~/Codex/approval-hub",
+      "created": "1 days ago"
+    },
+    {
+      "id": "f1162615-0a56-4163-8678-33cfa60aa477",
+      "shortId": "f116261",
+      "name": "现在对于paseo-ui的整个Skill进行一下整个的沙箱测试，随便找个例子。",
+      "provider": "claude/gemini",
+      "thinking": "high",
+      "status": "idle",
+      "cwd": "~/Codex",
+      "created": "20 hours ago"
+    },
+    {
+      "id": "becd73ca-5d28-4899-aa8d-0d9c653e9639",
+      "shortId": "becd73c",
+      "name": "https://cleanyour.tv/ 我想在我的电视上，其实帮我其实其实完成这个项目本身的操作。然后你仔细检查一下",
+      "provider": "claude/flash",
+      "thinking": "high",
+      "status": "idle",
+      "cwd": "~/Codex",
+      "created": "1 days ago"
+    },
+    {
+      "id": "5b8c8a61-ea78-456c-97d3-f33ae57cb83b",
+      "shortId": "5b8c8a6",
+      "name": "https://github.com/oil-oil/oil-ui https://github.com/ibelick",
+      "provider": "claude/gemini",
+      "thinking": "high",
+      "status": "idle",
+      "cwd": "~/Codex/design-prototype-kit",
+      "created": "4 days ago"
+    },
+    {
+      "id": "7ea8beeb-2eca-4995-a4c5-4f433a8f2cfd",
+      "shortId": "7ea8bee",
+      "name": "对整个所有的代码进行整体的走查，尤其是对于整个的任务执行链路，进行真正的实际的每一个脚本的认真的读取，看一下整个的执行框",
+      "provider": "claude/gemini",
+      "thinking": "high",
+      "status": "idle",
+      "cwd": "~/Codex/claude-code-config",
+      "created": "5 days ago"
+    },
+    {
+      "id": "4cfcefe5-ea28-479f-8972-a12203a0bca5",
+      "shortId": "4cfcefe",
+      "name": "-",
+      "provider": "codex/gpt",
+      "thinking": "high",
+      "status": "initializing",
+      "cwd": "~/.paseo/worktrees/3j0rvshz/task-eas-substitute-phase3-phase4-t-06",
+      "created": "just now"
+    },
+    {
+      "id": "9318a289-060b-42b0-afb4-f8f6f9bb9bec",
+      "shortId": "9318a28",
+      "name": "评审一下我整体的整个产品设计，然后看一下，其实整体的产品设计，哪些是非常值得可取的，哪些其实在今天当下的整个的 RAG",
+      "provider": "claude/gemini",
+      "thinking": "high",
+      "status": "closed",
+      "cwd": "~/Codex/AI-Writer-Master",
+      "created": "13 days ago"
+    }
+  ]
+}

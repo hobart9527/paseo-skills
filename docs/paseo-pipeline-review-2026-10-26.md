@@ -1,0 +1,215 @@
+# paseo-pipeline 复核与优化方案 v2（基于本地最新实现）
+
+- 日期：2026-10-26
+- 输入：R1《paseo-pipeline-review-2026-10-25.md》（基线公开提交 `ae0ca49`）
+- 本次基线：本地工作区 = HEAD `ae0ca49` + 未提交改动（`git status --porcelain` 23 行；`git diff --stat` 15 文件 +2561/−458；未跟踪文件含 `lib/paseo-state.mjs`、`lib/roles.mjs`、`lib/run-state.mjs`、`lib/ledger.mjs`、`lib/lock.mjs`、`run-state.mjs`）
+- 本机：`paseo 0.12.0`；`paseo ls --json --all` 1604 行，字段 `id,shortId,name,provider,thinking,status,cwd,created`（无 labels）
+- 回归实测（2026-10-26 本轮收口，在仓库根目录执行 `bash skills/paseo-pipeline/test/run-all.sh`）：Node `tests 392 / pass 392 / fail 0`，`duration_ms 108259.142166`；contract-check（`bash skills/paseo-pipeline/contract-check.test.sh`）`通过 19 / 失败 0`。R1 的 244、本文初版的 349、上一轮的 378/390/391 都是历史计数。
+- 未执行：原生 Paseo 冒烟、真实业务试点。下文 §4.1 唤醒方案为待验证假设。
+- 行号对应 2026-10-26 00:21 的工作区（`reconcile.mjs` 在走查期间仍被改动过一次，结论已按最新文件重核）。
+
+---
+
+## 0. 本轮实施状态（按包）
+
+| 包 | 状态 | 说明 |
+|---|---|---|
+| A 观测与对账 | **已实施** | `lib/paseo-state.mjs` 单一适配器 + runtime 三态；活态改为「任一源报 live 即 live」；attempt 数值绑定；`rejected` 分支不再进 MERGE；解析级 INVALID 写手与同仓外部写手均计入 cap（SCEN-REC-17 ×2） |
+| B 合流门禁 | **已实施** | 冻结 `Verify with` 强制先跑（exit 36）；`-z --no-renames`；单写者锁（exit 37）；Pod 冻结成员校验；legacy 豁免需环境变量二次确认并记 run-log；测试内 commit 检测（exit 40）；进程组 kill；已合流重试的分项诊断（SCEN-MRG-25/26/27） |
+| C 契约收敛 | **部分实施** | 角色/phase 单点定义（`lib/roles.mjs`）；`Review` 三档语义写入 SKILL；run-state 读改写加锁 + 候选校验入锁；证据闸门的场景 PASS 与占位值检测已补（SCEN-EVD-02 ×3）；§3-P1-11 的 SKILL/LESSONS 内部矛盾已逐条消除，只剩 `~/.paseo/task-routing.md` 与 shangshu notes 中的活态表述未改（需另行授权） |
+| D 试点 | **未执行** | 无真实业务验收，不得宣布产品验收成功 |
+| 0 唤醒冒烟 | **未执行** | `paseo wait` 主动等待方案仍是假设，未采集 |
+
+**下文 §2/§3 的行号与结论保留为当时的复核记录；已闭合项在 §2 表格中标为「已修复」，未闭合项在 §3 末尾的「仍未闭合」清单集中列出。**
+
+---
+
+## 1. 结论先行
+
+1. **最大损耗是唤醒链断裂，不是脚本正确性。** 归档 change `2026-10-25-pipeline-native-closure` 的原生冒烟 `result: FAIL`：Lead `62ce24cf` 派出的 T-02 a5（`dfa79d7b`）于 05:54:33Z 派发、06:13:24Z 才有通知，同类停摆复发于 `52479f24`、`e73389e6`。9 个任务从首次合流 04:43:47Z 到末次 06:41:44Z，T-02 共 5 次 attempt、2 次人工预算例外。
+2. **门禁可被调用者放宽。** 冻结的 `Verify with` 从不被 merge-task 读取，调用方传 `true` 即可；`--allow-legacy-author` 任何人可加；run-state 不带 `--owner` 即跳过租约校验。历史上已发生一次自审被放行（T-02，见 §3-P0-3）。
+3. **规则多源、互相矛盾。** 心跳、Lead 阈值、hotfix 定位、审查轮数、角色归类各有 2–3 套说法，执行 agent 无法同时遵守。
+4. **修法克制：** 用 Paseo 已有的 `paseo wait` 把唤醒从“等通知”改为“主动等待”；调用者参数只能收紧不能放宽；规则收敛到一处。不新增层级，不做调度平台。
+
+---
+
+## 2. R1 逐条复核
+
+| R1 结论 | 本地状态 | 证据 |
+|---|---|---|
+| 依赖未满足仍可合流 | **已修复** | `merge-task.mjs` 依赖门禁 `verifyDone`（L184），exit 35 |
+| contract-check T-1/T-10 前缀串扰 | **已修复** | `contract-check.mjs` 精确匹配（L79） |
+| hotfix review 标签写死 | **已修复** | `hotfix.sh:93` `pass(mechanical@${TIP7}/${BASE7})` |
+| 空提交 no-op 可合流 | **部分** | 默认路径 exit 31；`--allow-legacy-author` 现需 `PIPELINE_ALLOW_LEGACY_AUTHOR=1` 二次确认并写入 run-log（`author-provenance=BYPASSED(legacy)`），但仍是可用的放宽口（见 §3 仍未闭合） |
+| 同阶段多记录顺序依赖 | **已修复** | 确定性排序 attempt→phase→id |
+| CLI 缺 labels | **已改路线** | 主源改为持久 JSON `~/.paseo/agents/*/*.json`，CLI 只交叉校验（`lib/paseo-state.mjs`） |
+| 意图跨 change 误配 | **已修复** | 限定在本 change members 内 |
+| INVALID 任务不占 cap | **已修复** | 解析级 INVALID（含 `MISSING_SCOPE`）上的活体写手现在计入 cap 与持有 scope（SCEN-REC-17） |
+| 权限暂停被新记录遮蔽 | **已修复** | 改为「任一成员有待批权限即 UNRESOLVED」，不再只看 latest |
+| 测试污染工作区 | **已修复** | 前后 `git status --porcelain=v1 --untracked-files=all` 指纹比对拦改写；测试内 `git commit` 使 `MERGE_HEAD` 消失且 HEAD 已变时 exit 40 并打印现场、不 reset（SCEN-MRG-25） |
+| Pod 成员不可验证 | **已修复** | `merge-task.mjs` 现读 `pod-members.json`，taskIds 必须等于冻结成员集（多报/少报/缺文件均 exit 31），SCEN-MRG-24 双向覆盖 |
+| `lastStatus` 不能当活态 | **已修复** | 改为「任一源报 live 即 live」：CLI 报 `running` 而持久文件已 `closed` 时按 live 保守占位（SCEN-PS-LIVE-CLI 负向对照已验） |
+| 冻结 Verify 可替换 | **已修复** | 冻结命令先逐条执行，位置参数只追加；不可解析 exit 36 |
+| attempt 分支误选 | **已修复** | 分支按数值绑定 latest attempt；旧 attempt 进 `staleBranches`，不再进 MERGE；`-a10` / `-a2` 有专门用例 |
+| rejected 但分支领先直接 MERGE | **已修复（语义变更）** | 旧断言被替换：旧 attempt 的领先分支报 `STALE_BRANCH`，任务按预算处置（耗尽则 BLOCKED） |
+| 并发合流无锁 | **已修复** | `lib/lock.mjs`（`O_CREAT\|O_EXCL`，落在 git common dir），持锁后重读 HEAD，占用时 exit 37 |
+| 改名旧路径漏检 | **已修复** | `git diff --name-only -z --no-renames`；中文路径与改名各有回归 + 负向对照 |
+| R1“本机无 CLI” | **不适用** | 本机 `paseo 0.12.0` 可用，含 `wait/inspect/permit ls` |
+
+---
+
+## 3. R1 未覆盖的新发现
+
+### P0：会导致重复派发、错误合流或假通过
+
+1. **权限源 fail-open。** `paseo permit ls` 失败只写证据（`paseo-state.mjs:165`），runtime 仍可为 `ok`，所有 agent 的 `pendingPermission` 视为 false，暂停中的 agent 可能被当成可推进。
+2. **`archivedAt` 读取但不参与判定**（`paseo-state.mjs:197`）；归档但 `lastStatus` 仍为 running 的记录会占 cap 或被视为 ACTIVE。
+3. **自审已发生且被放行。** `archive/.../tasks.md:17` 为 `review=pass(dfa79d7b@fe4240f/fe0a598)`，`native-smoke.md:23` 记录 `dfa79d7b` 就是 T-02 a5 的写手。提交 `fe4240f` 只有 Co-Authored-By，无 `Pipeline-Author`/`Pipeline-Role`；合流提交 `528c691` 只有 `Pipeline-Task/Source`。根因：作者 trailer 可缺失，reviewer 身份不与派发记录交叉核对。
+4. **run-state 租约可绕过。** `requireActiveOwner` 仅在 `owner !== null` 时比对（`run-state.mjs:58`），而 SKILL 的 claim 示例本身不带 `--owner`；读改写只有 tmp+rename，无锁，并发 claim 可双双成功。
+5. **证据闸门仍偏弱。** acceptance 闸门不跑结构检查（`check-evidence.mjs:170-176`，仅 `all` 才两者都跑）；smoke 的 sha 绑定可选（L144）；场景检查是不区分大小写的子串匹配（L150，`SCEN-1` 命中 `SCEN-10`），且只要求“被提到”，不要求该场景通过。归档 change 的 T-08 冒烟 FAIL 仍以 Done 合流，正是因为当时走的 structure 闸门。
+6. **占位证据值。** `native-smoke.md` 的 `notification_message_id: msg_01JAX_LOST_NOTIFICATION` 不是采集值，违反“只写采集值”。
+
+### P1：推进摩擦、协同断裂
+
+7. **`nextAction` 单一 kind、严格优先级**（`reconcile.mjs:506-559`）。任一 INVALID/UNRESOLVED/预算耗尽都会输出 `arbitrate`，与之无关的任务的 merge/dispatch 也被压住；有 MERGE 时不同时给 dispatch，每次唤醒只推进一类动作。另外 `canDispatchNow` 不看 INVALID/UNRESOLVED，可能与 `nextAction` 结论不一致。
+8. **意图生命周期不闭合。** `fail` 后同一键无法再 claim（与 SKILL:150 “fail 后可重派”矛盾）；`record` 会清 `failedAt` 让已作废意图复活；不带 `--agent` 也能关闭意图；非超期的 INTENT_PENDING 若未命中 L554 分支会落到兜底“状态无法解释”。`run` 字段无代码写入，恒为 `local`。
+9. **`claimsMerged` 报错指向 `terminal[0]`**（L407），不是 latest。
+10. **角色多源。** `dispatch.mjs:25-29` 自带角色表，`yushi`/`mige` 归类与 `lib/roles.mjs` 冲突；已删除 profile `qingqibing` 仍在 `roles.mjs` 与 `dispatch.mjs` 中；`Review: standard` 出现在 SKILL 但未定义；任务 ID 两套规则：`lib/tasks.mjs` 接受 `[A-Za-z]+-\d+`，`reconcile.mjs:95` 只认 `T-\d+`。
+11. **规则冲突。**
+    - 心跳：`openspec/specs/pipeline-delivery/spec.md:153` “Ordinary runs SHALL create no recurring heartbeat or schedule” 对比 `SKILL.md:164` 要求 Lead 开工 `create_heartbeat`（3 分钟），shangshu profile notes 与 `~/.paseo/task-routing.md` 同样要求。
+    - Lead 阈值：CLAUDE.md 与 `SKILL.md:34` 写“预计派发 ≥6 或 >30 分钟”，task-routing 与 shangshu notes 写“任务数 ≥4”。
+    - hotfix：`SKILL.md:51` 定为 Legacy 兜底，`SKILL.md:53` 又作推荐小修入口。
+    - OpenSpec：L11 禁止 Lead 跑 `openspec`，L62 恢复流程要用 `openspec status`。
+    - 交回：要求 Lead 用 `send_agent_prompt` 向主会话交回，但主会话（Claude Code）不是 Paseo agent，收不到；`SKILL.md:178-180` 的孙→Lead→父接力在冒烟中实测 FAIL。
+    - 审查轮数：task-routing“中型 1 轮、大型 ≤2 轮、微型免审”，SKILL 写 Pod 需审一次，另有“打回 2 次 + 升级 1 次”。
+    - LESSONS 与 SKILL：LESSONS:74“Read ≥5 次就停”对比 SKILL:114“不自动中断”；LESSONS:29/30 合流与派发顺序自相矛盾。
+12. **无派发 brief 模板与 Auditor 输出契约。** 没有 Writer/Tester/Auditor/Lead 模板；Auditor 的 verdict 集合、`reviewed_sha`、review-tag 由谁拼接均未定义。下游无法机械消费上游产出，是“协同断裂”的直接来源。
+13. **message-id 去重只有文字没有实现**（spec.md:153 要求，代码无对应逻辑）。
+
+### P2：边角
+
+14. 中文路径：`git diff --name-only` 默认对非 ASCII 加引号，scope 判定误报越界，需 `-z`。
+15. `hotfix.sh:71-74` profile 查不到时以空 `--provider` 继续派发；`--short=7` 遇歧义输出更长 SHA，与 7 位 tag 正则不符。
+16. 测试超时 SIGTERM 只杀 shell，孙进程可能继续写工作区。
+17. 嵌套 pod 分支被静默忽略；FOREIGN 写手不计 cap。
+18. 过度承诺措辞：SKILL“双轨自愈 / 瞬时响应”，task-routing“毫秒级唤醒、至多 3 分钟消除永久停摆”，CLAUDE.md“毫秒级”——均无实测。
+
+### 仍未闭合（截至 2026-10-26 本轮实施后）
+
+以下各项经本轮复核仍成立，**没有**在本次改动中处理，也不得在报告中记为已修复：
+
+1. `--allow-legacy-author` 仍能整体关闭作者血统门禁。已加两道约束（`PIPELINE_ALLOW_LEGACY_AUTHOR=1` 二次确认 + run-log 记 `BYPASSED(legacy)`），未移除该路径。
+2. 通知去重（spec 要求的 message-id 复合键）只有文字描述，无实现。
+3. `Review: required` / `Review: default` 在历史 `tasks.md` 里真实出现过（11 + 1 处，均在 archive），现被 `UNKNOWN_REVIEW` 拒绝；SKILL 已注明需迁移，但未提供迁移脚本。
+4. `paseo wait` 主动等待方案（§4.1）未验证；Lead 回合不结束对上下文与超时的影响未采集。
+5. 真实业务验收、原生多 Agent 冒烟、一次成功率与耗时采集全部**未执行**。
+
+**本轮新闭合（原 2/3/4/5/7 项，均带负向对照）**
+
+| 原项 | 修复 | 负向对照 |
+|---|---|---|
+| 2 `abortMerge` 在测试内 commit 时静默返回 | 记住 `expectedPreMergeHead`，`MERGE_HEAD` 消失且 HEAD 已变即 exit 40 并打印现场，不 reset | 撤掉检测 → `SCEN-MRG-25` 红 |
+| 3 超时只杀外层 shell | `spawn` + `detached:true`，`process.kill(-pid)` 打整棵进程树，SIGTERM→2s→SIGKILL，并轮询进程组消失 | 去掉 `detached` → `SCEN-MRG-26` 红（孙进程 3 秒后落盘） |
+| 4 hotfix 空 provider / 7 位标签 | profile 解析 fail-closed（缺文件/缺 profile/缺 provider-model 一律 exit 1）；标签用完整 SHA 截前 7 位 | 恢复旧写法 → `SCEN-DISP-05/06` 3 条红 |
+| 5 外部写手不计 cap | `foreignLiveWriters` 计入 `room`；解析级 INVALID（`MISSING_SCOPE`）上正跑的写手也占 cap 与 scope；`nextAction` 与门禁同口径 | `SCEN-REC-17` ×2 红 |
+| 7 场景只要出现、占位值放行 | 要求 `scenario_results` 段 `<ID>: PASS` + 不得同时在 unverified；占位/退化值判为未采集 | `SCEN-EVD-02` ×3 分别红 |
+| 6 嵌套 Pod 分支静默忽略 | `for-each-ref refs/heads/pod/<change>` 是路径段前置匹配，`pod/<change>/<x>` 也会被列出；判据改成「映射不到任何任务即 UNMAPPED」，不再只认第三段为 `undefined` | `SCEN-REC-17 nested pod branch` 红 |
+| 8 LESSONS:29/30 派发与合流顺序自相矛盾 | 改为「先派发」只适用于**不依赖本任务 Done** 的下游；依赖本任务合流的下游必须先合流再派，合流被推到「等待空档」不是规则 | 文档条款，`SCEN-DOC-*` 无对应断言；以人工核对为准（未做负向对照，如实记录） |
+
+---
+
+## 4. 优化方案（克制版）
+
+### 4.1 唤醒链：从“等通知”改为“主动等待”（收益最大，先冒烟）
+
+- **Lead**：派发后不结束回合，前台循环 `paseo wait <id...> --timeout 540`；返回即跑 `reconcile.mjs` 并执行动作，超时则轻量对账后继续等。回合不 idle，就不依赖 `notifyOnFinish` 唤醒 idle 父级。
+- **主会话**（Claude Code，非 Paseo agent）：对 Lead 用后台 `paseo wait <lead-id>`（Bash `run_in_background` 或 Monitor），由 harness 通知；Lead 最终信封通过 `paseo logs` / `get_agent_activity` 读取。
+- 删除孙→Lead→父的 `send_agent_prompt` 接力要求与未实现的 message-id 去重。
+- Heartbeat 降为可选兜底（仅 Lead 回合意外结束时），与 spec.md:153 统一；`run-state heartbeat` 只保留 register/delete 记账。
+- 风险：`paseo wait` 长时间阻塞对 Lead 上下文与超时的影响**未采集**；包 0 冒烟不过则回退现状并如实记录。
+
+### 4.2 reconcile：一次唤醒推进所有可做动作
+
+- `nextAction` 改为有序动作列表：阻塞按任务局部生效，影响面外的 merge 与 dispatch 同轮给出（合流在前，不互斥）。全局 hold 只保留 runtime 非 ok 与 UNMAPPED。**已实施**（SKILL §2.0 与 `ALSO` 输出已同步）。
+- 活态：labels 取持久 JSON，状态取 CLI `status`；两者不一致按 live 保守计；`permit ls` 失败 → `degraded`；`archivedAt` 非空且 CLI 无此 id → 非 live。**已实施**（「任一源报 live 即 live」，SCEN-PS-LIVE-CLI 覆盖）。
+- 所有解析级 INVALID 的 live 写手计入 cap；scope 未知时视为全局占用。**未实施**（仅 `BAD_SCOPE_PATH` 计入）。
+- 任一成员有待批权限 → UNRESOLVED（不只看 latest）。**已实施**。
+- 分支精确绑定 latest attempt（`-a<N>` 数值匹配）；旧 attempt 分支报 STALE，不进 MERGE。**已实施**（`staleBranches` + `STALE_BRANCH` 输出行）。
+- rejected/abandoned 的 latest 进 REWORK（回 READY，受预算约束），不进 MERGE；同步修改 SCEN-REC-16 断言。**已实施（取「不进 MERGE」这一半）**：旧 attempt 的领先分支报 STALE 并按预算处置；未新增独立 REWORK 状态，复用的是既有 READY/BLOCKED 路径。
+- 任务 ID 规则改用 `lib/tasks.mjs` 的同一正则。**已实施**。
+
+### 4.3 merge-task：调用者只能收紧，不能放宽
+
+- 必跑冻结 `Verify with`；位置参数 `<test-cmd>` 只作追加。任务无 `Verify with` 时才允许单独传入，并写入 run-log。**已实施（exit 36）。**
+- `git diff --name-only -z --no-renames base..tip`，同时校验 base 是 tip 的祖先。**已实施（exit 30 / 34）。**
+- 测试前后比较 porcelain 指纹。**已实施。** 原计划的 `git write-tree` 未加（porcelain 已覆盖工作树与未跟踪文件）。
+- 集成写锁：git common dir 下 `O_EXCL` 锁文件，持锁后重读 HEAD。**已实施（exit 37）。**
+- 非自审：`Pipeline-Author` 必填；`--allow-legacy-author` 需显式环境变量并写入 run-log。**已实施（二次确认 + `BYPASSED(legacy)` 记录）。** reviewer 与 run-state 派发记录交叉核对**未实施**。
+- Pod：读 `pod-members.json`，taskIds 必须等于成员集合。**已实施（exit 31）。**
+- 幂等：**本条建议已裁决为不采纳。** `openspec/specs/pipeline-delivery/spec.md:140` 的 SCEN-MRG-08 明文规定「已 Done → exit 非零且不产生新提交」，改 exit 0 属于门禁语义变更，需 OpenSpec delta 与确认点 1；规范优先于走查建议。**实际实施的是诊断精度**：同一 tip 的重试报 `task T is already merged from <tip7> ... retry after a lost merge receipt`，换了 tip 的旧成果仍报 `different revision cannot be merged under the same task`，两者都不产生提交、不改账本（SCEN-MRG-27 × 2 覆盖，负向对照：抹掉 source 比较后该用例变红）。
+- 超时用进程组 kill。**已实施**：`spawn(..., {detached:true})` + `process.kill(-pid)`，SIGTERM 后 2s SIGKILL，并轮询进程组消失（SCEN-MRG-26 用 3 秒后落盘的孙进程验证；负向对照去掉 `detached` 即变红）。
+
+### 4.4 run-state
+
+- 存在租约时 `--owner` 必填；读改写与 merge-task 共用 `O_EXCL` 锁。**已实施**（`lib/lock.mjs`，锁内校验，`ELOCKED` → exit 2；SCEN-RS-LOCK×2 覆盖并发 claim 与陈旧锁回收）。
+- `fail` 后允许同键重新 claim（记 `retryOf`）；`record` 必须带 `--agent`，且不得复活已 fail 意图。**已实施**。
+- 不做自动接管、代际扩展等新机制。
+
+### 4.5 单一来源与契约
+
+- 角色：`dispatch.mjs`、`hotfix.sh` 改用 `lib/roles.mjs`；删除 `qingqibing`；`Review` 只留 `strict|mechanical`（或正式定义 `standard`），二选一。**部分实施**：`lib/roles.mjs` 已是单点定义；`Review` 选定「正式定义 `standard`」（见 SKILL §2.1 三档语义），`required`/`default` 判为未知；`dispatch.mjs`/`hotfix.sh` 的引用未改，`qingqibing` 仍在 `WRITER_ROLES`（真实历史数据里出现过 1 条，删除会让既有记录被判 UNMAPPED）。
+- Lead 阈值：只在 CLAUDE.md 定义一次（建议沿用“预计派发 ≥6 或 >30 分钟”），SKILL、task-routing、shangshu notes 只引用。
+- 心跳：**已按「撤销 SKILL 中的强制要求」收敛**（不需要改 spec）。SKILL 现在写明常规运行不创建周期性 heartbeat/schedule、无外部计时器源时对账只在下次真实调用发生；`run-state.mjs heartbeat` 降为「确证来源才登记」，并给出停摆处置 `BLOCKED_ON_WAKE`。`~/.paseo/task-routing.md` 与 shangshu notes 中的强制表述**未改**（属活态配置，需另行授权）。
+- hotfix：**已收敛为两种明确用途**——`hotfix.sh` 是 L1 小修正式入口（自带 `paseo wait`，不依赖未验证回调），`dispatch.mjs` 是纯调试用的 Legacy 兜底；两者共用同一套合流门禁，不再有互相矛盾的两句话。
+- OpenSpec：**已按「主会话独占、Lead 只读产物」收敛**——`openspec status` 由主会话执行后把结论交给 Lead，Lead 只读 `openspec/changes/<name>/` 下的文件，需要时走交回点。
+- 新增 `templates/`，4 个 ≤30 行 brief：writer / tester / auditor / lead。固定字段：目标与不变式、base SHA、Write scope、Verify 命令、必填 trailers、信封格式（≤20 行，`kind=phase-complete|blocked`，含 `conflicting_tests`、`BLOCKED_ON_CONFLICT`）。Auditor 输出 `verdict ∈ {PASS, PASS_WITH_NITS, BLOCK}` + `reviewed_sha` + blocker ID 列表；review-tag 由 Lead 机械拼接，不由 Auditor 手写。
+- SKILL 与 LESSONS 去重：LESSONS 只留事故与教训，规则只在 SKILL 出现一次；删除 §3-P2-18 所列过度承诺。
+
+### 4.6 分流（降低流程税）
+
+| 档 | 判据 | 编排 | 审查 |
+|---|---|---|---|
+| L0 直做 | 单文件、问答 | 主会话 | 无 |
+| L1 单写手 | 1 任务、有可靠验证命令 | 主会话 + merge-task（hotfix） | mechanical 或 1 次 Auditor |
+| L2 小 DAG | 2–5 任务 | 主会话前台 `paseo wait` 编排 | 按风险面 |
+| L3 无人值守 | 预计派发 ≥6 或 >30 分钟 | Lead + `paseo wait` | 按风险面，≤2 轮后仲裁 |
+
+DAG 与 cap：滚动释放（依赖满足且 scope 不冲突即派），Wave 只作展示；cap 统计写手与 Tester，Auditor 另设轻量上限（如 2）；Tester 只在 `strict` 任务派；首批任务优先打通最小业务链，尽早暴露集成问题。
+
+### 4.7 证据闸门
+
+acceptance 先跑 structure；smoke 必须 `--sha`；场景按 token 边界精确匹配，并要求该场景结果为 PASS；占位值（如 `msg_01JAX_…`）判为未采集。
+
+**状态：** 五项**已全部实施**。acceptance 先跑 structure；smoke 必须 `--sha`；场景按 token 边界匹配；必需场景必须在 `scenario_results` 段有 `<ID>: PASS`（只在正文被提到、结论非 PASS、或同时挂在 unverified 都拒绝）；占位值（`PLACEHOLDER`/`LOST`/`NOT_COLLECTED`、全同字符退化值）与字段缺失同等对待。SCEN-EVD-02 三条负向对照逐项撤掉修复均变红。
+
+---
+
+## 5. 实施分包
+
+每个包 = 代码 + SKILL/模板 + 测试同步，负向用例先红后绿。
+
+| 包 | 内容 | 出口判据 | 状态 |
+|---|---|---|---|
+| 0 唤醒冒烟（先做） | 3 任务、≥1 依赖边、≥1 对共享文件（整数运算契约）；Lead 前台 `paseo wait`，主会话后台 wait Lead | 无人工催促完成派发→合流→最终信封；各段真实耗时入证据；失败记 FAIL，保留现状 | **未执行** |
+| A 观测与对账 | §4.2 + 角色单源 | 新增用例：permit 失败降级、archivedAt、MISSING_SCOPE 占 cap、旧 attempt 权限、`-a10`/`-a2`、rejected 不进 MERGE、局部阻塞不压独立任务 | **已实施**（`MISSING_SCOPE` 占 cap 与「同仓外部写手计 cap」本次补齐，SCEN-REC-17 ×2） |
+| B 合流门禁 | §4.3 + §4.7 | 新增用例：Verify 替换、改名越界、中文路径、改写 staged、测试内 commit、并发 merge、legacy no-op、自审复刻 T-02、重复合流幂等 | **已实施**；「重复合流幂等」按 spec 裁决落为**诊断精度**（仍 exit 非零），见 §4.3 |
+| C 契约收敛 | §4.4 + §4.5 | run-state 并发与 owner 用例；docs.test 检查规则只在一处定义；SKILL 内部矛盾清单（§3-P1-11）逐条消除 | **部分**；run-state 并发已覆盖，SKILL 矛盾清单未逐条消除 |
+| D 试点 | 1 个日常小修（L1）+ 1 个跨模块任务（L2/L3） | 如实记录首次业务验收结果、人工救援次数、READY 等待时长与原因 | **未执行** |
+
+前置：当前未提交改动需由用户确认是否作为基线提交（未经确认不提交、不推送）。建议用一个 OpenSpec change（如 `pipeline-hardening-v2`）承载 A–C，任务数 ≤8，主会话按 L2 编排。
+
+---
+
+## 6. 度量
+
+首次业务验收通过率、人工救援次数、READY 等待原因与时长、返工分类（spec 不清 / 实现错误 / 集成冲突 / 环境）、每 change 派发次数。`createdAt → 通知` 与执行时长分列统计。采集不到写“未采集”。
+
+---
+
+## 7. 需要用户决定
+
+1. 心跳：撤销 SKILL/notes 强制要求（推荐），还是修订 spec 允许心跳。
+2. Lead 阈值口径：“预计派发 ≥6 或 >30 分钟”（推荐）还是“任务数 ≥4”。
+3. hotfix 定位：L1 正式入口（推荐）还是 Legacy。
+4. 当前未提交改动是否先作为基线提交。
+5. 是否授权按 §5 从包 0 开始实施。

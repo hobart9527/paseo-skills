@@ -1,0 +1,50 @@
+{
+  "archivedAt": "2026-10-25T11:58:35.384Z",
+  "attentionReason": null,
+  "attentionTimestamp": null,
+  "createdAt": "2026-10-25T11:47:42.734Z",
+  "cwd": "~/.paseo/worktrees/3j0rvshz/task-eas-substitute-phase3-phase4-t-05",
+  "features": [
+    {
+      "description": "Switch Codex into planning-only collaboration mode",
+      "icon": "list-todo",
+      "id": "plan_mode",
+      "label": "Plan",
+      "tooltip": "Toggle plan mode",
+      "type": "toggle",
+      "value": false
+    }
+  ],
+  "id": "a98527a6-adb5-4689-8792-f3bb0059c45d",
+  "internal": false,
+  "labels": {
+    "paseo.open-agent-tab.cid_1f0f932625dd4a1b89e8c450a0215229": "true",
+    "paseo.parent-agent-id": "53c4928e-9b2b-47fa-88eb-40424a9c9da6",
+    "pipeline.attempt": "1",
+    "pipeline.change": "eas-substitute-phase3-phase4",
+    "pipeline.phase": "TEST_FIRST",
+    "pipeline.role": "ceshi",
+    "pipeline.task": "T-05"
+  },
+  "lastActivityAt": "2026-10-25T11:58:35.384Z",
+  "lastModeId": "full-access",
+  "lastStatus": "closed",
+  "lastUserMessageAt": null,
+  "persistence": {
+    "metadata": null,
+    "nativeHandle": "<redacted>",
+    "provider": "codex",
+    "sessionId": "<redacted>"
+  },
+  "provider": "codex",
+  "requiresAttention": false,
+  "runtimeInfo": {
+    "modeId": "full-access",
+    "model": "gpt",
+    "provider": "codex",
+    "thinkingOptionId": "high"
+  },
+  "title": "[Pipeline] ceshi T-05 eas-substitute-phase3-phase4",
+  "updatedAt": "2026-10-25T11:58:35.384Z",
+  "workspaceId": "wks_a0c4abe6031c428c"
+}

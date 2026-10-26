@@ -1,0 +1,35 @@
+{
+  "archivedAt": "2026-10-25T12:10:03.320Z",
+  "attentionReason": null,
+  "attentionTimestamp": null,
+  "createdAt": "2026-10-25T11:58:56.499Z",
+  "cwd": "~/.paseo/worktrees/3j0rvshz/task-eas-substitute-phase3-phase4-t-05",
+  "features": [],
+  "id": "1a7e5685-66e7-4252-b015-182b1fff95f8",
+  "internal": false,
+  "labels": {
+    "paseo.parent-agent-id": "53c4928e-9b2b-47fa-88eb-40424a9c9da6",
+    "reason": "标记 T-05 实现阶段 runner 属性"
+  },
+  "lastActivityAt": "2026-10-25T12:10:03.320Z",
+  "lastModeId": "bypassPermissions",
+  "lastStatus": "closed",
+  "lastUserMessageAt": null,
+  "persistence": {
+    "metadata": null,
+    "nativeHandle": "<redacted>",
+    "provider": "claude",
+    "sessionId": "<redacted>"
+  },
+  "provider": "claude",
+  "requiresAttention": false,
+  "runtimeInfo": {
+    "modeId": "bypassPermissions",
+    "model": "flash",
+    "provider": "claude",
+    "thinkingOptionId": null
+  },
+  "title": "[Pipeline] gongbu T-05 eas-substitute-phase3-phase4",
+  "updatedAt": "2026-10-25T12:10:03.320Z",
+  "workspaceId": "wks_a0c4abe6031c428c"
+}

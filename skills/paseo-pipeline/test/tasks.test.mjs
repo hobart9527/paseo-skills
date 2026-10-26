@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseTasks } from '../lib/tasks.mjs';
+import { parseTasks, normalizeScope, isFileWithinScopes, isTaskId } from '../lib/tasks.mjs';
 
 function taskMarkdown({
   id = 'T-01',
@@ -62,6 +62,10 @@ test('parses task fields, a dependency chain, multiple dependencies and Done evi
       depends: [],
       scope: ['src/tasks.mjs', 'test/tasks.test.mjs'],
       review: 'strict',
+      requiredReview: 'strict',
+      risk: ['error-handling'],
+      verify: null,
+      scenarios: [],
       doneLine: { source: 'a1b2c3d', review: 'pass(12345678@a1b2c3d/7654321)' },
     },
     {
@@ -72,6 +76,10 @@ test('parses task fields, a dependency chain, multiple dependencies and Done evi
       depends: ['T-01'],
       scope: ['src/reconcile.mjs'],
       review: 'mechanical',
+      requiredReview: 'mechanical',
+      risk: [],
+      verify: null,
+      scenarios: [],
       doneLine: null,
     },
     {
@@ -82,6 +90,10 @@ test('parses task fields, a dependency chain, multiple dependencies and Done evi
       depends: ['T-01', 'T-02'],
       scope: ['test/delivery.test.mjs', 'docs/delivery.md'],
       review: null,
+      requiredReview: null,
+      risk: [],
+      verify: null,
+      scenarios: [],
       doneLine: null,
     },
   ]);
@@ -117,6 +129,57 @@ test('a checkbox task line without an ID reports MALFORMED_LINE', () => {
   - Write scope: src/task.mjs
 `);
 
+  assertError(result, 'MALFORMED_LINE');
+});
+
+test('the colon form `T-01: 标题` parses identically to the space form', () => {
+  // 真实兼容性回归：仓库内已归档 change 与 contract-check 夹具都写 `T-01: 标题`。
+  // 只认空格形式会让整份 tasks.md 解析成 0 条任务（2026-10-25 实测 malformed=5~8），
+  // 对账与合流一起失效。
+  const colon = parseTasks(`- [ ] 1.1 T-01: Alpha title
+  - Depends on: none
+  - Write scope: src/a.mjs, src/shared.mjs
+  - Verify with: \`node --test src/a.test.mjs\`
+`);
+  assert.deepEqual(colon.errors, []);
+  assert.equal(colon.tasks.length, 1);
+  assert.equal(colon.tasks[0].id, 'T-01');
+  assert.equal(colon.tasks[0].num, '1.1');
+  assert.equal(colon.tasks[0].title, 'Alpha title');
+  assert.deepEqual(colon.tasks[0].scope, ['src/a.mjs', 'src/shared.mjs']);
+  assert.deepEqual(colon.tasks[0].verify.tests, ['src/a.test.mjs']);
+
+  const space = parseTasks(`- [ ] 1.1 T-01 Alpha title
+  - Depends on: none
+  - Write scope: src/a.mjs, src/shared.mjs
+  - Verify with: \`node --test src/a.test.mjs\`
+`);
+  assert.deepEqual(colon.tasks, space.tasks);
+});
+
+test('the colon form still supports a Done line and dependency chain', () => {
+  const result = parseTasks(`- [x] 1.1 T-01: Alpha
+  - Depends on: none
+  - Write scope: [src/a.mjs]
+  - Done: source=abc1234 review=pass(deadbeef@abc1234/def5678)
+
+- [ ] 1.2 T-02: Beta
+  - Depends on: T-01
+  - Write scope: [src/b.mjs]
+`);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.tasks[0].done, true);
+  assert.equal(result.tasks[0].doneLine.source, 'abc1234');
+  assert.deepEqual(result.tasks[1].depends, ['T-01']);
+});
+
+test('a colon glued to the ID (`T-01:Alpha`) stays MALFORMED_LINE', () => {
+  // 只有 `T-01: 标题`（冒号后跟空白或行尾）是合法形式；`T-01:Alpha` 不是真实写法，
+  // 让它静默通过会把 ID 解析成 `T-01:Alpha`，依赖引用全部对不上。
+  const result = parseTasks(`- [ ] 1.1 T-01:Alpha
+  - Depends on: none
+  - Write scope: src/task.mjs
+`);
   assertError(result, 'MALFORMED_LINE');
 });
 
@@ -207,3 +270,162 @@ for (const [name, doneLine] of [
     assertError(result, 'BAD_DONE_LINE');
   });
 }
+
+test('normalizeScope normalizes valid relative paths and rejects invalid paths', () => {
+  assert.deepEqual(normalizeScope('src/services/'), ['src', 'services']);
+  assert.deepEqual(normalizeScope('src/services/approval.ts'), ['src', 'services', 'approval.ts']);
+  assert.deepEqual(normalizeScope('.'), []);
+  assert.deepEqual(normalizeScope('./src/services/'), ['src', 'services']);
+  assert.deepEqual(normalizeScope('src/../src/services/'), ['src', 'services']);
+  assert.equal(normalizeScope('/absolute/path'), null);
+  assert.equal(normalizeScope('C:\\windows\\path'), null);
+  assert.equal(normalizeScope('../escaping/root'), null);
+  assert.equal(normalizeScope(''), null);
+  assert.equal(normalizeScope(null), null);
+});
+
+test('isFileWithinScopes checks path prefix containment', () => {
+  const scopes = ['packages/server/src/services/approval-service.ts', 'packages/server/src/db/'];
+
+  assert.equal(isFileWithinScopes('packages/server/src/services/approval-service.ts', scopes), true);
+  assert.equal(isFileWithinScopes('packages/server/src/db/index.ts', scopes), true);
+  assert.equal(isFileWithinScopes('packages/server/src/db/sub/extra.ts', scopes), true);
+  assert.equal(isFileWithinScopes('packages/server/src/db_other/index.ts', scopes), false);
+  assert.equal(isFileWithinScopes('packages/server/src/services/other.ts', scopes), false);
+  assert.equal(isFileWithinScopes('packages/server/test/approval.test.ts', scopes), false);
+
+  // 根范围放行一切
+  assert.equal(isFileWithinScopes('any/file.ts', ['.']), true);
+  assert.equal(isFileWithinScopes('any/file.ts', [[]]), true);
+});
+
+
+// --- 风险面与 Review 档位（L1-04） ---
+// 真实缺口：治理 change 的 7 个任务全部高风险，但旧解析器不消费 Risk-surface，
+// 于是「Review 缺省」被当成低风险，mechanical 快轨的实际风险无人拦截。
+
+test('Risk-surface non-none derives strict review even when Review is omitted', () => {
+  const result = parseTasks(`- [ ] 1.1 T-01 Governance seam
+  - Depends on: none
+  - Write scope: packages/server/src/routes/api.ts
+  - Risk-surface: [crypto/auth, concurrency, irreversible]
+`);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.tasks[0].review, null);
+  assert.equal(result.tasks[0].requiredReview, 'strict');
+  assert.deepEqual(result.tasks[0].risk, ['concurrency', 'crypto/auth', 'irreversible']);
+});
+
+test('Risk-surface none with no Review stays undetermined instead of becoming mechanical', () => {
+  const result = parseTasks(`- [ ] 1.1 T-01 Docs only
+  - Depends on: none
+  - Write scope: docs/
+  - Risk-surface: [none]
+`);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.tasks[0].review, null);
+  assert.equal(result.tasks[0].requiredReview, null);
+});
+
+test('explicit Review strict stays strict and a repeated Risk-surface line merges', () => {
+  const result = parseTasks(`- [ ] 1.1 T-01 Repeated risk
+  - Depends on: none
+  - Write scope: src/
+  - Review: Strict
+  - Risk-surface: error-handling
+  - Risk-surface: numerical, error-handling
+`);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.tasks[0].review, 'strict');
+  assert.equal(result.tasks[0].requiredReview, 'strict');
+  assert.deepEqual(result.tasks[0].risk, ['error-handling', 'numerical']);
+});
+
+test('unknown Risk-surface token is an error, not silently treated as low risk', () => {
+  const result = parseTasks(`- [ ] 1.1 T-01 Typo risk
+  - Depends on: none
+  - Write scope: src/
+  - Risk-surface: [errorhandling]
+`);
+  assert.equal(result.errors.length, 1);
+  assert.equal(result.errors[0].code, 'UNKNOWN_RISK');
+  assert.equal(result.errors[0].task, 'T-01');
+});
+
+test('mechanical review conflicting with a non-none Risk-surface is rejected', () => {
+  const result = parseTasks(`- [ ] 1.1 T-01 Risky mechanical
+  - Depends on: none
+  - Write scope: src/
+  - Review: mechanical
+  - Risk-surface: [crypto/auth]
+`);
+  assert.equal(result.errors.length, 1);
+  assert.equal(result.errors[0].code, 'REVIEW_RISK_CONFLICT');
+});
+
+test('unknown Review value is an error', () => {
+  const result = parseTasks(`- [ ] 1.1 T-01 Bad review
+  - Depends on: none
+  - Write scope: src/
+  - Review: lenient
+`);
+  assert.equal(result.errors.length, 1);
+  assert.equal(result.errors[0].code, 'UNKNOWN_REVIEW');
+});
+
+// --- Verify with 可执行性（L1-04） ---
+// 实测：治理 change 的 7 条 Verify with 全是自然语言描述，没有一条是可执行命令。
+// 解析器必须能区分二者，调用方才能拒绝「把描述当测试命令」。
+
+test('Verify with separates an executable command from a natural-language description', () => {
+  const result = parseTasks(`- [ ] 1.1 T-01 Command form
+  - Depends on: none
+  - Write scope: src/
+  - Verify with: NODE_ENV=test node --test --import tsx packages/server/test/loan-offset.test.ts
+
+- [ ] 1.2 T-02 Description form
+  - Depends on: none
+  - Write scope: src/
+  - Verify with: 单元与集成测试验证流转动作落盘 Saga 账本、超时置为 UNKNOWN
+`);
+  assert.deepEqual(result.errors, []);
+  const [command, description] = result.tasks;
+  assert.equal(command.verify.command, 'NODE_ENV=test node --test --import tsx packages/server/test/loan-offset.test.ts');
+  assert.deepEqual(command.verify.tests, ['packages/server/test/loan-offset.test.ts']);
+  assert.equal(description.verify.command, null);
+  assert.equal(description.verify.raw, '单元与集成测试验证流转动作落盘 Saga 账本、超时置为 UNKNOWN');
+  assert.deepEqual(description.verify.tests, []);
+});
+
+test('Verify with accepts a plain command without env assignment and ignores prose after a command', () => {
+  const result = parseTasks(`- [ ] 1.1 T-01 Plain
+  - Depends on: none
+  - Write scope: src/
+  - Verify with: npm test
+
+- [ ] 1.2 T-02 Prose first
+  - Depends on: none
+  - Write scope: src/
+  - Verify with: 运行 node --test test/a.test.ts 验证
+`);
+  const [plain, prose] = result.tasks;
+  assert.equal(plain.verify.command, 'npm test');
+  assert.equal(prose.verify.command, null, '以自然语言开头的行不是可执行命令');
+});
+
+test('Scenarios field collects scenario ids across repeated lines', () => {
+  const result = parseTasks(`- [ ] 1.1 T-01 Scenarios
+  - Depends on: none
+  - Write scope: src/
+  - Scenarios: SCEN-A-01, SCEN-A-02
+  - Scenario: SCEN-A-03
+`);
+  assert.deepEqual(result.tasks[0].scenarios, ['SCEN-A-01', 'SCEN-A-02', 'SCEN-A-03']);
+});
+
+test('isTaskId accepts any <prefix>-<number> id, matching what parseTasks itself accepts', () => {
+  // reconcile 曾自带 /^T-\d+$/，比解析器更严：tasks.md 里合法的 `TASK-01` 会在 agent 标签
+  // 比对时被判「不在 tasks.md」，任务永远进不了 ACTIVE。两处规则必须来自同一属主。
+  for (const id of ['T-01', 'TASK-01', 'BUG-3', 'scen-12']) assert.equal(isTaskId(id), true, id);
+  for (const id of ['T01', 'T-', '-1', 'T-01x', '', null, undefined, 7]) assert.equal(isTaskId(id), false, String(id));
+});
