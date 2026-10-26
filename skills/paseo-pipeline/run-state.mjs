@@ -7,7 +7,11 @@
 //   node run-state.mjs claim    <change> --task T-01 [--attempt 1] [--phase impl] [--role gongbu] [--action dispatch]
 //   node run-state.mjs record   <change> --key <key> --agent <agent-id> [--workspace <id>] [--owner <id>]
 //   node run-state.mjs fail     <change> --key <key> --reason <text> [--owner <id>]
-//   node run-state.mjs heartbeat <change> --id <heartbeat-id> --action register|renew|pause|delete [--expires-at <iso>]
+//
+// 无 heartbeat 子命令：SKILL 已声明常规运行不建周期性 heartbeat，2026-10-26 的
+// `hardening-governance-contracts` 账本里 heartbeats 为 0，注册入口没有使用者。
+// 账本里的 `heartbeats` 字段保留为只读兼容（旧文件仍可读，`status` 仍打印），
+// 但没有写入路径——要恢复注册语义必须先有可证伪的唤醒来源。
 //
 // 退出码：0 成功；2 动作被拒（重复意图、租约无效或非当前 owner、复活已作废意图）；1 用法/状态错误。
 //
@@ -21,7 +25,7 @@
 //     record 必须带真实 agent 且不得复活已 fail 的意图。
 import {
   readRunState, updateRunState, intentKey, findByKey, openIntents, leaseStatus,
-  isFailed, heartbeatStatus, intentAgeMs, DEFAULT_LEASE_TTL_MS,
+  isFailed, intentAgeMs, DEFAULT_LEASE_TTL_MS,
 } from './lib/run-state.mjs';
 
 function fail(code, message) {
@@ -34,7 +38,7 @@ const json = argv.includes('--json');
 const command = argv[0];
 const change = argv[1];
 if (!command || !change) {
-  console.error('Usage: node run-state.mjs <begin|status|claim|record|fail|heartbeat> <change> [flags]');
+  console.error('Usage: node run-state.mjs <begin|status|claim|record|fail> <change> [flags]');
   process.exit(1);
 }
 
@@ -237,44 +241,6 @@ switch (command) {
     });
     if (result.missing) fail(1, `未知意图键：${key}`);
     console.log(json ? JSON.stringify({ change, intent: result.intent }) : `[run-state] fail ok ${key} reason=${reason}`);
-    break;
-  }
-
-  case 'heartbeat': {
-    const id = flag('id');
-    const action = flag('action') ?? 'register';
-    if (id === null) fail(1, 'heartbeat 需要 --id <heartbeat-id>');
-    const expiresAt = flag('expires-at');
-    const result = update(`heartbeat ${action} ${id}`, (draft) => {
-      let beat = heartbeatStatus(draft, id);
-      if (!beat) {
-        beat = { id, createdAt: nowIso, status: 'active', expiresAt: null };
-        draft.heartbeats.push(beat);
-      }
-      beat.updatedAt = nowIso;
-      if (action === 'register') {
-        if (expiresAt === null) return { needsExpiry: true };
-        beat.status = 'active';
-        beat.expiresAt = expiresAt;
-        beat.deletedAt = null;
-      } else if (action === 'renew') {
-        if (expiresAt === null) return { needsExpiry: true };
-        beat.status = 'active';
-        beat.expiresAt = expiresAt;
-      } else if (action === 'pause') {
-        beat.status = 'paused';
-      } else if (action === 'delete') {
-        beat.status = 'deleted';
-        beat.deletedAt = nowIso;
-        beat.expiresAt = null;
-      } else {
-        return { badAction: action };
-      }
-      return { beat };
-    });
-    if (result.needsExpiry) fail(1, `${action} 需要 --expires-at <iso>（到期不等于任务结束，但必须可判定）`);
-    if (result.badAction) fail(1, `未知 heartbeat action: ${result.badAction}（register|renew|pause|delete）`);
-    console.log(json ? JSON.stringify({ change, heartbeat: result.beat }) : `[run-state] heartbeat ${action} ok ${id} status=${result.beat.status}`);
     break;
   }
 

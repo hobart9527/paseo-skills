@@ -8,7 +8,7 @@
 // 本模块只补这一层最小事实，不建第二套任务真源：
 //   lease        —— 同一 run 唯一编排 owner（代际租约，旧 Lead 复活后不能继续提交动作）
 //   intents      —— 动作意图（先记意图 → 执行 → 记真实 agent/workspace 回执）
-//   heartbeats   —— 原生 Heartbeat 生命周期（注册/续期/暂停/删除），到期不等于任务结束
+//   heartbeats   —— 只读兼容字段：旧账本可能带该数组，新代码不再写入（heartbeat 子命令已删）
 //
 // 存放位置：git common dir 下的 `paseo-pipeline/<change>/run-state.json`。
 // 为什么不放工作树：合流要求工作树干净，把运行时状态写进 openspec/ 会让每次派发都弄脏
@@ -159,10 +159,6 @@ export function leaseStatus(state, now = Date.now()) {
   const expiresAtMs = lease.expiresAt ? Date.parse(lease.expiresAt) : NaN;
   const valid = Number.isFinite(expiresAtMs) && expiresAtMs > now;
   return { ...lease, expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : null, valid };
-}
-
-export function heartbeatStatus(state, id) {
-  return state.heartbeats.find((entry) => entry.id === id) ?? null;
 }
 
 /** 意图年龄（毫秒）；时间戳解析失败返回 null（调用方不得据此判定为新鲜）。 */

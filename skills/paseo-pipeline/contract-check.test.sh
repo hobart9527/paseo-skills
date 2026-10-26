@@ -81,8 +81,8 @@ check 0 "SKIPPED" "$(run "$WORK/spec-full.md" "$WORK/nope.test.js")"
 echo "R6 部分产出 → 期望 1"
 check 1 "部分产出" "$(run "$WORK/spec-full.md" "$WORK/test-alpha.test.js" "$WORK/nope.test.js")"
 
-echo "R7 spec 提到 error 但无可提取字面量 → 期望 1"
-check 1 "spec 有 error 无字面量" "$(run "$WORK/spec-mentions.md" "$WORK/test-plain.test.js")"
+echo "R7 spec 提到 error 但用错误码方言 → 期望 0（消息通道报 N/A，2026-10-26 语义变更）"
+check 0 "spec 有 error 无字面量 → N/A" "$(run "$WORK/spec-mentions.md" "$WORK/test-plain.test.js")"
 
 echo "R8 spec 确实无错误契约 → 期望 0 SKIPPED"
 check 0 "无错误契约 SKIPPED" "$(run "$WORK/spec-noerror.md" "$WORK/test-plain.test.js")"
@@ -154,6 +154,56 @@ check 1 "场景遗漏拦截" "$(run "$WORK/spec-scen.md" "$WORK/test-scen-partia
 
 echo "R19 场景未完全覆盖带 --partial → 期望 0"
 check 0 "场景部分覆盖 partial" "$(run "$WORK/spec-scen.md" "$WORK/test-scen-partial.test.js" --partial)"
+
+# ---------- 2026-10-26 收窄：谓词窗口、全局提取、方言不适用 ----------
+cat > "$WORK/spec-code.md" <<'EOF'
+### Requirement: CodeDialect
+The adapter SHALL reject with an error whose `code` identifies the failure.
+#### Scenario: SCEN-CODE-01 rejection carries a code
+- **WHEN** the payload is invalid
+- **THEN** the error code is `ATTACHMENT_SIZE_INVALID`.
+EOF
+# 谓词回调：断言的错误码不是完整消息，不得进消息通道。
+cat > "$WORK/test-predicate.test.js" <<'EOF'
+function hasErrorCode(expected) {
+  return (error) => error.code === expected;
+}
+await assert.rejects(fn, hasErrorCode('ATTACHMENT_SIZE_INVALID'));
+await assert.rejects(fn, (err) => err instanceof TypeError && err.code === 'INVALID_LOAN_RESERVATION');
+// SCEN-CODE-01
+EOF
+echo "R20 谓词回调 + 错误码方言 → 期望 0（消息通道 N/A，只对账场景）"
+check 0 "谓词窗口不进消息通道" "$(run "$WORK/spec-code.md" "$WORK/test-predicate.test.js")"
+
+# 全局 message: 提取已删：桩返回值不是契约。
+cat > "$WORK/test-stub-value.test.js" <<'EOF'
+const fakeClient = {
+  async testConnection() {
+    return { healthy: true, latencyMs: 1, message: 'ok' };
+  }
+};
+await assert.rejects(fn, (err) => err.code === 'ATTACHMENT_SIZE_INVALID');
+// SCEN-CODE-01
+EOF
+echo "R21 桩返回值 message: 'ok' → 期望 0（不再被当成断言消息）"
+check 0 "桩返回值不算断言" "$(run "$WORK/spec-code.md" "$WORK/test-stub-value.test.js")"
+
+# 全局 new XError(STR) 提取已删：构造输入不是断言消息。
+cat > "$WORK/test-ctor-input.test.js" <<'EOF'
+const fetcher = { dict: new MasterDataSyncError('MASTER_DATA_FETCH_FAILED', '远端不可达') };
+await assert.rejects(fn, (err) => err.code === 'ATTACHMENT_SIZE_INVALID');
+// SCEN-CODE-01
+EOF
+echo "R22 构造器输入被断言 → 期望 0（不再被当成 spec 未声明）"
+check 0 "构造输入不算断言消息" "$(run "$WORK/spec-code.md" "$WORK/test-ctor-input.test.js")"
+
+# 方言匹配时消息通道照常双向对账：真 drift 仍要拦。
+cat > "$WORK/test-code-drift.test.js" <<'EOF'
+await assert.rejects(fn, { message: "spec 没声明这条消息" });
+// SCEN-CODE-01
+EOF
+echo "R23 方言匹配时的真 drift → 期望 1"
+check 1 "真 drift 仍拦" "$(run "$WORK/spec-full.md" "$WORK/test-code-drift.test.js" --partial)"
 
 printf '\n通过 %d / 失败 %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

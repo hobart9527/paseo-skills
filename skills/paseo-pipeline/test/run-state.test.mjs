@@ -118,22 +118,13 @@ test('unknown key on record is a usage error, not a silent success', (context) =
   assert.match(result.stderr, /未知意图键/);
 });
 
-test('heartbeat lifecycle requires an expiry and records pause and delete', (context) => {
+test('heartbeat is no longer a run-state subcommand', (context) => {
+  // 注册入口已删：SKILL 声明常规运行不建周期性 heartbeat，2026-10-26 账本 heartbeats=0。
+  // 旧账本里的 heartbeats 数组仍是只读兼容字段，status 照常打印，但不得再有写入路径。
   const subject = fixture(context);
-  const noExpiry = subject.run('heartbeat', '--id', 'hb-1', '--action', 'register');
-  assert.equal(noExpiry.status, 1, 'register without expiry is not a decision-ready record');
-  assert.match(noExpiry.stderr, /--expires-at/);
-
-  const expires = new Date(Date.now() + 7_200_000).toISOString();
-  assert.equal(subject.run('heartbeat', '--id', 'hb-1', '--action', 'register', '--expires-at', expires).status, 0);
-  assert.equal(subject.run('heartbeat', '--id', 'hb-1', '--action', 'renew', '--expires-at', expires).status, 0);
-  assert.equal(subject.run('heartbeat', '--id', 'hb-1', '--action', 'pause').status, 0);
-  assert.equal(subject.run('heartbeat', '--id', 'hb-1', '--action', 'delete').status, 0);
-
-  const beat = subject.read().heartbeats[0];
-  assert.equal(beat.status, 'deleted');
-  assert.ok(beat.deletedAt, 'delete must be recorded, not inferred');
-  assert.equal(beat.expiresAt, null);
+  const result = subject.run('heartbeat', '--id', 'hb-1', '--action', 'register');
+  assert.equal(result.status, 1, 'removed subcommand must be a usage error');
+  assert.match(result.stderr, /未知命令/);
 });
 
 test('a corrupt run-state file is reported as absent, never thrown', (context) => {

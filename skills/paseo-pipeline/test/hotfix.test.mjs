@@ -6,7 +6,6 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const dispatchPath = fileURLToPath(new URL("../dispatch.mjs", import.meta.url));
 const hotfixPath = fileURLToPath(new URL("../hotfix.sh", import.meta.url));
 const runStatePath = fileURLToPath(new URL("../run-state.mjs", import.meta.url));
 
@@ -83,77 +82,11 @@ function run(command, argv, setup) {
   return result;
 }
 
-function dryRun(context, profile, flags = []) {
-  const setup = fixture(context, profile);
-  const result = run(process.execPath, [
-    dispatchPath, "qingqibing", "implement", "fixture-change", setup.brief,
-    "--dry-run", ...flags,
-  ], setup);
-  assert.equal(result.status, 0, result.stderr);
-  const output = JSON.parse(result.stdout);
-  assert.ok(Array.isArray(output.argv), "dry-run JSON must expose argv");
-  return { output, stderr: result.stderr };
-}
 
 function optionValues(argv, option) {
   return argv.flatMap((value, index) => value === option ? [argv[index + 1]] : []);
 }
 
-test("SCEN-DISP-02: dry-run announces legacy callback path in JSON and stderr", (context) => {
-  const { output, stderr } = dryRun(context, { provider: "claude", model: "fixture-model" });
-  assert.equal(output.legacy, true);
-  assert.equal(typeof output.notice, "string");
-  assert.match(output.notice, /LEGACY/);
-  assert.match(output.notice, /callback/);
-  assert.ok(stderr.includes(output.notice), "stderr must include the JSON legacy notice");
-});
-
-for (const { name, flags, labels } of [
-  { name: "omitted", flags: [], labels: [] },
-  { name: "task only", flags: ["--task", "T-04"], labels: ["pipeline.task=T-04"] },
-  { name: "attempt only", flags: ["--attempt", "2"], labels: ["pipeline.attempt=2"] },
-  { name: "phase only", flags: ["--phase", "test"], labels: ["pipeline.phase=test"] },
-  {
-    name: "all supplied",
-    flags: ["--task", "T-04", "--attempt", "2", "--phase", "test"],
-    labels: ["pipeline.task=T-04", "pipeline.attempt=2", "pipeline.phase=test"],
-  },
-]) {
-  test(`SCEN-DISP-02: optional dispatch labels ${name}`, (context) => {
-    const { output } = dryRun(context, { provider: "claude", model: "fixture-model" }, flags);
-    const actual = optionValues(output.argv, "--label")
-      .filter((value) => /^pipeline\.(task|attempt|phase)=/.test(value));
-    assert.deepEqual(actual.sort(), [...labels].sort());
-  });
-}
-
-test("SCEN-DISP-07: dispatch binds the parsed agentId only when it matches the known shape", (context) => {
-  const setup = fixture(context, { provider: "claude", model: "fixture-model" });
-  fs.mkdirSync(path.join(setup.repo, "openspec", "changes", "fixture-change"), { recursive: true });
-  const result = run(process.execPath, [
-    dispatchPath, "qingqibing", "implement", "fixture-change", setup.brief,
-  ], setup);
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /agent=01234567-89ab-cdef-0123-456789abcdef/);
-  const runLog = fs.readFileSync(
-    path.join(setup.repo, "openspec", "changes", "fixture-change", "run-log.md"), "utf8");
-  assert.match(runLog, /agent=01234567-89ab-cdef-0123-456789abcdef/, "run-log 必须登记真实 agentId");
-});
-
-test("SCEN-DISP-07: dispatch refuses a malformed agentId and prints the raw CLI output", (context) => {
-  const setup = fixture(context, { provider: "claude", model: "fixture-model" });
-  setup.env.PASEO_FIXTURE_BAD_ID = "1";
-  fs.mkdirSync(path.join(setup.repo, "openspec", "changes", "fixture-change"), { recursive: true });
-  const result = run(process.execPath, [
-    dispatchPath, "qingqibing", "implement", "fixture-change", setup.brief,
-  ], setup);
-  assert.equal(result.status, 2, `非法 agentId 必须 exit 2: ${result.stdout}`);
-  assert.match(result.stderr, /不是合法 agentId/);
-  assert.match(result.stderr, /agent created successfully/, "stderr 必须带完整原始输出以便排查");
-  assert.ok(
-    !fs.existsSync(path.join(setup.repo, "openspec", "changes", "fixture-change", "run-log.md")),
-    "错绑的 agentId 不得写入 run-log");
-});
 
 const profileCases = [
   {
@@ -191,15 +124,6 @@ const profileCases = [
     mode: ["fixture-mode"], thinking: ["high"],
   },
 ];
-
-for (const { name, profile, mode, thinking } of profileCases) {
-  test(`SCEN-DISP-03: dispatch ${name}`, (context) => {
-    const { output } = dryRun(context, profile);
-    assert.deepEqual(optionValues(output.argv, "--provider"), [`${profile.provider}/${profile.model}`]);
-    assert.deepEqual(optionValues(output.argv, "--mode"), mode);
-    assert.deepEqual(optionValues(output.argv, "--thinking"), thinking);
-  });
-}
 
 function hotfixFixture(context, profile) {
   const setup = fixture(context, profile);

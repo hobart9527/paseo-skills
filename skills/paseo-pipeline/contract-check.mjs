@@ -40,6 +40,22 @@ const addStrings = (set, src, pattern) => {
 // 第一个实参是被测回调，里面的字符串字面量是**输入值**，不是断言消息。实测反例：
 //   assert.throws(() => toBase("10", 1), { message: RADIX_MESSAGE })
 //   → 扫整个窗口会把 "10" 当断言消息，报 undeclared=1。
+// 断言第二实参是**谓词**时，它断言的是判断结果，不是一条完整错误消息：
+//   assert.rejects(fn, (err) => err.code === 'ATTACHMENT_SIZE_INVALID')
+//   assert.rejects(fn, hasErrorCode('MASTER_DATA_FETCH_FAILED'))
+// 这类窗口里的字符串是错误码、字段名或断言失败说明串，混进消息通道就是 undeclared 误报
+// （2026-10-26 实测：11 条误报里 6 条来自谓词回调）。
+// 判据只看形态，不看语义：函数字面量（`(…) =>` / `async (…) =>`）与函数调用（`helper(…)`）。
+// 对象形态 `{ message: "…" }`、字符串、正则、构造器调用都不是谓词。
+const isPredicateSpec = (body) => {
+  const text = body.trim();
+  if (text === "") return false;
+  if (/^(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/.test(text)) return true;
+  // 函数调用：标识符（可带点号）紧跟左括号，且同名的不是错误构造器。
+  const call = /^([A-Za-z_$][\w$.]*)\s*\(/.exec(text);
+  return call !== null && !/Error$/.test(call[1]);
+};
+
 const assertWindows = (src) => {
   const windows = [];
   for (const m of src.matchAll(/\.(?:throws|rejects)\s*\(/g)) {
@@ -59,6 +75,9 @@ const assertWindows = (src) => {
   }
   return windows;
 };
+
+/** 只保留断言了完整消息的窗口；谓词窗口归 code 通道语义，不进消息对账。 */
+const messageWindows = (windows) => windows.filter((body) => !isPredicateSpec(body));
 
 // 提取 tasks.md 中声明的测试路径（优先从 Verify with 提取，兜底 Write scope）。
 // 任务解析属主是 lib/tasks.mjs：这里不再自带一套行匹配，否则 check-evidence / merge-task /
@@ -211,10 +230,14 @@ for (const f of existing) {
     if (lit !== undefined) tested.add(lit);
   }
 }
-// { message: "..." }
-addStrings(tested, testSrc, new RegExp(String.raw`message:\s*${STR}`, "g"));
-// new TypeError("...")
-addStrings(tested, testSrc, new RegExp(String.raw`new\s+[A-Za-z_$][\w$]*Error\s*\(\s*${STR}`, "g"));
+// 不再做全局 `message: "..."` 与全局 `new XError("...")` 提取（2026-10-26 收窄）：
+//   - 全局 `message:` 会收到**桩对象的返回值**，而不是任何契约。实测反例：
+//     `async testConnection() { return { healthy: true, message: 'ok' }; }`
+//     → 'ok' 被判成"测试断言但 spec 未声明"。
+//   - 全局 `new XError(STR)` 会收到**被断言的输入**。实测反例：
+//     `new MasterDataSyncError('MASTER_DATA_FETCH_FAILED', '远端不可达')`
+//     → 错误码被当成断言消息。
+// 断言内的这两类形态仍由断言窗口覆盖（窗口取第二实参里的全部字面量），覆盖面没有缩小。
 // err.message === "..." / assert.equal(err.message, "...")
 addStrings(tested, testSrc, new RegExp(String.raw`\.message\s*(?:,|===?|!==?)\s*${STR}`, "g"));
 addStrings(tested, testSrc, new RegExp(String.raw`${STR}\s*===?\s*[^;\n]*\.message`, "g"));
@@ -225,7 +248,7 @@ const CTOR_NAMES = new Set([
   "Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError",
   "EvalError", "URIError", "AggregateError",
 ]);
-for (const w of assertWindows(testSrc)) {
+for (const w of messageWindows(assertWindows(testSrc))) {
   // 断言窗口内的字符串字面量大多是被断言的错误消息，但 `name: "RangeError"`
   // 这类**判别字段**不是消息——一旦混入 tested，就会被判成 undeclared drift。
   // 先剥掉 name 字段与裸构造器名，再取剩余字面量。实测反例：
@@ -279,14 +302,31 @@ const untestedScens = [...declaredScens].filter((s) => !testedScens.has(s)).sort
 const undeclared = [...tested].filter((m) => !declared.has(m)).sort();
 const untested = [...declared].filter((m) => !covered.has(m)).sort();
 
-for (const m of undeclared) console.log(`测试断言但 spec 未声明: ${m}`);
-if (undeclared.length) {
-  // 赋能：给可直接粘进 spec Scenario 的逐字声明行（解析器认的形态），不只报红。
-  console.log(`[建议] 把下列行补进对应 Requirement 的 Scenario（类型按实际抛出的 Error 子类调整）：`);
-  for (const m of undeclared) console.log(`  - THEN throws Error(${JSON.stringify(m)})`);
+// 只认契约性提及：必须有可执行语境的 throw/throws/raised 或 Error 类型名。
+// 不能只搜 "error" 字样——标题里的 "Spec without error contract" 会误判成"提到了错误"。
+const specMentionsError =
+  /\b(?:throws?|raises?|raised|rejects?|fails?)\b/i.test(specSrc) ||
+  /\b(?:Type|Range|Syntax|Reference|Eval|URI|Aggregate)?Error\b/.test(specSrc);
+// 方言不匹配：spec 谈错误却不写 `Error("字面量")`，测试断言的是错误码/字段。
+// 此时消息通道两侧根本不在同一个坐标系，逐条打印「测试断言但 spec 未声明」只会
+// 制造噪声，让人以为 spec 缺声明——实际是通道不适用。
+const dialectMismatch = declared.size === 0 && specMentionsError;
+
+if (dialectMismatch) {
+  console.log(
+    "N/A: 消息通道不适用——本 spec 未用 `Error(\"...\")` 方言声明错误契约，测试侧断言的是错误码/字段。" +
+      "消息通道未做任何对账，不等于通过；只对账场景编号。"
+  );
+} else {
+  for (const m of undeclared) console.log(`测试断言但 spec 未声明: ${m}`);
+  if (undeclared.length) {
+    // 赋能：给可直接粘进 spec Scenario 的逐字声明行（解析器认的形态），不只报红。
+    console.log(`[建议] 把下列行补进对应 Requirement 的 Scenario（类型按实际抛出的 Error 子类调整）：`);
+    for (const m of undeclared) console.log(`  - THEN throws Error(${JSON.stringify(m)})`);
+  }
+  if (!PARTIAL) for (const m of untested) console.log(`spec 声明但测试中未见静态引用: ${m}`);
+  else if (untested.length) console.log(`(--partial：${untested.length} 条 spec 声明尚未在本任务测试中静态引用，留待阶段 2 全量对账)`);
 }
-if (!PARTIAL) for (const m of untested) console.log(`spec 声明但测试中未见静态引用: ${m}`);
-else if (untested.length) console.log(`(--partial：${untested.length} 条 spec 声明尚未在本任务测试中静态引用，留待阶段 2 全量对账)`);
 
 if (declaredScens.size > 0) {
   for (const s of phantomScens) console.log(`测试引用但 spec 未声明的场景 (phantom): ${s}`);
@@ -303,7 +343,7 @@ console.log(
 // → 是测试侧解析失效，不是"没有契约"。必须让门禁失败，否则 undeclared=0 是空转得出的假绿灯。
 // 这一条**必须排在 spec 侧判定之前**：spec 即使没有错误契约，测试侧解析失效仍然是解析失效，
 // 不能因为"spec 恰好没声明"就放行（实测踩过：动态拼接消息 + 无契约 spec 曾被判 exit 0）。
-if (tested.size === 0 && assertWindows(testSrc).length > 0) {
+if (tested.size === 0 && messageWindows(assertWindows(testSrc)).length > 0) {
   console.error(
     "测试里有 assert.throws/rejects，但没能提取出任何断言消息（可能写成了内联箭头或动态拼接）；" +
       "门禁不成立。请把错误消息写成字面量或同文件 const 常量。"
@@ -316,17 +356,13 @@ if (tested.size === 0 && assertWindows(testSrc).length > 0) {
 // 旧版只在 `tested.size > 0` 时才判失败，于是 (a) 中"测试也没断言任何错误"的情形
 // 会静默 exit 0 —— declared=0、undeclared=0、untested=0，三数全零看着像完美通过。
 if (declared.size === 0) {
-  // 只认契约性提及：必须有可执行语境的 throw/throws/raised 或 Error 类型名。
-  // 不能只搜 "error" 字样——标题里的 "Spec without error contract" 会误判成"提到了错误"。
-  const specMentionsError =
-    /\b(?:throws?|raises?|raised|rejects?|fails?)\b/i.test(specSrc) ||
-    /\b(?:Type|Range|Syntax|Reference|Eval|URI|Aggregate)?Error\b/.test(specSrc);
-  if (specMentionsError) {
-    console.error(
-      "spec 提到错误/异常，但未解析出任何 `Error(\"...\")` 字面量声明，门禁不成立；" +
-        "请在 spec 里把错误类型与消息写成 `TypeError(\"...\")` / `RangeError(\"...\")` 的逐字形式。"
-    );
-    process.exit(1);
+  if (dialectMismatch) {
+    if (declaredScens.size === 0) {
+      console.log("SKIPPED: 本 spec 也没有场景编号，无可对账内容。");
+      process.exit(0);
+    }
+    const scenFailed = phantomScens.length > 0 || (!PARTIAL && untestedScens.length > 0);
+    process.exit(scenFailed ? 1 : 0);
   }
   if (declaredScens.size > 0) {
     const scenFailed = phantomScens.length > 0 || (!PARTIAL && untestedScens.length > 0);

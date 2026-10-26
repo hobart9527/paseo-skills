@@ -58,9 +58,8 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
   | `rejected` / `abandoned` | `retry` | 本轮产出未被接受，消耗打回预算 |
   **不打这个标签，`reconcile` 会把该任务的终态 agent 判为 `UNRESOLVED` 并压住它的推进**（fail-closed，不是缺陷）。生产者是编排者，不是子 agent 自报。
 
-**Legacy CLI 路径（`dispatch.mjs` / `hotfix.sh`）**：这两个脚本用 `paseo run --no-wait` 派发，**拿不到父子 Agent 完成通知**（该通路的回调从未被验证过）。因此它们的正确用法只有一种：调用方**同步 `paseo wait`** 阻塞等结果，绝不当成「派完就走、靠通知回来」的异步路径。`dispatch.mjs` 不带 `--wait` 时就是异步半成品，只能用于调试。
+**Legacy CLI 路径（`hotfix.sh`）**：该脚本用 `paseo run --no-wait` 派发，**拿不到父子 Agent 完成通知**（该通路的回调从未被验证过）。因此它的正确用法只有一种：调用方**同步 `paseo wait`** 阻塞等结果，绝不把它当成「派完就走、靠通知回来」的异步路径。`dispatch.mjs` 已在 2026-10-26 删除——它是同一路径的另一个入口，从来没有使用者，保留只会让「legacy 兜底」被当成一条可选主路径。
 
-- `dispatch.mjs`：**Legacy 兜底**。仅在原生 MCP 不可用时调试用，不参与正常流水线。
 - `hotfix.sh`：**L1 小修正式入口**（单任务、`Review: mechanical`、`Risk-surface: none`）。它自己 `paseo wait`，所以不依赖那条未验证的回调。脚本在派发前机械校验 mechanical/Risk-surface，不合立即拒绝；合流 review 标签用真实 tip/base 生成。意图记账同样强制：派发前 `run-state.mjs claim`、拿到 agent 后 `record`、`paseo run` 失败时 `fail` 作废意图——claim 被拒（重复意图、账本被占用或存在有效编排租约）即中止，**存在有效租约时 hotfix 不带 `--owner` 必然被拒**，这是预期：编排进行中不得走旁路快轨，须等租约到期或由 owner 执行。这几点都是脚本行为，不靠提示词自觉。
 
 ## 2. 执行主路径
@@ -101,8 +100,14 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
    **旅程或异常场景 → 真实入口/装配点 → 承载任务 → 验证方法 → 环境与数据 → 通过判据 → 责任角色 → 必要外部依赖**。
    覆盖实现装配与路由可达性，不只验孤立模块。外部必需依赖缺失的项，冻结时就标 `BLOCKED/未验证`，不得用 mock 通过冒充业务验收。
 4. **冻结前机械预检**：跑一次任务解析，确认无 `MISSING_SCOPE`、`UNKNOWN_REVIEW`、`UNKNOWN_RISK`、`REVIEW_RISK_CONFLICT`、`BAD_DONE_LINE`，依赖 ID 存在且无环，scope 为仓库根内合法相对路径。**scope 与老测试迁移的冲突在此解决**，不要留到执行期。
+5. **spec 撰写规则（冻结审查逐条核，不靠脚本）**：下面五条来自 2026-10-26 `hardening-governance-contracts` 的冻结后返工，每条都对应一次真实的执行期损失。它们**不写成门禁脚本**——语义判据机械化的收益低于维护成本，由 Auditor 在冻结审查时逐条核对。
+   - **环境独立**：`Verify with` 必须在**干净工作树**里可执行。命令或 `Write scope` 引用了被 `.gitignore` 的文件（如 `.env.example`）就是冻结缺陷——那会让任务在合并时才发现验证不了。冻结前对新拉出的 worktree 实跑一次。
+   - **scope 闭环**：任务的 `Write scope` 必须涵盖它的 `Verify with` **读到**的每个文件，以及它名下每个 `SCEN-*` 的**实现文件**。场景挂给一个 scope 排除实现文件的任务，等于让写手二选一：越权或被判失败。
+   - **一场景一承载**：每条 `SCEN-*` 必须能指到一个测试文件，或者是静态检查（此时必须在 spec 里写明检查命令，且该命令不需要新增测试文件）。没有承载的场景在验收时必然变成 `untested_scens` 噪声，或者被写成幻影声明。
+   - **delta 先对基线**：新增/修改场景前，对照 `openspec/specs/<cap>/spec.md` 的**同一输入**看既有结论。同一输入两个不同结论（如空快照是 `INVALID_BOS_UUID` 还是 `ORG_MAPPING_NOT_FOUND`）必须在冻结前裁决，不能留给两个任务各写一半。
+   - **矩阵计数由命令生成**：业务验收矩阵的行数、场景数、测试数一律贴**命令输出**，不抄、不数、不凭印象。编排者口述的数字（"18 行"）不是真源，`wc -l` 与测试运行器的输出才是。
    - 任务行格式 `- [ ] 1.1 T-01 标题` 与 `- [ ] 1.1 T-01: 标题` 都合法（后者是早期产物的历史写法，`parseTasks` 与 `merge-task.mjs` 的 Done 定位都兼容）；`T-01:标题` 这种冒号紧贴 ID 的写法不合法，会被判 `MALFORMED_LINE`，因为它会让 ID 解析错位。
-5. **人类确认点 1：spec 冻结**：呈报概况、DAG 拓扑、业务验收矩阵与 Auditor 结论，经用户确认后冻结。冻结即固定本轮 spec revision。
+6. **人类确认点 1：spec 冻结**：呈报概况、DAG 拓扑、业务验收矩阵与 Auditor 结论，经用户确认后冻结。冻结即固定本轮 spec revision。
 
 ### 2.2 执行循环
 
@@ -160,7 +165,7 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 
 ## 4. 运行账本与编排租约（轻量执行闭环）
 
-运行账本补「**正在进行的动作**」这一层事实。它**不是第二套任务真源**：任务契约在 `tasks.md`，已合流事实在 git first-parent 账本，Agent 事实在 Paseo，运行账本只记 action intent、派发结果、租约与 heartbeat。
+运行账本补「**正在进行的动作**」这一层事实。它**不是第二套任务真源**：任务契约在 `tasks.md`，已合流事实在 git first-parent 账本，Agent 事实在 Paseo，运行账本只记 action intent、派发结果与租约。
 
 ```bash
 # 开工：领取/续期编排租约（同 run 唯一 owner + 代际 generation）
@@ -171,14 +176,14 @@ node skills/paseo-pipeline/run-state.mjs claim  <change> --task T-01 --attempt 1
 node skills/paseo-pipeline/run-state.mjs record <change> --key <key> --agent <agent-id> [--workspace <id>]
 # 创建确认失败：显式作废意图，才允许重派
 node skills/paseo-pipeline/run-state.mjs fail   <change> --key <key> --reason <text>
-# 查看：租约、未回执意图、heartbeat
+# 查看：租约、未回执意图
 node skills/paseo-pipeline/run-state.mjs status <change> [--json]
 ```
 
 - **动作意图幂等**：同一幂等键已有未回执意图时，`claim` 以 exit 2 拒绝重复派发。**先记意图，再派发，再记回执。** 创建成功但回执丢失时，按唯一标签对账，未排除重复前不盲重派。
 - **单 owner 租约**：同 run 只有一个有效 owner。租约过期后旧 owner 的全部 `claim`/`record`/`fail` 一律 exit 2，必须显式 `begin` 领取新代际——防止旧 Lead 复活后继续提交动作。**租约仍有效且属于他人时不得抢占**，等其 renew 或超时。
 - **孤儿意图（`ORPHAN_INTENT`）**：意图超过 10 分钟仍无对应 agent（创建失败或回执丢失）。`reconcile` 把它列为最高优先级 `NEXT arbitrate`，**自动化不得自行重派**，须核对后显式 `fail` 或 `record`。
-- **Heartbeat 生命周期**：`register`/`renew`/`pause`/`delete` 都必须可判定到期（`--expires-at`）。**到期不等于任务结束。** 注册结果、有效期、续期责任、暂停与删除全部记入账本。任务全量完成后 `delete` 销毁。
+- **无 heartbeat 子命令**：注册入口已删（2026-10-26）。常规运行不建周期性 heartbeat，且 `hardening-governance-contracts` 账本里 `heartbeats` 为 0——没有使用者的写入路径不留。旧账本里的 `heartbeats` 数组仍是只读兼容字段，`status` 照常打印。
 - 存放位置：git common dir 下 `paseo-pipeline/<change>/run-state.json`（不放 `openspec/`，否则弄脏工作树阻塞合流）。`PIPELINE_RUN_STATE_DIR` 可覆盖。
 
 **唤醒模型（与 spec 一致）**：常规运行**不创建**周期性 heartbeat 或 schedule；没有经过验证的计时器或外部事件源时，静默丢失的回调无法唤醒空闲 Lead——对账只能在**下一次真实调用**时发生。这是事实，不是可以通过多写几条规则消除的缺陷。
@@ -187,7 +192,7 @@ node skills/paseo-pipeline/run-state.mjs status <change> [--json]
 2. **主动等待（不依赖事件）**：派发后在**前台阻塞** `paseo wait <agent-id> --timeout 540 --json`，返回即读产出一轮。回合不 idle 就不依赖 `notifyOnFinish` 去唤醒一个空闲父级，这是 2026-10-25 停摆事故的直接对策。
    - **`paseo wait` 的退出码恒为 0**（实测 `idle`、`timeout`、`Agent not found` 三种终局均 `rc=0`）。必须解析 `--json` 的 `status`：`idle` 才是子 agent 停了，`timeout` 要继续等同一 id（不得重派），`error` 按失败处置。`paseo wait ... && 推进` 这类写法会把超时当成完成。
    - 等待期间的真实耗时与起止时间戳要采集，它们是判断「空等」还是「有效长任务」的唯一依据。
-3. **外部唤醒（可选，需确证来源）**：只有当主会话 harness 或人类确实提供了会定期唤醒 Lead 的机制时，才把它的 id 与到期时间登记进运行账本（`run-state.mjs heartbeat <change> --id <id> --action register --expires-at <iso>`）。**不登记来源就无法验证的计时器**，也不把它写成默认行为。登记了的必须在任务全量结束时 `--action delete`；到期不等于任务结束。
+3. **外部唤醒（可选，需确证来源）**：只有当主会话 harness 或人类确实提供了会定期唤醒 Lead 的机制时，才把它写进当次信封并如实记录来源 id 与到期时间。**没有可证伪的来源就不写进规则**——运行账本已无 heartbeat 注册入口，这条只能靠当次记录兑现，不得写成默认行为。
 4. **惰性对账**：任何一次真实唤醒（事件、外部唤醒、人类追问、接手）都先跑 `reconcile.mjs <change>`。**通知只是唤醒；终态以可核验产物为准。** 空闲时只做轻量增量核对，避免每次全量长日志。
 5. **停摆的处置**：不再依赖「等它自己醒」。超时未推进即在运行账本标 `BLOCKED_ON_WAKE` 并上报人类，说明最后一次可核验产物是什么、缺哪一环——不要用「进程还 running」冒充有进展。
 

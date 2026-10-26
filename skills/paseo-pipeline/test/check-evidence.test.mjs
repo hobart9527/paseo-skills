@@ -343,3 +343,36 @@ test('SCEN-EVD-02 placeholder detection respects word boundaries for common word
   const cmdRes = runCheck([withCommand]);
   assert.equal(cmdRes.status, 0, cmdRes.stderr);
 });
+
+test('SCEN-EVD-03 command fields are judged whole-value, not by substring', () => {
+  // 命令型字段存的就是一条 shell 命令。通用词的子串形态（test/sample/example/todo）
+  // 是命令名或路径的一段，不是占位标记——2026-10-26 验收账本唯一的闸门失败项就是它
+  // （`acceptance_command: npm --prefix packages/server test` 被判占位）。逐词豁免修不干净，
+  // 只对这类字段用整值判据。
+  const cases = [
+    'npm test --prefix packages/server',
+    'npm --prefix packages/server test',
+    'npm run test:sample',
+    'pytest tests/test_todo_api.py',
+    'grep -q FOO .env.example',
+  ];
+  for (const command of cases) {
+    const file = write('command-form.md',
+      `${PASSING_SMOKE}\nacceptance_command: ${command}\n`);
+    const res = runCheck([file]);
+    assert.equal(res.status, 0, `real command must pass structure gate: ${command}\n${res.stderr}`);
+  }
+
+  // 整值就是占位词的形态仍然必须拦：包括尖括号模板和占位专用词。
+  for (const bogus of ['PLACEHOLDER', '<test-command>', 'TODO', 'TBD']) {
+    const file = write('command-bogus.md', `${PASSING_SMOKE}\nacceptance_command: ${bogus}\n`);
+    const res = runCheck([file]);
+    assert.equal(res.status, 1, `whole-value placeholder must stay rejected: ${bogus}`);
+    assert.match(res.stderr, /占位值/);
+  }
+
+  // 非命令字段的子串判据不变：`result: TEST` 仍是被伪造的结论。
+  const badResult = write('result-placeholder.md', PASSING_SMOKE.replace('result: PASS', 'result: TEST'));
+  const badRes = runCheck([badResult]);
+  assert.equal(badRes.status, 1, 'non-command fields keep substring matching');
+});

@@ -136,10 +136,30 @@
 - **治理（F1-F9，全部有回归测试锁住）**：
   1. writer 模板写入侧自验：提交后必跑 `%(trailers:key=Pipeline-Author,valueonly)` 自验非空；
   2. 中文角色词/自由格式标题的尾 token 失配不再冻死派发：任一 slug 形态中段 token（含 `-`/`.`/数字，排除标题动词）且与本 change 无前缀关系，即可证明属于另一个 change；
-  3. `dispatch.mjs` 对 `paseo run` 输出末位做 agentId 形态校验（UUID 或 `agent_*`），不匹配即带原始输出 exit 2，不再静默错绑；
+  3. `dispatch.mjs` 对 `paseo run` 输出末位做 agentId 形态校验（UUID 或 `agent_*`），不匹配即带原始输出 exit 2，不再静默错绑。（该脚本已于 2026-10-26 删除，见 §12；这条校验逻辑随文件一并下架。）
   4. `slugMatches` 改单向：token 比 change 长不成立归属（`foo` 与 `foo-bar` 不再互绑互占 cap）；
   5. `hotfix.sh` 接入意图账本（claim/record/fail），有有效编排租约时不带 `--owner` 必被拒；
   6. 陈旧锁删除前重读 mtime 比对，换锁即放弃删除；
   7. 证据占位检测的通用词（`LOST`/`UNKNOWN`/`TEST`/`NOT_COLLECTED`）加词边界（空白/下划线/边缘），`.` 与 `/` 不算边界（否则 `a.test.mjs`、`bash test/run-all.sh` 误伤）；
   8. `Verify with` 第三档排除英文高频动词（run/use/see/check/verify/ensure/manually）；
   9. `reconcile.mjs` 分支领先判定区分「git 失败」与「不领先」：失败按领先未知进 UNMAPPED 诊断，不静默当 0。
+
+## 12. 2026-10-26 门禁分级：文本启发式不得与合流门禁同级（`hardening-governance-contracts` 实测）
+
+**结论：把"对抗 LLM 文本"的启发式与"保护 git 历史"的门禁放在同一个 exit 码上，会反向激励执行者为过闸门而写 spec。** 本 change 12 任务、942 测试、一次验收通过（39/39 场景、19/19 矩阵），但两个静态闸门在验收时都是红的，且都是误报。
+
+- **采集值**：`contract-check` → `tested=11 declared=0 undeclared=11`，对照基线 `e6298b1` 的 undeclared 集合与数量**逐字相同**（两侧各 11 条，diff 为空）；`check-evidence` → 唯一失败项是 `acceptance_command: npm --prefix packages/server test` 的行尾 `test` 被占位词判定命中。
+- **误报逐条归因（插桩实测，非推测）**：11 条里 6 条来自谓词回调（`(err) => err.code === 'X'`、`hasErrorCode('X')`），1 条是桩的返回值（`message: 'ok'`），1 条是被断言的输入（`new XError('CODE', …)`）；旧提取器**没有 `.code` 通道**，所以按错误码写 spec 的仓库永远对不上。
+- **收窄后的采集值**：`undeclared` 11 → 1，剩 1 条是测试故意注入的桩错误探针（`模拟推送失败`）；真实验收账本 `check-evidence --kind audit --gate acceptance --sha 7cf3471…` 由 rc=1 转 **rc=0**。
+- **否决的方案：新增 CODE 通道做双向对账。** 实测 spec 侧有 27 个大写反引号 token，被测试按 `.code` 断言的只有 6 个，其余是状态值（`SAVED`/`INTENT`）、环境变量（`KINGDEE_APP_ID`/`MOCK_MODE`）和样例 ID。按"反引号即声明"对账会立刻冒出约 21 条新误报，只能再加白名单——误报换个方向而已。
+
+**三条可复用判据**：
+
+1. **按"拦的是什么"分级，不按"能不能写成代码"分级。** 保护 git 历史/合流正确性的（写范围、依赖 DONE、固定 tip、非自审、写锁）→ 阻断（exit≠0）。判断文本语义的（消息抽取、占位词、方言）→ 提示，交 Auditor 判。误报不再卡流程，执行者也就没有动机去适配脚本。
+2. **一进一出。** 每加一条门禁，同时删或降一条，并在本文件写明它对应的事故。没有事故证据的规则不加——`Verify with` 引用被 `.gitignore` 的文件（T-09）只发生过 1 次，所以只写进 SKILL 撰写规则，没上脚本。
+3. **方言不匹配要报"不适用"，不报失败。** 仓库用错误码 + 场景编号承载契约时，消息通道两侧本就不在同一坐标系；fail-closed 只会逼人编字面量。
+
+**两处零使用残留物同轮删除**（`wc -l` 与账本采集，非估计）：
+
+- `dispatch.mjs`（117 行）+ `test/dispatch.test.mjs`（434 行）：SKILL 自述"不参与正常流水线"。**注意：该测试文件同时承载 `hotfix.sh` 的 12 条用例**，直接删会连带丢失 hotfix 保护——已拆出 `test/hotfix.test.mjs`（17 条，全绿）后再删。
+- `run-state.mjs heartbeat` 子命令 + `lib/run-state.mjs` 的 `heartbeatStatus`：`hardening-governance-contracts` 账本 `heartbeats` 为 **0**。`heartbeats` 字段保留为只读兼容（旧文件仍可读、`status` 仍打印），但不留写入路径。

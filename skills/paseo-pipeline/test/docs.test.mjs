@@ -90,9 +90,9 @@ test('SCEN-DOC-05: 运行账本闭环命令齐全，孤儿意图禁止自动重�
   assert.match(text, /租约过期后旧 owner[^\n]*exit\s*2|旧 owner 的全部[^\n]*exit\s*2/);
   // 孤儿意图由人工/仲裁处置，自动化不得自行重派。
   assert.match(text, /ORPHAN_INTENT[\s\S]{0,200}不得自行重派|不得自行重派/);
-  // Heartbeat 到期不等于任务结束，且必须可判定。
-  assert.match(text, /到期不等于任务结束/);
-  assert.match(text, /register[\s\S]{0,40}renew[\s\S]{0,40}pause[\s\S]{0,40}delete/);
+  // heartbeat 注册入口已删（2026-10-26）：文档必须写明，而不是继续宣传生命周期命令。
+  assert.match(text, /无 heartbeat 子命令/);
+  assert.doesNotMatch(text, /run-state\.mjs\s+heartbeat/);
 });
 
 test('SCEN-DOC-06: 合流门禁逐因子写清，并绑定真实退出码与脚本', () => {
@@ -286,4 +286,32 @@ test('SCEN-DOC-16: Auditor 模板禁止自拼 review-tag，且只接受 4 类 Bl
   }
   // R2 不得引入新的风格挑剔——否则「2 轮熔断」变成无限延长。
   assert.match(auditor, /禁止在\s*R2\s*提新的风格挑剔/);
+});
+
+test('SCEN-DOC-19: 冻结阶段的 spec 撰写规则五条齐备，且由 Auditor 核不靠脚本', () => {
+  // 这五条来自 2026-10-26 hardening-governance-contracts 的冻结后返工，每条对应一次
+  // 真实的执行期损失。它们是语义判据，故意不写成门禁脚本（见 LESSONS §12 判据 1）。
+  const text = section('冻结前准备');
+  const RULES = [
+    [/环境独立[\s\S]{0,200}gitignore/, 'Verify with 必须在干净工作树可执行'],
+    [/scope 闭环[\s\S]{0,300}SCEN-/, 'Write scope 必须覆盖 Verify 读到的文件与场景实现文件'],
+    [/一场景一承载/, '每条 SCEN 必须有测试文件或写明的静态检查'],
+    [/delta 先对基线/, '新增场景前先对基线同一输入看既有结论'],
+    [/矩阵计数由命令生成/, '矩阵与测试计数贴命令输出，不凭印象'],
+  ];
+  for (const [pattern, why] of RULES) {
+    assert.match(text, pattern, `缺少 spec 撰写规则：${why}`);
+  }
+  assert.match(text, /不写成门禁脚本/, '必须写明这类语义判据不由脚本强制');
+});
+
+test('SCEN-DOC-20: Lead 模板列出分叉核对命令，并要求 brief 事实由命令输出生成', () => {
+  const text = template('lead');
+  // 2026-10-26 实测：分叉（集成领先 32 / main 领先 15，4 处冲突预测）到人工确认点 2
+  // 才被发现。分叉不是错误，"到最后一刻才知道"是编排缺陷。
+  assert.match(text, /git merge-base --is-ancestor/);
+  assert.match(text, /git merge-tree/);
+  assert.match(text, /冻结时[\s\S]{0,80}确认点 2/, '分叉核对必须出现在冻结与合流两处');
+  // 编排者口述数字不是真源：18 行 vs 实有 19 行导致错误 brief 白烧一轮。
+  assert.match(text, /brief 里的事实必须由命令输出生成/);
 });

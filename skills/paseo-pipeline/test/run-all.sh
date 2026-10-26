@@ -10,7 +10,7 @@ node --test \
   skills/paseo-pipeline/test/paseo-state.test.mjs \
   skills/paseo-pipeline/test/reconcile.test.mjs \
   skills/paseo-pipeline/test/merge-task.test.mjs \
-  skills/paseo-pipeline/test/dispatch.test.mjs \
+  skills/paseo-pipeline/test/hotfix.test.mjs \
   skills/paseo-pipeline/test/docs.test.mjs \
   skills/paseo-pipeline/test/check-evidence.test.mjs \
   skills/paseo-pipeline/test/run-state.test.mjs \

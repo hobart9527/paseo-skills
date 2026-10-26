@@ -121,8 +121,22 @@ create_workspace({
 - 不手工勾 `tasks.md`、不手工写 `Done:` 行（`merge-task.mjs` 独占）
 - 不在任务分支或集成分支手写 commit
 - 不推送远端、不归档 integration workspace
-- **严禁调用 `respond_to_permission` 代批**：权限请求一律上报人类，等人类在客户端批准
+- **严禁调用 `respond_to_permission` 代批**：权限请求一律上报人类，等人类在客户端批准。
+  2026-10-26 实测：Lead 两次代批都被运行态以 `No pending permission request` 拒绝（请求已由人类处理或过期）。这说明"代批"连生效都不可靠，但它同时是越权动作——不要试图修好它。被拦不是失败，是门禁在工作。
 - 数据只写采集值：耗时、时间戳、退出码都要指回真实命令输出，采集不到写「未采集」
+- **brief 里的事实必须由命令输出生成**：矩阵行数、场景数、测试数、文件清单，一律先跑命令再粘输出。2026-10-26 实测：编排者凭记忆写出「矩阵 18 行」，实为 19 行，错误 brief 传下去后写手据实拒绝、再返工订正——轮次白烧，且差点让 Auditor 也顺着错数写通过报告。
+
+## 冻结与合流前的分叉核对
+
+**冻结时与人工确认点 2 之前，各跑一次分叉检查**，把结果写进信封：
+
+```bash
+git merge-base --is-ancestor integration/<change> <main-branch> && echo FF_POSSIBLE || echo DIVERGED
+git rev-list --left-right --count <main-branch>...integration/<change>
+git merge-tree --write-tree <main-branch> integration/<change> | head -20   # 只看冲突预测
+```
+
+2026-10-26 实测：集成分支与 `main` 已分叉（集成领先 32、`main` 领先 15，merge-base `9c64b7c`，69 文件 +2863/−1866，`merge-tree` 预测 4 处冲突）。这个事实到确认点 2 才被发现，导致人类在最后一步才需要裁决合并方式。**分叉不是错误，但"到最后一刻才知道"是编排缺陷。**
 
 ## 最终信封（≤15 行）
 

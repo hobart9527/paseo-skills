@@ -95,6 +95,14 @@ const PLACEHOLDER_BOUNDED = ['LOST', 'UNKNOWN', 'TEST', 'NOT[_-]?COLLECTED']
   .join('|');
 const PLACEHOLDER_RE = new RegExp(
   `(?:PLACEHOLDER|TODO|FIXME|TBD|CHANGEME|DUMMY|SAMPLE|EXAMPLE|${PLACEHOLDER_BOUNDED})`, 'i');
+// 命令型字段的值本身就是一条 shell 命令，判据完全不同：`npm test`、`pytest -k test_`、
+// `grep -q FOO .env.example`、`npm run test:sample`、`pytest tests/test_todo_api.py` 里的
+// TEST/EXAMPLE/SAMPLE/TODO 是命令名或路径的一段，不是占位标记。对这类字段只拒**整值**
+// 就是占位词的形态（`<verify>、PLACEHOLDER、TODO…`），其余一律按命令放行。
+// 这比逐词加豁免更窄：子串形态的命令永远合法，编造的整值占位仍然拦得住。
+const BARE_PLACEHOLDER_RE = new RegExp(
+  `^(?:<[^>]*>|PLACEHOLDER|TODO|FIXME|TBD|CHANGEME|DUMMY|SAMPLE|EXAMPLE|LOST|UNKNOWN|NOT[_-]?COLLECTED)$`, 'i');
+const COMMAND_FIELD_RE = /(?:^|_)(?:command|cmd)$/i;
 const ALL_SAME_CHAR_RE = /^([0-9a-f])\1{7,}$/i;
 
 function placeholderFields() {
@@ -105,7 +113,11 @@ function placeholderFields() {
     if (!match) continue;
     const [, name, rawValue] = match;
     const value = rawValue.trim();
-    if (PLACEHOLDER_RE.test(value)) {
+    // 命令型字段（acceptance_command / verify_command / …）走整值判据，不走子串。
+    const isPlaceholder = COMMAND_FIELD_RE.test(name)
+      ? BARE_PLACEHOLDER_RE.test(value)
+      : PLACEHOLDER_RE.test(value);
+    if (isPlaceholder) {
       problems.push(`${name} 是占位值而不是采集值（${value.slice(0, 40)}）；采集不到请写「未采集」并说明原因`);
     } else if (ALL_SAME_CHAR_RE.test(value)) {
       problems.push(`${name} 是退化值（${value}），不是真实标识`);
