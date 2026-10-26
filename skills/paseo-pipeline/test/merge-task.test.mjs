@@ -1010,3 +1010,34 @@ test('SCEN-MRG-23 the merge lock is released on success so the next merge can pr
   assert.equal(fs.existsSync(path.join(repo.cwd, lockDir, `merge-${change}.lock`)), false,
     'a successful merge must leave no lock behind');
 });
+
+// --- 错误严重度：只压住被点名的任务，不因无关任务的问题挡住整批合流 ---
+// 严重度归属在 lib/tasks.mjs 的 ERROR_SCOPE 单点定义；这里验的是合流入口的消费方式。
+test('SCEN-CON-01 a task-level error on an unrelated task does not block this merge', (context) => {
+  // T-2 缺 Write scope（task 级错误），本次合流的是 T-1 —— 两者毫无关系。
+  const repo = fixture(context, { tasks: [{ id: 'T-1' }, { id: 'T-2', scope: '' }] });
+  assertMerged(repo, invoke(repo));
+});
+
+test('SCEN-CON-01 a task-level error on the requested task itself still blocks', (context) => {
+  const repo = fixture(context, { tasks: [{ id: 'T-1', scope: '' }] });
+  const result = invoke(repo);
+  assertRejected(repo, result);
+  assert.match(result.stderr, /MISSING_SCOPE/);
+});
+
+test('SCEN-CON-01 a task-level error on a direct dependency still blocks', (context) => {
+  // 依赖的账本完整性是本次合流真正消费的约束，不能放过。
+  const repo = fixture(context, { tasks: [{ id: 'T-1', depends: 'T-2' }, { id: 'T-2', scope: '' }] });
+  const result = invoke(repo);
+  assertRejected(repo, result);
+  assert.match(result.stderr, /MISSING_SCOPE/);
+});
+
+test('SCEN-CON-01 a graph-level error blocks every merge regardless of the requested task', (context) => {
+  // 依赖指向不存在的任务：整份 DAG 不可信，任何任务的合流都拒绝。
+  const repo = fixture(context, { tasks: [{ id: 'T-1' }, { id: 'T-2', depends: 'T-99' }] });
+  const result = invoke(repo);
+  assertRejected(repo, result);
+  assert.match(result.stderr, /UNKNOWN_DEP/);
+});

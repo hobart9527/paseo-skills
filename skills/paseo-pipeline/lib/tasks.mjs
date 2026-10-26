@@ -21,6 +21,67 @@
 // 冒号形式是既有历史产物（早期 pipeline 一律这么写，见仓库内已归档 change 与
 // contract-check 的 `--tasks` 夹具）；只认空格形式会让这些 tasks.md 整份解析成 0 条任务，
 // 对账与合流一起失效。冒号后面的内容一律当标题，不再参与 ID 识别。
+/**
+ * 错误码的严重度归属——**唯一属主**。
+ *
+ * 同一份 tasks.md 原本有四种判法：reconcile.mjs 只看 5 个码、contract-check.mjs 只看 2 个、
+ * merge-task.mjs 对任意错误全拒、hotfix.sh 单独放过 MISSING_SCOPE。后果是两个方向都错：
+ *   - merge-task 因一条无关任务的 MISSING_SCOPE 挡住整批合流，与「单个任务的问题只压住
+ *     被点名的任务」直接矛盾；
+ *   - hotfix 放过 MISSING_SCOPE 没有任何理由记录在案。
+ *
+ * 因此按「这个错误的破坏范围」分两类，不再按调用方的宽松程度各写一份：
+ *   graph  任务图本身不可信（行错、ID 重复、依赖缺失/自环/成环）。任何依赖 DAG 的判断
+ *          都可能错，整份文件不可用。
+ *   task   只影响被点名的那个任务。其它任务照常可派发、可合流。
+ */
+export const ERROR_SCOPE = {
+  MALFORMED_LINE: 'graph',
+  DUPLICATE_ID: 'graph',
+  UNKNOWN_DEP: 'graph',
+  SELF_DEP: 'graph',
+  CYCLE: 'graph',
+  MISSING_SCOPE: 'task',
+  BAD_DONE_LINE: 'task',
+  UNKNOWN_REVIEW: 'task',
+  UNKNOWN_RISK: 'task',
+  UNKNOWN_FIELD: 'task',
+  REVIEW_RISK_CONFLICT: 'task',
+};
+
+/** 该错误是否让整份 tasks.md 不可用。未知错误码按 graph 处理（fail closed）。 */
+export function isGraphError(code) {
+  return (ERROR_SCOPE[code] ?? 'graph') === 'graph';
+}
+
+/** 只保留让整份文件不可用的错误。 */
+export function graphErrors(errors) {
+  return errors.filter((error) => isGraphError(error.code));
+}
+
+/**
+ * 让「任务集合与字段归属」不可信的码。
+ *
+ * 这是与 graph/task 正交的第二个轴，只服务一个刻意的窄用途：contract-check 从 tasks.md
+ * 抽取测试路径时，只要任务集合与每个任务的字段归属是对的，抽取结果就可信；依赖成环、
+ * Done 行格式这类错误不影响抽取，重复判一遍只会把合流门禁的规则误用到规划期。
+ * 轴归解析器所有，调用方不再自带集合。
+ */
+export const IDENTITY_CODES = new Set(['MALFORMED_LINE', 'DUPLICATE_ID']);
+
+/** 只保留改变任务集合或字段归属的错误。 */
+export function identityErrors(errors) {
+  return errors.filter((error) => IDENTITY_CODES.has(error.code));
+}
+
+/**
+ * 某个任务是否带 task 级错误。
+ * 用于合流入口：只压住被合流的任务及其依赖，不因无关任务的问题挡住整批。
+ */
+export function taskErrorsFor(errors, taskId) {
+  return errors.filter((error) => !isGraphError(error.code) && error.task === taskId);
+}
+
 const TASK_LINE = /^\s*[-*]\s*\[([ xX])\]\s+(\d+(?:\.\d+)*)\s+(\S+?)(?::(?=\s|$))?(?:\s+(.*))?$/;
 const CHECKBOX_LINE = /^\s*[-*]\s*\[[ xX]\]/;
 const FIELD_LINE = /^\s+[-*]\s+([^:]+):\s*(.*)$/;
@@ -37,6 +98,21 @@ export function isTaskId(value) {
   return typeof value === 'string' && TASK_ID.test(value);
 }
 const DONE_LINE = /^source=([0-9a-f]{7}) review=(\S+)$/;
+
+/**
+ * 合流 review 标签的语法：`pass(<mechanical|8 位 id|完整 UUID>@<tip7>/<base7>)`。
+ *
+ * 单一属主。原本这条正则只在 `merge-task.mjs` 里，于是 Done 行的 review 值可以是任何
+ * 非空字符串——`pipeline-gate-slimming` 的 19 条 Done 行全写着 `review=main-session`，
+ * 主会话自审在账本上毫无痕迹，读账本的人却会以为审查发生过。
+ * 解析期用它校验 Done 行，合流期用同一份正则校验传入标签，两处不可能漂移。
+ */
+export const REVIEW_TAG = /^pass\((mechanical|[0-9a-f]{8}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})@([0-9a-f]{7})\/([0-9a-f]{7})\)$/;
+
+/** Done 行的 review 值是否是合法标签。 */
+export function isReviewTag(value) {
+  return typeof value === 'string' && REVIEW_TAG.test(value);
+}
 
 /**
  * 已知风险面词表。实测取值（2026-10-25 两业务 change 的 15 个任务）：
@@ -171,6 +247,7 @@ export function parseTasks(markdown) {
   let current = null;
   let sawScopeField = false;
   let sawDoneField = false;
+  let inComment = false;
 
   function fail(code, message, task) {
     errors.push({ code, message, task: task ?? null });
@@ -197,11 +274,30 @@ export function parseTasks(markdown) {
     if (task.done) {
       if (!sawDoneField || task.doneLine === null) {
         fail('BAD_DONE_LINE', `${task.id} 已勾选但缺少合法的 Done 行`, task.id);
+      } else if (!isReviewTag(task.doneLine.review)) {
+        // 语法合法不等于审查发生过，但语法非法一定不是 `merge-task.mjs` 写的。
+        // `pipeline-gate-slimming` 的 19 条 Done 行全是 `review=main-session`——
+        // 手写记账冒充合流收据，账本看起来完整，实际没有一条经过合流门禁。
+        fail('BAD_DONE_LINE', `${task.id} 的 Done 行 review 值不是合法标签：${task.doneLine.review}`
+          + '（须为 pass(<reviewer>@<tip7>/<base7>) 或 pass(mechanical@<tip7>/<base7>)；'
+          + '该行只能由 merge-task.mjs 生成）', task.id);
       }
     }
   }
 
   for (const line of lines) {
+    // HTML 注释里的内容不是任务契约。模板与大量 tasks.md 用注释写规则说明，
+    // 里面的 `- Foo: bar` 形态本来不该参与解析（否则模板自己就解析不过）。
+    if (inComment) {
+      if (line.includes('-->')) inComment = false;
+      continue;
+    }
+    if (line.includes('<!--')) {
+      // 同一行开闭（`<!-- x -->`）不进入注释态。
+      if (!line.includes('-->')) inComment = true;
+      continue;
+    }
+
     const taskMatch = line.match(TASK_LINE);
     if (taskMatch) {
       finish(current);
@@ -243,7 +339,8 @@ export function parseTasks(markdown) {
     const fieldMatch = line.match(FIELD_LINE);
     if (!fieldMatch) continue;
 
-    const key = fieldMatch[1].trim().toLowerCase();
+    const rawKey = fieldMatch[1].trim();
+    const key = rawKey.toLowerCase();
     const value = fieldMatch[2];
 
     if (key === 'depends on') {
@@ -266,6 +363,13 @@ export function parseTasks(markdown) {
       current.doneLine = doneMatch
         ? { source: doneMatch[1], review: doneMatch[2] }
         : null;
+    } else if (/^[a-z][a-z .-]*$/.test(key)) {
+      // 未知字段：拼错的 `Verfy with` 过去被静默忽略，于是「冻结时看着有验证命令、
+      // 合流时却没有」——那一条任务的 Verify 源在解析后凭空消失。只对 ASCII 字段名形态报错，
+      // 中文短句是说明性文字，不是字段。task 级：只压住被点名的任务。
+      fail('UNKNOWN_FIELD', `${current.id} 含未知字段 "${rawKey}"：`
+        + '解析器会静默忽略它，导致该字段的约束在冻结后消失。'
+        + `已知字段：Depends on / Write scope / Review / Risk-surface / Verify with / Scenarios / Done`, current.id);
     }
   }
   finish(current);

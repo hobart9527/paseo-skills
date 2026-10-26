@@ -2,7 +2,7 @@
 import { spawnSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseTasks, isFileWithinScopes } from './lib/tasks.mjs';
+import { parseTasks, isFileWithinScopes, graphErrors, taskErrorsFor, REVIEW_TAG } from './lib/tasks.mjs';
 import { verifyDone, buildMergeAcceptance, expandDoneSource as expandDoneSourceFor } from './lib/ledger.mjs';
 import { WRITER_ROLES, CONTROL_ROLES, READONLY_ROLES, isControlRole } from './lib/roles.mjs';
 import { acquireLock } from './lib/lock.mjs';
@@ -193,8 +193,8 @@ const tip = git(['rev-parse', '--verify', `${branch}^{commit}`]);
 const tip7 = tip.slice(0, 7);
 
 // reviewer 可以是 8 位短 ID（日常用法）、完整 UUID（便于与 Paseo 原生 id 对照），
-// 或 mechanical（仅限显式声明 Review: mechanical 的任务）。
-const REVIEW_TAG = /^pass\((mechanical|[0-9a-f]{8}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})@([0-9a-f]{7})\/([0-9a-f]{7})\)$/;
+// 或 mechanical（仅限显式声明 Review: mechanical 的任务）。语法与 Done 行的 review 值
+// 共用 lib/tasks.mjs 的 REVIEW_TAG：两处若各写一份，一处收紧另一处就会放行。
 const reviewMatch = reviewTag.match(REVIEW_TAG);
 if (!reviewMatch) fail(`malformed review tag: ${reviewTag}`);
 const [, reviewer, reviewedTip7, reviewedBase7] = reviewMatch;
@@ -276,8 +276,15 @@ if (source.taskId === null) {
 }
 
 const parsed = parseTasks(fs.readFileSync(tasksFile, 'utf8'));
-if (parsed.errors.length > 0) {
-  fail(`invalid tasks ledger:\n${parsed.errors.map((error) => `${error.code}: ${error.message}`).join('\n')}`);
+
+// 只拒「让整份文件不可信」的错误 + 「被合流任务（及其依赖）自身的错误」。
+//
+// 旧实现对任意解析错误一律 exit，于是别的任务漏写 Write scope 会挡住本任务合流——
+// 这与「单个任务的问题只压住被点名的任务」直接矛盾，也让合流入口成为全 change 的串行瓶颈。
+// 严重度归属由 lib/tasks.mjs 的 ERROR_SCOPE 单点定义，这里不另立集合。
+const graphProblems = graphErrors(parsed.errors);
+if (graphProblems.length > 0) {
+  fail(`invalid tasks ledger:\n${graphProblems.map((error) => `${error.code}: ${error.message}`).join('\n')}`);
 }
 
 const tasksById = new Map(parsed.tasks.map((task) => [task.id, task]));
@@ -286,6 +293,20 @@ const requestedTasks = taskIds.map((id) => {
   if (!task) fail(`unknown task ID: ${id}`);
   return task;
 });
+
+// 被合流的任务自身与它的直接依赖若有 task 级错误，合流仍然拒绝：
+// 这两者是本次合流真正消费的约束（自己的 scope/Review/Done、依赖的账本完整性）。
+const scopedProblems = [];
+for (const task of requestedTasks) {
+  for (const id of [task.id, ...task.depends]) {
+    for (const error of taskErrorsFor(parsed.errors, id)) {
+      scopedProblems.push(`${error.code}: ${error.message}`);
+    }
+  }
+}
+if (scopedProblems.length > 0) {
+  fail(`tasks ledger errors for the requested task(s):\n${scopedProblems.join('\n')}`);
+}
 
 // --- 已 Done 的拒绝必须区分「已合过」与「换了 revision」 ---
 //
