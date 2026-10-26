@@ -16,7 +16,7 @@
 |---|---|---|
 | A 观测与对账 | **已实施** | `lib/paseo-state.mjs` 单一适配器 + runtime 三态；活态改为「任一源报 live 即 live」；attempt 数值绑定；`rejected` 分支不再进 MERGE；解析级 INVALID 写手与同仓外部写手均计入 cap（SCEN-REC-17 ×2） |
 | B 合流门禁 | **已实施** | 冻结 `Verify with` 强制先跑（exit 36）；`-z --no-renames`；单写者锁（exit 37）；Pod 冻结成员校验；legacy 豁免需环境变量二次确认并记 run-log；测试内 commit 检测（exit 40）；进程组 kill；已合流重试的分项诊断（SCEN-MRG-25/26/27）；base 须同时是集成 HEAD 与 tip 的祖先（exit 34）；审查员与运行账本派发记录交叉核对（exit 32，复刻 T-02 自审） |
-| C 契约收敛 | **部分实施** | 角色/phase 单点定义（`lib/roles.mjs`）；`Review` 三档语义写入 SKILL；run-state 读改写加锁 + 候选校验入锁；证据闸门的场景 PASS、占位值与 smoke `--sha` 已补（SCEN-EVD-01/02）；§3-P1-11 的 SKILL/LESSONS 内部矛盾已逐条消除（心跳、Lead 阈值、hotfix 定位、OpenSpec 交回、审查轮数、停滞信号均已复核一致）；派发 brief 四份模板已落地并锁定必填字段（SCEN-DOC-13..16）；非 `T-` 前缀任务 ID 的 dispatch 标识已修（SCEN-REC-20）。**仅剩** `~/.paseo/task-routing.md` 与 shangshu notes 中的活态表述未改（需另行授权） |
+| C 契约收敛 | **部分实施** | 角色/phase 单点定义（`lib/roles.mjs`）；`Review` 三档语义写入 SKILL；run-state 读改写加锁 + 候选校验入锁；证据闸门的场景 PASS、占位值与 smoke `--sha` 已补（SCEN-EVD-01/02）；§3-P1-11 的 SKILL/LESSONS 内部矛盾已逐条消除（心跳、Lead 阈值、hotfix 定位、OpenSpec 交回、审查轮数、停滞信号均已复核一致；**但 `send_agent_prompt` 接力与打回预算两条未闭合，见 §3.10**）；派发 brief 四份模板已落地并锁定必填字段（SCEN-DOC-13..16）；非 `T-` 前缀任务 ID 的 dispatch 标识已修（SCEN-REC-20）。**仅剩** `~/.paseo/task-routing.md` 与 shangshu notes 中的活态表述未改（需另行授权） |
 | D 试点 | **未执行** | 无真实业务验收，不得宣布产品验收成功 |
 | 0 唤醒冒烟（串行） | **已执行（判断：通过）** | 5 任务串行全流程一次跑通，0 失败、0 人工催促；顺带查出「账本缺失导致因子 3b 静默消失」并已修。采集值与覆盖缺口见 §8 |
 | 0 唤醒冒烟（并行 DAG） | **已执行（判断：通过）** | 5 任务 / cap=2：cap 真实饱和（同一时刻恰 2 写手）、scope 冲突确定性产 `BLOCKED_RESOURCE` 并在上游合流后自动释放、依赖门禁正确。查出「trailer 必须在最后一段」缺陷（5 写手 2 踩中）并已修模板+测试。采集值见 §9 |
@@ -137,10 +137,10 @@
 
 | §3 条目 | 文档结论 | 代码实际 | 证据 | 锁住它的回归测试 |
 |---|---|---|---|---|
-| P0-1 权限源 fail-open | 仍存在 | **已闭合** | `reconcile.mjs:564` 把 `runtime != ok` 记入 `holdReasons`；`:598` 直接返回全局 `hold`，清空 `canDispatchNow` 并禁止派发与合流。`paseo-state.mjs:243` 在 `permissionsUsable=false` 时把 runtime 降到 `degraded` | `reconcile.test.mjs:356` SCEN-REC-13 三组参数化（`labels 键缺失` / `CLI 行集合为空` / `runtime 不可用`），每条都断言 `heldClosed` |
+| P0-1 权限源 fail-open | 仍存在 | **已闭合** | `reconcile.mjs:564` 把 `runtime != ok` 记入 `holdReasons`；`nextAction` 在 `:599-600` 直接返回全局 `hold`，清空 `canDispatchNow` 并禁止派发与合流。`paseo-state.mjs:243` 在 `permissionsUsable=false` 时把 runtime 降到 `degraded` | `reconcile.test.mjs:356` SCEN-REC-13 三组参数化（`labels 键缺失` / `CLI 行集合为空` / `runtime 不可用`），每条都断言 `heldClosed` |
 | P0-2 `archivedAt` 不参与判定 | 仍存在 | **已闭合** | `paseo-state.mjs:193-195` 定义 `archivedAt` 与 `staleArchive`（归档但 `lastStatus` 仍属 LIVE_STATUSES 的记录）并参与归一化 | `paseo-state.test.mjs:319` 双向断言：CLI 仍认识 → 保守算 live；CLI 不认识 → 不计 live |
 | P0-4 租约 `--owner` 可绕过 | 仍存在 | **已闭合** | `run-state.mjs:60-72` `ownerRefusal()`：有有效租约时 `--owner` 必填且必须等于 `lease.owner`；租约过期一律拒绝，必须显式 `begin` 取新代际 | `run-state.test.mjs:27` 第二个 owner `exit 2`；`:40` 过期租约 bump generation 后旧 owner 全部动作被拒 |
-| P1-7 `nextAction` 单 kind 严格优先级 | 仍存在 | **已闭合** | `reconcile.mjs:586-600` 只保留三类**全局**阻塞（`runtime!=ok`、`UNMAPPED`、账本自相矛盾），其余按任务局部处理；`:650-697` 组装 `actions` 有序数组，`arbitrate` / `merge` / `dispatch` 同轮给出 | `reconcile.test.mjs:1197` INVALID 不冻结无关任务派发；`:1214` UNRESOLVED 不冻结无关任务合流；`:1227` 全局阻塞仍只给单个 `hold`（负向控制） |
+| P1-7 `nextAction` 单 kind 严格优先级 | 仍存在 | **已闭合** | `reconcile.mjs:598-611` 只保留三类**全局**阻塞（`runtime!=ok`、`UNMAPPED`、账本自相矛盾），其余按任务局部处理；`:613-701` 组装 `actions` 有序数组，`arbitrate` / `merge` / `dispatch` 同轮给出 | `reconcile.test.mjs:1197` INVALID 不冻结无关任务派发；`:1214` UNRESOLVED 不冻结无关任务合流；`:1227` 全局阻塞仍只给单个 `hold`（负向控制） |
 | P1-8 `fail` 后同键不可再 `claim` | 仍存在 | **已闭合** | `run-state.mjs:166-175` claim 就地复位同一条记录并记 `retryOf` 链；`:219` 禁止 `record` 复活已 fail 意图；`:203` `record` 缺 `--agent` 直接拒绝 | `run-state.test.mjs:196` 重派留 `retryOf` 且 `intents.length === 1`；`:214` `record` 复活被拒并保留 `failedAt`；`:185` `record` 缺 `--agent` 被拒 |
 
 **这五条不需要补测试**：闭合时已同步落测，且 P1-7 带负向控制（全局阻塞不得拆成多动作）。缺的不是覆盖，是**文档滞后于代码**——已由本节更正。
@@ -152,8 +152,43 @@
   - 分类（写入者 / 控制面 / 只读）确实单点在 `lib/roles.mjs`，由 `reconcile.mjs` 与 `merge-task.mjs` 消费；`dispatch.mjs` 只写 `pipeline.role=<profile-key>`，不做分类。
   - **且 `READ_ONLY` 不能并入 `CONTROL_ROLES`**：实测并入会新增静音 `shangshu`/`xunjian`/`lead`/`orchestrator`/`hanlin`/`chanpin`——其中 `shangshu` 是 Lead，给它下发「禁读 cwd 外文件、禁联网」是错的。这两个集合语义不同，合并是退步。
   - 未知角色由 `reconcile` fail-closed 判 `UNMAPPED` 并全局 hold，已足够兜底。**此处不需要改代码。**
-- **P1-9 `claimsMerged` 用 `terminal[0]` 兜底**：`reconcile.mjs:481` 仍是 `latest?.id ?? terminal[0].id`。但 `claimsMerged` 只在 `terminal.length > 0` 分支内置为 true，此时 `latest` 必然非 null，**该兜底是死分支**，实际不会取到 `terminal[0]`。属可读性瑕疵，非正确性缺陷。
+- **P1-9 `claimsMerged` 用 `terminal[0]` 兜底**：`reconcile.mjs:483` 仍是 `latest?.id ?? terminal[0].id`。但 `claimsMerged` 只在 `terminal.length > 0` 分支内置为 true，此时 `latest` 必然非 null，**该兜底是死分支**，实际不会取到 `terminal[0]`。属可读性瑕疵，非正确性缺陷。
 - **P0-6 占位证据值**：归档 change 的 `native-smoke.md` 仍含 `msg_01JAX_LOST_NOTIFICATION`。属历史归档产物，是否回改需人类决定。
+
+### 3.10 包 C「P1-11 已逐条消除」的复核：两条不成立（2026-10-26）
+
+§0 表格里包 C 记「§3-P1-11 的 SKILL/LESSONS 内部矛盾已逐条消除（心跳、Lead 阈值、hotfix 定位、OpenSpec 交回、审查轮数、停滞信号均已复核一致）」。本轮按同一标准复验，**心跳、Lead 阈值、hotfix、OpenSpec 交回、审查轮数、LESSONS 停滞信号六项确实已一致**，但有两条不成立：
+
+**（1）`send_agent_prompt` 接力：SKILL 改了，spec 没改——两者正面冲突**
+
+| 位置 | 原文 | 矛盾点 |
+|---|---|---|
+| `openspec/specs/pipeline-delivery/spec.md:153` | `a Lead whose turn ends while awaiting a grandchild worker SHALL later send the final envelope to its parent via explicit send_agent_prompt` | 仍**要求**用这条路径 |
+| `openspec/specs/pipeline-delivery/spec.md:165` | `... and the grandchild→Lead→parent relay rule, each stated once ...` | 仍要求文档**必须写**这条规则 |
+| `SKILL.md:147` / `:194` / `:214` | 「主会话不是 Paseo agent，`send_agent_prompt` 发不到它……不要设计『Lead 主动 push 给主会话』的路径」 | **禁止**这条路径 |
+
+这是规范层与执行层的直接对立：spec 是 SHALL，SKILL 是「不要设计」。包 C 只改了 SKILL，spec 未动（`git log openspec/specs/pipeline-delivery/spec.md` 只有归档提交 `6ecd925`）。
+**根因不是遗漏而是流程**：spec 修改须走 OpenSpec change（proposal → delta → archive），包 C 是直接改 SKILL 文本，没有承载 delta 的 change，所以 spec 层的陈述无从更正。
+**处置**：这不是文档措辞问题，是**规范语义变更**，须由人类决定走哪种方式——(a) 新建 change 提交 delta 把 `:153`/`:165` 改为「`paseo wait` 主动等待」，或 (b) 撤回 SKILL 的禁止表述回到 spec 口径。在此之前，SKILL 与 spec 对同一件事给出相反指令，执行 agent 无法同时遵守。
+
+**（2）打回预算：SKILL 承诺 3 次机会，代码只给 2 次，且无升级路径**
+
+| 位置 | 原文/实现 |
+|---|---|
+| `SKILL.md:200` | 「每任务最多打回 **2 轮 + 升级高工 1 次**；超出即标 `Blocked`」 |
+| `openspec/changes/archive/2026-10-25-pipeline-native-closure/design.md:46` | 「重试预算：每任务 ≤2 次打回 + **1 次升级**，用尽标 Blocked」 |
+| `lib/roles.mjs:87` | `export const MAX_REJECTIONS = 2;` |
+| `reconcile.mjs:402` / `:499` | `rejections >= MAX_REJECTIONS` 即 BLOCKED——**第 2 次打回就停，不区分是否已升级** |
+| `reconcile.mjs:542` | `out.READY.push({ task, id, scope })`——**不携带任何角色建议**，「升级」无机器可执行载体 |
+
+即：文档承诺「2 次打回 + 1 次升级 = 共 3 次尝试机会」，代码在第 2 次打回后直接 BLOCKED。
+「升级高工」在机器可执行层面没有载体。实测 `grep -rn gaogong skills/paseo-pipeline/ --exclude-dir=test | wc -l` = **11**，全部是**角色名字符串**——`dispatch.mjs:18/26` 的别名与显示名、`lib/roles.mjs:5/15` 的统计注释与 `WRITER_ROLES` 成员、`SKILL.md:39/119/228/271` 与 `templates/{lead,writer}.md` 的派发指引、`LESSONS.md:110` 的 trailer 校验说明。**没有任何一处是「第 N 次打回后改派 gaogong」的判定逻辑**：`reconcile.mjs:402` 只数 `rejections`，`:499` 只与常量比较，两者都不区分角色，`READY` 输出（`:542`）也不携带角色。
+**影响**：一个需要「换更深的模型再试一次」的任务，按文档应还有一次机会，按代码会被直接丢给人类裁决。两者行为差异是**多一次自动重派 vs 立即人工介入**。
+**处置**：属语义变更，需人类决策——(a) 代码补升级路径（第 2 次打回后 READY 携带 `escalate: gaogong`，第 3 次才 BLOCKED），或 (b) 文档改为「打回 2 次即 Blocked，升级由人类决定」。**未擅自改任何一侧。**
+
+> 本条与 §3.9 的五条形成对照：那五条是**文档落后于代码**（代码对、文档错，改文档即可）；这两条是**要求本身未被实现**（文档承诺的能力代码里不存在），必须由人类决定以哪边为准。
+>
+> **为什么没有测试拦住**：`docs.test.mjs` 只断言「某段文字存在且包含某些关键词」，不检查跨文件语义一致性，也没有任何测试读 `openspec/specs/`。上面两条冲突恰好落在两处盲区——(1) spec 与 SKILL 的**对立陈述**，两者各自内部自洽；(2) 文档承诺的**能力**是否存在，需要把文档描述与 `reconcile.mjs` 的实际输出形状对账才能发现。若要自动化，需要新增一类「文档承诺 → 代码符号」的映射断言，这是 §5 包 C 未覆盖的空白（包 C 的验收标准只写了「docs.test 检查规则只在一处定义」，即防重复，不含防失实）。
 
 ---
 
@@ -267,6 +302,8 @@ acceptance 先跑 structure；smoke 与 audit 都必须 `--sha`；场景按 toke
 3. hotfix 定位：L1 正式入口（推荐）还是 Legacy。
 4. 当前未提交改动是否先作为基线提交。
 5. 是否授权按 §5 从包 0 开始实施。
+6. **`send_agent_prompt` 接力冲突（§3.10-1）**：spec.md:153/165 要求用该路径交回，SKILL.md:147/194/214 禁止该路径。走 OpenSpec change 提交 delta 改 spec，还是撤回 SKILL 表述回到 spec 口径？改 spec 属规范语义变更，须人类决定。
+7. **打回预算冲突（§3.10-2）**：SKILL.md:200 与归档 design.md:46 写「打回 2 轮 + 升级高工 1 次」，代码 `MAX_REJECTIONS = 2` 在第 2 次打回即 BLOCKED 且无升级路径。补代码实现升级，还是把文档改为「2 次即 Blocked、升级交人类」？
 
 ---
 
