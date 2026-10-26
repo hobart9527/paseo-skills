@@ -150,7 +150,14 @@ A task SHALL release dependents only when DONE, where DONE requires a checked bo
 - **THEN** merge succeeds, drift is recorded in run-log, and no rebase occurred.
 
 ### Requirement: Event-driven operation, relay and permission discipline
-Ordinary runs SHALL create no recurring heartbeat or schedule. Documentation SHALL state that without a verified timer or external event source a silently lost callback cannot wake an idle Lead and reconciliation runs at the next real invocation; it SHALL NOT claim a ten-minute watchdog, fixed latency, zero compaction, universal success, or exact test counts without collected evidence. Envelopes SHALL be ≤20 lines with `kind=turn-idle|phase-complete|blocked`; a Lead whose turn ends while awaiting a grandchild worker SHALL later send the final envelope to its parent via explicit `send_agent_prompt`. Notification dedupe SHALL key on agent id plus message/event id plus task, attempt, phase and revision, ignoring duplicates and stale ones. The Lead SHALL NOT call `respond_to_permission`; permission requests are reported to the human. Retry budgets SHALL be finite and workspaces of failed/Blocked tasks SHALL be retained.
+
+Ordinary runs SHALL create no recurring heartbeat or schedule. Documentation SHALL state that without a verified timer or external event source a silently lost callback cannot wake an idle Lead and reconciliation runs at the next real invocation; it SHALL NOT claim a ten-minute watchdog, fixed latency, zero compaction, universal success, or exact test counts without collected evidence. Envelopes SHALL be ≤20 lines with `kind=turn-idle|phase-complete|blocked`.
+
+A Lead awaiting a grandchild worker SHALL NOT let its turn end: it SHALL block in `paseo wait <id> --timeout <seconds>` and act on the returned `status`, because `notifyOnFinish` is consumed single-level and the observed failure mode is an idle Lead that a completed child cannot wake. The parent session SHALL NOT be the target of a `send_agent_prompt` relay: the main session is not a Paseo agent, so that path is structurally undeliverable. The main session SHALL instead read the Lead's final envelope after its own blocking `paseo wait` on the Lead's id. Documentation SHALL forbid designing the relay path and SHALL state why.
+
+Notification dedupe SHALL key on agent id plus message/event id plus task, attempt, phase and revision, ignoring duplicates and stale ones. The Lead SHALL NOT call `respond_to_permission`; permission requests are reported to the human.
+
+Retry budgets SHALL be finite and workspaces of failed/Blocked tasks SHALL be retained. The budget SHALL be countable and its escalation target machine-readable: the first `MAX_REJECTIONS` retry-consuming dispositions (rejected/abandoned) SHALL re-dispatch the task under its normal role, the next one SHALL re-dispatch it escalated to the escalation role, and any further retry-consuming disposition SHALL block the task for human arbitration. Reconciliation SHALL expose the escalation target on the task it is about to dispatch, so that a documented escalation is executable rather than advisory.
 
 #### Scenario: SCEN-EVT-01 limitation documented
 - **WHEN** SKILL.md is read
@@ -162,11 +169,27 @@ Ordinary runs SHALL create no recurring heartbeat or schedule. Documentation SHA
 
 #### Scenario: SCEN-DOC-01 discipline sections present
 - **WHEN** SKILL.md is read
-- **THEN** it contains envelope format with kind, task/attempt/phase mapping, dedupe key, stale/duplicate handling, permission-pause handling, retry budget, OpenSpec CLI main-session exclusivity, workspace retention, and the grandchild→Lead→parent relay rule, each stated once without conflicting duplicates.
+- **THEN** it contains envelope format with kind, task/attempt/phase mapping, dedupe key, stale/duplicate handling, permission-pause handling, retry budget, OpenSpec CLI main-session exclusivity and workspace retention, each stated once without conflicting duplicates, and it does not require a grandchild→Lead→parent `send_agent_prompt` relay.
 
 #### Scenario: SCEN-DOC-02 permission self-approval forbidden
 - **WHEN** SKILL.md permission section is read
 - **THEN** it forbids the Lead calling `respond_to_permission` and routes requests to the human.
+
+#### Scenario: SCEN-EVT-03 wake path is blocking wait, not a relay
+- **WHEN** SKILL.md and `templates/lead.md` are read
+- **THEN** they instruct the Lead to block in `paseo wait` for the child id, state that the main session waits on the Lead rather than the Lead pushing to the main session, and name the main session as not being a Paseo agent.
+
+#### Scenario: SCEN-BUD-01 escalation target is machine-readable
+- **WHEN** a task has accumulated exactly `MAX_REJECTIONS` rejection-consuming dispositions and is inside `canDispatchNow`
+- **THEN** its entry in the reconciliation output carries the escalation flag and target role, the dispatch action names it in a separate escalation list, and the machine-readable task list keeps its existing shape.
+
+#### Scenario: SCEN-BUD-02 below threshold carries no escalation
+- **WHEN** a task has fewer than `MAX_REJECTIONS` rejection-consuming dispositions
+- **THEN** its reconciliation entry carries no escalation fields and the dispatch action carries no escalation list.
+
+#### Scenario: SCEN-BUD-03 exhausted budget blocks for the human
+- **WHEN** a task accumulates more than `MAX_REJECTIONS` plus one escalation attempt of rejection-consuming dispositions
+- **THEN** the task is BLOCKED with a budget-exhausted reason and is absent from `canDispatchNow`.
 
 ### Requirement: Truthful verification
 Regression tests SHALL be dependency-free, runnable by `skills/paseo-pipeline/test/run-all.sh`, and cover success, failure, duplicate/unresolved execution, resource conflicts and safe merge, plus the existing `contract-check.test.sh`. A passing test run SHALL be reported only as the printed pass/fail counts, never as coverage. Contract-check output SHALL describe counts as static references. Live native callback smoke evidence SHALL be recorded separately from mock-based tests and validated structurally by `test/check-evidence.mjs`; unrun scenarios SHALL be listed as UNVERIFIED.

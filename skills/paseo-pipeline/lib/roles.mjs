@@ -83,5 +83,37 @@ export function consumesRetryBudget(disposition) {
   return DISPOSITION_EFFECT[disposition] === 'retry';
 }
 
-/** 单任务打回预算：≤2 次打回后转 BLOCKED，禁止无预算重派。 */
+/** 常规打回预算：≤2 次打回仍按原角色重派。 */
 export const MAX_REJECTIONS = 2;
+
+/** 打回耗尽的升级目标角色：最后一次机会改派更深模型。 */
+export const ESCALATION_ROLE = 'gaogong';
+
+/** 升级后允许的重派次数（本次仍被打回即转 BLOCKED）。 */
+export const MAX_ESCALATED_RETRIES = 1;
+
+/**
+ * 打回预算策略——这是「还能不能再派一次、派给谁」的唯一判定点。
+ *
+ * 口径（SKILL「重试与返工预算」）：每任务最多打回 2 轮 + 升级高工 1 次，超出即 Blocked。
+ * 换成计数即：rejections 0–1 → 常规重派；2 → 升级重派；≥3 → 耗尽。
+ *
+ * 之所以要把「升级」做成机器可读的返回值而不是文档里的一句话：派发角色若只写在
+ * 提示词里，执行器仍会按默认角色重派，第 3 次尝试用的还是同一个模型——「换更深模型
+ * 再试一次」这个承诺就没有任何执行载体（2026-10-26 复核发现的历史缺陷）。
+ */
+export function retryPolicy(rejections) {
+  if (rejections < MAX_REJECTIONS) {
+    return { allowed: true, escalate: false, role: null, rejections };
+  }
+  if (rejections < MAX_REJECTIONS + MAX_ESCALATED_RETRIES) {
+    return { allowed: true, escalate: true, role: ESCALATION_ROLE, rejections };
+  }
+  return {
+    allowed: false,
+    escalate: false,
+    role: null,
+    rejections,
+    reason: `打回预算耗尽（${rejections} 次 rejected/abandoned，已含 ${MAX_ESCALATED_RETRIES} 次升级重派）；须人类裁决是否继续`,
+  };
+}

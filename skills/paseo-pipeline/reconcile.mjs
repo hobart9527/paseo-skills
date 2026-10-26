@@ -25,7 +25,7 @@ import { verifyDone } from "./lib/ledger.mjs";
 import { readPaseoState, selectChange, hasPipelineMarker } from "./lib/paseo-state.mjs";
 import {
   WRITER_ROLES, READONLY_ROLES, isControlRole, normalizePhase, PHASE_ORDER, DISPOSITIONS,
-  DISPOSITION_EFFECT, consumesRetryBudget, MAX_REJECTIONS,
+  DISPOSITION_EFFECT, consumesRetryBudget, retryPolicy,
 } from "./lib/roles.mjs";
 import {
   readRunState, openIntents, leaseStatus, intentAgeMs, DEFAULT_INTENT_GRACE_MS,
@@ -399,7 +399,9 @@ for (const task of tasks) {
   const terminal = taskMembers.filter((m) => !m.live);
   // 打回预算：消耗预算的处置（rejected/abandoned）累加到本任务的审计历史。
   // 预算耗尽后不再重派，转 BLOCKED 交人类裁决——否则一个反复被打回的任务会无限自旋。
+  // 前 MAX_REJECTIONS 次按原角色重派，其后一次升级改派 ESCALATION_ROLE（见 retryPolicy）。
   const rejections = terminal.filter((m) => consumesRetryBudget(m.disposition)).length;
+  const policy = retryPolicy(rejections);
   // agent 自称 disposition=merged。自报不是验收：留到最后判定，先让「分支领先」这一
   // 可核验事实说话（分支仍在 → 其实没合流，进 MERGE；分支没了又没账本 → 才是矛盾）。
   let claimsMerged = false;
@@ -496,11 +498,11 @@ for (const task of tasks) {
   // 打回预算耗尽：不再回流 READY 无预算重派，转 BLOCKED 交人类裁决。
   // 放在 MERGE 之后：分支已领先说明工作成果存在，合流仍走正常门禁（测试 + 非自审），
   // 预算只拦「什么都没交出去就再派一次」的空转。
-  if (rejections >= MAX_REJECTIONS) {
+  if (!policy.allowed) {
     out.BLOCKED.push({
       task: label,
       waitFor: [],
-      reason: `打回预算耗尽（${rejections}/${MAX_REJECTIONS} 次 rejected/abandoned）；须人类裁决是否继续`,
+      reason: policy.reason,
     });
     stateOf.set(task.id, "BLOCKED");
     continue;
@@ -519,7 +521,15 @@ for (const task of tasks) {
     held.push({ id: task.id, label, scope: task.scope });
     continue;
   }
-  candidates.push({ id: task.id, label, scope: task.scope });
+  candidates.push({
+    id: task.id,
+    label,
+    scope: task.scope,
+    // 升级重派：本次派发必须换角色，否则「打回 2 次后升级高工」没有任何执行载体。
+    escalate: policy.escalate,
+    role: policy.role,
+    rejections: policy.rejections,
+  });
 }
 
 // --- 资源串行（按文件顺序；路径段前缀重叠即冲突） ---
@@ -539,7 +549,13 @@ for (const c of candidates) {
     out.BLOCKED_RESOURCE.push({ task: c.label, conflict: holder.label });
     stateOf.set(c.id, "BLOCKED_RESOURCE");
   } else {
-    out.READY.push({ task: c.label, id: c.id, scope: c.scope });
+    out.READY.push({
+      task: c.label,
+      id: c.id,
+      scope: c.scope,
+      // 仅在升级重派时出现。字段缺省表示按常规角色派发；出现即要求执行器改派该角色。
+      ...(c.escalate ? { escalate: true, role: c.role, rejections: c.rejections } : {}),
+    });
     stateOf.set(c.id, "READY");
     held.push(c);
   }
@@ -672,6 +688,12 @@ function nextAction(out, { tasks, cap }) {
     // `/\bT-\d+\b/` 从 label 里抠 ID——`lib/tasks.mjs` 明明接受 `<前缀>-<数字>`
     // （`TASK-01`、`BUG-3` 都合法），非 `T-` 前缀就抠不出来，整条 label 会被当成任务 ID
     // 塞进 `pipeline.task` 标签。改为回查 READY（label 的产出点，同时带 id）。
+    // 升级重派：任务列表保持「机器标识」形状不变（执行器按键取值），
+    // 另开 `escalations` 只在确有升级时出现，说明该任务这次必须改派哪个角色。
+    // 不把 tasks 改成对象：那是既有公开契约，改形状会打断所有已写好的执行器。
+    const escalations = out.READY
+      .filter((r) => r.escalate && out.canDispatchNow.includes(r.task))
+      .map((r) => ({ task: r.id, role: r.role, rejections: r.rejections }));
     actions.push({
       kind: "dispatch",
       reason: `cap=${cap}，当前 ${out.liveWriterCount} 个本 change 写入者`
@@ -679,6 +701,7 @@ function nextAction(out, { tasks, cap }) {
       tasks: out.canDispatchNow.map(
         (label) => out.READY.find((r) => r.task === label)?.id ?? label
       ),
+      ...(escalations.length > 0 ? { escalations } : {}),
     });
   }
   if (actions.length === 0) {
@@ -719,7 +742,12 @@ if (asJson) {
   for (const e of out.BLOCKED) console.log(`BLOCKED  ${e.task}  ${e.reason ? `(${e.reason})` : `(等 ${e.waitFor.join(",")})`}`);
   for (const e of out.BLOCKED_RESOURCE) console.log(`BLOCKED_RESOURCE ${e.task}  (冲突 ${e.conflict})`);
   for (const e of out.INTENT_PENDING) console.log(`INTENT_PENDING ${e.task}  (${e.reason})`);
-  for (const e of out.READY) console.log(`READY    ${e.task}`);
+  for (const e of out.READY) {
+    // 升级重派必须在文本通道也看得见：执行器读的是 stdout，不是 JSON。
+    console.log(e.escalate
+      ? `READY    ${e.task}  [升级重派 -> ${e.role}，已打回 ${e.rejections} 次]`
+      : `READY    ${e.task}`);
+  }
   for (const e of out.UNMAPPED) console.log(`UNMAPPED ${String(e.id).slice(0, 8)}  (${e.reason})`);
   for (const e of out.ORPHAN_INTENT) console.log(`ORPHAN_INTENT ${e.key}  (${e.reason})`);
   for (const e of out.FOREIGN) console.log(`FOREIGN  ${String(e.id).slice(0, 8)} ${e.status}  ${e.name}`);

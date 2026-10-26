@@ -1085,16 +1085,76 @@ test('SCEN-REC-16 one rejection keeps the task dispatchable (budget remains)', (
   dispatch(result, ['T-01']);
 });
 
-test('SCEN-REC-16 rejections at the budget ceiling become BLOCKED for human arbitration', (context) => {
+test('SCEN-REC-16 rejections at the escalation threshold re-dispatch as gaogong, not BLOCKED', (context) => {
+  // 语义变更（2026-10-26）：SKILL 与归档 design 都写「打回 2 轮 + 升级高工 1 次」，
+  // 即第 2 次打回不是终点，而是**升级重派**的起点。旧实现在这里直接 BLOCKED，
+  // 使「升级」变成一句没有执行载体的承诺。
   const subject = fixture(context);
   subject.runtime([
     agent({ id: 'r1', status: 'idle' }, { 'pipeline.attempt': '1', 'pipeline.phase': 'impl', 'pipeline.disposition': 'rejected' }),
     agent({ id: 'r2', status: 'idle' }, { 'pipeline.attempt': '2', 'pipeline.phase': 'impl', 'pipeline.disposition': 'rejected' }),
   ]);
   const result = output(subject);
+  state(result, 'T-01', 'READY');
+  dispatch(result, ['T-01']);
+
+  // 升级目标必须是机器可读的：只写在提示词里，执行器无从得知该换哪个角色。
+  const ready = result.READY.find((r) => r.id === 'T-01');
+  assert.equal(ready.escalate, true, '第 2 次打回后必须标记升级重派');
+  assert.equal(ready.role, 'gaogong', '升级目标角色必须是 gaogong');
+  assert.equal(ready.rejections, 2);
+
+  const action = (result.nextAction.actions ?? []).find((a) => a.kind === 'dispatch');
+  assert.ok(action, `必须给出 dispatch 动作：${JSON.stringify(result.nextAction)}`);
+  assert.deepEqual(action.tasks, ['T-01'], '任务标识形状不得因升级而改变（既有公开契约）');
+  assert.deepEqual(action.escalations, [{ task: 'T-01', role: 'gaogong', rejections: 2 }]);
+});
+
+test('SCEN-REC-16 a third rejection exhausts the budget and blocks for human arbitration', (context) => {
+  const subject = fixture(context);
+  subject.runtime([
+    agent({ id: 'r1', status: 'idle' }, { 'pipeline.attempt': '1', 'pipeline.phase': 'impl', 'pipeline.disposition': 'rejected' }),
+    agent({ id: 'r2', status: 'idle' }, { 'pipeline.attempt': '2', 'pipeline.phase': 'impl', 'pipeline.disposition': 'rejected' }),
+    agent({ id: 'r3', status: 'idle' }, { 'pipeline.attempt': '3', 'pipeline.phase': 'impl', 'pipeline.disposition': 'rejected' }),
+  ]);
+  const result = output(subject);
   state(result, 'T-01', 'BLOCKED');
   assert.match(JSON.stringify(result.BLOCKED), /打回预算耗尽/);
   dispatch(result, []);
+});
+
+test('SCEN-REC-16 a below-threshold task carries no escalation fields (negative control)', (context) => {
+  // 负向对照：升级字段只在升级重派时出现。若它无条件出现，执行器会以为每个任务都要换角色。
+  const subject = fixture(context);
+  subject.runtime([agent({ status: 'idle' }, { 'pipeline.disposition': 'rejected' })]);
+  const result = output(subject);
+  state(result, 'T-01', 'READY');
+  const ready = result.READY.find((r) => r.id === 'T-01');
+  assert.equal(ready.escalate, undefined, '未达阈值不得携带 escalate');
+  assert.equal(ready.role, undefined, '未达阈值不得携带 role');
+  const action = (result.nextAction.actions ?? []).find((a) => a.kind === 'dispatch');
+  assert.equal(action.escalations, undefined, '未达阈值不得出现 escalations 数组');
+});
+
+test('SCEN-REC-16 escalation only names tasks actually inside canDispatchNow', (context) => {
+  // cap=1 且两个任务都到升级阈值：只有进入 canDispatchNow 的那个能带升级指令，
+  // 否则执行器会按 escalations 派发一个本就不该派的任务（突破 cap）。
+  const subject = fixture(context, [
+    { id: 'T-01', scope: 'src/a.mjs' },
+    { id: 'T-02', scope: 'src/b.mjs' },
+  ]);
+  subject.runtime([
+    agent({ id: 'a1', status: 'idle' }, { 'pipeline.task': 'T-01', 'pipeline.attempt': '1', 'pipeline.disposition': 'rejected' }),
+    agent({ id: 'a2', status: 'idle' }, { 'pipeline.task': 'T-01', 'pipeline.attempt': '2', 'pipeline.disposition': 'rejected' }),
+    agent({ id: 'b1', status: 'idle' }, { 'pipeline.task': 'T-02', 'pipeline.attempt': '1', 'pipeline.disposition': 'rejected' }),
+    agent({ id: 'b2', status: 'idle' }, { 'pipeline.task': 'T-02', 'pipeline.attempt': '2', 'pipeline.disposition': 'rejected' }),
+  ]);
+  const result = output(subject, ['--cap', '1']);
+  assert.equal(result.canDispatchNow.length, 1);
+  const dispatched = result.canDispatchNow[0].split(' ')[0];
+  const action = (result.nextAction.actions ?? []).find((a) => a.kind === 'dispatch');
+  assert.deepEqual(action.escalations.map((e) => e.task), [dispatched],
+    'escalations 必须与 canDispatchNow 同一口径');
 });
 
 test('SCEN-REC-16 mixed rejected and abandoned both consume the retry budget', (context) => {
@@ -1103,7 +1163,9 @@ test('SCEN-REC-16 mixed rejected and abandoned both consume the retry budget', (
     agent({ id: 'r1', status: 'error' }, { 'pipeline.attempt': '1', 'pipeline.disposition': 'rejected' }),
     agent({ id: 'r2', status: 'idle' }, { 'pipeline.attempt': '2', 'pipeline.disposition': 'abandoned' }),
   ]);
-  state(output(subject), 'T-01', 'BLOCKED');
+  state(output(subject), 'T-01', 'READY');
+  const ready = output(subject).READY.find((r) => r.id === 'T-01');
+  assert.equal(ready.escalate, true, 'abandoned 与 rejected 同样消耗预算，达到阈值即升级');
 });
 
 test('SCEN-REC-16 handed-off and superseded do not consume the retry budget', (context) => {
@@ -1121,7 +1183,8 @@ test('SCEN-REC-16 handed-off and superseded do not consume the retry budget', (c
 test('SCEN-REC-16 a rejected attempt branch is STALE, never the merge target', (context) => {
   // 分支领先 = 有产物，但产物来自**被判回的 attempt**。合流它等于接受被拒绝的成果，
   // 而且最新 attempt（2）什么都没交出去。旧实现把这种分支直接当 MERGE，等于用旧产物顶掉返工。
-  // 正确结论：旧 attempt 分支报 STALE_BRANCH，任务本身按预算处置（此处两次打回已耗尽 → BLOCKED）。
+  // 正确结论：旧 attempt 分支报 STALE_BRANCH，任务本身按预算处置
+  // （两次打回 → 进入升级重派，不是 BLOCKED；第 3 次才耗尽）。
   const subject = fixture(context);
   subject.taskBranch();
   subject.runtime([
@@ -1129,11 +1192,11 @@ test('SCEN-REC-16 a rejected attempt branch is STALE, never the merge target', (
     agent({ id: 'r2', status: 'idle' }, { 'pipeline.attempt': '2', 'pipeline.disposition': 'rejected' }),
   ]);
   const result = output(subject);
-  state(result, 'T-01', 'BLOCKED');
+  state(result, 'T-01', 'READY');
+  assert.equal(result.READY.find((r) => r.id === 'T-01').escalate, true);
   assert.equal(result.staleBranches.length, 1);
   assert.equal(result.staleBranches[0].attempt, 1);
   assert.equal(result.staleBranches[0].latestAttempt, 2);
-  assert.match(result.BLOCKED.map((e) => e.reason ?? '').join(' '), /打回预算耗尽/);
 });
 
 test('SCEN-REC-16 the latest attempt branch is the merge target, attempts compared numerically', (context) => {

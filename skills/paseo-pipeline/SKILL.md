@@ -199,6 +199,8 @@ node skills/paseo-pipeline/run-state.mjs status <change> [--json]
 
 **重试与返工预算**：每任务最多打回 2 轮 + 升级高工 1 次；超出即标 `Blocked`，保留现场报人类裁决，禁止无限自旋。
 
+「升级」不是一句提示词，而是 `reconcile` 的机器可读输出：打回数达到 `MAX_REJECTIONS`（`lib/roles.mjs`，当前 2）时，该任务的 `READY` 条目带 `escalate: true` 与 `role: "gaogong"`，`dispatch` 动作另带 `escalations: [{ task, role, rejections }]`，文本通道输出 `READY    <task>  [升级重派 -> gaogong，已打回 2 次]`。执行器**必须按该角色派发**，否则第 3 次尝试仍是同一模型，「升级」形同虚设。再多一次打回即转 `Blocked`。
+
 ### 信封规范（≤20 行）
 
 统一字段：`task`、`attempt`、`phase`、`result`、`reviewed_sha`、`blockers`、`next_action`。

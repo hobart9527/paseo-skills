@@ -79,6 +79,14 @@ wait          # 等全部返回；也可以只 poll 文件，谁先有 status �
 **不打这个标签，`reconcile` 会把该任务判为 `UNRESOLVED` 并锁死推进**（fail-closed）。
 这是 2026-10-26 冒烟里最耗时的一处摩擦，务必照做。
 
+## 打回预算与升级重派
+
+预算由 `lib/roles.mjs` 的 `retryPolicy()` 独占判定，**不要自己数也不要自己决定换不换角色**，读 `reconcile` 的输出即可：
+
+- 打回数 < `MAX_REJECTIONS`（当前 2）：按原角色重派。
+- 打回数 == `MAX_REJECTIONS`：该任务的 `READY` 条目带 `escalate: true` 与 `role`，`dispatch` 动作另带 `escalations: [{ task, role, rejections }]`。**必须按该 `role` 派发**——否则第 3 次尝试仍是同一模型，「升级」形同虚设。
+- 再多一次打回：任务进 `BLOCKED`，保留 workspace 与运行账本，报人类裁决，禁止无限自旋。
+
 ## 合流
 
 ```bash
