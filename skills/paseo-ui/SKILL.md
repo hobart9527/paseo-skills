@@ -239,10 +239,12 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
 | 分级 | 判据 | 执行者 | 隔离 | 评审 |
 | :--- | :--- | :--- | :--- | :--- |
 | **L-0** | 改动 ≤2 个文件，且不触共享原语（`components/ui/`）与全局 token 文件 | 主会话直接改 | 原地 | 自动门禁 |
-| **L-1** | 多文件，但不触共享原语与全局 token | 设计营造师 Builder | worktree | 自动门禁（Builder profile 默认的交叉评审被显式豁免——缺陷由 `capture.mjs` 探针与 `package.json` 门禁兜底） |
-| **L-2** | 触及共享原语或全局 token（影响面跨页面） | 设计营造师 Builder | worktree | 自动门禁 + 设计师 Designer 前后截图抽检一次（抽检走通道 B 全文内联） |
+| **L-1** | 多文件，但不触共享原语与全局 token | 设计营造师 Designer (`agent_profile_jiangzuo`) | worktree | 自动门禁（缺陷由 `capture.mjs` 探针与 `package.json` 门禁兜底） |
+| **L-2** | 触及共享原语或全局 token（影响面跨页面） | 设计营造师 Designer (`agent_profile_jiangzuo`) | worktree | 自动门禁 + 独立 Auditor 截图对比抽检一次（抽检走通道 B 全文内联） |
 
-走查快轨 ⑦ 的执行者：看截图选设计师 Designer，看代码与 a11y JSON 选审计员 Auditor；L-2 的 Designer 抽检同样只读。
+走查快轨 ⑦ 的执行者：看截图选设计营造师 Designer，看代码与 a11y JSON 选独立审查 Auditor；L-2 的截图抽检同样只读。
+
+**UI 角色只剩一个 profile**：原「设计营造师 Builder」（写码）与「设计师 Designer」（只读视觉走查）是两个 profile，收敛后都映射到 `agent_profile_jiangzuo`。**同一 profile 承担写入与自检不构成独立审查**——L-2 的抽检必须由 `agent_profile_anchasi`（异族、只读）执行，或在 brief 里强制另一实例且明确禁止读自己刚写的 diff。
 
 **Lite 执行流**：
 1. **基线**：确认目标文件的 `git status`。若目标文件有未提交改动，L-1/L-2 不建 worktree（会丢失这些改动），先问人类是先提交还是改为原地执行；原地执行时先把 `git diff -- <目标文件>` 存为 `./captures/baseline.patch`，交付时只报告相对基线的增量。
@@ -255,7 +257,7 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
 
 - **触发场景**：全新功能页面（0→1）、大面积业务流程重构（≥3 个交互界面）、公共组件库改造。
 - **与 paseo-pipeline 的边界**：需求同时含后端/接口改动，或拆出 ≥3 个有依赖的非 UI 任务时，整体走 `paseo-pipeline`（OpenSpec change）。此时本档六阶段作为该 change 中 UI 任务的内部流程：Stage 1 的产出并入 pipeline 确认点 1（`PRODUCT.md`、`DESIGN.md` 随 spec 冻结），Stage 6 合入 `integration/<change>` 分支，主干合入归 pipeline 确认点 2；此时不调用 `openspec` CLI。纯 UI 需求则独立运行本档。
-- **编排者**：Stage 1 由主会话直接编排（方向确认需人类在场）；Stage 2–5 预计派发 ≥4 次，按全局约定交总控 Lead 无人值守执行，主会话只守 Stage 1 与 Stage 6 两个确认点。下文 Stage 2–5 中的「编排者」即当前阶段的负责人（Lead 档为总控 Lead，主会话编排时为主会话）——起停预览、跑 `capture.mjs` 与 `accesslint`、准备 Stage 4 两路 brief、归并缺陷单，均为编排者职责，不派给静音评审角色。无人值守角色（Lead、Builder、Auditor 等）一律以 `bypassPermissions` 模式派发，不打断等许可。
+- **编排者**：Stage 1 由主会话直接编排（方向确认需人类在场）；Stage 2–5 预计派发 ≥6 次或预计 >30 分钟，按全局约定交总控 Lead 无人值守执行，主会话只守 Stage 1 与 Stage 6 两个确认点。下文 Stage 2–5 中的「编排者」即当前阶段的负责人（Lead 档为总控 Lead，主会话编排时为主会话）——起停预览、跑 `capture.mjs` 与 `accesslint`、准备 Stage 4 两路 brief、归并缺陷单，均为编排者职责，不派给静音评审角色。无人值守的**写入**角色（Lead、设计营造师）用 `bypassPermissions` 派发，不打断等许可；**只读**审查角色（Auditor）保持 `auto-review`，不放宽成 `bypassPermissions`。
 
 ---
 
@@ -279,7 +281,7 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
    - 态 B（存量工程无规范）：从代码 token 文件与公共组件中提取既有模式，起草 `DESIGN.md`（只写语义角色，不抄数值）。
    - 态 C（全新 0→1 页面）：调用 `python3 ~/.claude/skills/paseo-ui/vendor/ui-ux-pro-max/scripts/search.py "<domain-keyword>" --design-system` 生成 A/B 两种不同密度（`--density`）与版式（`--variance`）的设计系统草案。
 2. **派发 Builder 塑形**：
-   - 角色：`设计营造师 Builder`（`agent_profile_shejishi_builder`）。
+   - 角色：`设计营造师 Designer`（`agent_profile_jiangzuo`）。
    - 注入上下文（统一使用绝对路径，免疫 worktree 隔离）：`~/.claude/skills/paseo-ui/vendor/impeccable/reference/shape.md`、`~/.claude/skills/paseo-ui/vendor/interface-design/SKILL.md` 与 `~/.claude/skills/paseo-ui/vendor/interaction-contracts/SKILL.md`（明确交互契约：触发/状态/反馈/中断/失败恢复/焦点）。
    - 产出：功能架构、核心动线、界面展示态矩阵（Idle/Loading/Empty/Error/Stressed）；业务状态机以既有 spec 为准，不自造。**仅态 C 产出 A/B 两套方向对比**；态 A/B 只产出一套与既有方向一致的方案，若认为需要改方向，写成 Suggest 块交回。
 3. **★ 确认点 1**：Builder 交回的方案（含 interface-design Suggest 块）由主会话转人类拍板；确认后按「单一设计宪法」保存映射写入 `DESIGN.md`，与 `PRODUCT.md` 一起冻结。
@@ -317,7 +319,7 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
 
 - **读图探针（前置）**：派 Designer 前，先给它一张已知截图，让它说出页面主按钮的文案；答错或含糊即判定本轮不可读图，路 A 改由**主会话亲自读图**完成视觉走查（主会话本身具备多模态能力，无需替换 profile），并在报告中记录探针结果与替换事实。
 - **路 A（视觉多模态走查 - 看图）**：
-  - 角色：`设计师 Designer`（`agent_profile_jiangzuo`，按读图探针结果决定是否替换）。
+  - 角色：`设计营造师 Designer`（`agent_profile_jiangzuo`，按读图探针结果决定是否替换）。
   - 注入方式：**通道 B 全文内联**——编排者把 `~/.claude/skills/paseo-ui/vendor/impeccable/reference/audit.md` 全文粘贴进 brief（Designer 带静音守则，读不到 worktree 外路径）。
   - 输入：`./captures/before` 与 `./captures/after` 下的截图、`capture-manifest.json` 探针（CHI 指数）、`DESIGN.md`（均在 worktree cwd 内）。
   - 职责：对照设计宪法与工艺基线，提取客观缺陷（Contract 违背条款 + Runtime 视口/状态复现 + Correction 唯一建议），严禁输出主观打分。
