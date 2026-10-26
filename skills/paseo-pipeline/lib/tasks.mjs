@@ -209,8 +209,46 @@ function parseVerify(raw) {
   const unwrap = (token) => token.replace(/^[([{`'"]+/, '').replace(/[)\]}`'"]+$/, '');
   let head = 0;
   while (head < tokens.length && ENV_ASSIGNMENT.test(unwrap(tokens[head]))) head += 1;
-  const command = head < tokens.length && isExecutableHead(unwrap(tokens[head])) ? text : null;
-  return { raw: text, command, tests };
+  const executable = head < tokens.length && isExecutableHead(unwrap(tokens[head]));
+  if (!executable) return { raw: text, command: null, tests };
+  // command 必须是**给 shell 执行**的字符串，因此要剥掉 Markdown 包裹。
+  //
+  // 旧实现只在「判断是不是命令」时 unwrap，返回值仍是原文：`` `node --test x.mjs` ``
+  // 被判定为可执行，然后原样交给 `/bin/sh -c`。反引号在 shell 里是**命令替换**，
+  // 整行会先执行 `node --test x.mjs`，再把它的输出当成命令名执行——实测报
+  // `/bin/sh: ✔: command not found`，合流以 exit 20 失败。这正是「验过」变自报的
+  // 反面：以为在跑冻结命令，实际跑的是命令的输出。
+  //
+  // 只剥包裹整行的定界符：`"$(a) $(b)"` 这类内部引号是命令语义的一部分，不能动。
+  const stripped = stripWrappingQuote(text).trim();
+  return { raw: text, command: stripped, tests };
+}
+
+/** 剥掉包裹整个字符串的一对定界符（反引号、单/双引号、圆括号）。内部内容原样保留。 */
+function stripWrappingQuote(text) {
+  const pairs = [['`', '`'], ['"', '"'], ["'", "'"], ['(', ')'], ['[', ']'], ['{', '}']];
+  for (const [open, close] of pairs) {
+    if (text.length >= 2 && text.startsWith(open) && text.endsWith(close)) {
+      // 只有当开头那个定界符就是结尾那个的配对时才算包裹：
+      // `"a" && "b"` 首尾都是 `"` 却不是包裹，剥掉会破坏命令。
+      const inner = text.slice(1, -1);
+      if (!containsUnbalanced(inner, open, close)) return inner;
+    }
+  }
+  return text;
+}
+
+/** 内层是否已经出现了未配对的定界符（出现即说明首尾不构成整体包裹）。 */
+function containsUnbalanced(text, open, close) {
+  let depth = 0;
+  for (const char of text) {
+    if (char === open) depth += 1;
+    else if (char === close) {
+      depth -= 1;
+      if (depth < 0) return true;
+    }
+  }
+  return depth !== 0;
 }
 
 function newTask(fields) {

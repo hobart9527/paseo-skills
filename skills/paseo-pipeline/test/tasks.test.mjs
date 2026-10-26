@@ -521,3 +521,35 @@ test('SCEN-CON-03 HTML comments do not participate in parsing', () => {
   assert.equal(result.tasks.length, 1);
   assert.equal(result.tasks[0].review, 'strict', '注释里的 Review 不得覆盖真实值');
 });
+
+// --- Verify with 的 Markdown 包裹必须剥掉再交给 shell ---
+// 实测（本 change 自己的 pod 合流）：tasks.md 里写 `` `node --test x.mjs` ``，
+// 解析器判定为可执行并把**原文**交给 /bin/sh -c。反引号在 shell 里是命令替换，
+// 整行先跑一遍测试，再把测试输出（`✔ ...`）当命令执行 → `/bin/sh: ✔: command not found`，
+// 合流 exit 20。判定对了、执行错了，等于白跑。
+test('SCEN-CON-03 Verify with strips the Markdown wrapper before handing the command to a shell', () => {
+  const { tasks } = parseTasks(`- [ ] 1.1 T-01 Backticked
+  - Depends on: none
+  - Write scope: src/a.mjs
+  - Verify with: \`node --test src/a.test.mjs\`
+
+- [ ] 1.2 T-02 Double-quoted
+  - Depends on: none
+  - Write scope: src/b.mjs
+  - Verify with: "node --test src/b.test.mjs"
+`);
+  assert.equal(tasks[0].verify.command, 'node --test src/a.test.mjs');
+  assert.equal(tasks[1].verify.command, 'node --test src/b.test.mjs');
+  // raw 保留原文：文档读者看到的仍是他们写下的内容。
+  assert.match(tasks[0].verify.raw, /^`node/);
+});
+
+test('SCEN-CON-03 Verify with keeps inner quotes that carry shell meaning', () => {
+  // 只有包裹整行的一对定界符被剥；`node -e "..."` 的内部引号是命令语义，剥掉就破了。
+  const { tasks } = parseTasks(`- [ ] 1.1 T-01 Inner
+  - Depends on: none
+  - Write scope: src/a.mjs
+  - Verify with: \`node -e "process.exit(0)"\`
+`);
+  assert.equal(tasks[0].verify.command, 'node -e "process.exit(0)"');
+});
