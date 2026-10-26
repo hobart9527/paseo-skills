@@ -47,6 +47,14 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 - 标签体系：必须打齐 `pipeline.change`、`pipeline.task`、`pipeline.attempt`、`pipeline.phase`、`pipeline.role`。这五个标签是 `reconcile` 做归属、cap 计数与 phase 排序的唯一依据，缺一即该 agent 被判 `UNMAPPED`。
 - 标题约束：`title` ≤60 字符，格式为 `[Pipeline] ${role} ${task} ${change}`。
 - **派发前先认领意图**：每次派发前先 `run-state.mjs claim`（见第 4 节），拿到 agent 后立刻 `record`。这堵住「创建请求已发出、回执尚未返回」窗口里的重复派发。
+- **阶段完成后由编排者打处置标签**：子 agent 走到终态后，编排者核对产出（改了哪些文件、`Verify with` 是否跑通），再 `update_agent` 写 `pipeline.disposition`：
+  | 取值 | 语义（`lib/roles.mjs` 的 `DISPOSITION_EFFECT`） | 何时用 |
+  |---|---|---|
+  | `handed-off` | `continue` | 阶段正常交接，产出已核对、准备合流或已合流 |
+  | `superseded` | `continue` | 被更新的 attempt 取代 |
+  | `merged` | `verify` | agent 自称已合流，**仍需 first-parent 账本证明**，自报不算验收 |
+  | `rejected` / `abandoned` | `retry` | 本轮产出未被接受，消耗打回预算 |
+  **不打这个标签，`reconcile` 会把该任务的终态 agent 判为 `UNRESOLVED` 并压住它的推进**（fail-closed，不是缺陷）。生产者是编排者，不是子 agent 自报。
 
 **Legacy CLI 路径（`dispatch.mjs` / `hotfix.sh`）**：这两个脚本用 `paseo run --no-wait` 派发，**拿不到父子 Agent 完成通知**（该通路的回调从未被验证过）。因此它们的正确用法只有一种：调用方**同步 `paseo wait`** 阻塞等结果，绝不当成「派完就走、靠通知回来」的异步路径。`dispatch.mjs` 不带 `--wait` 时就是异步半成品，只能用于调试。
 
@@ -174,9 +182,14 @@ node skills/paseo-pipeline/run-state.mjs status <change> [--json]
 **唤醒模型（与 spec 一致）**：常规运行**不创建**周期性 heartbeat 或 schedule；没有经过验证的计时器或外部事件源时，静默丢失的回调无法唤醒空闲 Lead——对账只能在**下一次真实调用**时发生。这是事实，不是可以通过多写几条规则消除的缺陷。
 
 1. **主轨（事件驱动）**：子 Agent 完成经 `notifyOnFinish: true` 唤醒父 Agent 处理合流与下游派发。回调到达即推进，这是正常路径。
-2. **外部唤醒（可选，需确证来源）**：只有当主会话 harness 或人类确实提供了会定期唤醒 Lead 的机制时，才把它的 id 与到期时间登记进运行账本（`run-state.mjs heartbeat <change> --id <id> --action register --expires-at <iso>`）。**不登记来源就无法验证的计时器**，也不把它写成默认行为。登记了的必须在任务全量结束时 `--action delete`；到期不等于任务结束。
-3. **惰性对账**：任何一次真实唤醒（事件、外部唤醒、人类追问、接手）都先跑 `reconcile.mjs <change>`。**通知只是唤醒；终态以可核验产物为准。** 空闲时只做轻量增量核对，避免每次全量长日志。
-4. **停摆的处置**：不再依赖「等它自己醒」。超时未推进即在运行账本标 `BLOCKED_ON_WAKE` 并上报人类，说明最后一次可核验产物是什么、缺哪一环——不要用「进程还 running」冒充有进展。
+2. **主动等待（不依赖事件）**：派发后在**前台阻塞** `paseo wait <agent-id> --timeout 540 --json`，返回即读产出一轮。回合不 idle 就不依赖 `notifyOnFinish` 去唤醒一个空闲父级，这是 2026-10-25 停摆事故的直接对策。
+   - **`paseo wait` 的退出码恒为 0**（实测 `idle`、`timeout`、`Agent not found` 三种终局均 `rc=0`）。必须解析 `--json` 的 `status`：`idle` 才是子 agent 停了，`timeout` 要继续等同一 id（不得重派），`error` 按失败处置。`paseo wait ... && 推进` 这类写法会把超时当成完成。
+   - 等待期间的真实耗时与起止时间戳要采集，它们是判断「空等」还是「有效长任务」的唯一依据。
+3. **外部唤醒（可选，需确证来源）**：只有当主会话 harness 或人类确实提供了会定期唤醒 Lead 的机制时，才把它的 id 与到期时间登记进运行账本（`run-state.mjs heartbeat <change> --id <id> --action register --expires-at <iso>`）。**不登记来源就无法验证的计时器**，也不把它写成默认行为。登记了的必须在任务全量结束时 `--action delete`；到期不等于任务结束。
+4. **惰性对账**：任何一次真实唤醒（事件、外部唤醒、人类追问、接手）都先跑 `reconcile.mjs <change>`。**通知只是唤醒；终态以可核验产物为准。** 空闲时只做轻量增量核对，避免每次全量长日志。
+5. **停摆的处置**：不再依赖「等它自己醒」。超时未推进即在运行账本标 `BLOCKED_ON_WAKE` 并上报人类，说明最后一次可核验产物是什么、缺哪一环——不要用「进程还 running」冒充有进展。
+
+**主会话不是 Paseo agent**：主会话（Claude Code）不在 agent 图里，`send_agent_prompt` 发不到它。主会话等 Lead 的正确方式是后台 `paseo wait <lead-id>`（Bash `run_in_background` 或 Monitor，由 harness 通知），返回后读 Lead 的信封。不要设计「Lead 主动 push 给主会话」的路径。
 
 **事件去重与过期**：复合键 `(agent_id, message-id/event-id, task, attempt, phase, revision)`。相同复合键已处理、attempt 低于当前记录、或 revision 与分支 tip 不符 → 忽略并记一行日志。
 
@@ -190,9 +203,13 @@ node skills/paseo-pipeline/run-state.mjs status <change> [--json]
 - `kind`: `turn-idle`（等下游时当前回合结束，非阶段完成）、`phase-complete`（当前阶段顺利完成）、`blocked`（阻断打回或失败）。
 - 短摘要与完整证据分开；字段适用性明确。执行器须验证信封与真实产物一致。
 
-### 孙 → Lead → 父会话显式接力
+### 孙 → Lead 的接力：用主动等待，不用通知接力
 
-`notifyOnFinish` 是单级消费机制。孙 Agent 终态通知到达 Lead 后被消费即结束；Lead 自身在等孙 Agent 时回合已结束（`turn-idle`）。因此孙 Agent 完成、Lead 跑完核对与合流后，**Lead 必须显式 `send_agent_prompt`（steer 模式）** 向父会话发送 `phase-complete` 或 `blocked` 信封，完成端到端接力。
+`notifyOnFinish` 是单级消费机制，孙 Agent 终态通知到达 Lead 后被消费即结束。依赖这级回调把结果送回父级，在 `pipeline-native-closure` 的原生冒烟里实测 FAIL（`native-smoke.md`：孙 agent 06:06:15Z 完成，Lead 到 06:13:24Z 才被人工催动）。
+
+**正确做法**：Lead 在等孙 Agent 时，回合**不结束**，前台阻塞在 `paseo wait <sun-id> --timeout 540 --json`，返回后跑 `reconcile.mjs` 并推进。回合不 idle，就不需要任何回调把它唤醒。
+
+**不要设计「Lead 用 `send_agent_prompt` 把信封推给父会话」的路径**：主会话（Claude Code）不在 Paseo agent 图里，收不到这条消息。主会话自己在后台 `paseo wait <lead-id>` 等 Lead 结束，再从 Lead 的最后一条回复里读信封。
 
 ## 5. 安全原子合流门禁（`merge-task.mjs`）
 

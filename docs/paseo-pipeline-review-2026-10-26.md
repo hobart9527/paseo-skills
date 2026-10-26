@@ -18,7 +18,7 @@
 | B 合流门禁 | **已实施** | 冻结 `Verify with` 强制先跑（exit 36）；`-z --no-renames`；单写者锁（exit 37）；Pod 冻结成员校验；legacy 豁免需环境变量二次确认并记 run-log；测试内 commit 检测（exit 40）；进程组 kill；已合流重试的分项诊断（SCEN-MRG-25/26/27）；base 须同时是集成 HEAD 与 tip 的祖先（exit 34）；审查员与运行账本派发记录交叉核对（exit 32，复刻 T-02 自审） |
 | C 契约收敛 | **部分实施** | 角色/phase 单点定义（`lib/roles.mjs`）；`Review` 三档语义写入 SKILL；run-state 读改写加锁 + 候选校验入锁；证据闸门的场景 PASS、占位值与 smoke `--sha` 已补（SCEN-EVD-01/02）；§3-P1-11 的 SKILL/LESSONS 内部矛盾已逐条消除，只剩 `~/.paseo/task-routing.md` 与 shangshu notes 中的活态表述未改（需另行授权） |
 | D 试点 | **未执行** | 无真实业务验收，不得宣布产品验收成功 |
-| 0 唤醒冒烟 | **未执行** | `paseo wait` 主动等待方案仍是假设，未采集 |
+| 0 唤醒冒烟 | **进行中** | 底层原语已实测（`paseo wait` 阻塞与唤醒可用，退出码恒 0）；5 任务全流程冒烟尚未收尾，见 §8 |
 
 **下文 §2/§3 的行号与结论保留为当时的复核记录；已闭合项在 §2 表格中标为「已修复」，未闭合项在 §3 末尾的「仍未闭合」清单集中列出。**
 
@@ -104,14 +104,15 @@
 1. `--allow-legacy-author` 仍能整体关闭作者血统门禁。已加两道约束（`PIPELINE_ALLOW_LEGACY_AUTHOR=1` 二次确认 + run-log 记 `BYPASSED(legacy)`），未移除该路径。
 2. 通知去重（spec 要求的 message-id 复合键）只有文字描述，无实现。
 3. `Review: required` / `Review: default` 在历史 `tasks.md` 里真实出现过（11 + 1 处，均在 archive），现被 `UNKNOWN_REVIEW` 拒绝；SKILL 已注明需迁移，但未提供迁移脚本。
-4. `paseo wait` 主动等待方案（§4.1）未验证；Lead 回合不结束对上下文与超时的影响未采集。
+4. ~~`paseo wait` 主动等待方案（§4.1）未验证~~ → **原语层已验证**（见 §4.1 实测表）：阻塞语义、子 agent 完成后唤醒、退出码恒 0 三个事实均已采集。**仍未采集**：Lead 全程前台阻塞下的上下文增长、单次 wait 540s 与回合超时的相互作用、5 任务全流程一次成功率。
 5. 真实业务验收、原生多 Agent 冒烟、一次成功率与耗时采集全部**未执行**。
 
 **本轮新闭合（原 2/3/4/5/7 项，均带负向对照）**
 
 | 原项 | 修复 | 负向对照 |
 |---|---|---|
-| 2 `abortMerge` 在测试内 commit 时静默返回 | 记住 `expectedPreMergeHead`，`MERGE_HEAD` 消失且 HEAD 已变即 exit 40 并打印现场，不 reset | 撤掉检测 → `SCEN-MRG-25` 红 || 3 超时只杀外层 shell | `spawn` + `detached:true`，`process.kill(-pid)` 打整棵进程树，SIGTERM→2s→SIGKILL，并轮询进程组消失 | 去掉 `detached` → `SCEN-MRG-26` 红（孙进程 3 秒后落盘） |
+| 2 `abortMerge` 在测试内 commit 时静默返回 | 记住 `expectedPreMergeHead`，`MERGE_HEAD` 消失且 HEAD 已变即 exit 40 并打印现场，不 reset | 撤掉检测 → `SCEN-MRG-25` 红 |
+| 3 超时只杀外层 shell | `spawn` + `detached:true`，`process.kill(-pid)` 打整棵进程树，SIGTERM→2s→SIGKILL，并轮询进程组消失 | 去掉 `detached` → `SCEN-MRG-26` 红（孙进程 3 秒后落盘） |
 | 4 hotfix 空 provider / 7 位标签 | profile 解析 fail-closed（缺文件/缺 profile/缺 provider-model 一律 exit 1）；标签用完整 SHA 截前 7 位 | 恢复旧写法 → `SCEN-DISP-05/06` 3 条红 |
 | 5 外部写手不计 cap | `foreignLiveWriters` 计入 `room`；解析级 INVALID（`MISSING_SCOPE`）上正跑的写手也占 cap 与 scope；`nextAction` 与门禁同口径 | `SCEN-REC-17` ×2 红 |
 | 7 场景只要出现、占位值放行 | 要求 `scenario_results` 段 `<ID>: PASS` + 不得同时在 unverified；占位/退化值判为未采集 | `SCEN-EVD-02` ×3 分别红 |
@@ -134,6 +135,18 @@
 ## 4. 优化方案（克制版）
 
 ### 4.1 唤醒链：从“等通知”改为“主动等待”（收益最大，先冒烟）
+
+#### 原语层实测（2026-10-26 本轮采集）
+
+`paseo wait` 的三条行为已用真实 agent 采到，不再是假设：
+
+| 观察项 | 采集值 | 来源 |
+|---|---|---|
+| 阻塞语义可用 | 对 running agent `--timeout 8` 实耗 `elapsed=8.41s` 后返回 `status: timeout` | `paseo wait dd078ab4 --timeout 8 --json` |
+| 子 agent 完成后唤醒 | 探针 `5c6992f5` 跑 `sleep_done_ms=45000`（`04:33:37Z`→`04:34:22Z`）；Lead `57fccc23` 前台 wait 于 `04:33:45.3NZ` 起等到 `04:34:26.3NZ` 返回，`status: idle`，`EXIT=0` | 两个 agent 的自报信封 |
+| 空闲 agent 立即返回 | `elapsed=0.61s`，`status: idle` | `paseo wait 74558a2 --timeout 20 --json` |
+
+**关键缺陷：`paseo wait` 的退出码恒为 0。** `idle`、`timeout`、`error`（如 `Agent not found`）三种终局全部 `rc=0`（分别为 `rc=0` / `rc=0` / `rc=0`）。任何 `paseo wait ... && 继续推进` 的写法都会把「超时没等到」当成「子 agent 完成了」。调用方必须解析 `--json` 的 `status` 字段。
 
 - **Lead**：派发后不结束回合，前台循环 `paseo wait <id...> --timeout 540`；返回即跑 `reconcile.mjs` 并执行动作，超时则轻量对账后继续等。回合不 idle，就不依赖 `notifyOnFinish` 唤醒 idle 父级。
 - **主会话**（Claude Code，非 Paseo agent）：对 Lead 用后台 `paseo wait <lead-id>`（Bash `run_in_background` 或 Monitor），由 harness 通知；Lead 最终信封通过 `paseo logs` / `get_agent_activity` 读取。
