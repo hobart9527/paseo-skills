@@ -208,15 +208,16 @@ node skills/paseo-pipeline/merge-task.mjs <branch> <task-id> <review-tag> <test-
 4. **因子 1 写范围封闭**：`git diff` 的修改文件必须 100% 落在任务 `Write scope:` 前缀内（exit 30）。
 5. **因子 2 作者血统与控制面隔离**：**逐个 commit** 校验必须带 `Pipeline-Role`（属于 `gongbu`/`gaogong`/`ceshi`/`jiangzuo`/`qingqibing`）与 `Pipeline-Author`；缺失或属控制面（`shangshu`/`lead`/`anchasi`/`hanlin`）以 exit 31 硬阻断。逐个 commit 判定，防止一个合法提交掩盖另一个无 trailer 的提交。
 6. **因子 3 独立非自审**：`review-tag` 必须为 `pass(<reviewer-id8>@<tip7>/<base7>)`；`reviewer` 与任一 `Pipeline-Author` 相同即 exit 32（完整 UUID 与唯一可解析前缀都比对，歧义 fail closed）。`Review: strict`/`standard` 严禁用 `mechanical`。
+6a. **因子 3b 审查员与派发记录交叉核对**（仅当该 change 的运行账本存在时生效）：只比对 commit 作者不够——历史 T-02 事故里写手提交没有 `Pipeline-Author` trailer，自审检查完全落空。有账本时，`reviewer` 不得等于本次合入任务中任一**写手意图**（`role` 属写入角色）的 `agentId`（exit 32），且必须命中其中至少一条已回执的 `anchasi` 审计意图（Pod 是一次审查覆盖整组，不要求逐任务各派一次）；账本不可解析同样 exit 32，不得按「没记录」豁免。
 6b. **Pod 成员集合**：`pod/<change>` 分支必须附带冻结的 `openspec/changes/<change>/pod-members.json`，且 `<task-ids>` 必须**恰好等于**该成员集合（多报、少报、缺文件均 exit 31）。分支名不携带任务身份，成员真源只有这一份冻结记录。
 6c. **legacy 豁免需二次确认**：`--allow-legacy-author` 会整体关闭作者血统门禁，必须同时设置 `PIPELINE_ALLOW_LEGACY_AUTHOR=1`，否则 exit 31；放行时 run-log 记 `author-provenance=BYPASSED(legacy)`。控制面角色检查不受豁免影响。
-7. **基线锚定**：`base7` 必须是集成 HEAD 的祖先（否则 exit 34）；与当前集成 HEAD 漂移且改动文件重叠时拒绝合流要求重审，不重叠则记录漂移放行。
+7. **基线锚定**：`base7` 必须同时是集成 HEAD 的祖先、以及被合入 tip 的祖先（任一不满足即 exit 34）——集成在任务分支拉出后前进一步时，那个新 HEAD 仍是集成历史祖先，但 `base..tip` 已把本任务没写过的提交算进审查范围。与当前集成 HEAD 漂移且改动文件重叠时拒绝合流要求重审，不重叠则记录漂移放行。
 8. **合流固定 tip**：用审查收据绑定的那个 commit（而非可变分支名）合流，避免「审查过的内容」与「实际合入的内容」漂移。
 9. **显式测试命令 + 截止时间 + 整树清理**：执行冻结命令与 `test-cmd`，默认超时 30 分钟（`MERGE_TEST_TIMEOUT_MS` 可调）。超时按**进程组**终止（SIGTERM，2 秒后 SIGKILL），不是只杀外层 shell——否则测试拉起的孙进程会继续写工作区。失败、超时、或**测试改写了工作树**（前后 `git status --porcelain=v1 --untracked-files=all` 指纹不一致）一律拒绝提交测试副作用；先撤掉对已跟踪文件的改写，再 `git merge --abort` 恢复现场，**严禁 `reset --hard` 回滚**。abort 失败、或 `MERGE_HEAD` 消失而 HEAD 已被推进（测试命令自己执行了 `git commit`）时保留现场并打印人工指引（exit 40）。
 10. **原子记账与血统透传**：自动勾 `tasks.md`、追加 `Done: source=<tip7> review=<review-tag>`，原子提交附 `Pipeline-Task`、`Pipeline-Source`、`Pipeline-Author`、`Pipeline-Role`、`Pipeline-Reviewer` trailers。
 11. **回执丢失的处置**：任务已 Done 一律 exit 非零且不产生新提交。错误文案区分两种情形——Done 行绑定的 source 就是本次 tip 时报「已从该 tip 合过，这是回执丢失后的重试，合流其实已成功，不要重派任务」；source 是别的 revision 时报「不同 revision 不能用同一任务合流」。**收到前一种报错时禁止重派写手**，去核对 `git log --first-parent` 即可。
 
-退出码：30 写范围 / 31 作者血统或 Pod 成员不符 / 32 非自审 / 34 base 非祖先 / 35 依赖未验收 / **36 不允许的 `Verify with`** / **37 并发合流被锁拒绝** / 10 冲突 / 20 测试失败或改树 / 40 abort 失败。
+退出码：30 写范围 / 31 作者血统或 Pod 成员不符 / 32 非自审（含审查员与运行账本派发记录不符）/ 34 base 非集成 HEAD 或非 tip 祖先 / 35 依赖未验收 / **36 不允许的 `Verify with`** / **37 并发合流被锁拒绝** / 10 冲突 / 20 测试失败或改树 / 40 abort 失败。
 
 ## 6. 证据双闸门（`test/check-evidence.mjs`）
 
@@ -229,9 +230,10 @@ node skills/paseo-pipeline/test/check-evidence.mjs --gate all --sha <acceptance-
 - **结构闸门（默认）**：只校验字段齐备、UUID/时间戳合法。**FAIL 报告的合法留档也 exit 0**——失败调查可以完成。
 - **占位值不是采集值**：`PLACEHOLDER`/`TODO`/`LOST`/`NOT_COLLECTED` 一类字样、或全同字符的退化 SHA，与「字段缺失」同等对待，结构闸门即拒绝。采集不到就写「未采集」并说明原因，不要编一个看起来像收据的值。
 - **验收闸门**：只接受约定通过结论，且要求
+  - 必须先过结构闸门；**smoke 与 audit 都必须给 `--sha`**——没有 revision 绑定的证据无法证明「当前这份代码」被验证过，smoke 已带 `reviewed_sha` 时还要与之一致；
   - smoke `result: PASS`、`unverified:` 为空、`notification_at >= dispatched_at`；
-  - audit `verdict` 属约定通过集合、给 `--sha` 且 `reviewed_sha` 与之一致（7 位前缀与完整 sha 可互比）；
-  - `--require-scenario <SCEN-ID>` 指定的场景不只要「被提到」：必须在 `scenario_results:` 段落里有 `<ID>: PASS` 的结论，且不得同时挂在 `unverified` 列表（自相矛盾直接拒绝）。**正文提及、注释、TODO 都不算验证。**
+  - audit `verdict` 属约定通过集合、`reviewed_sha` 与 `--sha` 一致（7 位前缀与完整 sha 可互比）；
+  - `--require-scenario <SCEN-ID>` 指定的场景不只要「被提到」：必须在 `scenario_results:` 段落里有 `<ID>: PASS` 的结论，且不得同时挂在 `unverified` 列表（自相矛盾直接拒绝）。**正文提及、注释、TODO 都不算验证**；记为 `FAIL`/`BLOCKED`/`SKIPPED` 同样阻断。
 - **FAIL、BLOCKED、SKIPPED、未验证、非 pass verdict、过期 revision 一律不能折算 PASS。** 调查任务完成 ≠ 被调查能力完成。
 
 ## 7. 失败处置与恢复

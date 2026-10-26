@@ -56,6 +56,7 @@ function fixture(context, {
   runLog = true,
   taskFile = true,
   sharedChange = false,
+  fileDirConflict = false,
   colonForm = false,
   baselineFiles = {},
 } = {}) {
@@ -85,6 +86,10 @@ function fixture(context, {
   git(cwd, 'switch', '-qc', branch);
   write(cwd, 'src/task.txt', 'task change\n');
   if (sharedChange) write(cwd, 'src/shared.txt', 'task version\n');
+  // file/directory 冲突：任务分支写文件 `src/conflict`，集成侧把它建成目录。
+  // 选这种冲突是为了制造**无文件重叠**的真冲突——同文件冲突会先被基线漂移重叠检查（exit 34）
+  // 拦下，测不到 merge 本身的 exit 10 分支。
+  if (fileDirConflict) write(cwd, 'src/conflict', 'task wrote a file here\n');
   git(cwd, 'add', '.');
   git(cwd, 'commit', '-qm', 'task implementation\n\nPipeline-Role: gongbu\nPipeline-Author: a1b2c3d4');
   const tip = git(cwd, 'rev-parse', 'HEAD');
@@ -260,13 +265,18 @@ for (const shell of [false, true]) {
   });
 
   test(`SCEN-MRG-07 merge conflicts abort cleanly with exit 10 via ${shell ? 'shell' : 'node'}`, (context) => {
-    const repo = fixture(context, { sharedChange: true });
-    write(repo.cwd, 'src/shared.txt', 'integration version\n');
+    const repo = fixture(context, {
+      fileDirConflict: true,
+      tasks: [{ id: 'T-1', scope: 'src/task.txt, src/conflict' }],
+    });
+    // 集成侧把 `src/conflict` 建成目录，与任务分支的同名文件形成 file/directory 冲突。
+    // 这条路不改任务分支的 base（repo.base 仍是两个 tip 的共同祖先），
+    // 因此测到的是 merge 冲突分支，而不是 review base 校验。
+    write(repo.cwd, 'src/conflict/inner.txt', 'integration made this a directory\n');
     git(repo.cwd, 'add', '.');
-    git(repo.cwd, 'commit', '-qm', 'conflicting integration change');
+    git(repo.cwd, 'commit', '-qm', 'integration change after task branch');
     const head = git(repo.cwd, 'rev-parse', 'HEAD');
-    const tag = reviewTag(repo, { base: head });
-    const result = invoke(repo, { shell, tag });
+    const result = invoke(repo, { shell });
     assert.equal(result.status, 10, `${result.stdout}${result.stderr}`);
     assertUnchanged(repo, head);
   });
@@ -388,10 +398,13 @@ test('pod mechanical review rejects a mixed strict/mechanical task list', (conte
 });
 
 test('SCEN-MRG-06 abort failure exits 40 with on-site dump and manual guidance', (context) => {
-  const repo = fixture(context, { sharedChange: true });
-  write(repo.cwd, 'src/shared.txt', 'integration version\n');
+  const repo = fixture(context, {
+    fileDirConflict: true,
+    tasks: [{ id: 'T-1', scope: 'src/task.txt, src/conflict' }],
+  });
+  write(repo.cwd, 'src/conflict/inner.txt', 'integration made this a directory\n');
   git(repo.cwd, 'add', '.');
-  git(repo.cwd, 'commit', '-qm', 'conflicting integration change');
+  git(repo.cwd, 'commit', '-qm', 'integration change after task branch');
   const head = git(repo.cwd, 'rev-parse', 'HEAD');
   const binDir = mkdtempSync(path.join(tmpdir(), 'pipeline-merge-fake-git-'));
   context.after(() => rmSync(binDir, { recursive: true, force: true }));
@@ -406,7 +419,7 @@ test('SCEN-MRG-06 abort failure exits 40 with on-site dump and manual guidance',
     `exec ${JSON.stringify(realGit)} "$@"`,
     '',
   ].join('\n'), { mode: 0o755 });
-  const result = spawnSync(process.execPath, [mergeScript, repo.branch, 'T-1', reviewTag(repo, { base: head }), passCommand], {
+  const result = spawnSync(process.execPath, [mergeScript, repo.branch, 'T-1', reviewTag(repo), passCommand], {
     cwd: repo.cwd,
     env: { ...gitEnv, PATH: `${binDir}${path.delimiter}${gitEnv.PATH}` },
     encoding: 'utf8',
@@ -581,8 +594,84 @@ test('SCEN-MRG-16 a full UUID reviewer equal to the author is rejected too', (co
   assert.match(result.stderr, /anti-self-approval violation/);
 });
 
-// --- 依赖门禁（L1-03） ---
+// --- 因子 3b：reviewer 与运行账本派发记录交叉核对（T-02 自审复刻） ---
+//
+// T-02 事故：review tag 里的 `dfa79d7b` 就是该任务的写手，但提交没有 `Pipeline-Author`
+// trailer，按 commit 作者做的自审检查完全没触发，假收据照样进了合流账本。
+// 这组用例把「账本里谁被派去做什么」作为第二道独立性证据。
 
+/**
+ * 写一份真实 schema 的运行账本，返回它的根目录（供 `PIPELINE_RUN_STATE_DIR` 覆盖）。
+ *
+ * 必须放在仓库**之外**：merge-task 开工先校验工作树干净，把账本写进 worktree 会直接
+ * 变成一个未跟踪文件，用例会死在「树脏」而不是被测的审计独立性检查上。
+ */
+function writeRunState(context, intents) {
+  const root = mkdtempSync(path.join(tmpdir(), 'pipeline-merge-state-'));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const dir = path.join(root, change);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, 'run-state.json'), `${JSON.stringify({
+    version: 1, run: null, lease: null, heartbeats: [], intents,
+  }, null, 2)}\n`);
+  return root;
+}
+
+function intent({ task = 'T-1', role, agentId, attempt = 1, phase = 'impl' }) {
+  return {
+    key: `local:${task}:${attempt}:${phase}:${role}:dispatch`,
+    task, attempt, phase, role, action: 'dispatch',
+    createdAt: '2026-10-26T00:00:00.000Z', resolvedAt: '2026-10-26T00:05:00.000Z',
+    agentId, workspaceId: null,
+  };
+}
+
+test('SCEN-MRG-16 a reviewer that run-state records as the writer is self-approval, not just the trailer author', (context) => {
+  const repo = fixture(context);
+  // 复刻 T-02 的本质：提交上的作者 trailer 是别人的（或缺失），而 review tag 写的是
+  // 账本里被派去写这个任务的 agent。只比对 commit 作者永远看不见这一层。
+  const writerAgent = 'dfa79d7b-1dfb-48ce-b896-cf1c5ed472c5';
+  const stateDir = writeRunState(context, [
+    intent({ role: 'gongbu', agentId: writerAgent }),
+    intent({ role: 'anchasi', phase: 'audit', agentId: '11111111-2222-3333-4444-555555555555' }),
+  ]);
+
+  const result = invoke(repo, {
+    env: { PIPELINE_RUN_STATE_DIR: stateDir },
+    tag: reviewTag(repo, { reviewer: 'dfa79d7b' }),
+  });
+  assert.equal(result.status, 32, `${result.stdout}${result.stderr}`);
+  assert.match(result.stderr, /dispatched as a writer for T-1/);
+  assertUnchanged(repo);
+});
+
+test('SCEN-MRG-16 a reviewer with no recorded audit dispatch is rejected when run-state exists', (context) => {
+  const repo = fixture(context);
+  // 账本在，但这个 reviewer 从未被派去做审计：独立审查无法证明，不得按「没记录」放行。
+  const stateDir = writeRunState(context, [
+    intent({ role: 'gongbu', agentId: 'a1b2c3d4' }),
+    intent({ role: 'anchasi', phase: 'audit', agentId: '99999999-8888-7777-6666-555555555555' }),
+  ]);
+  const result = invoke(repo, {
+    env: { PIPELINE_RUN_STATE_DIR: stateDir },
+    tag: reviewTag(repo, { reviewer: '12345678' }),
+  });
+  assert.equal(result.status, 32, `${result.stdout}${result.stderr}`);
+  assert.match(result.stderr, /no recorded audit dispatch/);
+  assertUnchanged(repo);
+});
+
+test('SCEN-MRG-16 a reviewer recorded as the audit intent for every task merges', (context) => {
+  const repo = fixture(context);
+  const stateDir = writeRunState(context, [
+    intent({ role: 'gongbu', agentId: 'a1b2c3d4' }),
+    intent({ role: 'anchasi', phase: 'audit', agentId: '12345678-aaaa-bbbb-cccc-dddddddddddd' }),
+  ]);
+  const result = invoke(repo, { env: { PIPELINE_RUN_STATE_DIR: stateDir } });
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+});
+
+// --- 依赖门禁（L1-03） ---
 test('SCEN-MRG-17 merging a task whose dependency is not yet Done is rejected exit 35', (context) => {
   const repo = fixture(context, {
     tasks: [{ id: 'T-1' }, { id: 'T-2', depends: 'T-1' }],
@@ -645,18 +734,18 @@ test('SCEN-MRG-18 a review base that is not an ancestor of integration HEAD is r
   assertUnchanged(repo);
 });
 
-test('SCEN-MRG-18 a review base newer than the reviewed source is not silently accepted', (context) => {
+test('SCEN-MRG-18 a review base newer than the reviewed source is rejected exit 34', (context) => {
   const repo = fixture(context);
-  // 集成分支在任务分支拉出之后又前进一步；用这个新 HEAD 当 base 会让 diff 范围变成空集。
+  // 集成分支在任务分支拉出之后又前进一步；用这个新 HEAD 当 base 时，它仍是集成历史的祖先，
+  // 只查「是集成 HEAD 祖先」会放行——但 `base..tip` 已不再覆盖本任务的改动，
+  // 写范围与漂移校验都会算错。必须额外要求 base 也是被合入 tip 的祖先。
   write(repo.cwd, 'src/integration.txt', 'later\n');
   git(repo.cwd, 'add', '.');
   git(repo.cwd, 'commit', '-qm', 'integration advanced past task base');
   const newer = git(repo.cwd, 'rev-parse', 'HEAD');
   const result = invoke(repo, { tag: reviewTag(repo, { base: newer }) });
-  // 新 base 仍是集成历史的祖先（就是 HEAD 本身），此时不得按「空 diff」放行：
-  // 校验的是 reviewedBase..tip 是否真的覆盖了本任务改动，见下方断言。
-  assert.equal(result.status, 30, `${result.stdout}${result.stderr}`);
-  assert.match(result.stderr, /outside declared Write scope/);
+  assert.equal(result.status, 34, `${result.stdout}${result.stderr}`);
+  assert.match(result.stderr, /is not an ancestor of the merged tip/);
   assertUnchanged(repo, newer);
 });
 

@@ -4,8 +4,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseTasks, isFileWithinScopes } from './lib/tasks.mjs';
 import { verifyDone, buildMergeAcceptance, expandDoneSource as expandDoneSourceFor } from './lib/ledger.mjs';
-import { WRITER_ROLES, CONTROL_ROLES, isControlRole } from './lib/roles.mjs';
+import { WRITER_ROLES, CONTROL_ROLES, READONLY_ROLES, isControlRole } from './lib/roles.mjs';
 import { acquireLock } from './lib/lock.mjs';
+import { readRunState } from './lib/run-state.mjs';
 
 const usage = [
   'Usage: node merge-task.mjs <branch> <task-ids> <review-tag> <test-cmd> [--allow-legacy-author]',
@@ -219,6 +220,17 @@ if (baseIsAncestor.status !== 0) {
     + 'a newer/unrelated base changes the diff under review', 34);
 }
 
+// base 还必须是 tip 的祖先，这一条不能由上面的检查代替：
+// 集成在任务分支拉出之后又前进时，用那个新提交当 base 仍然「是集成 HEAD 的祖先」，
+// 但 `base..tip` 会把集成侧之后的所有改动算成本任务的 diff——写范围与漂移校验都会被放大，
+// reviewer 审的也不是这份内容。
+const baseReachedTip = gitMaybe(['merge-base', '--is-ancestor', reviewedBaseSha, tip]);
+if (baseReachedTip.error) fail(`git merge-base could not start: ${baseReachedTip.error.message}`);
+if (baseReachedTip.status !== 0) {
+  fail(`review base ${reviewedBaseSha.slice(0, 7)} is not an ancestor of the merged tip ${tip7}; `
+    + 'the diff under review would include commits this task did not author', 34);
+}
+
 const changeDir = path.join('openspec', 'changes', source.change);
 const tasksFile = path.join(changeDir, 'tasks.md');
 const logFile = path.join(changeDir, 'run-log.md');
@@ -430,6 +442,66 @@ function reviewerMatchesAuthor(reviewer, author) {
 
 if (reviewer === 'mechanical' && requestedTasks.some((task) => task.review !== 'mechanical')) {
   fail('mechanical review requires Review: mechanical on every requested task');
+}
+
+function isWriterRole(role) {
+  return typeof role === 'string' && WRITER_ROLES.has(role.toLowerCase());
+}
+
+function isReadonlyRole(role) {
+  return typeof role === 'string' && READONLY_ROLES.has(role.toLowerCase());
+}
+
+/**
+ * reviewer 是否指向候选集合中的某个 id。
+ *
+ * 与 `reviewerMatchesAuthor` 同一套前缀规则，但候选来自运行账本而非提交 trailer：
+ * 8 位前缀命中多个不同 id 时是歧义，必须 fail closed——否则调用者可以用一个模糊前缀
+ * 同时「证明」自己是审计员、又不是写手。
+ */
+function reviewerMatchesAny(reviewer, ids) {
+  const lower = ids.map((id) => id.toLowerCase());
+  if (lower.includes(reviewer)) return true;
+  const prefixed = lower.filter((id) => id.startsWith(reviewer));
+  if (prefixed.length > 1) {
+    fail(`ambiguous reviewer id '${reviewer}' matches multiple dispatched agents: ${prefixed.join(', ')}`, 32);
+  }
+  return prefixed.length === 1;
+}
+
+// --- 因子 3b: reviewer 与派发记录的交叉核对 ---
+//
+// 历史事故（pipeline-native-closure T-02）：review tag 写的 `dfa79d7b` 就是该任务写手本人，
+// 但那个提交没有 `Pipeline-Author` trailer，上面按 commit 作者做的自审检查完全落空——
+// 合流账本上留下了「已审」的假收据。
+//
+// 根因是审查员身份只看提交元数据。运行账本记录了「谁被派去做什么」，两份记录必须对齐：
+//   1) reviewer 不得等于本任务任一写手意图的 agent（即使 commit 上没有作者 trailer）；
+//   2) reviewer 必须是本任务至少一条已回执的审计意图（role=anchasi）的 agent
+//      ——Pod 是一次审查覆盖整组成员，因此按「任一成员有该审计派发」判定，不要求逐任务各派一次。
+//
+// 运行账本不存在时跳过——那表示这个 change 没走流水线记账（例如热修只合并单任务），
+// 此时沿用上面的 trailer 检查。存在即按账本判定：账本在，就不得用「没记」当豁免。
+const runLedger = readRunState(source.change);
+if (runLedger.error !== null) {
+  fail(`run-state ledger is unreadable, refusing to attest review independence: ${runLedger.error}`, 32);
+}
+if (runLedger.present && reviewer !== 'mechanical') {
+  const recorded = runLedger.state.intents.filter((intent) => typeof intent.agentId === 'string' && intent.agentId !== '');
+  const scoped = recorded.filter((intent) => taskIds.includes(intent.task));
+  const writerIntents = scoped.filter((intent) => isWriterRole(intent.role));
+  const writerAgent = writerIntents.find((intent) => reviewerMatchesAny(reviewer, [intent.agentId]));
+  if (writerAgent !== undefined) {
+    fail(`anti-self-approval violation: reviewer '${reviewer}' is the agent dispatched as a writer for ${writerAgent.task} `
+      + `(run-state intent ${writerAgent.key}); review by the implementer is never independent`, 32);
+  }
+  const auditIntent = scoped.find((intent) => isReadonlyRole(intent.role)
+    && reviewerMatchesAny(reviewer, [intent.agentId]));
+  if (auditIntent === undefined) {
+    fail(`reviewer '${reviewer}' has no recorded audit dispatch for ${taskIds.join(',')}: `
+      + 'run-state holds no resolved anchasi intent for this reviewer, so independent review is unproven '
+      + '(dispatch the auditor through run-state claim/record before merging)', 32);
+  }
 }
 
 let drifted = false;

@@ -4,7 +4,7 @@
 - 输入：R1《paseo-pipeline-review-2026-10-25.md》（基线公开提交 `ae0ca49`）
 - 本次基线：本地工作区 = HEAD `ae0ca49` + 未提交改动（`git status --porcelain` 23 行；`git diff --stat` 15 文件 +2561/−458；未跟踪文件含 `lib/paseo-state.mjs`、`lib/roles.mjs`、`lib/run-state.mjs`、`lib/ledger.mjs`、`lib/lock.mjs`、`run-state.mjs`）
 - 本机：`paseo 0.12.0`；`paseo ls --json --all` 1604 行，字段 `id,shortId,name,provider,thinking,status,cwd,created`（无 labels）
-- 回归实测（2026-10-26 本轮收口，在仓库根目录执行 `bash skills/paseo-pipeline/test/run-all.sh`）：Node `tests 392 / pass 392 / fail 0`，`duration_ms 108259.142166`；contract-check（`bash skills/paseo-pipeline/contract-check.test.sh`）`通过 19 / 失败 0`。R1 的 244、本文初版的 349、上一轮的 378/390/391 都是历史计数。
+- 回归实测（2026-10-26 本轮收口，在仓库根目录执行 `bash skills/paseo-pipeline/test/run-all.sh`）：Node `tests 397 / pass 397 / fail 0`，`duration_ms 109471.265083`；contract-check（`bash skills/paseo-pipeline/contract-check.test.sh`）`通过 19 / 失败 0`。R1 的 244、本文初版的 349、上一轮的 378/390/391/392 都是历史计数。
 - 未执行：原生 Paseo 冒烟、真实业务试点。下文 §4.1 唤醒方案为待验证假设。
 - 行号对应 2026-10-26 00:21 的工作区（`reconcile.mjs` 在走查期间仍被改动过一次，结论已按最新文件重核）。
 
@@ -15,8 +15,8 @@
 | 包 | 状态 | 说明 |
 |---|---|---|
 | A 观测与对账 | **已实施** | `lib/paseo-state.mjs` 单一适配器 + runtime 三态；活态改为「任一源报 live 即 live」；attempt 数值绑定；`rejected` 分支不再进 MERGE；解析级 INVALID 写手与同仓外部写手均计入 cap（SCEN-REC-17 ×2） |
-| B 合流门禁 | **已实施** | 冻结 `Verify with` 强制先跑（exit 36）；`-z --no-renames`；单写者锁（exit 37）；Pod 冻结成员校验；legacy 豁免需环境变量二次确认并记 run-log；测试内 commit 检测（exit 40）；进程组 kill；已合流重试的分项诊断（SCEN-MRG-25/26/27） |
-| C 契约收敛 | **部分实施** | 角色/phase 单点定义（`lib/roles.mjs`）；`Review` 三档语义写入 SKILL；run-state 读改写加锁 + 候选校验入锁；证据闸门的场景 PASS 与占位值检测已补（SCEN-EVD-02 ×3）；§3-P1-11 的 SKILL/LESSONS 内部矛盾已逐条消除，只剩 `~/.paseo/task-routing.md` 与 shangshu notes 中的活态表述未改（需另行授权） |
+| B 合流门禁 | **已实施** | 冻结 `Verify with` 强制先跑（exit 36）；`-z --no-renames`；单写者锁（exit 37）；Pod 冻结成员校验；legacy 豁免需环境变量二次确认并记 run-log；测试内 commit 检测（exit 40）；进程组 kill；已合流重试的分项诊断（SCEN-MRG-25/26/27）；base 须同时是集成 HEAD 与 tip 的祖先（exit 34）；审查员与运行账本派发记录交叉核对（exit 32，复刻 T-02 自审） |
+| C 契约收敛 | **部分实施** | 角色/phase 单点定义（`lib/roles.mjs`）；`Review` 三档语义写入 SKILL；run-state 读改写加锁 + 候选校验入锁；证据闸门的场景 PASS、占位值与 smoke `--sha` 已补（SCEN-EVD-01/02）；§3-P1-11 的 SKILL/LESSONS 内部矛盾已逐条消除，只剩 `~/.paseo/task-routing.md` 与 shangshu notes 中的活态表述未改（需另行授权） |
 | D 试点 | **未执行** | 无真实业务验收，不得宣布产品验收成功 |
 | 0 唤醒冒烟 | **未执行** | `paseo wait` 主动等待方案仍是假设，未采集 |
 
@@ -54,6 +54,7 @@
 | rejected 但分支领先直接 MERGE | **已修复（语义变更）** | 旧断言被替换：旧 attempt 的领先分支报 `STALE_BRANCH`，任务按预算处置（耗尽则 BLOCKED） |
 | 并发合流无锁 | **已修复** | `lib/lock.mjs`（`O_CREAT\|O_EXCL`，落在 git common dir），持锁后重读 HEAD，占用时 exit 37 |
 | 改名旧路径漏检 | **已修复** | `git diff --name-only -z --no-renames`；中文路径与改名各有回归 + 负向对照 |
+| review base 未校验为 tip 祖先 | **已修复（本次补齐）** | `merge-task.mjs` 增 `merge-base --is-ancestor <base> <tip>`，exit 34；负向对照撤掉即 `SCEN-MRG-18` 红 |
 | R1“本机无 CLI” | **不适用** | 本机 `paseo 0.12.0` 可用，含 `wait/inspect/permit ls` |
 
 ---
@@ -62,11 +63,13 @@
 
 ### P0：会导致重复派发、错误合流或假通过
 
+> 本节保留走查当时的事实描述。已闭合项在条目末尾标注状态，未闭合项汇总在 §3「仍未闭合」。
+
 1. **权限源 fail-open。** `paseo permit ls` 失败只写证据（`paseo-state.mjs:165`），runtime 仍可为 `ok`，所有 agent 的 `pendingPermission` 视为 false，暂停中的 agent 可能被当成可推进。
 2. **`archivedAt` 读取但不参与判定**（`paseo-state.mjs:197`）；归档但 `lastStatus` 仍为 running 的记录会占 cap 或被视为 ACTIVE。
-3. **自审已发生且被放行。** `archive/.../tasks.md:17` 为 `review=pass(dfa79d7b@fe4240f/fe0a598)`，`native-smoke.md:23` 记录 `dfa79d7b` 就是 T-02 a5 的写手。提交 `fe4240f` 只有 Co-Authored-By，无 `Pipeline-Author`/`Pipeline-Role`；合流提交 `528c691` 只有 `Pipeline-Task/Source`。根因：作者 trailer 可缺失，reviewer 身份不与派发记录交叉核对。
+3. **自审已发生且被放行。** `archive/.../tasks.md:17` 为 `review=pass(dfa79d7b@fe4240f/fe0a598)`，`native-smoke.md:23` 记录 `dfa79d7b` 就是 T-02 a5 的写手。提交 `fe4240f` 只有 Co-Authored-By，无 `Pipeline-Author`/`Pipeline-Role`；合流提交 `528c691` 只有 `Pipeline-Task/Source`。根因：作者 trailer 可缺失，reviewer 身份不与派发记录交叉核对。**已闭合（本轮）**：`merge-task.mjs` 在运行账本存在时交叉核对 reviewer 与本任务的写手/审计意图，exit 32；SCEN-MRG-16 三条（写手本人、无审计派发、审计派发匹配）覆盖，撤掉检查后两条变红。
 4. **run-state 租约可绕过。** `requireActiveOwner` 仅在 `owner !== null` 时比对（`run-state.mjs:58`），而 SKILL 的 claim 示例本身不带 `--owner`；读改写只有 tmp+rename，无锁，并发 claim 可双双成功。
-5. **证据闸门仍偏弱。** acceptance 闸门不跑结构检查（`check-evidence.mjs:170-176`，仅 `all` 才两者都跑）；smoke 的 sha 绑定可选（L144）；场景检查是不区分大小写的子串匹配（L150，`SCEN-1` 命中 `SCEN-10`），且只要求“被提到”，不要求该场景通过。归档 change 的 T-08 冒烟 FAIL 仍以 Done 合流，正是因为当时走的 structure 闸门。
+5. **证据闸门仍偏弱。** acceptance 闸门不跑结构检查（`check-evidence.mjs:170-176`，仅 `all` 才两者都跑）；smoke 的 sha 绑定可选（L144）；场景检查是不区分大小写的子串匹配（L150，`SCEN-1` 命中 `SCEN-10`），且只要求“被提到”，不要求该场景通过。归档 change 的 T-08 冒烟 FAIL 仍以 Done 合流，正是因为当时走的 structure 闸门。**已闭合**：结构前置、smoke 与 audit 均须 `--sha`、token 边界匹配且要求 `<ID>: PASS`、非 PASS 结论阻断，四条各有负向对照。
 6. **占位证据值。** `native-smoke.md` 的 `notification_message_id: msg_01JAX_LOST_NOTIFICATION` 不是采集值，违反“只写采集值”。
 
 ### P1：推进摩擦、协同断裂
@@ -108,13 +111,23 @@
 
 | 原项 | 修复 | 负向对照 |
 |---|---|---|
-| 2 `abortMerge` 在测试内 commit 时静默返回 | 记住 `expectedPreMergeHead`，`MERGE_HEAD` 消失且 HEAD 已变即 exit 40 并打印现场，不 reset | 撤掉检测 → `SCEN-MRG-25` 红 |
-| 3 超时只杀外层 shell | `spawn` + `detached:true`，`process.kill(-pid)` 打整棵进程树，SIGTERM→2s→SIGKILL，并轮询进程组消失 | 去掉 `detached` → `SCEN-MRG-26` 红（孙进程 3 秒后落盘） |
+| 2 `abortMerge` 在测试内 commit 时静默返回 | 记住 `expectedPreMergeHead`，`MERGE_HEAD` 消失且 HEAD 已变即 exit 40 并打印现场，不 reset | 撤掉检测 → `SCEN-MRG-25` 红 || 3 超时只杀外层 shell | `spawn` + `detached:true`，`process.kill(-pid)` 打整棵进程树，SIGTERM→2s→SIGKILL，并轮询进程组消失 | 去掉 `detached` → `SCEN-MRG-26` 红（孙进程 3 秒后落盘） |
 | 4 hotfix 空 provider / 7 位标签 | profile 解析 fail-closed（缺文件/缺 profile/缺 provider-model 一律 exit 1）；标签用完整 SHA 截前 7 位 | 恢复旧写法 → `SCEN-DISP-05/06` 3 条红 |
 | 5 外部写手不计 cap | `foreignLiveWriters` 计入 `room`；解析级 INVALID（`MISSING_SCOPE`）上正跑的写手也占 cap 与 scope；`nextAction` 与门禁同口径 | `SCEN-REC-17` ×2 红 |
 | 7 场景只要出现、占位值放行 | 要求 `scenario_results` 段 `<ID>: PASS` + 不得同时在 unverified；占位/退化值判为未采集 | `SCEN-EVD-02` ×3 分别红 |
 | 6 嵌套 Pod 分支静默忽略 | `for-each-ref refs/heads/pod/<change>` 是路径段前置匹配，`pod/<change>/<x>` 也会被列出；判据改成「映射不到任何任务即 UNMAPPED」，不再只认第三段为 `undefined` | `SCEN-REC-17 nested pod branch` 红 |
 | 8 LESSONS:29/30 派发与合流顺序自相矛盾 | 改为「先派发」只适用于**不依赖本任务 Done** 的下游；依赖本任务合流的下游必须先合流再派，合流被推到「等待空档」不是规则 | 文档条款，`SCEN-DOC-*` 无对应断言；以人工核对为准（未做负向对照，如实记录） |
+
+**2026-10-26 P0 收口（本轮）**
+
+| 原项 | 修复 | 负向对照 |
+|---|---|---|
+| §3-P0-3 自审（T-02） | `merge-task.mjs` 新增因子 3b：运行账本存在时，reviewer 不得是本任务任一写手意图的 agentId，且必须是本任务一条已回执 `anchasi` 意图的 agentId；账本不可解析 exit 32 | 撤掉 3b 整段 → `SCEN-MRG-16` 两条红（写手本人、无审计派发） |
+| §3-P0-5 smoke 无 sha 绑定 | `acceptanceErrors()` 把 `--sha` 要求移出 audit 分支，smoke 同样强制 | 撤掉该要求 → `SCEN-EVD-01 revision binding for smoke` 红 |
+| `base7` 未校验为 tip 祖先 | `merge-task.mjs` 增加 `merge-base --is-ancestor <base> <tip>`，exit 34 | 把该检查替换为恒通过 → `SCEN-MRG-18` 红 |
+| 必需场景非 PASS 结论 | 已有实现，本轮补锁定用例：`BLOCKED`/`SKIPPED`/`UNVERIFIED` 三种结论逐项拒绝 | 撤掉非 PASS 拒绝 → `SCEN-EVD-02 BLOCKED or SKIPPED` 与 `merely mentioned` 两条红 |
+
+回归实测（本轮改动后，仓库根目录 `bash skills/paseo-pipeline/test/run-all.sh`）：Node `tests 397 / pass 397 / fail 0`，`duration_ms 109471.265083`；contract-check `通过 19 / 失败 0`。
 
 ---
 
@@ -132,7 +145,7 @@
 
 - `nextAction` 改为有序动作列表：阻塞按任务局部生效，影响面外的 merge 与 dispatch 同轮给出（合流在前，不互斥）。全局 hold 只保留 runtime 非 ok 与 UNMAPPED。**已实施**（SKILL §2.0 与 `ALSO` 输出已同步）。
 - 活态：labels 取持久 JSON，状态取 CLI `status`；两者不一致按 live 保守计；`permit ls` 失败 → `degraded`；`archivedAt` 非空且 CLI 无此 id → 非 live。**已实施**（「任一源报 live 即 live」，SCEN-PS-LIVE-CLI 覆盖）。
-- 所有解析级 INVALID 的 live 写手计入 cap；scope 未知时视为全局占用。**未实施**（仅 `BAD_SCOPE_PATH` 计入）。
+- 所有解析级 INVALID 的 live 写手计入 cap；scope 未知时视为全局占用。**已实施**（`invalidByParse` 与 `BAD_SCOPE_PATH` 两条路径均累加 `liveWriterCount` 并保守占位，SCEN-REC-17 覆盖）。
 - 任一成员有待批权限 → UNRESOLVED（不只看 latest）。**已实施**。
 - 分支精确绑定 latest attempt（`-a<N>` 数值匹配）；旧 attempt 分支报 STALE，不进 MERGE。**已实施**（`staleBranches` + `STALE_BRANCH` 输出行）。
 - rejected/abandoned 的 latest 进 REWORK（回 READY，受预算约束），不进 MERGE；同步修改 SCEN-REC-16 断言。**已实施（取「不进 MERGE」这一半）**：旧 attempt 的领先分支报 STALE 并按预算处置；未新增独立 REWORK 状态，复用的是既有 READY/BLOCKED 路径。
@@ -141,10 +154,10 @@
 ### 4.3 merge-task：调用者只能收紧，不能放宽
 
 - 必跑冻结 `Verify with`；位置参数 `<test-cmd>` 只作追加。任务无 `Verify with` 时才允许单独传入，并写入 run-log。**已实施（exit 36）。**
-- `git diff --name-only -z --no-renames base..tip`，同时校验 base 是 tip 的祖先。**已实施（exit 30 / 34）。**
+- `git diff --name-only -z --no-renames base..tip`，同时校验 base 是集成 HEAD 的祖先**且**是被合入 tip 的祖先（两者任一不满足 exit 34）。**已实施**：前者原已有，后者本轮补齐（只查集成 HEAD 会放过「分支拉出后集成又前进、再拿新 HEAD 当 base」的标签，此时 `base..tip` 会把本任务没写过的提交算进审查范围）。
 - 测试前后比较 porcelain 指纹。**已实施。** 原计划的 `git write-tree` 未加（porcelain 已覆盖工作树与未跟踪文件）。
 - 集成写锁：git common dir 下 `O_EXCL` 锁文件，持锁后重读 HEAD。**已实施（exit 37）。**
-- 非自审：`Pipeline-Author` 必填；`--allow-legacy-author` 需显式环境变量并写入 run-log。**已实施（二次确认 + `BYPASSED(legacy)` 记录）。** reviewer 与 run-state 派发记录交叉核对**未实施**。
+- 非自审：`Pipeline-Author` 必填；`--allow-legacy-author` 需显式环境变量并写入 run-log。**已实施（二次确认 + `BYPASSED(legacy)` 记录）。** reviewer 与 run-state 派发记录交叉核对：**本轮已实施**——账本存在时，`reviewer` 不得等于本任务任一写手意图的 `agentId`，且必须是本任务一条已回执 `anchasi` 意图的 `agentId`；账本不可解析同样 exit 32。账本不存在时保持原 trailer 检查（该 change 未走流水线记账）。
 - Pod：读 `pod-members.json`，taskIds 必须等于成员集合。**已实施（exit 31）。**
 - 幂等：**本条建议已裁决为不采纳。** `openspec/specs/pipeline-delivery/spec.md:140` 的 SCEN-MRG-08 明文规定「已 Done → exit 非零且不产生新提交」，改 exit 0 属于门禁语义变更，需 OpenSpec delta 与确认点 1；规范优先于走查建议。**实际实施的是诊断精度**：同一 tip 的重试报 `task T is already merged from <tip7> ... retry after a lost merge receipt`，换了 tip 的旧成果仍报 `different revision cannot be merged under the same task`，两者都不产生提交、不改账本（SCEN-MRG-27 × 2 覆盖，负向对照：抹掉 source 比较后该用例变红）。
 - 超时用进程组 kill。**已实施**：`spawn(..., {detached:true})` + `process.kill(-pid)`，SIGTERM 后 2s SIGKILL，并轮询进程组消失（SCEN-MRG-26 用 3 秒后落盘的孙进程验证；负向对照去掉 `detached` 即变红）。
@@ -178,9 +191,9 @@ DAG 与 cap：滚动释放（依赖满足且 scope 不冲突即派），Wave 只
 
 ### 4.7 证据闸门
 
-acceptance 先跑 structure；smoke 必须 `--sha`；场景按 token 边界精确匹配，并要求该场景结果为 PASS；占位值（如 `msg_01JAX_…`）判为未采集。
+acceptance 先跑 structure；smoke 与 audit 都必须 `--sha`；场景按 token 边界精确匹配，并要求该场景结果为 PASS；占位值（如 `msg_01JAX_…`）判为未采集。
 
-**状态：** 五项**已全部实施**。acceptance 先跑 structure；smoke 必须 `--sha`；场景按 token 边界匹配；必需场景必须在 `scenario_results` 段有 `<ID>: PASS`（只在正文被提到、结论非 PASS、或同时挂在 unverified 都拒绝）；占位值（`PLACEHOLDER`/`LOST`/`NOT_COLLECTED`、全同字符退化值）与字段缺失同等对待。SCEN-EVD-02 三条负向对照逐项撤掉修复均变红。
+**状态：** 五项**已全部实施**。acceptance 先跑 structure；**smoke 与 audit 都必须 `--sha`**（本轮补齐：此前只有 audit 强制，冒烟证据可完全脱离 revision 通过验收）；场景按 token 边界匹配；必需场景必须在 `scenario_results` 段有 `<ID>: PASS`（只在正文被提到、结论非 PASS、或同时挂在 unverified 都拒绝）；占位值（`PLACEHOLDER`/`LOST`/`NOT_COLLECTED`、全同字符退化值）与字段缺失同等对待。负向对照逐项撤掉修复均变红：撤 structure 前置、撤 smoke `--sha`、撤非 PASS 结论拒绝，三条分别使对应用例变红。
 
 ---
 

@@ -162,6 +162,14 @@ function acceptanceErrors() {
   for (const missing of structureErrors()) problems.push(`结构不合格（缺 ${missing}）`);
   const sha = field('reviewed_sha');
 
+  // 验收必须绑定 revision：没有 `--sha` 就无法证明这份证据对应的是当前集成分支。
+  // 该要求对 smoke 与 audit 同等适用。旧实现只对 audit 要求 --sha，于是冒烟证据可以
+  // 完全脱离 revision 通过验收——「验证通过了」与「验证的是哪份代码」脱钩，
+  // 节点在合流推进后仍是绿的。smoke 已带 reviewed_sha 时还要与该 revision 相符。
+  if (expectedSha === null) {
+    problems.push('验收闸门必须给 --sha <集成 HEAD>：无 revision 绑定的证据不能证明当前代码被验证过');
+  }
+
   if (kind === 'audit') {
     const verdict = (field('verdict') ?? '').trim().toLowerCase();
     if (verdict === '') {
@@ -171,11 +179,9 @@ function acceptanceErrors() {
     } else if (!PASSING_VERDICTS.has(verdict)) {
       problems.push(`verdict=${verdict} 不是已约定的通过结论；未知结论不得折算为通过`);
     }
-    if (expectedSha === null) {
-      problems.push('验收闸门必须给 --sha <集成 HEAD>：无 revision 绑定的审计记录不能证明当前代码被审过');
-    } else if (!sha) {
+    if (!sha) {
       problems.push('缺少 reviewed_sha');
-    } else if (!shasAgree(sha, expectedSha)) {
+    } else if (expectedSha !== null && !shasAgree(sha, expectedSha)) {
       problems.push(`reviewed_sha=${sha} 与验收 revision ${expectedSha} 不符（审查记录已过期）`);
     }
   } else {

@@ -106,6 +106,18 @@ test('SCEN-EVD-01 structure gate keeps a FAIL investigation on file (exit 0)', (
   assert.match(res.stdout, /不构成验收通过/);
 });
 
+test('SCEN-EVD-01 the acceptance gate requires a revision binding for smoke too', () => {
+  // 修复前只有 audit 强制 `--sha`：一份完全通过、字段齐全的 smoke 证据不带 revision 也能
+  // exit 0，于是「验证通过」与「验证的是哪份代码」脱钩（合流推进后它仍是绿的）。
+  const file = write('smoke-nosha.md', PASSING_SMOKE);
+  const res = runCheck(['--gate', 'acceptance', file]);
+  assert.equal(res.status, 1, 'smoke acceptance without --sha must be rejected');
+  assert.match(res.stderr, /必须给 --sha/);
+  // structure 闸门不受影响：留档不需要 revision 绑定。
+  const structure = runCheck([file]);
+  assert.equal(structure.status, 0, structure.stderr);
+});
+
 test('SCEN-EVD-01 acceptance gate rejects a FAIL smoke result', () => {
   const file = write('fail-acceptance.md', PASSING_SMOKE.replace('result: PASS', 'result: FAIL'));
   const res = runCheck(['--gate', 'acceptance', '--sha', '528c69176495ee698383bc565b0ea9dfc467d897', file]);
@@ -260,6 +272,21 @@ test('SCEN-EVD-02 a scenario claimed PASS must not also be listed as unverified'
   ]);
   assert.equal(res.status, 1);
   assert.match(res.stderr, /自相矛盾/);
+});
+
+test('SCEN-EVD-02 a required scenario recorded as BLOCKED or SKIPPED blocks acceptance', () => {
+  // FAIL 之外的两种「没验成」也必须阻断：BLOCKED（外部依赖缺失）与 SKIPPED（本次没跑）。
+  // 这两种结论在历史上被写成「已记录，因此满足必需项」，于是必需场景根本没被执行也算通过。
+  for (const outcome of ['BLOCKED', 'SKIPPED', 'UNVERIFIED']) {
+    const file = write(`scen-${outcome.toLowerCase()}.md`,
+      `${PASSING_SMOKE}scenario_results:\n  - SCEN-REL-07: ${outcome}\n`);
+    const res = runCheck([
+      '--gate', 'acceptance', '--sha', '528c69176495ee698383bc565b0ea9dfc467d897',
+      '--require-scenario', 'SCEN-REL-07', file,
+    ]);
+    assert.equal(res.status, 1, `${outcome} must not satisfy a required scenario`);
+    assert.match(res.stderr, new RegExp(`结论是 ${outcome}，不是 PASS`));
+  }
 });
 
 test('SCEN-EVD-02 placeholder values are rejected as not-collected, in both gates', () => {
