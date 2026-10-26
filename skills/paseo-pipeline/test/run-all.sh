@@ -13,6 +13,7 @@ node --test \
   skills/paseo-pipeline/test/dispatch.test.mjs \
   skills/paseo-pipeline/test/docs.test.mjs \
   skills/paseo-pipeline/test/check-evidence.test.mjs \
-  skills/paseo-pipeline/test/run-state.test.mjs
+  skills/paseo-pipeline/test/run-state.test.mjs \
+  skills/paseo-pipeline/test/lock.test.mjs
 
 echo "=== All regression test suites completed successfully ==="

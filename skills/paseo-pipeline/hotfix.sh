@@ -93,8 +93,29 @@ CLI+=(--new-workspace worktree --new-branch "$BRANCH_WITH_ATTEMPT" --base "$BASE
 CLI+=(--label "pipeline.change=${CHANGE}" --label "pipeline.role=gongbu"
       --label "pipeline.task=${TID}" --label "pipeline.attempt=${ATTEMPT}" --label "pipeline.phase=impl")
 
-AGENT_ID="$(paseo "${CLI[@]}" "$(cat "$TMP")")"
-echo "[hotfix] agent=$AGENT_ID branch=$BRANCH_WITH_ATTEMPT attempt=$ATTEMPT"
+# --- 意图记账（与正常路径同一护栏，见 SKILL.md §4）：派发前 claim、拿到 agent 后 record ---
+# 旧实现完全不做：意图护栏对 hotfix 派发失明，创建在途窗口会被再派一次。
+# 账本在 git common dir（不弄脏工作树）。无租约时 claim 直接生效；存在有效编排租约时
+# hotfix 不带 --owner 会被拒（exit 2）——这是预期：编排进行中不得走旁路快轨（SKILL.md §1）。
+CLAIM_JSON="$(node "$DIR/run-state.mjs" claim "$CHANGE" --task "$TID" --attempt "$ATTEMPT" --phase impl --role gongbu --json)" || {
+  echo "[hotfix] 意图认领失败，中止派发（重复意图、租约拒绝或账本被占用）" >&2; exit 1; }
+CLAIM_KEY="$(node -e '
+let raw="";process.stdin.on("data",(c)=>raw+=c).on("end",()=>{
+  const intent=JSON.parse(raw).intent;
+  if(!intent||typeof intent.key!=="string"){console.error("[hotfix] claim 回执缺少 intent.key");process.exit(1);}
+  console.log(intent.key);
+});' <<< "$CLAIM_JSON")" || exit 1
+
+if ! AGENT_ID="$(paseo "${CLI[@]}" "$(cat "$TMP")")"; then
+  # 派发动作失败：显式作废意图，否则未回执意图会挡住后续重派（重复意图 exit 2）。
+  node "$DIR/run-state.mjs" fail "$CHANGE" --key "$CLAIM_KEY" --reason "paseo run 非零退出" >&2 || true
+  echo "[hotfix] paseo run 失败，意图已作废: $CLAIM_KEY" >&2; exit 1
+fi
+# 回执必须登记真实 agent：回执丢失会让 reconcile 判 INTENT_PENDING 并冻结重派。
+# record 失败属账本异常，硬失败并提示人工补登记，不得静默继续（否则护栏再次失明）。
+node "$DIR/run-state.mjs" record "$CHANGE" --key "$CLAIM_KEY" --agent "$AGENT_ID" || {
+  echo "[hotfix] 意图回执失败（agent 已派发: $AGENT_ID）；人工执行: node $DIR/run-state.mjs record $CHANGE --key '$CLAIM_KEY' --agent '$AGENT_ID'" >&2; exit 1; }
+echo "[hotfix] agent=$AGENT_ID branch=$BRANCH_WITH_ATTEMPT attempt=$ATTEMPT intent=$CLAIM_KEY"
 paseo wait "$AGENT_ID"
 
 # review 标签必须绑定真实 tip 与真实 base：merge-task 会逐字段校验，

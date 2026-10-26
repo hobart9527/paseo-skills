@@ -84,7 +84,17 @@ function unverifiedItems() {
  * 让「通知丢失」这个结论看起来有收据支撑，实际没有任何采集值。
  * 编造的值不是格式错误，是数据来源错误：必须与缺失同等对待。
  */
-const PLACEHOLDER_RE = /(?:PLACEHOLDER|TODO|FIXME|TBD|CHANGEME|DUMMY|SAMPLE|EXAMPLE|LOST|UNKNOWN_|_TEST_|NOT[_-]?COLLECTED)/i;
+// 通用词（LOST/UNKNOWN/TEST/NOT_COLLECTED）必须带词边界：真实采集值可能把它们作为
+// 子串嵌在标识里（如 ULID 片段 `01JAXLOSTFOUND`、英文词 `LATEST`/`TESTING`），无边界
+// 子串匹配会误伤合法值；但编造收据惯用的分隔形态（`msg_01JAX_LOST_NOTIFICATION`）
+// 仍必须命中。边界只认空白/下划线/字符串边缘——`.` 与 `/` 不算，否则合法值
+// `a.test.mjs`、`bash test/run-all.sh` 会被 `.test.`、`test/` 误伤。
+// PLACEHOLDER/TODO/FIXME/TBD/CHANGEME/DUMMY/SAMPLE/EXAMPLE 是占位专用词，保持子串匹配。
+const PLACEHOLDER_BOUNDED = ['LOST', 'UNKNOWN', 'TEST', 'NOT[_-]?COLLECTED']
+  .map((word) => `(?:^|[\\s_])${word}(?=[\\s_]|$)`)
+  .join('|');
+const PLACEHOLDER_RE = new RegExp(
+  `(?:PLACEHOLDER|TODO|FIXME|TBD|CHANGEME|DUMMY|SAMPLE|EXAMPLE|${PLACEHOLDER_BOUNDED})`, 'i');
 const ALL_SAME_CHAR_RE = /^([0-9a-f])\1{7,}$/i;
 
 function placeholderFields() {

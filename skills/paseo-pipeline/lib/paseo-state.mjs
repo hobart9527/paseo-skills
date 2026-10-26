@@ -284,10 +284,19 @@ export function readPaseoState() {
  */
 const PIPELINE_TITLE = /^\[Pipeline\]\s+(.*)$/;
 
-/** change 名与标题尾 token 的模糊匹配：兼容 60 字符截断（两向前缀）。 */
+/**
+ * change 名与标题尾 token 的模糊匹配：兼容 60 字符截断（单向前缀）。
+ *
+ * 只保留 `change.startsWith(token)` 一个方向：标题被 60 字符截断时，尾 token 是
+ * change 的**前缀**（`governance-seam-and-isolated-servic`）。反向
+ * `token.startsWith(change)` 会把 change `foo` 与 `foo-bar` 互绑——`foo-bar` 是
+ * 另一个 change 的完整 slug，把它归属到 `foo` 会让两个 change 互相占 cap、互相冻结
+ * （2026-10-26 走查实测推演）。token 比 change 长时不成立归属，交由 namesAnotherChange
+ * 判定是否为外部 change。
+ */
 function slugMatches(token, change) {
   if (typeof token !== 'string' || token === '') return false;
-  return token === change || token.startsWith(change) || change.startsWith(token);
+  return token === change || change.startsWith(token);
 }
 
 export function attributeAgent(agent) {
@@ -358,22 +367,45 @@ export function selectChange(state, change) {
     const { belongs, attribution } = belongsToChange(agent, change);
     if (belongs) {
       members.push({ ...agent, attribution });
-    } else if (agent.live && hasPipelineMarker(agent) && !namesAnotherChange(attribution)) {
+    } else if (agent.live && hasPipelineMarker(agent) && !namesAnotherChange(attribution, agent, change)) {
       suspicious.push({ ...agent, attribution });
     }
   }
   return { members, suspicious };
 }
 
-/**
- * 标题通道解析出的「另一个 change」是否可信到可以排除嫌疑。
- * 只有形如 change slug 的尾 token 才算（含连字符，或与任务/角色词汇不冲突）；
- * `T-02`、`Runner`、空串等说明标题格式不规范，归属不可判定 → 仍需 fail closed。
- */
-function namesAnotherChange(attribution) {
-  const token = attribution.change;
+/** slug 形态判定（namesAnotherChange 两个路径共用）。 */
+function isSlugToken(token) {
   if (typeof token !== 'string' || token === '') return false;
   if (/^T-\d+$/.test(token)) return false;
   if (token.startsWith('[')) return false;
   return /^[a-z0-9][a-z0-9._-]*$/.test(token) && token.length >= 6;
+}
+
+/**
+ * 标题通道解析出的「另一个 change」是否可信到可以排除嫌疑。
+ *
+ * 两条路径（满足其一即可排除）：
+ *   1. 尾 token 路径（标题契约 `[Pipeline] <role> <task> <change>` 把 change 放在末尾）：
+ *      尾 token 形如 change slug 即采信；`T-02`、`Runner`、空串等说明标题格式不规范，
+ *      归属不可判定 → 仍需 fail closed。
+ *   2. 任一 token 路径：真实标题并不都遵守契约——中文角色词（总控/产品/巡检）与
+ *      自由格式动作（`[Pipeline] 巡检 复核 <change> 进行中`）会把 change 挤到中段、
+ *      尾部留下中文，尾 token 必然失配，于是别 change 的正常 agent 也冻死本 change 的
+ *      派发。此时任一 slug 形态的中段 token 即可证明它属于**另一个** change。
+ *      中段 token 缺少位置锚点，证据必须更强：要求含 `-`、`.` 或数字
+ *      （排除 `dispatch`/`hotfix`/`review` 这类标题动词），且不得与本 change 有前缀关系
+ *      （可能是本 change 被 60 字符截断后的 slug——那种情况归属不可判定，不得用来排除）。
+ */
+function namesAnotherChange(attribution, agent, currentChange) {
+  const tail = attribution.change;
+  if (isSlugToken(tail)) return true;
+  const title = typeof agent?.title === 'string' ? agent.title : '';
+  for (const token of title.split(/\s+/)) {
+    if (!isSlugToken(token)) continue;
+    if (!/[-.\d]/.test(token)) continue;
+    if (slugMatches(token, currentChange)) continue;
+    return true;
+  }
+  return false;
 }

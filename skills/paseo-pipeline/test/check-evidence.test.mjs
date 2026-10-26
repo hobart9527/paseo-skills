@@ -318,3 +318,28 @@ test('SCEN-EVD-02 placeholder values are rejected as not-collected, in both gate
   const ok = runCheck([notCollected]);
   assert.equal(ok.status, 0, ok.stderr);
 });
+
+test('SCEN-EVD-02 placeholder detection respects word boundaries for common words', () => {
+  // 合法采集值可把 LOST 作为标识子串（ULID 片段）：无边界的子串匹配会误伤它。
+  const legit = write('legit-lost-substring.md',
+    PASSING_SMOKE.replace('notification_message_id: msg_01JAX789ABC',
+      'notification_message_id: msg_01JAXLOSTFOUND9Z'));
+  const legitRes = runCheck([legit]);
+  assert.equal(legitRes.status, 0, legitRes.stderr);
+
+  // 编造收据的分隔形态（`_LOST_`）仍必须拦——与上方真实事故样本同一形态。
+  const fabricated = write('fabricated-lost-delimited.md',
+    PASSING_SMOKE.replace('notification_message_id: msg_01JAX789ABC',
+      'notification_message_id: msg_01JAX_LOST_NOTIFICATION'));
+  const fabRes = runCheck([fabricated]);
+  assert.equal(fabRes.status, 1, 'delimited LOST must stay rejected');
+  assert.match(fabRes.stderr, /占位值/);
+
+  // 真实验证命令含 `test` 路径片段（`.test.`、`test/`）：`.` 与 `/` 不得算作词边界。
+  const withCommand = write('legit-test-command.md',
+    PASSING_SMOKE.replace('notification_message_id: msg_01JAX789ABC',
+      'notification_message_id: msg_01KA2B3C4D5E6F7G8H9J0K')
+      .replace('relay_case: confirmed', 'relay_case: confirmed\nverify_command: node --test test/a.test.mjs'));
+  const cmdRes = runCheck([withCommand]);
+  assert.equal(cmdRes.status, 0, cmdRes.stderr);
+});

@@ -246,9 +246,69 @@ test('attribution distinguishes label channel, truncated-title channel and forei
   assert.equal(other.members.length, 0);
   assert.ok(!byId.get(TAGGED_WRITER.id).live, '本用例的样本是终态，suspicious 只看活体');
 
-  // 标题通道截断兼容：60 字符截断后的 slug 仍能指向同一 change。
-  const truncated = { ...TAGGED_WRITER, labels: {}, title: '[Pipeline] ceshi T-06 eas-substitute-phase3-phase4-' };
+  // 标题通道截断兼容：60 字符截断后的 slug 是 change 的**前缀**，仍能指向同一 change。
+  const truncated = { ...TAGGED_WRITER, labels: {}, title: '[Pipeline] ceshi T-06 eas-substitute-phase3-phas' };
   assert.equal(belongsToChange(truncated, 'eas-substitute-phase3-phase4').belongs, true);
+});
+
+// ---------------------------------------------------------------------------
+// 3b. slug 归属方向（F4）与中文/自由格式标题的排除路径（F2）
+// ---------------------------------------------------------------------------
+
+test('F4: a superset slug (foo-bar) does not bind to change foo, and vice versa stays one-directional', (t) => {
+  // 旧 slugMatches 双向匹配让 change `foo` 与 `foo-bar` 互相归属、互占 cap。
+  // 修复后 token 比 change 长（`foo-bar` 是另一个 change 的完整 slug）不成立归属；
+  // 反向（token 是本 change 的截断前缀）仍成立。
+  const foreign = {
+    ...TAGGED_WRITER, id: 'foreign-foo-bar', lastStatus: 'running', archivedAt: null,
+    labels: {}, title: '[Pipeline] gongbu T-01 foo-bar',
+  };
+  const state = adapterOn(t, { persistent: [foreign] });
+  const sel = selectChange(state, 'foo');
+  assert.equal(sel.members.length, 0, '`foo-bar` 不得归属到 change `foo`');
+  assert.equal(sel.suspicious.length, 0, '能证明属于另一个 change，应排除出 suspicious（不互冻）');
+  assert.equal(belongsToChange({ ...foreign, title: '[Pipeline] gongbu T-01 foo' }, 'foo-bar').belongs, true,
+    'token 是 change 的截断前缀（60 字符截断形态）仍成立归属');
+});
+
+test('F2: a Chinese tail token with a foreign change slug mid-title does not freeze dispatch', (t) => {
+  // 自由格式标题 `[Pipeline] 巡检 复核 <change> 进行中`：尾 token 是中文，旧的尾 token
+  // 判定必然失配 → suspicious → UNMAPPED → 别 change 的正常 agent 冻死本 change 派发。
+  const agent = {
+    ...TAGGED_WRITER, id: 'cn-foreign', lastStatus: 'running', archivedAt: null,
+    labels: {}, title: '[Pipeline] 巡检 复核 other-change-v2 进行中',
+  };
+  const state = adapterOn(t, { persistent: [agent] });
+  const sel = selectChange(state, 'reconcile-contract');
+  assert.equal(sel.members.length, 0);
+  assert.equal(sel.suspicious.length, 0, '中段 slug token 足以证明属于另一个 change，不得冻结本 change');
+});
+
+test('F2: a mid-title token prefix-related to the current change cannot prove foreignness', (t) => {
+  // 中段 token 与本 change 同名（或是它的截断前缀）：可能是本 change 自己的 agent 用了
+  // 自由格式标题，归属不可判定，必须保持 fail closed。
+  const agent = {
+    ...TAGGED_WRITER, id: 'cn-ambiguous', lastStatus: 'running', archivedAt: null,
+    labels: {}, title: '[Pipeline] 巡检 复核 reconcile-contract 进行中',
+  };
+  const state = adapterOn(t, { persistent: [agent] });
+  const sel = selectChange(state, 'reconcile-contract');
+  assert.equal(sel.suspicious.length, 1, '与本 change 前缀相关的中段 token 不得用来排除嫌疑');
+});
+
+test('F2: bare title verbs (dispatch/hotfix/review) never count as foreign change slugs', (t) => {
+  // 中段 token 缺少位置锚点，必须比尾 token 更强的形态证据（含 `-`、`.` 或数字），
+  // 否则 `dispatch`/`hotfix`/`review` 这些标题动词会被当成「另一个 change 的 slug」，
+  // 把真正归属不可判定的 agent 放出 suspicious —— 那是放松 fail closed，绝不允许。
+  for (const verb of ['dispatch', 'hotfix', 'review']) {
+    const agent = {
+      ...TAGGED_WRITER, id: `cn-verb-${verb}`, lastStatus: 'running', archivedAt: null,
+      labels: {}, title: `[Pipeline] 总控 ${verb} 进行中`,
+    };
+    const state = adapterOn(t, { persistent: [agent] });
+    const sel = selectChange(state, 'reconcile-contract');
+    assert.equal(sel.suspicious.length, 1, `标题动词 ${verb} 不得被当成外部 change slug`);
+  }
 });
 
 // ---------------------------------------------------------------------------

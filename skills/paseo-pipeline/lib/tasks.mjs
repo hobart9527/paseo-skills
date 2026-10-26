@@ -69,14 +69,17 @@ const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
  * `dotnet` 以及被引号包裹的绝对路径。因此判定分三档：
  *   1. 已知命令名（COMMAND_HEADS）；
  *   2. 明确的路径/变量调用（`/abs/node`、`./run.sh`、`$NODE`）；
- *   3. 小写 ASCII 命令名形状（`^[a-z][a-z0-9_.+-]*$`）。
+ *   3. 小写 ASCII 命令名形状（`^[a-z][a-z0-9_.+-]*$`），但排除自然语言高频动词。
  * 自然语言描述在实测样本里都以中文或大写字母开头（`运行 … 验证`、`See the …`），
- * 因此第 3 档不会把描述当命令放行。若描述侥幸通过，合流时会以「命令不存在」失败，
- * 仍是 fail closed，只是出口从 36 变成 20。
+ * 但小写英文描述（`run the test suite`、`verify all scenarios`）的首词会撞上第 3 档
+ * 形状，被误当成命令名放行。这些词不是可执行命令头，必须排他；误拦真实命令的代价
+ * 只是合流时以「命令不存在」失败（exit 20），误放行自然语言才是要堵的口子。
  */
+const PROSE_HEADS = new Set(['run', 'use', 'see', 'check', 'verify', 'ensure', 'manually']);
 function isExecutableHead(token) {
   if (COMMAND_HEADS.has(token)) return true;
   if (/^(?:[./~]|\$)[^\s]*$/.test(token)) return true;
+  if (PROSE_HEADS.has(token)) return false;
   return /^[a-z][a-z0-9_.+-]*$/.test(token);
 }
 

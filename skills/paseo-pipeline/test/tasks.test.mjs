@@ -413,6 +413,34 @@ test('Verify with accepts a plain command without env assignment and ignores pro
   assert.equal(prose.verify.command, null, '以自然语言开头的行不是可执行命令');
 });
 
+test('Verify with rejects natural-language English head words as commands', () => {
+  // 第三档形状（小写 ASCII 命令名）会把 `run the test suite` 的首词 `run` 当命令放行；
+  // 这些是高频自然语言动词，必须排他（fail closed：真实验证缺口在合流前暴露）。
+  for (const [head, rest] of [
+    ['run', 'the test suite'],
+    ['use', 'npm test to verify'],
+    ['see', 'the audit report'],
+    ['check', 'that all scenarios pass'],
+    ['verify', 'all scenarios manually'],
+    ['ensure', 'the ledger is written'],
+    ['manually', 'confirm the rollout'],
+  ]) {
+    const result = parseTasks(`- [ ] 1.1 T-01 Prose
+  - Depends on: none
+  - Write scope: src/
+  - Verify with: ${head} ${rest}
+`);
+    assert.equal(result.tasks[0].verify.command, null, `自然语言首词 ${head} 不得被当成可执行命令`);
+  }
+  // 真实命令名形态不受影响。
+  const result = parseTasks(`- [ ] 1.1 T-01 Command
+  - Depends on: none
+  - Write scope: src/
+  - Verify with: pytest tests/ -q
+`);
+  assert.equal(result.tasks[0].verify.command, 'pytest tests/ -q', 'pytest 是真实命令头，必须放行');
+});
+
 test('Scenarios field collects scenario ids across repeated lines', () => {
   const result = parseTasks(`- [ ] 1.1 T-01 Scenarios
   - Depends on: none

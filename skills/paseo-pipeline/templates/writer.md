@@ -28,13 +28,16 @@
   Pipeline-Author: <你的 agent id>
   ```
 
-### ⚠️ trailer 必须在**最后一段**，中间不能有空行
+### ⚠️ trailer 必须在**最后一段**；提交后必须自验
 
-`merge-task.mjs` 用 `git log --format=%(trailers)` 解析，而 git **只认最后一个段落**。
-把 trailer 之后又写了 `Co-Authored-By:` **并隔了空行**，前面的 trailer 全部作废，合流直接
-`exit 31`（author provenance）。2026-10-26 并行冒烟实测：5 个写手里 2 个踩中，返工 2 次。
+`merge-task.mjs` 用 `git log --format=%(trailers)` 解析，而 git **只认最后一个非空段落**。
+2026-10-26 六组探针实测（B/C/D/E 组）：
+- **块后空行 + 再跟任何一行**（正文、`Co-Authored-By:`、`Signed-off-by:` 皆可）→
+  前面的 `Pipeline-*` trailer 全部作废，合流直接 `exit 31`（author provenance）；
+- **块内空行** → 只有最后一段被解析，前面的 trailer 同样丢失；
+- **信息尾部空行无害**——不用删结尾换行。
 
-**正确**（trailer 与前面正文只隔一个空行，trailer 块内不留空行）：
+**正确**（trailer 与前面正文只隔一个空行，trailer 块内不留空行，块后没有任何行）：
 ```
 feat(x): 一句话
 
@@ -44,7 +47,7 @@ Pipeline-Role: gongbu
 Pipeline-Author: <你的 agent id>
 ```
 
-**错误**（空行把 `Co-Authored-By` 分开，trailer 块被截断）：
+**错误**（空行把 `Co-Authored-By` 分开，前面 trailer 块被截断作废）：
 ```
 Pipeline-Role: gongbu
 Pipeline-Author: <你的 agent id>
@@ -53,6 +56,12 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>
 ```
 
 如果工具自动追加了 `Co-Authored-By`，把它放在 **trailer 块内部、不留空行**，或干脆不放。
+
+**提交后必做自验**（解析结果与写入意图不一致时，不靠肉眼相信提交信息）：
+```
+git log -1 --format='%(trailers:key=Pipeline-Author,valueonly)'
+```
+输出必须非空且等于你的 agent id；为空说明 trailer 块作废，立即 `git commit --amend` 修正后再验。
 
 - 提交后 `git status --porcelain` 必须为空。
 - **不要**自己合流、不要勾 `tasks.md`、不要写 `Done:` 行——那些由 `merge-task.mjs` 独占。

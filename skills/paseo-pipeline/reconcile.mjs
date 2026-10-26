@@ -230,7 +230,16 @@ for (const agent of suspicious) {
 }
 // Pod 分支领先但既无 task 身份也无冻结成员记录：无法恢复到任何任务，保守清空派发。
 for (const b of unmappedPodBranches) {
-  if (Number(sh("git", ["rev-list", "--count", `HEAD..${b}`]) || 0) > 0) {
+  const ahead = sh("git", ["rev-list", "--count", `HEAD..${b}`]);
+  if (ahead === null) {
+    // git 调用失败 ≠ 不领先：失败被 `|| 0` 吞掉时，一条真实领先的分支会被当成
+    // 「无内容」静默忽略，reconcile 还报一切正常。领先未知按 fail closed 进 UNMAPPED。
+    UNMAPPED.push({
+      id: b,
+      name: b,
+      reason: `Pod 分支缺少 task 映射且领先状态不可判定（git rev-list 失败）；先人工核对`,
+    });
+  } else if (Number(ahead) > 0) {
     UNMAPPED.push({
       id: b,
       name: b,
@@ -447,8 +456,25 @@ for (const task of tasks) {
   // 没有 agent 历史可依据时（例如对账先于任何派发记录），退化为按**数值**取最高 attempt：
   // 旧实现用 `branches.find(...)`，`git for-each-ref` 的字典序让 `-a10` 排在 `-a2` 之前，
   // 于是第 10 次尝试的成果被第 2 次的旧分支顶掉。
-  const leading = branches.filter((b) => branchTaskIds(b).includes(task.id)
-    && Number(sh("git", ["rev-list", "--count", `HEAD..${b}`]) || 0) > 0);
+  // rev-list 失败（null）必须与「不领先」（"0"）分开：失败时按领先未知处理——
+  // 分支保留在 leading（不丢弃可能存在的真实成果、不触发重派），同时进 UNMAPPED
+  // 诊断（全局 hold，人工核对前不放行任何合流/派发）。静默当 0 会把一轮成果从
+  // 合流候选里抹掉，还把任务错误地放回 READY 造成重复派发。
+  const leading = [];
+  for (const b of branches) {
+    if (!branchTaskIds(b).includes(task.id)) continue;
+    const ahead = sh("git", ["rev-list", "--count", `HEAD..${b}`]);
+    if (ahead === null) {
+      UNMAPPED.push({
+        id: b,
+        name: b,
+        reason: `任务 ${task.id} 的分支领先状态不可判定（git rev-list 失败）；按领先处理，先人工核对`,
+      });
+      leading.push(b);
+    } else if (Number(ahead) > 0) {
+      leading.push(b);
+    }
+  }
   const latestAttempt = latest?.attempt ?? null;
   const ranked = (list) => list.slice().sort((x, y) => {
     const ax = branchAttempt(x); const ay = branchAttempt(y);

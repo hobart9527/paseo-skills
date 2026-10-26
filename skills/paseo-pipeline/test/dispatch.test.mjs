@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const dispatchPath = fileURLToPath(new URL("../dispatch.mjs", import.meta.url));
 const hotfixPath = fileURLToPath(new URL("../hotfix.sh", import.meta.url));
+const runStatePath = fileURLToPath(new URL("../run-state.mjs", import.meta.url));
 
 function fixture(context, profile) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-dispatch-"));
@@ -41,7 +42,12 @@ if (argv[0] === "run") {
     execFileSync("git", ["commit", "-aqm", "fix: fixture task\\n\\nPipeline-Role: gongbu\\nPipeline-Author: 0123456789abcdef0123456789abcdef"], { stdio: "ignore" });
     execFileSync("git", ["switch", "-q", base], { stdio: "ignore" });
   }
-  console.log("fixture-agent-id");
+  if (process.env.PASEO_FIXTURE_BAD_ID === "1") {
+    // 模拟 CLI 输出形态漂移：多了一行提示，末位不是 agentId。dispatch 必须拒绝错绑。
+    console.log("agent created successfully");
+  } else {
+    console.log("01234567-89ab-cdef-0123-456789abcdef");
+  }
 } else if (argv[0] !== "wait") {
   console.error("Unexpected paseo command: " + argv[0]);
   process.exit(1);
@@ -120,6 +126,34 @@ for (const { name, flags, labels } of [
     assert.deepEqual(actual.sort(), [...labels].sort());
   });
 }
+
+test("SCEN-DISP-07: dispatch binds the parsed agentId only when it matches the known shape", (context) => {
+  const setup = fixture(context, { provider: "claude", model: "fixture-model" });
+  fs.mkdirSync(path.join(setup.repo, "openspec", "changes", "fixture-change"), { recursive: true });
+  const result = run(process.execPath, [
+    dispatchPath, "qingqibing", "implement", "fixture-change", setup.brief,
+  ], setup);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /agent=01234567-89ab-cdef-0123-456789abcdef/);
+  const runLog = fs.readFileSync(
+    path.join(setup.repo, "openspec", "changes", "fixture-change", "run-log.md"), "utf8");
+  assert.match(runLog, /agent=01234567-89ab-cdef-0123-456789abcdef/, "run-log 必须登记真实 agentId");
+});
+
+test("SCEN-DISP-07: dispatch refuses a malformed agentId and prints the raw CLI output", (context) => {
+  const setup = fixture(context, { provider: "claude", model: "fixture-model" });
+  setup.env.PASEO_FIXTURE_BAD_ID = "1";
+  fs.mkdirSync(path.join(setup.repo, "openspec", "changes", "fixture-change"), { recursive: true });
+  const result = run(process.execPath, [
+    dispatchPath, "qingqibing", "implement", "fixture-change", setup.brief,
+  ], setup);
+  assert.equal(result.status, 2, `非法 agentId 必须 exit 2: ${result.stdout}`);
+  assert.match(result.stderr, /不是合法 agentId/);
+  assert.match(result.stderr, /agent created successfully/, "stderr 必须带完整原始输出以便排查");
+  assert.ok(
+    !fs.existsSync(path.join(setup.repo, "openspec", "changes", "fixture-change", "run-log.md")),
+    "错绑的 agentId 不得写入 run-log");
+});
 
 const profileCases = [
   {
@@ -252,6 +286,37 @@ test("SCEN-DISP-04: hotfix stamps all five identity labels and a real tip/base r
   const tip7 = /source=([0-9a-f]{7})/.exec(doneLine)[1];
   const branchTip = run("git", ["rev-parse", "--short=7", "task/fixture-change/T-04"], setup);
   assert.equal(branchTip.stdout.trim(), tip7, "Done source must equal the merged branch tip");
+});
+
+test("SCEN-DISP-08: hotfix claims then records the dispatch intent in the run ledger", (context) => {
+  const setup = hotfixFixture(context, { provider: "claude", model: "fixture-claude" });
+  setup.env.PASEO_FIXTURE_COMMIT = "1";
+  const stateDir = path.join(path.dirname(setup.repo), "ledger");
+  setup.env.PIPELINE_RUN_STATE_DIR = stateDir;
+  const result = run("bash", [hotfixPath, "fixture-change", "T-04", setup.brief, "true"], setup);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stdout, /intent=local:T-04:1:impl:gongbu:dispatch/);
+  const ledger = JSON.parse(fs.readFileSync(path.join(stateDir, "fixture-change", "run-state.json"), "utf8"));
+  const intent = ledger.intents.find((entry) => entry.key === "local:T-04:1:impl:gongbu:dispatch");
+  assert.ok(intent, `意图必须入账: ${JSON.stringify(ledger.intents)}`);
+  assert.equal(intent.agentId, "01234567-89ab-cdef-0123-456789abcdef", "record 必须登记真实 agentId");
+  assert.ok(intent.resolvedAt, "record 后意图必须已回执（resolvedAt 非空）");
+});
+
+test("SCEN-DISP-08: hotfix aborts before dispatch when the intent is already claimed", (context) => {
+  // 重复意图 = 上一次派发的创建可能已在途；意图护栏必须拦住 hotfix 的旁路重派（F5 前完全失明）。
+  const setup = hotfixFixture(context, { provider: "claude", model: "fixture-claude" });
+  const stateDir = path.join(path.dirname(setup.repo), "ledger");
+  setup.env.PIPELINE_RUN_STATE_DIR = stateDir;
+  const claim = run(process.execPath, [
+    runStatePath, "claim", "fixture-change", "--task", "T-04", "--attempt", "1",
+    "--phase", "impl", "--role", "gongbu",
+  ], setup);
+  assert.equal(claim.status, 0, claim.stderr);
+  const result = run("bash", [hotfixPath, "fixture-change", "T-04", setup.brief, "true"], setup);
+  assert.notEqual(result.status, 0, "重复意图必须中止 hotfix");
+  assert.match(result.stderr, /意图认领失败/);
+  assert.equal(paseoCalls(setup).filter((argv) => argv[0] === "run").length, 0, "被拒绝时不得派发");
 });
 
 test("SCEN-DISP-04: hotfix counts an existing base branch as attempt 1 and branches with -a2", (context) => {

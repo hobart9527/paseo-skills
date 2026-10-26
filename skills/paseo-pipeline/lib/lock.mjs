@@ -29,6 +29,27 @@ function describeHolder(file) {
 }
 
 /**
+ * 仅当锁文件 mtime 与初次观测一致时才删除（陈旧锁清理的换锁防护）。
+ *
+ * @returns {boolean} true=已删除（或文件本就不在，删除目标已达成）；false=锁已被换/不可读，放弃。
+ */
+export function removeIfMtimeUnchanged(file, expectedMtimeMs) {
+  let current;
+  try {
+    current = fs.statSync(file).mtimeMs;
+  } catch {
+    return false; // 读不到就无从比对，不得盲删
+  }
+  if (current !== expectedMtimeMs) return false;
+  try {
+    fs.rmSync(file, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 尝试获取排他锁。
  *
  * @returns {{ok: true, release: () => void, file: string}
@@ -67,13 +88,21 @@ export function acquireLock(dir, name, {
       }
       const holder = describeHolder(file);
       let age = null;
-      try { age = now - fs.statSync(file).mtimeMs; } catch { age = null; }
+      let observedMtime = null;
+      try {
+        observedMtime = fs.statSync(file).mtimeMs;
+        age = now - observedMtime;
+      } catch { age = null; }
       const stale = age !== null && age > staleMs;
       if (!stale || attempt === 1) {
         return { ok: false, reason: 'held', holder: `${holder}${stale ? '（已超时，但清理失败）' : ''}`, file };
       }
-      // 陈旧残留：只在能确认不会被并发争抢时删除（删后立即重试一次 open）。
-      try { fs.rmSync(file, { force: true }); } catch { /* 交由下一轮 open 报告 */ }
+      // 陈旧残留：删除前必须重读 mtime 比对。判定 stale 到 rm 之间有窗口——并发进程可能
+      // 已释放旧锁并重建新锁（同路径、新 mtime）；不比对就 rm 会删掉别人刚持有的锁，
+      // 两个进程都以为自己拿到了排他权。mtime 变了即放弃删除，按 held 返回。
+      if (!removeIfMtimeUnchanged(file, observedMtime)) {
+        return { ok: false, reason: 'held', holder: describeHolder(file), file };
+      }
     }
   }
   return { ok: false, reason: 'held', holder: describeHolder(file), file };

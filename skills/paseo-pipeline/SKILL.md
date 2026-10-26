@@ -47,7 +47,7 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 - 参数源头：`provider`、`settings.modeId`、`settings.thinkingOptionId`、`settings.features` 均取自当前活态 `list_profiles`（其中的 `featureValues→settings.features` 逐字复制）。缺省字段直接省略，禁止编造默认值。
 - 通知约束：`notifyOnFinish: true`（默认启用，不可关闭），通知到达驱动后续流转。
 - 标签体系：必须打齐 `pipeline.change`、`pipeline.task`、`pipeline.attempt`、`pipeline.phase`、`pipeline.role`。这五个标签是 `reconcile` 做归属、cap 计数与 phase 排序的唯一依据，缺一即该 agent 被判 `UNMAPPED`。
-- 标题约束：`title` ≤60 字符，格式为 `[Pipeline] ${role} ${task} ${change}`。
+- 标题约束：`title` ≤60 字符，格式为 `[Pipeline] ${role} ${task} ${change}`。归属匹配是**单向**的：标题尾 token 是 change 的截断前缀才成立归属；反向（token 比 change 长，如 `foo` 撞 `foo-bar`）不成立——长 token 是另一个 change 的完整 slug，互绑会让两个 change 互占 cap。
 - **派发前先认领意图**：每次派发前先 `run-state.mjs claim`（见第 4 节），拿到 agent 后立刻 `record`。这堵住「创建请求已发出、回执尚未返回」窗口里的重复派发。
 - **阶段完成后由编排者打处置标签**：子 agent 走到终态后，编排者核对产出（改了哪些文件、`Verify with` 是否跑通），再 `update_agent` 写 `pipeline.disposition`：
   | 取值 | 语义（`lib/roles.mjs` 的 `DISPOSITION_EFFECT`） | 何时用 |
@@ -61,7 +61,7 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 **Legacy CLI 路径（`dispatch.mjs` / `hotfix.sh`）**：这两个脚本用 `paseo run --no-wait` 派发，**拿不到父子 Agent 完成通知**（该通路的回调从未被验证过）。因此它们的正确用法只有一种：调用方**同步 `paseo wait`** 阻塞等结果，绝不当成「派完就走、靠通知回来」的异步路径。`dispatch.mjs` 不带 `--wait` 时就是异步半成品，只能用于调试。
 
 - `dispatch.mjs`：**Legacy 兜底**。仅在原生 MCP 不可用时调试用，不参与正常流水线。
-- `hotfix.sh`：**L1 小修正式入口**（单任务、`Review: mechanical`、`Risk-surface: none`）。它自己 `paseo wait`，所以不依赖那条未验证的回调。脚本在派发前机械校验 mechanical/Risk-surface，不合立即拒绝；合流 review 标签用真实 tip/base 生成。这两点都是脚本行为，不靠提示词自觉。
+- `hotfix.sh`：**L1 小修正式入口**（单任务、`Review: mechanical`、`Risk-surface: none`）。它自己 `paseo wait`，所以不依赖那条未验证的回调。脚本在派发前机械校验 mechanical/Risk-surface，不合立即拒绝；合流 review 标签用真实 tip/base 生成。意图记账同样强制：派发前 `run-state.mjs claim`、拿到 agent 后 `record`、`paseo run` 失败时 `fail` 作废意图——claim 被拒（重复意图、账本被占用或存在有效编排租约）即中止，**存在有效租约时 hotfix 不带 `--owner` 必然被拒**，这是预期：编排进行中不得走旁路快轨，须等租约到期或由 owner 执行。这几点都是脚本行为，不靠提示词自觉。
 
 ## 2. 执行主路径
 
@@ -94,8 +94,8 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
      - `mechanical`：可客观完整验证且无风险面，允许 `pass(mechanical@tip/base)` 机械审查标签。
    - 声明 `Review: mechanical` 却带风险面会被解析器判 `REVIEW_RISK_CONFLICT` 直接报错。未知风险词同样报错，不得静默按低风险处理。
    - 历史产物里出现过 `Review: required` / `Review: default`，二者不是合法取值，会被判 `UNKNOWN_REVIEW`；迁移时改写为上述三档之一。
-   - `Verify with:` 必须是可执行命令；自然语言描述不算命令。冻结时校验，合流时**逐条先跑**——它是任务契约的一部分，不是注释。
-     判定口径：已知命令名 / 明确的路径或变量调用（`/abs/node`、`./run.sh`、`$NODE`）/ 小写 ASCII 命令名形状；描述通常以中文或大写字母开头。跨模块命令请写全调用（`PYTHONPATH=runtime python3 -m pytest …`）。
+   - `Verify with:` 必须是可执行命令；自然语言描述不算命令（`run`/`use`/`see`/`check`/`verify`/`ensure`/`manually` 等英文高频动词开头的一律按自然语言处理，不放行为命令）。冻结时校验，合流时**逐条先跑**——它是任务契约的一部分，不是注释。
+     判定口径：已知命令名 / 明确的路径或变量调用（`/abs/node`、`./run.sh`、`$NODE`）/ 小写 ASCII 命令名形状（排除上述高频动词）；描述通常以中文或大写字母开头。跨模块命令请写全调用（`PYTHONPATH=runtime python3 -m pytest …`）。
    - `Scenarios:` 列出本任务覆盖的 spec 场景编号（`SCEN-*`），收尾静态对账用。
 3. **业务验收矩阵**（L4-01，冻结的一部分，不可省）：为每条业务旅程/异常场景冻结一行，含
    **旅程或异常场景 → 真实入口/装配点 → 承载任务 → 验证方法 → 环境与数据 → 通过判据 → 责任角色 → 必要外部依赖**。
@@ -117,7 +117,7 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 2. **`TEST_FIRST`**（若 `Review: strict`）：派 `agent_profile_ceshi` 进独立工作区。
    - **爆炸半径扫雷（Blast Radius Sweep）**：写新 Red 测试前，强制 `rg` 全局扫描变更枚举/契约在老测试中的断言引用；发现破坏性断言就在信封输出 `conflicting_tests`，报备 Lead 扩大 `Write scope` 涵盖旧测试同步迁移。
 3. **`IMPLEMENTING`**：派 `agent_profile_gongbu`（普通）或 `agent_profile_gaogong`（复杂）进 `task/<name>/<task>` 工作区。
-   - 提交必须附 `Pipeline-Role: gongbu`（或相应写入角色）与 `Pipeline-Author: <agentId>` trailers。
+   - 提交必须附 `Pipeline-Role: gongbu`（或相应写入角色）与 `Pipeline-Author: <agentId>` trailers；trailer 块必须是最后一个非空段落（块后空行再跟任何一行即整块作废；消息尾部空行本身无害，2026-10-26 探针实测），提交后必跑 `git log -1 --format='%(trailers:key=Pipeline-Author,valueonly)'` 自验非空（模板 `templates/writer.md` 同此要求）。
    - **契约互斥中断协议（Deadlock Protocol）**：确认新 Spec 与既有 Test 存在不可调和冲突时，严禁用底层 hack 欺骗测试；最多尝试 3 次，必须立即抛 `kind: "blocked", reason: "BLOCKED_ON_CONFLICT"` 信封挂起等待裁决，严禁在死胡同内空转。
 4. **`AUDITING`**：派 `agent_profile_anchasi` 独立审计。
    - **第 1 轮全量审计（R1）**：检视完整 diff。**4 类 Blocker 准入**：`SPEC_VIOLATION`、`CORRECTNESS_BUG`、`SECURITY_DEFECT`、`SCOPE_VIOLATION`；非 4 类问题（命名、注释、偏好）标 `NIT:` 并签发 `PASS_WITH_NITS`。
@@ -199,8 +199,6 @@ node skills/paseo-pipeline/run-state.mjs status <change> [--json]
 
 **重试与返工预算**：每任务最多打回 2 轮 + 升级高工 1 次；超出即标 `Blocked`，保留现场报人类裁决，禁止无限自旋。
 
-「升级」不是一句提示词，而是 `reconcile` 的机器可读输出：打回数达到 `MAX_REJECTIONS`（`lib/roles.mjs`，当前 2）时，该任务的 `READY` 条目带 `escalate: true` 与 `role: "gaogong"`，`dispatch` 动作另带 `escalations: [{ task, role, rejections }]`，文本通道输出 `READY    <task>  [升级重派 -> gaogong，已打回 2 次]`。执行器**必须按该角色派发**，否则第 3 次尝试仍是同一模型，「升级」形同虚设。再多一次打回即转 `Blocked`。
-
 ### 信封规范（≤20 行）
 
 统一字段：`task`、`attempt`、`phase`、`result`、`reviewed_sha`、`blockers`、`next_action`。
@@ -250,7 +248,7 @@ node skills/paseo-pipeline/test/check-evidence.mjs --gate all --sha <acceptance-
 ```
 
 - **结构闸门（默认）**：只校验字段齐备、UUID/时间戳合法。**FAIL 报告的合法留档也 exit 0**——失败调查可以完成。
-- **占位值不是采集值**：`PLACEHOLDER`/`TODO`/`LOST`/`NOT_COLLECTED` 一类字样、或全同字符的退化 SHA，与「字段缺失」同等对待，结构闸门即拒绝。采集不到就写「未采集」并说明原因，不要编一个看起来像收据的值。
+- **占位值不是采集值**：`PLACEHOLDER`/`TODO`/`FIXME`/`TBD` 等占位专用词按子串匹配；`LOST`/`UNKNOWN`/`TEST`/`NOT_COLLECTED` 这类通用词按词边界匹配（边界为空白/下划线/字符串边缘），因此真实标识里的子串（如 ULID 片段 `01JAXLOSTFOUND`、路径 `a.test.mjs`）不误伤，而编造收据的分隔形态（`msg_01JAX_LOST_NOTIFICATION`）仍拒绝。全同字符的退化 SHA 同样拒绝。以上与「字段缺失」同等对待，结构闸门即拒绝。采集不到就写「未采集」并说明原因，不要编一个看起来像收据的值。
 - **验收闸门**：只接受约定通过结论，且要求
   - 必须先过结构闸门；**smoke 与 audit 都必须给 `--sha`**——没有 revision 绑定的证据无法证明「当前这份代码」被验证过，smoke 已带 `reviewed_sha` 时还要与之一致；
   - smoke `result: PASS`、`unverified:` 为空、`notification_at >= dispatched_at`；

@@ -124,3 +124,22 @@
 - **为何此前没发现**：`test/reconcile.test.mjs` 的测试替身 `agent()` 人为构造了 `labels` 字段，再用假 `paseo` 脚本回放该 fixture。**替身形状与真实 CLI 输出不同 —— 测试全绿但生产不可用。**
 - **治理**：抽出单一状态适配器 `lib/paseo-state.mjs`（持久 JSON 为主、原生 MCP `list_agents` 为备，字段存在性断言，`runtime` 三态 `ok`/`degraded`/`unavailable`）；`reconcile.mjs` 只消费其规范化结果，业务逻辑里禁止再读 `a.labels`；非 `ok` 一律清空 `canDispatchNow`；测试替身必须源自真实录制样本。
 - **方法论教训（本轮最大收获）**：**任何测试替身都必须源自真实输出，否则全绿等于没测。** 依赖断裂观测平面推出的任何指标（并发度、空等损耗、一次成功率）都是空集推导的结果，全部不可信，须修复观测平面后重新采集。
+
+## 11. 2026-10-26 合流门禁 exit 31 排查与九项加固（实测证据）
+
+- **git trailer 探针（6 组，`git log -1 --format='%(trailers:key=Pipeline-Author,valueonly)'`）**：
+  - 正常块（与正文隔一个空行）→ 解析正常；
+  - 消息**尾部空行** → 无害，解析正常（旧文档暗示有害是错的，已纠正）；
+  - trailer 块后空行 + `Co-Authored-By:` → `Pipeline-Author` 解析为空（整块前面的 trailer 作废）；
+  - trailer 块后空行 + 任意正文行 → 同样作废（exit 31 的真实触发形态）；
+  - 块内空行 → 只有最后一段被解析，前面的 trailer 丢失。
+- **治理（F1-F9，全部有回归测试锁住）**：
+  1. writer 模板写入侧自验：提交后必跑 `%(trailers:key=Pipeline-Author,valueonly)` 自验非空；
+  2. 中文角色词/自由格式标题的尾 token 失配不再冻死派发：任一 slug 形态中段 token（含 `-`/`.`/数字，排除标题动词）且与本 change 无前缀关系，即可证明属于另一个 change；
+  3. `dispatch.mjs` 对 `paseo run` 输出末位做 agentId 形态校验（UUID 或 `agent_*`），不匹配即带原始输出 exit 2，不再静默错绑；
+  4. `slugMatches` 改单向：token 比 change 长不成立归属（`foo` 与 `foo-bar` 不再互绑互占 cap）；
+  5. `hotfix.sh` 接入意图账本（claim/record/fail），有有效编排租约时不带 `--owner` 必被拒；
+  6. 陈旧锁删除前重读 mtime 比对，换锁即放弃删除；
+  7. 证据占位检测的通用词（`LOST`/`UNKNOWN`/`TEST`/`NOT_COLLECTED`）加词边界（空白/下划线/边缘），`.` 与 `/` 不算边界（否则 `a.test.mjs`、`bash test/run-all.sh` 误伤）；
+  8. `Verify with` 第三档排除英文高频动词（run/use/see/check/verify/ensure/manually）；
+  9. `reconcile.mjs` 分支领先判定区分「git 失败」与「不领先」：失败按领先未知进 UNMAPPED 诊断，不静默当 0。

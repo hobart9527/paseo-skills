@@ -96,6 +96,15 @@ try {
   process.exit(2);
 }
 const agentId = out.split(/\s+/).pop();
+// agentId 必须形如 Paseo 真实标识（实测：UUID，或 `agent_` 前缀形态）。
+// 旧实现无校验：CLI 输出形态一旦变化（如多了提示行），最后一个 token 会被静默错绑并写进
+// run-log，对账从此指向一个不存在的 agent。宁可拒绝派发，也不留错绑记录。
+const AGENT_ID_RE = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|agent_[A-Za-z0-9_-]+)$/i;
+if (!AGENT_ID_RE.test(agentId ?? "")) {
+  console.error(`[dispatch] paseo run 输出末位不是合法 agentId: ${JSON.stringify(agentId)}`);
+  console.error(`[dispatch] 完整原始输出: ${JSON.stringify(out)}`);
+  process.exit(2);
+}
 
 const logPath = runLog || path.join("openspec", "changes", change, "run-log.md");
 if (fs.existsSync(path.dirname(logPath))) {
