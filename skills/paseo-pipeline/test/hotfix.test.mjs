@@ -20,7 +20,7 @@ function fixture(context, profile) {
     fs.mkdirSync(directory, { recursive: true });
   }
   fs.writeFileSync(path.join(home, ".paseo", "config.json"), JSON.stringify({
-    daemon: { agentProfiles: [{ id: "agent_profile_qingqibing", ...profile }] },
+    daemon: { agentProfiles: [{ id: "agent_profile_gongbu", ...profile }] },
   }));
   const brief = path.join(repo, "brief.md");
   fs.writeFileSync(brief, "Fix only the assigned fixture task.\n");
@@ -302,7 +302,7 @@ test("hotfix requires test-cmd before dispatching an agent", (context) => {
 
 // --- 派发侧 fail-closed（2026-10-26 走查 §3 未闭合项 4） ---
 
-test("SCEN-DISP-05: hotfix refuses to dispatch when no worker profile resolves", (context) => {
+test("SCEN-CON-13 SCEN-DISP-05: hotfix refuses to dispatch when no worker profile resolves", (context) => {
   // 旧实现把 profile 查找写在 `read -r ... < <(...)` 里：node 抛错（找不到 profile）
   // 只让子 shell 失败，PROVIDER 变成空串，`paseo run --provider ""` 照常发出——
   // 派发出去却没人能完成。这里必须拒绝派发，且不得调用 paseo run。
@@ -317,7 +317,7 @@ test("SCEN-DISP-05: hotfix refuses to dispatch when no worker profile resolves",
     "an unresolvable profile must fail before paseo run");
 });
 
-test("SCEN-DISP-05: hotfix refuses a profile that resolves to an empty provider", (context) => {
+test("SCEN-CON-13 SCEN-DISP-05: hotfix refuses a profile that resolves to an empty provider", (context) => {
   const setup = hotfixFixture(context, { provider: "pi", model: "fixture-pi" });
   fs.writeFileSync(path.join(setup.env.HOME, ".paseo", "config.json"), JSON.stringify({
     daemon: { agentProfiles: [{ id: "agent_profile_gongbu" }] },

@@ -457,3 +457,99 @@ test('isTaskId accepts any <prefix>-<number> id, matching what parseTasks itself
   for (const id of ['T-01', 'TASK-01', 'BUG-3', 'scen-12']) assert.equal(isTaskId(id), true, id);
   for (const id of ['T01', 'T-', '-1', 'T-01x', '', null, undefined, 7]) assert.equal(isTaskId(id), false, String(id));
 });
+
+// --- Done 行 review 语法、未知字段、注释不参与解析（2026-10-27 包 4） ---
+
+test('SCEN-CON-02 a Done line whose review value is not a merge-task tag is rejected', () => {
+  // `pipeline-gate-slimming` 归档时 19 条 Done 行全是 `review=main-session`：手写记账
+  // 冒充合流收据。语法合法不证明审查发生过，但语法非法一定不是 merge-task 写的。
+  for (const review of ['main-session', 'mechanical', 'pass(mechanical)', 'pass(tag)', 'pass(1234@a1b2c3d/7654321)']) {
+    const result = parseTasks(taskMarkdown({ done: true, doneLine: `source=a1b2c3d review=${review}` }));
+    assertError(result, 'BAD_DONE_LINE');
+  }
+  // 两个合法形态都必须继续通过。
+  for (const review of ['pass(12345678@a1b2c3d/7654321)', 'pass(mechanical@a1b2c3d/7654321)',
+    'pass(12345678-90ab-cdef-1234-567890abcdef@a1b2c3d/7654321)']) {
+    const result = parseTasks(taskMarkdown({ done: true, doneLine: `source=a1b2c3d review=${review}` }));
+    assert.deepEqual(result.errors, [], review);
+  }
+});
+
+test('SCEN-CON-03 an unknown metadata field is reported instead of silently ignored', () => {
+  // 拼错的 `Verfy with:` 过去被静默丢弃：冻结时看着有验证命令，合流时那一条凭空消失。
+  const result = parseTasks(`- [ ] 1.1 T-01 Unknown field
+  - Depends on: none
+  - Write scope: src/
+  - Verfy with: \`node --test src/a.test.mjs\`
+`);
+  assertError(result, 'UNKNOWN_FIELD');
+  const error = result.errors.find((entry) => entry.code === 'UNKNOWN_FIELD');
+  assert.equal(error.task, 'T-01');
+  assert.match(error.message, /Verfy with/);
+  // 任务本身仍被解析出来：未知字段是 task 级错误，不该抹掉图。
+  assert.deepEqual(result.tasks.map((task) => task.id), ['T-01']);
+});
+
+test('SCEN-CON-03 UNKNOWN_FIELD is a task-level error and stays out of the graph axis', () => {
+  const result = parseTasks([
+    taskMarkdown({ id: 'T-01' }),
+    `- [ ] 1.2 T-02 has a typo
+  - Depends on: T-01
+  - Write scope: src/
+  - Scenaro: SCEN-A-01`,
+    taskMarkdown({ id: 'T-03', num: '1.3' }),
+  ].join('\n\n'));
+  const unknown = result.errors.filter((entry) => entry.code === 'UNKNOWN_FIELD');
+  assert.equal(unknown.length, 1);
+  assert.equal(unknown[0].task, 'T-02');
+  assert.deepEqual(result.tasks.map((task) => task.id), ['T-01', 'T-02', 'T-03']);
+});
+
+test('SCEN-CON-03 HTML comments do not participate in parsing', () => {
+  // 模板与真实 tasks.md 都用注释写字段规则，注释里的 `- Foo: bar` 不该被当成字段。
+  const result = parseTasks(`<!--
+  - Review: mechanical
+  - Done: source=a1b2c3d review=pass(tag)
+-->
+
+- [ ] 1.1 T-01 Commented rules
+  - Depends on: none
+  - Write scope: src/
+  - Review: strict
+`);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.tasks.length, 1);
+  assert.equal(result.tasks[0].review, 'strict', '注释里的 Review 不得覆盖真实值');
+});
+
+// --- Verify with 的 Markdown 包裹必须剥掉再交给 shell ---
+// 实测（本 change 自己的 pod 合流）：tasks.md 里写 `` `node --test x.mjs` ``，
+// 解析器判定为可执行并把**原文**交给 /bin/sh -c。反引号在 shell 里是命令替换，
+// 整行先跑一遍测试，再把测试输出（`✔ ...`）当命令执行 → `/bin/sh: ✔: command not found`，
+// 合流 exit 20。判定对了、执行错了，等于白跑。
+test('SCEN-CON-03 Verify with strips the Markdown wrapper before handing the command to a shell', () => {
+  const { tasks } = parseTasks(`- [ ] 1.1 T-01 Backticked
+  - Depends on: none
+  - Write scope: src/a.mjs
+  - Verify with: \`node --test src/a.test.mjs\`
+
+- [ ] 1.2 T-02 Double-quoted
+  - Depends on: none
+  - Write scope: src/b.mjs
+  - Verify with: "node --test src/b.test.mjs"
+`);
+  assert.equal(tasks[0].verify.command, 'node --test src/a.test.mjs');
+  assert.equal(tasks[1].verify.command, 'node --test src/b.test.mjs');
+  // raw 保留原文：文档读者看到的仍是他们写下的内容。
+  assert.match(tasks[0].verify.raw, /^`node/);
+});
+
+test('SCEN-CON-03 Verify with keeps inner quotes that carry shell meaning', () => {
+  // 只有包裹整行的一对定界符被剥；`node -e "..."` 的内部引号是命令语义，剥掉就破了。
+  const { tasks } = parseTasks(`- [ ] 1.1 T-01 Inner
+  - Depends on: none
+  - Write scope: src/a.mjs
+  - Verify with: \`node -e "process.exit(0)"\`
+`);
+  assert.equal(tasks[0].verify.command, 'node -e "process.exit(0)"');
+});

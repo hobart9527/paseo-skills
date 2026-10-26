@@ -11,9 +11,13 @@
 //
 // 用法:
 //   node check-evidence.mjs [--kind smoke|audit] [--gate structure|acceptance|all]
-//                            [--sha <expected-40-or-7>] [--require-scenario SCEN-1,SCEN-2] <file>
+//                            [--sha <expected-40-or-7>] [--matrix <acceptance.md>]
+//                            [--require-scenario SCEN-1,SCEN-2] <file>
 //   --gate 默认 structure（留档用）；收尾验收必须显式 --gate acceptance。
+//   --matrix 从冻结的验收矩阵读必需场景：调用者只能追加（--require-scenario），不能减少。
 import fs from 'node:fs';
+import { findAgentRecord } from '../lib/paseo-state.mjs';
+import { NOT_COLLECTED_BLOCKING_FIELDS, SMOKE_REQUIRED_FIELDS, isContractField, COMMAND_FIELD_RE } from '../lib/evidence-contract.mjs';
 
 const PASSING_VERDICTS = new Set(['pass', 'pass_with_nits', 'passed']);
 const FAILING_VERDICTS = new Set(['fail', 'failed', 'blocked', 'skipped', 'unknown', 'inconclusive']);
@@ -24,6 +28,7 @@ let gate = 'structure';
 let expectedSha = null;
 const requiredScenarios = [];
 let filePath = null;
+let matrixPath = null;
 
 for (let i = 0; i < args.length; i += 1) {
   const arg = args[i];
@@ -33,6 +38,8 @@ for (let i = 0; i < args.length; i += 1) {
     gate = args[++i];
   } else if (arg === '--sha') {
     expectedSha = args[++i] ?? null;
+  } else if (arg === '--matrix') {
+    matrixPath = args[++i] ?? null;
   } else if (arg === '--require-scenario') {
     // 逗号或空白分隔；可重复给出。
     for (const token of (args[++i] ?? '').split(/[,\s]+/).filter(Boolean)) requiredScenarios.push(token);
@@ -43,7 +50,7 @@ for (let i = 0; i < args.length; i += 1) {
 
 if (!filePath) {
   console.error('Usage: node check-evidence.mjs [--kind smoke|audit] [--gate structure|acceptance|all]'
-    + ' [--sha <sha>] [--require-scenario SCEN-1,SCEN-2] <file>');
+    + ' [--sha <sha>] [--matrix <acceptance.md>] [--require-scenario SCEN-1,SCEN-2] <file>');
   process.exit(1);
 }
 if (!['structure', 'acceptance', 'all'].includes(gate)) {
@@ -102,7 +109,6 @@ const PLACEHOLDER_RE = new RegExp(
 // 这比逐词加豁免更窄：子串形态的命令永远合法，编造的整值占位仍然拦得住。
 const BARE_PLACEHOLDER_RE = new RegExp(
   `^(?:<[^>]*>|PLACEHOLDER|TODO|FIXME|TBD|CHANGEME|DUMMY|SAMPLE|EXAMPLE|LOST|UNKNOWN|NOT[_-]?COLLECTED)$`, 'i');
-const COMMAND_FIELD_RE = /(?:^|_)(?:command|cmd)$/i;
 const ALL_SAME_CHAR_RE = /^([0-9a-f])\1{7,}$/i;
 
 function placeholderFields() {
@@ -112,6 +118,8 @@ function placeholderFields() {
     const match = line.match(/^\s*([A-Za-z_][\w.-]*):\s*(\S.*)$/);
     if (!match) continue;
     const [, name, rawValue] = match;
+    // 只判闸门自己拥有的字段：`notes:` 之类的人话不是采集值，它的措辞不该决定收据存亡。
+    if (!isContractField(name)) continue;
     const value = rawValue.trim();
     // 命令型字段（acceptance_command / verify_command / …）走整值判据，不走子串。
     const isPlaceholder = COMMAND_FIELD_RE.test(name)
@@ -127,6 +135,19 @@ function placeholderFields() {
 }
 
 // --- 结构闸门 ---
+// 字段清单来自 lib/evidence-contract.mjs（模板与 docs 测试共用同一份），
+// 这里只提供每个字段的判据。新增字段必须同时改那份清单——漏改会让模板与闸门漂移。
+const SMOKE_VALIDATORS = {
+  parent_agent_id: () => UUID_FIELD.test(content) && UUID_RE.test(field('parent_agent_id') ?? ''),
+  child_agent_id: () => UUID_RE.test(field('child_agent_id') ?? ''),
+  notification_message_id: () => /\S/.test(field('notification_message_id') ?? ''),
+  dispatched_at: () => ISO_RE.test(field('dispatched_at') ?? ''),
+  notification_at: () => ISO_RE.test(field('notification_at') ?? ''),
+  result: () => /^(PASS|FAIL)$/i.test((field('result') ?? '').trim()) && /\b(PASS|FAIL)\b/i.test(content),
+  relay_case: () => /\S/.test(field('relay_case') ?? ''),
+  unverified: () => /(?:^|\n)\s*unverified:\s*/i.test(content),
+};
+
 function structureErrors() {
   const missing = [];
   if (kind === 'audit') {
@@ -135,21 +156,25 @@ function structureErrors() {
     missing.push(...placeholderFields());
     return missing;
   }
-  const parentMatch = content.match(/(?:^|\n)\s*parent_agent_id:\s*(\S+)/i);
-  if (!parentMatch || !UUID_RE.test(parentMatch[1])) missing.push('parent_agent_id (valid UUID required)');
-  const childMatch = content.match(/(?:^|\n)\s*child_agent_id:\s*(\S+)/i);
-  if (!childMatch || !UUID_RE.test(childMatch[1])) missing.push('child_agent_id (valid UUID required)');
-  if (!/(?:^|\n)\s*notification_message_id:\s*(\S+)/i.test(content)) missing.push('notification_message_id');
-  const dispatched = field('dispatched_at');
-  if (!dispatched || !ISO_RE.test(dispatched)) missing.push('dispatched_at (valid ISO timestamp required)');
-  const notify = field('notification_at');
-  if (!notify || !ISO_RE.test(notify)) missing.push('notification_at (valid ISO timestamp required)');
-  if (!/(?:^|\n)\s*result:\s*(PASS|FAIL)\b/i.test(content)) missing.push('result (PASS|FAIL required)');
-  if (!/(?:^|\n)\s*relay_case:\s*(\S+)/i.test(content)) missing.push('relay_case');
-  if (!/(?:^|\n)\s*unverified:\s*/i.test(content)) missing.push('unverified: list');
+  for (const name of SMOKE_REQUIRED_FIELDS) {
+    const validate = SMOKE_VALIDATORS[name];
+    // 清单里列了字段却没有判据 = 契约与校验漂移，必须当场暴露而不是静默跳过。
+    if (!validate) throw new Error(`evidence-contract 列了 ${name}，但 structureErrors 没有它的判据`);
+    if (!validate()) missing.push(`${name}${SMOKE_FIELD_HINTS[name] ? ` (${SMOKE_FIELD_HINTS[name]})` : ''}`);
+  }
   missing.push(...placeholderFields());
   return missing;
 }
+
+const UUID_FIELD = /(?:^|\n)\s*parent_agent_id:\s*(\S+)/i;
+const SMOKE_FIELD_HINTS = {
+  parent_agent_id: 'valid UUID required',
+  child_agent_id: 'valid UUID required',
+  dispatched_at: 'valid ISO timestamp required',
+  notification_at: 'valid ISO timestamp required',
+  result: 'PASS|FAIL required',
+  unverified: 'list',
+};
 
 /**
  * 必需场景的结论。
@@ -174,6 +199,41 @@ function scenarioResults() {
   return results;
 }
 
+// --- 冻结的业务验收矩阵 ---
+//
+// 必需场景清单过去由调用者用 `--require-scenario` 现场给：漏传就等于没验，而漏传不会
+// 产生任何报错。这里改为从冻结的 acceptance.md 读 Required=yes 的行，`--require-scenario`
+// 只能**追加**（与 merge-task 对冻结 Verify 的口径一致：调用者只能收紧，不能放宽）。
+function matrixRequiredScenarios(matrixFile) {
+  const text = fs.readFileSync(matrixFile, 'utf8');
+  const lines = text.split(/\r?\n/);
+  const headerIndex = lines.findIndex((line) => /^\s*\|/.test(line) && /\bScenario\b/i.test(line));
+  if (headerIndex === -1) {
+    throw new Error(`${matrixFile} 没有可解析的表格（表头须含 Scenario 列）`);
+  }
+  const header = lines[headerIndex].trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+  const scenCol = header.indexOf('Scenario');
+  const reqCol = header.indexOf('Required');
+  const resCol = header.indexOf('Result');
+  if (scenCol === -1 || reqCol === -1) {
+    throw new Error(`${matrixFile} 表格缺 Scenario 或 Required 列`);
+  }
+  const required = [];
+  const notPassed = [];
+  for (const line of lines.slice(headerIndex + 1)) {
+    if (!/^\s*\|/.test(line)) continue;
+    const cells = line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+    if (cells.every((c) => /^:?-{2,}:?$/.test(c))) continue;
+    if ((cells[reqCol] ?? '').toLowerCase() !== 'yes') continue;
+    const scen = (cells[scenCol] ?? '').match(/SCEN-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/i)?.[0];
+    if (!scen) continue;
+    required.push(scen);
+    const result = (cells[resCol] ?? '').toUpperCase();
+    if (result !== 'PASS') notPassed.push(`${scen}=${result || '(空)'}`);
+  }
+  return { required, notPassed };
+}
+
 // --- 验收闸门 ---
 // 只认约定的通过结论；未知结论不得当成通过。FAIL/BLOCKED/SKIPPED/未验证项之一即拒绝。
 function acceptanceErrors() {
@@ -183,6 +243,72 @@ function acceptanceErrors() {
   // 连 child_agent_id、relay_case 都没有，却当成收据通过验收）。
   for (const missing of structureErrors()) problems.push(`结构不合格（缺 ${missing}）`);
   const sha = field('reviewed_sha');
+
+  // 冻结的验收矩阵是必需场景的权威来源。
+  const required = [...requiredScenarios];
+  if (matrixPath !== null) {
+    try {
+      const matrix = matrixRequiredScenarios(matrixPath);
+      for (const scenario of matrix.required) {
+        if (!required.some((entry) => entry.toUpperCase() === scenario.toUpperCase())) required.push(scenario);
+      }
+      // 矩阵自己就是「算不算交付」的定义：Required 行没通过，收尾不得宣布验收完成。
+      if (matrix.notPassed.length > 0) {
+        problems.push(`验收矩阵里 Required 行未通过：${matrix.notPassed.join(', ')}；`
+          + '须在收尾实测后回填 PASS（外部依赖接不通标 BLOCKED 并说明原因）');
+      }
+    } catch (error) {
+      problems.push(error.message);
+    }
+  }
+
+  // 证据必须能对上一个真实创建过的 agent，且时间线自洽。
+  // 旧实现只校验 child_agent_id 是格式合法的 UUID：native-closure 的 smoke 写了一个
+  // 不存在的 UUID（前 8 位与真实 agent 相同），dispatched_at 还早于真实 createdAt 十分钟，
+  // 两道闸门都放行。「收据里有 UUID」与「这个 agent 真的被创建过」是两件事。
+  const childId = (field('child_agent_id') ?? '').trim();
+  if (kind === 'smoke' && childId !== '' && !PLACEHOLDER_RE.test(childId)) {
+    if (process.env.PIPELINE_SKIP_PASEO_LOOKUP === '1') {
+      // 显式豁免：Paseo 目录不在本机（CI 或另一台机器）时无法核对，必须显式声明。
+      problems.push('PIPELINE_SKIP_PASEO_LOOKUP=1 跳过了 child_agent_id 真实性核对；'
+        + '该证据只能作为结构留档，不能作为本机验收收据');
+    } else {
+      const record = findAgentRecord(childId);
+      if (record === null) {
+        problems.push(`child_agent_id ${childId} 在 Paseo 持久记录中不存在：`
+          + '这不是一次真实派发的收据（读不到记录一律视为不可信，不做「无记录即通过」）');
+      } else {
+        const created = record.createdAt ? Date.parse(record.createdAt) : NaN;
+        const dispatched = field('dispatched_at');
+        const notify = field('notification_at');
+        if (!Number.isFinite(created)) {
+          problems.push(`agent ${childId} 的持久记录没有 createdAt，无法核对时间线`);
+        } else {
+          if (ISO_RE.test(dispatched ?? '') && Date.parse(dispatched) < created) {
+            problems.push(`dispatched_at ${dispatched} 早于该 agent 的真实创建时间 ${record.createdAt}：收据时间线不成立`);
+          }
+          if (ISO_RE.test(notify ?? '') && Date.parse(notify) < created) {
+            problems.push(`notification_at ${notify} 早于该 agent 的真实创建时间 ${record.createdAt}: 收据时间线不成立`);
+          }
+        }
+      }
+    }
+  }
+
+  // 「未采集」是合法的留档值，但不是可验收值。
+  //
+  // 采集不到时如实写「未采集」是对的（不许编造），structure 闸门必须放行——否则人只
+  // 有一个选择：编一个值。但把这些字段当验收证据同样不成立：验收要的是「这份收据证明
+  // 了某件真事」，而「未采集」证明的是没采到。实测：`notification_message_id: 未采集`
+  // 与 `relay_case: 未采集` 的文件两道闸门都 rc=0。
+  if (kind === 'smoke') {
+    for (const name of NOT_COLLECTED_BLOCKING_FIELDS) {
+      const value = (field(name) ?? '').trim();
+      if (value === '未采集' || /^未采集[（(，,。.\s]/.test(value)) {
+        problems.push(`${name} 是「未采集」：可以作为留档，不能作为验收收据；采到真实值后再验收`);
+      }
+    }
+  }
 
   // 验收必须绑定 revision：没有 `--sha` 就无法证明这份证据对应的是当前集成分支。
   // 该要求对 smoke 与 audit 同等适用。旧实现只对 audit 要求 --sha，于是冒烟证据可以
@@ -231,7 +357,7 @@ function acceptanceErrors() {
     }
   }
 
-  for (const scenario of requiredScenarios) {
+  for (const scenario of required) {
     // 按 token 边界匹配，不用裸子串：`SCEN-1` 会命中 `SCEN-10`，
     // 于是拿一条无关场景的证据就能满足必需项（实测验证过）。
     const boundary = new RegExp(`(?<![A-Za-z0-9-])${escapeRegExp(scenario)}(?![A-Za-z0-9-])`, 'i');

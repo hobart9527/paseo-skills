@@ -209,7 +209,7 @@ test('SCEN-DOC-11: 派发指令取自活态 profile，不硬编码模型名', ()
 // `UNRESOLVED` 锁死一轮。模板漏掉一个字段 = 每个 change 重犯一次同样的摩擦，
 // 所以这里有断言，而不只是「文档里提了一句 templates/」。
 const templateDir = path.join(skillDir, 'templates');
-const TEMPLATES = ['writer', 'tester', 'auditor', 'lead'];
+const TEMPLATES = ['writer', 'tester', 'auditor', 'arbiter', 'lead'];
 
 function template(name) {
   const file = path.join(templateDir, `${name}.md`);
@@ -217,7 +217,7 @@ function template(name) {
   return fs.readFileSync(file, 'utf8');
 }
 
-test('SCEN-DOC-13: 四份 brief 模板齐备且被 SKILL 引用', () => {
+test('SCEN-DOC-13: 五份 brief 模板齐备且被 SKILL 引用', () => {
   for (const name of TEMPLATES) template(name);
   // SKILL 必须指向模板目录，否则模板存在也不会被用上。
   assert.match(skillText, /`?templates\/`?/, 'SKILL.md 必须指向 templates/');
@@ -234,6 +234,7 @@ test('SCEN-DOC-14: 每份模板都锁定必填字段，缺一个就红', () => {
     writer: [/目标/, /base SHA/, /Write scope/, /Verify/, /Pipeline-Author/, /信封/, /next_action/],
     tester: [/base SHA/, /Write scope/, /Verify/, /Pipeline-Author/, /信封/, /conflicting_tests/],
     auditor: [/base SHA/, /tip SHA/, /verdict/, /reviewed_sha/, /closing_criteria/, /信封/],
+    arbiter: [/base SHA/, /tip SHA/, /decision/, /reviewed_sha/, /ESCALATE_HUMAN/, /信封/, /next_action/],
     lead: [/paseo wait/, /status/, /reconcile\.mjs/, /merge-task\.mjs/, /信封/, /wall_clock/],
   };
   for (const [name, patterns] of Object.entries(REQUIRED)) {
@@ -314,4 +315,64 @@ test('SCEN-DOC-20: Lead 模板列出分叉核对命令，并要求 brief 事实�
   assert.match(text, /冻结时[\s\S]{0,80}确认点 2/, '分叉核对必须出现在冻结与合流两处');
   // 编排者口述数字不是真源：18 行 vs 实有 19 行导致错误 brief 白烧一轮。
   assert.match(text, /brief 里的事实必须由命令输出生成/);
+});
+
+// --- 契约三环：模板 / 闸门 / 文档必须指向同一份定义（2026-10-27 包 5） ---
+//
+// 三环中缺任何一环，缺陷都要顺流到下游才暴露：只有模板没有闸门 → 写错也没人拦；
+// 只有闸门没有模板 → 写的人靠猜；两者都有但没有测试 → 静默漂移。
+
+test('SCEN-CON-06 SCEN-DOC-21: 证据模板的字段集等于 evidence-contract 导出的必填集', async () => {
+  const contract = await import('../lib/evidence-contract.mjs');
+  const fieldNames = (markdown) => new Set(
+    [...markdown.matchAll(/^([a-z][a-z0-9_]*):/gm)].map((match) => match[1]),
+  );
+  for (const [name, required] of [
+    ['evidence-smoke', contract.SMOKE_REQUIRED_FIELDS],
+    ['evidence-audit', contract.AUDIT_REQUIRED_FIELDS],
+  ]) {
+    const declared = fieldNames(template(name));
+    for (const field of required) {
+      assert.ok(declared.has(field), `templates/${name}.md 缺契约字段 ${field}`);
+    }
+  }
+  // 反向：模板里出现的每个顶层字段都必须在契约里，否则模板在教人写闸门不读的字段。
+  const smokeDeclared = fieldNames(template('evidence-smoke'));
+  const known = new Set([...contract.SMOKE_REQUIRED_FIELDS, ...contract.ACCEPTANCE_REQUIRED_FIELDS,
+    contract.SCENARIO_RESULTS_FIELD]);
+  for (const field of smokeDeclared) {
+    assert.ok(known.has(field), `templates/evidence-smoke.md 含契约外的字段 ${field}`);
+  }
+});
+
+test('SCEN-CON-06 SCEN-DOC-22: 证据模板含有闸门读取的各段落锚点', () => {
+  // 模板里的占位尖括号会让闸门的占位值判据正确地报错，所以这里不假装「跑一遍闸门」；
+  // 真实的通过路径由 check-evidence.test.mjs 的 PASSING_SMOKE 夹具证明。这一条只查
+  // 「闸门读的那几个段落锚点在模板里存在」——缺一个，照模板写的人就写不出可验收的证据。
+  const smoke = template('evidence-smoke');
+  const audit = template('evidence-audit');
+  assert.match(smoke, /^parent_agent_id:/m);
+  assert.match(smoke, /^unverified:\s*$/m);
+  assert.match(smoke, /^scenario_results:/m);
+  assert.match(audit, /^verdict:/m);
+  assert.match(audit, /^reviewed_sha:/m);
+});
+
+test('SCEN-CON-12 SCEN-DOC-23: SKILL 的 run-state 命令示例照抄即可执行（不带 --owner 在租约下必被拒）', () => {
+  // 文档示例与实际行为脱节是实测过的教训：SKILL 曾把 claim 示例写成不带 --owner，
+  // 而 begin 之后所有动作都要求 --owner，照抄必然 exit 2——读文档的人会以为命令写错了。
+  const text = section('运行账本');
+  const block = text.slice(text.indexOf('```bash') + 7, text.indexOf('```', text.indexOf('```bash') + 7));
+  const lines = block.split('\n').map((line) => line.trim()).filter((line) => line.startsWith('node '));
+  assert.ok(lines.length >= 5, '运行账本节必须列出 begin/claim/record/fail/status 五条命令');
+  for (const line of lines) {
+    if (!/run-state\.mjs\s+(claim|record|fail)\b/.test(line)) continue;
+    assert.match(line, /--owner/, `租约下的动作必须带 --owner：${line}`);
+  }
+  // 示例里出现的每一个 run-state 子命令都必须是脚本真正支持的命令。
+  const script = fs.readFileSync(path.join(skillDir, 'run-state.mjs'), 'utf8');
+  for (const match of text.matchAll(/run-state\.mjs\s+(\w+)/g)) {
+    assert.match(script, new RegExp(`case '${match[1]}'`), `SKILL 写了不存在的子命令：${match[1]}`);
+  }
+  assert.match(text, /有租约时 `--owner` 必填/, '省略 --owner 的后果必须写明');
 });

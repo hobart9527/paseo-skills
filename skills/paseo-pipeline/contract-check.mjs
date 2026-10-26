@@ -8,7 +8,7 @@
 // 判定前先剥注释：注释里出现的字面量既不算断言，也不算覆盖。
 import fs from "node:fs";
 import path from "node:path";
-import { parseTasks } from "./lib/tasks.mjs";
+import { parseTasks, identityErrors } from "./lib/tasks.mjs";
 
 const CODE_EXT = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]);
 const DOC_EXT = new Set([".md", ".markdown"]);
@@ -88,8 +88,9 @@ const extractTestsFromTasks = (tasksContent, targetTask) => {
   // 账本完整性类错误（BAD_DONE_LINE / MISSING_SCOPE / UNKNOWN_REVIEW / 风险与 Review 冲突、
   // 依赖缺失或成环）由 reconcile 与 merge-task 负责，不在这里重复判，否则同一份 tasks.md
   // 会在文档抽取阶段被合流门禁的规则误拒。
-  const FATAL_HERE = new Set(["MALFORMED_LINE", "DUPLICATE_ID"]);
-  const fatal = errors.filter((error) => FATAL_HERE.has(error.code));
+  // 判定由 lib/tasks.mjs 的 IDENTITY_CODES 拥有：这里不再自带集合，否则同一组码的
+  // 严重度会在四个入口各自漂移（reconcile / contract-check / merge-task / hotfix）。
+  const fatal = identityErrors(errors);
   if (fatal.length > 0) {
     console.error(`tasks 解析失败: ${fatal.map((error) => `${error.code}: ${error.message}`).join("; ")}`);
     process.exit(1);
@@ -115,13 +116,16 @@ const extractTestsFromTasks = (tasksContent, targetTask) => {
 
 const argv = process.argv.slice(2);
 const PARTIAL = argv.includes("--partial");
+// `--final` 是收尾模式：此刻本 change 的所有测试都该已产出，「一条都没有」不再是
+// 「阶段 1 的正常状态」，而是缺件。默认模式保留 SKIPPED 是为了规划期能跑同一命令。
+const FINAL = argv.includes("--final");
 let tasksFile = null;
 let targetTask = null;
 const positional = [];
 
 for (let i = 0; i < argv.length; i++) {
   const arg = argv[i];
-  if (arg === "--partial") continue;
+  if (arg === "--partial" || arg === "--final") continue;
   if (arg === "--tasks") {
     tasksFile = argv[++i];
   } else if (arg.startsWith("--tasks=")) {
@@ -152,8 +156,9 @@ if (tasksFile) {
 }
 
 if (!specPath || testArgs.length === 0) {
-  console.error("usage: contract-check.mjs <spec> <testPath...>");
-  console.error("   or: contract-check.mjs <spec> --tasks <tasks.md> [--task <id>] [--partial]");
+  console.error("usage: contract-check.mjs <spec> <testPath...> [--final]");
+  console.error("   or: contract-check.mjs <spec> --tasks <tasks.md> [--task <id>] [--partial] [--final]");
+  console.error("  --final  收尾模式：测试路径一条都没产出时 exit 1，不再 SKIPPED 放行。");
   console.error("  传入本 change 在 tasks.md Write scope / Verify with 里声明的测试路径（文件或目录）。");
   console.error("  不要传整个 test/ 目录：增量仓库里历史测试会把门禁打成 undeclared 全红。");
   process.exit(2);
@@ -175,6 +180,14 @@ for (const arg of testArgs) {
   else existing.push(...files);
 }
 if (existing.length === 0) {
+  if (FINAL) {
+    // 收尾时「一条测试都没有」不可能是正常状态：走这条分支等于整轮契约对账被静默跳过，
+    // 收尾报告里却会写着「跑过 contract-check」。这就是 `--final` 存在的唯一理由。
+    console.error(`收尾模式：声明的测试路径一条都没有产出（${missing.length} 条缺失），`
+      + "此时不存在「Tester 尚未上场」的解释：");
+    for (const m of missing) console.error(`  - ${m}`);
+    process.exit(1);
+  }
   console.log(`SKIPPED: 声明的测试路径均尚未产出（阶段 1 正常状态，Tester 未上场）；共 ${missing.length} 条待产出：`);
   for (const m of missing) console.log(`  - ${m}`);
   process.exit(0);

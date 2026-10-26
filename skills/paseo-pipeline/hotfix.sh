@@ -30,10 +30,16 @@ node --input-type=module -e '
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 const [skillDir, file, taskId] = process.argv.slice(1);
-const { parseTasks } = await import(pathToFileURL(`${skillDir}/lib/tasks.mjs`).href);
+const { parseTasks, graphErrors, taskErrorsFor } = await import(pathToFileURL(`${skillDir}/lib/tasks.mjs`).href);
 const { tasks, errors } = parseTasks(fs.readFileSync(file, "utf8"));
-const fatal = errors.filter((e) => e.code !== "MISSING_SCOPE");
-if (fatal.length) { console.error(`[hotfix] tasks 解析失败: ${fatal.map((e) => `${e.code}: ${e.message}`).join("; ")}`); process.exit(1); }
+// 严重度归属由 lib/tasks.mjs 单点定义：graph 类错误让整份文件不可信，
+// 另外本任务自身的 task 级错误也必须拦（快轨只允一个任务，别的任务的问题与它无关）。
+// 旧实现硬写 `code !== "MISSING_SCOPE"` 单独放过一种错误，没有理由也没有记录。
+const fatal = [...graphErrors(errors), ...taskErrorsFor(errors, taskId)];
+if (fatal.length) {
+  console.error(`[hotfix] tasks 解析失败: ${fatal.map((e) => `${e.code}: ${e.message}`).join("; ")}`);
+  process.exit(1);
+}
 const task = tasks.find((t) => t.id === taskId);
 if (!task) { console.error(`[hotfix] tasks.md 中没有 ${taskId}`); process.exit(1); }
 if (task.review !== "mechanical") {
@@ -66,19 +72,21 @@ TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
 { cat "$BRIEF"; printf '\n\nConstraints: 基点为集成分支 %s@%s；只改 brief 列出的文件；完成后提交并保持工作区干净。\n' "$BASE" "$BASE_SHA"; } > "$TMP"
 
 TITLE="[Pipeline] Runner hotfix ${TID} ${CHANGE}"; TITLE="${TITLE:0:60}"
-# 角色参数取自 dispatch.mjs 的 profile 解析，保证与 list_profiles 一致
+# 角色参数取自 ~/.paseo/config.json 的 agent profile，保证与 list_profiles 一致
 # mode/thinking 缺省不发明默认值：读不到即输出 none 并省略对应参数；pi provider 不支持 --mode，一律省略。
 # profile 解析必须 fail-closed：找不到时旧的 `p.provider` 抛错被 `< <(...)` 吞掉，
 # PROVIDER 变成空串，`paseo run --provider ""` 照常发出——派发出去却没人能完成。
 # 这里显式校验非空与非 none，读不到就拒绝派发，绝不发空 provider。
+# 只认 gongbu：`agent_profile_qingqibing` 不是一个角色来源，只是历史标签的遗留名，
+# 用它做兜底会让「profile 没配好」静默降级成「换了个写手角色」。
 PROFILE_LINE="$(node -e '
 const fs=require("node:fs");
 const file=process.env.HOME+"/.paseo/config.json";
 if(!fs.existsSync(file)){console.error("[hotfix] 找不到 "+file);process.exit(1);}
 const c=JSON.parse(fs.readFileSync(file,"utf8"));
 const profiles=c?.daemon?.agentProfiles ?? [];
-const p=profiles.find(x=>x.id==="agent_profile_gongbu") || profiles.find(x=>x.id==="agent_profile_qingqibing");
-if(!p){console.error("[hotfix] config.json 中既无 agent_profile_gongbu 也无 agent_profile_qingqibing");process.exit(1);}
+const p=profiles.find(x=>x.id==="agent_profile_gongbu");
+if(!p){console.error("[hotfix] config.json 中无 agent_profile_gongbu");process.exit(1);}
 if(!p.provider||!p.model){console.error("[hotfix] profile "+p.id+" 缺 provider/model");process.exit(1);}
 console.log(`${p.provider}/${p.model} ${p.modeId||"none"} ${p.thinkingOptionId||"none"}`)')" || exit 1
 read -r PROVIDER MODE THINK <<< "$PROFILE_LINE"

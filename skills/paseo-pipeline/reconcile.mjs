@@ -20,7 +20,7 @@
 // fail closed：canDispatchNow 清空。runtime != ok → canDispatchNow 恒空。
 import fs from "node:fs";
 import path from "node:path";
-import { parseTasks, normalizeScope, isTaskId } from "./lib/tasks.mjs";
+import { parseTasks, normalizeScope, isTaskId, graphErrors } from "./lib/tasks.mjs";
 import { verifyDone } from "./lib/ledger.mjs";
 import { readPaseoState, selectChange, hasPipelineMarker } from "./lib/paseo-state.mjs";
 import {
@@ -78,8 +78,8 @@ if (!fs.existsSync(tasksFile)) {
   fatal(`[reconcile] 找不到 ${tasksFile}（请在集成 workspace 根目录运行）`);
 }
 const { tasks, errors } = parseTasks(fs.readFileSync(tasksFile, "utf8"));
-const FATAL_CODES = new Set(["MALFORMED_LINE", "DUPLICATE_ID", "UNKNOWN_DEP", "SELF_DEP", "CYCLE"]);
-const fatalErrors = errors.filter((e) => FATAL_CODES.has(e.code));
+// 严重度归属由 lib/tasks.mjs 的 ERROR_SCOPE 单点定义（graph 让整份文件不可信）。
+const fatalErrors = graphErrors(errors);
 if (fatalErrors.length) {
   fatal(`[reconcile] INVALID 任务图：\n${fatalErrors.map((e) => `  ${e.code}: ${e.message}`).join("\n")}`);
 }

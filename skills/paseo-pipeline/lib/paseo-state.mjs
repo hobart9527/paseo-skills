@@ -409,3 +409,40 @@ function namesAnotherChange(attribution, agent, currentChange) {
   }
   return false;
 }
+
+/**
+ * 按 agent id 读取真实创建记录（证据交叉核对用）。
+ *
+ * 为什么需要：`check-evidence` 过去只校验 `child_agent_id` 是一个格式合法的 UUID，
+ * 于是 native-closure 的 smoke 写了一个**不存在的** UUID（与真实 agent 前 8 位相同、
+ * 其余不同），`dispatched_at` 还早于真实 createdAt 十分钟，两份闸门都放行。
+ * 「收据里有一个 UUID」与「这个 UUID 真的被创建过」是两件事。
+ *
+ * 返回 null 表示读不到（Paseo 目录不存在、无该 id 的文件、JSON 损坏）——调用方必须
+ * 把 null 当失败处理（fail closed），不能当成「没有反证所以通过」。
+ */
+export function findAgentRecord(agentId) {
+  if (typeof agentId !== 'string' || !/^[0-9a-f-]{36}$/i.test(agentId.trim())) return null;
+  const wanted = agentId.trim().toLowerCase();
+  const root = path.join(homeDir(), 'agents');
+  if (!fs.existsSync(root)) return null;
+  for (const dir of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!dir.isDirectory()) continue;
+    const file = path.join(root, dir.name, `${wanted}.json`);
+    if (!fs.existsSync(file)) continue;
+    try {
+      const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+      return {
+        id: record.id ?? wanted,
+        createdAt: record.createdAt ?? null,
+        archivedAt: record.archivedAt ?? null,
+        title: record.title ?? null,
+        labels: record.labels ?? {},
+        file,
+      };
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
