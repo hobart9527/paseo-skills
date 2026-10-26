@@ -4,7 +4,7 @@
 - 输入：R1《paseo-pipeline-review-2026-10-25.md》（基线公开提交 `ae0ca49`）
 - 本次基线：本地工作区 = HEAD `ae0ca49` + 未提交改动（`git status --porcelain` 23 行；`git diff --stat` 15 文件 +2561/−458；未跟踪文件含 `lib/paseo-state.mjs`、`lib/roles.mjs`、`lib/run-state.mjs`、`lib/ledger.mjs`、`lib/lock.mjs`、`run-state.mjs`）
 - 本机：`paseo 0.12.0`；`paseo ls --json --all` 1604 行，字段 `id,shortId,name,provider,thinking,status,cwd,created`（无 labels）
-- 回归实测（2026-10-26 并行等待策略复核收口，在仓库根目录执行）：Node `tests 407 / pass 407 / fail 0 / duration_ms 111204.023708`（`bash skills/paseo-pipeline/test/run-all.sh`）；contract-check `通过 19 / 失败 0`（`bash skills/paseo-pipeline/contract-check.test.sh`）。R1 的 244、本文初版的 349、上一轮的 378/390/391/392/397/405/406 都是历史计数。
+- 回归实测（2026-10-26 打回预算升级落地后，在仓库根目录执行）：Node `tests 410 / pass 410 / fail 0 / duration_ms 118691.305666`（`bash skills/paseo-pipeline/test/run-all.sh`）；contract-check `通过 19 / 失败 0`（`bash skills/paseo-pipeline/contract-check.test.sh`）。R1 的 244、本文初版的 349、上一轮的 378/390/391/392/397/405/406/407 都是历史计数；407→410 的 3 条来自本次新增的升级路径用例。
 - 原生 Paseo 冒烟（包 0）：**已执行**，5 任务全流程一次跑通，采集值与覆盖缺口见 §8。真实业务试点**未执行**。
 - 行号对应 2026-10-26 00:21 的工作区（`reconcile.mjs` 在走查期间仍被改动过一次，结论已按最新文件重核）。
 
@@ -16,7 +16,7 @@
 |---|---|---|
 | A 观测与对账 | **已实施** | `lib/paseo-state.mjs` 单一适配器 + runtime 三态；活态改为「任一源报 live 即 live」；attempt 数值绑定；`rejected` 分支不再进 MERGE；解析级 INVALID 写手与同仓外部写手均计入 cap（SCEN-REC-17 ×2） |
 | B 合流门禁 | **已实施** | 冻结 `Verify with` 强制先跑（exit 36）；`-z --no-renames`；单写者锁（exit 37）；Pod 冻结成员校验；legacy 豁免需环境变量二次确认并记 run-log；测试内 commit 检测（exit 40）；进程组 kill；已合流重试的分项诊断（SCEN-MRG-25/26/27）；base 须同时是集成 HEAD 与 tip 的祖先（exit 34）；审查员与运行账本派发记录交叉核对（exit 32，复刻 T-02 自审） |
-| C 契约收敛 | **部分实施** | 角色/phase 单点定义（`lib/roles.mjs`）；`Review` 三档语义写入 SKILL；run-state 读改写加锁 + 候选校验入锁；证据闸门的场景 PASS、占位值与 smoke `--sha` 已补（SCEN-EVD-01/02）；§3-P1-11 的 SKILL/LESSONS 内部矛盾已逐条消除（心跳、Lead 阈值、hotfix 定位、OpenSpec 交回、审查轮数、停滞信号均已复核一致；**但 `send_agent_prompt` 接力与打回预算两条未闭合，见 §3.10**）；派发 brief 四份模板已落地并锁定必填字段（SCEN-DOC-13..16）；非 `T-` 前缀任务 ID 的 dispatch 标识已修（SCEN-REC-20）。**仅剩** `~/.paseo/task-routing.md` 与 shangshu notes 中的活态表述未改（需另行授权） |
+| C 契约收敛 | **部分实施** | 角色/phase 单点定义（`lib/roles.mjs`）；`Review` 三档语义写入 SKILL；run-state 读改写加锁 + 候选校验入锁；证据闸门的场景 PASS、占位值与 smoke `--sha` 已补（SCEN-EVD-01/02）；§3-P1-11 的 SKILL/LESSONS 内部矛盾已逐条消除（心跳、Lead 阈值、hotfix 定位、OpenSpec 交回、审查轮数、停滞信号均已复核一致；**`send_agent_prompt` 接力与打回预算两条当时未闭合，见 §3.10，已于本轮按用户裁决落地**：接力改 spec 并已归档合并进正式 spec（change `pipeline-wakeup-budget-alignment` → `archive/2026-10-26-pipeline-wakeup-budget-alignment/`），预算补代码（`retryPolicy()` + `escalations` 输出））；派发 brief 四份模板已落地并锁定必填字段（SCEN-DOC-13..16）；非 `T-` 前缀任务 ID 的 dispatch 标识已修（SCEN-REC-20）。**仅剩** `~/.paseo/task-routing.md` 与 shangshu notes 中的活态表述未改（需另行授权） |
 | D 试点 | **未执行** | 无真实业务验收，不得宣布产品验收成功 |
 | 0 唤醒冒烟（串行） | **已执行（判断：通过）** | 5 任务串行全流程一次跑通，0 失败、0 人工催促；顺带查出「账本缺失导致因子 3b 静默消失」并已修。采集值与覆盖缺口见 §8 |
 | 0 唤醒冒烟（并行 DAG） | **已执行（判断：通过）** | 5 任务 / cap=2：cap 真实饱和（同一时刻恰 2 写手）、scope 冲突确定性产 `BLOCKED_RESOURCE` 并在上游合流后自动释放、依赖门禁正确。查出「trailer 必须在最后一段」缺陷（5 写手 2 踩中）并已修模板+测试。采集值见 §9 |
@@ -155,7 +155,7 @@
 - **P1-9 `claimsMerged` 用 `terminal[0]` 兜底**：`reconcile.mjs:483` 仍是 `latest?.id ?? terminal[0].id`。但 `claimsMerged` 只在 `terminal.length > 0` 分支内置为 true，此时 `latest` 必然非 null，**该兜底是死分支**，实际不会取到 `terminal[0]`。属可读性瑕疵，非正确性缺陷。
 - **P0-6 占位证据值**：归档 change 的 `native-smoke.md` 仍含 `msg_01JAX_LOST_NOTIFICATION`。属历史归档产物，是否回改需人类决定。
 
-### 3.10 包 C「P1-11 已逐条消除」的复核：两条不成立（2026-10-26）
+### 3.10 包 C「P1-11 已逐条消除」的复核：当时两条不成立（2026-10-26，已按用户裁决落地）
 
 §0 表格里包 C 记「§3-P1-11 的 SKILL/LESSONS 内部矛盾已逐条消除（心跳、Lead 阈值、hotfix 定位、OpenSpec 交回、审查轮数、停滞信号均已复核一致）」。本轮按同一标准复验，**心跳、Lead 阈值、hotfix、OpenSpec 交回、审查轮数、LESSONS 停滞信号六项确实已一致**，但有两条不成立：
 
@@ -189,6 +189,15 @@
 > 本条与 §3.9 的五条形成对照：那五条是**文档落后于代码**（代码对、文档错，改文档即可）；这两条是**要求本身未被实现**（文档承诺的能力代码里不存在），必须由人类决定以哪边为准。
 >
 > **为什么没有测试拦住**：`docs.test.mjs` 只断言「某段文字存在且包含某些关键词」，不检查跨文件语义一致性，也没有任何测试读 `openspec/specs/`。上面两条冲突恰好落在两处盲区——(1) spec 与 SKILL 的**对立陈述**，两者各自内部自洽；(2) 文档承诺的**能力**是否存在，需要把文档描述与 `reconcile.mjs` 的实际输出形状对账才能发现。若要自动化，需要新增一类「文档承诺 → 代码符号」的映射断言，这是 §5 包 C 未覆盖的空白（包 C 的验收标准只写了「docs.test 检查规则只在一处定义」，即防重复，不含防失实）。
+
+**处置结论（2026-10-26 用户裁决）**：第（1）条取 (a) 改 spec，第（2）条取 (a) 补代码实现升级。两条均已落地，承载 change 为 `openspec/changes/pipeline-wakeup-budget-alignment`（4/4 产物，`openspec validate --strict` 通过）。上表保留为冲突发生时的原始证据，不再代表当前实现。
+
+| 冲突 | 落地方式 | 现态 |
+|---|---|---|
+| （1）relay | spec delta 的 MODIFIED requirement 改写为「Lead 阻塞 `paseo wait`；主会话从自己的 `paseo wait` 读信封」，并**禁止** `send_agent_prompt` 向上推送且写明原因 | 表内 `spec.md:153`/`:165` 的两句已随归档失效；正式 spec 现为 `openspec/specs/pipeline-delivery/spec.md:156`（阻塞等待 + 禁止推送路径 + 主会话不是 Paseo agent）、`:170`（SCEN-DOC-01 删去「必须写 relay rule」，改为「不得要求 relay」） |
+| （2）预算 | `lib/roles.mjs` 新增 `ESCALATION_ROLE`/`MAX_ESCALATED_RETRIES`/`retryPolicy()`；`reconcile.mjs` 改调用它，`READY` 带 `escalate`/`role`/`rejections`，`dispatch` 动作带可选 `escalations`；`SKILL.md:202` 与 `templates/lead.md` 写明执行载体 | 表内 `reconcile.mjs:402/499/542` 三行已过时，现为 `:403-404`（`retryPolicy`）、`:501`（gate）、`:557`（`READY` 条目） |
+
+`grep -rn gaogong skills/paseo-pipeline/ --exclude-dir=test | wc -l` 现为 **13**（原 11 + 本次新增 2：`lib/roles.mjs:90` 的 `export const ESCALATION_ROLE = 'gaogong'` 与 `SKILL.md:202` 的执行载体说明）。前一处是被 `retryPolicy()` 引用、进而由 `reconcile.mjs:695` 生成 `escalations` 的**判定逻辑**，不再是纯角色名字符串——这正是本条要补的「可执行载体」。
 
 ---
 
@@ -302,8 +311,10 @@ acceptance 先跑 structure；smoke 与 audit 都必须 `--sha`；场景按 toke
 3. hotfix 定位：L1 正式入口（推荐）还是 Legacy。
 4. 当前未提交改动是否先作为基线提交。
 5. 是否授权按 §5 从包 0 开始实施。
-6. **`send_agent_prompt` 接力冲突（§3.10-1）**：spec.md:153/165 要求用该路径交回，SKILL.md:147/194/214 禁止该路径。走 OpenSpec change 提交 delta 改 spec，还是撤回 SKILL 表述回到 spec 口径？改 spec 属规范语义变更，须人类决定。
-7. **打回预算冲突（§3.10-2）**：SKILL.md:200 与归档 design.md:46 写「打回 2 轮 + 升级高工 1 次」，代码 `MAX_REJECTIONS = 2` 在第 2 次打回即 BLOCKED 且无升级路径。补代码实现升级，还是把文档改为「2 次即 Blocked、升级交人类」？
+6. ~~**`send_agent_prompt` 接力冲突（§3.10-1）**~~ **已决（2026-10-26）：改 spec。** 走 OpenSpec change `pipeline-wakeup-budget-alignment` 提交 delta，把 relay 改为阻塞 `paseo wait` 并禁止向父级推送路径。**已归档并合并进正式 spec**（`openspec/changes/archive/2026-10-26-pipeline-wakeup-budget-alignment/`）。
+7. ~~**打回预算冲突（§3.10-2）**~~ **已决（2026-10-26）：补代码实现升级。** `lib/roles.mjs` 新增 `retryPolicy()` 为唯一判定者，第 2 次打回升级 `gaogong`、第 3 次 BLOCKED；`reconcile` 输出 `escalate`/`role`/`rejections` 与 `escalations`，文本通道同步打印。落地证据见 §3.10 处置表。
+
+**第 6、7 项的当前落地状态**：代码与文档已完成并全绿（Node 410/410、contract-check 19/0、`openspec validate --strict` 通过、负向对照 4 条转红），change 已 `openspec archive`（归档目录 `openspec/changes/archive/2026-10-26-pipeline-wakeup-budget-alignment/`），`openspec/specs/pipeline-delivery/spec.md` 已合并新文本（`+27/−…`，SCEN-EVT-03 与 SCEN-BUD-01/02/03 已进入正式 spec，SCEN-DOC-01 删去「必须写 relay rule」的要求），归档后 `docs.test.mjs` 仍 19/19。本条闭合。
 
 ---
 
