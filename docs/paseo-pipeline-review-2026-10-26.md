@@ -131,6 +131,30 @@
 
 回归实测（本轮改动后，仓库根目录 `bash skills/paseo-pipeline/test/run-all.sh`）：Node `tests 397 / pass 397 / fail 0`，`duration_ms 109471.265083`；contract-check `通过 19 / 失败 0`。
 
+### 3.9 §3 结论状态复核（2026-10-26 逐条对代码核验）
+
+写走查结论时这些条目记为「仍存在」，但本轮逐条读代码后发现 **5 条已经闭合**。这是单一真实源失效——后来者按文档去「修」一段已经正确实现的代码，只会把正常逻辑改坏。以下为逐条证据：
+
+| §3 条目 | 文档结论 | 代码实际 | 证据 | 锁住它的回归测试 |
+|---|---|---|---|---|
+| P0-1 权限源 fail-open | 仍存在 | **已闭合** | `reconcile.mjs:564` 把 `runtime != ok` 记入 `holdReasons`；`:598` 直接返回全局 `hold`，清空 `canDispatchNow` 并禁止派发与合流。`paseo-state.mjs:243` 在 `permissionsUsable=false` 时把 runtime 降到 `degraded` | `reconcile.test.mjs:356` SCEN-REC-13 三组参数化（`labels 键缺失` / `CLI 行集合为空` / `runtime 不可用`），每条都断言 `heldClosed` |
+| P0-2 `archivedAt` 不参与判定 | 仍存在 | **已闭合** | `paseo-state.mjs:193-195` 定义 `archivedAt` 与 `staleArchive`（归档但 `lastStatus` 仍属 LIVE_STATUSES 的记录）并参与归一化 | `paseo-state.test.mjs:319` 双向断言：CLI 仍认识 → 保守算 live；CLI 不认识 → 不计 live |
+| P0-4 租约 `--owner` 可绕过 | 仍存在 | **已闭合** | `run-state.mjs:60-72` `ownerRefusal()`：有有效租约时 `--owner` 必填且必须等于 `lease.owner`；租约过期一律拒绝，必须显式 `begin` 取新代际 | `run-state.test.mjs:27` 第二个 owner `exit 2`；`:40` 过期租约 bump generation 后旧 owner 全部动作被拒 |
+| P1-7 `nextAction` 单 kind 严格优先级 | 仍存在 | **已闭合** | `reconcile.mjs:586-600` 只保留三类**全局**阻塞（`runtime!=ok`、`UNMAPPED`、账本自相矛盾），其余按任务局部处理；`:650-697` 组装 `actions` 有序数组，`arbitrate` / `merge` / `dispatch` 同轮给出 | `reconcile.test.mjs:1197` INVALID 不冻结无关任务派发；`:1214` UNRESOLVED 不冻结无关任务合流；`:1227` 全局阻塞仍只给单个 `hold`（负向控制） |
+| P1-8 `fail` 后同键不可再 `claim` | 仍存在 | **已闭合** | `run-state.mjs:166-175` claim 就地复位同一条记录并记 `retryOf` 链；`:219` 禁止 `record` 复活已 fail 意图；`:203` `record` 缺 `--agent` 直接拒绝 | `run-state.test.mjs:196` 重派留 `retryOf` 且 `intents.length === 1`；`:214` `record` 复活被拒并保留 `failedAt`；`:185` `record` 缺 `--agent` 被拒 |
+
+**这五条不需要补测试**：闭合时已同步落测，且 P1-7 带负向控制（全局阻塞不得拆成多动作）。缺的不是覆盖，是**文档滞后于代码**——已由本节更正。
+
+**仍然成立的**（本轮确认未修）：
+
+- **P1-10 残留（已复核，比原描述轻）**：`qingqibing` 仍在 `lib/roles.mjs:15` 的 `WRITER_ROLES` 中。**不建议直接删**——真实历史数据里有 1 条该标签（`roles.mjs:5` 注释记录），删除会让既有记录被判 `UNMAPPED`；若要清理，须连同 `test/` 里 5 处引用一起改并给迁移策略。
+  - 原结论说「`dispatch.mjs` 自带角色表」是第二套分类，**这个判断经复核不成立**。`dispatch.mjs` 的三张表都不是分类：`ALIAS` 是历史名→现行 profile 的映射，`ROLE_LABEL` 是标题显示名，`READ_ONLY` 是静音策略。
+  - 分类（写入者 / 控制面 / 只读）确实单点在 `lib/roles.mjs`，由 `reconcile.mjs` 与 `merge-task.mjs` 消费；`dispatch.mjs` 只写 `pipeline.role=<profile-key>`，不做分类。
+  - **且 `READ_ONLY` 不能并入 `CONTROL_ROLES`**：实测并入会新增静音 `shangshu`/`xunjian`/`lead`/`orchestrator`/`hanlin`/`chanpin`——其中 `shangshu` 是 Lead，给它下发「禁读 cwd 外文件、禁联网」是错的。这两个集合语义不同，合并是退步。
+  - 未知角色由 `reconcile` fail-closed 判 `UNMAPPED` 并全局 hold，已足够兜底。**此处不需要改代码。**
+- **P1-9 `claimsMerged` 用 `terminal[0]` 兜底**：`reconcile.mjs:481` 仍是 `latest?.id ?? terminal[0].id`。但 `claimsMerged` 只在 `terminal.length > 0` 分支内置为 true，此时 `latest` 必然非 null，**该兜底是死分支**，实际不会取到 `terminal[0]`。属可读性瑕疵，非正确性缺陷。
+- **P0-6 占位证据值**：归档 change 的 `native-smoke.md` 仍含 `msg_01JAX_LOST_NOTIFICATION`。属历史归档产物，是否回改需人类决定。
+
 ---
 
 ## 4. 优化方案（克制版）
