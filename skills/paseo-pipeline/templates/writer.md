@@ -27,6 +27,33 @@
   Pipeline-Role: gongbu
   Pipeline-Author: <你的 agent id>
   ```
+
+### ⚠️ trailer 必须在**最后一段**，中间不能有空行
+
+`merge-task.mjs` 用 `git log --format=%(trailers)` 解析，而 git **只认最后一个段落**。
+把 trailer 之后又写了 `Co-Authored-By:` **并隔了空行**，前面的 trailer 全部作废，合流直接
+`exit 31`（author provenance）。2026-10-26 并行冒烟实测：5 个写手里 2 个踩中，返工 2 次。
+
+**正确**（trailer 与前面正文只隔一个空行，trailer 块内不留空行）：
+```
+feat(x): 一句话
+
+正文说明。
+
+Pipeline-Role: gongbu
+Pipeline-Author: <你的 agent id>
+```
+
+**错误**（空行把 `Co-Authored-By` 分开，trailer 块被截断）：
+```
+Pipeline-Role: gongbu
+Pipeline-Author: <你的 agent id>
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>
+```
+
+如果工具自动追加了 `Co-Authored-By`，把它放在 **trailer 块内部、不留空行**，或干脆不放。
+
 - 提交后 `git status --porcelain` 必须为空。
 - **不要**自己合流、不要勾 `tasks.md`、不要写 `Done:` 行——那些由 `merge-task.mjs` 独占。
 

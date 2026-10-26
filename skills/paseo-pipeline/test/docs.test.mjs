@@ -244,6 +244,19 @@ test('SCEN-DOC-14: 每份模板都锁定必填字段，缺一个就红', () => {
   }
 });
 
+test('SCEN-DOC-17: writer 模板警告 trailer 必须是最后一段（否则 merge exit 31）', () => {
+  // 2026-10-26 并行冒烟实测：5 个写手里 2 个把 Co-Authored-By 用空行另起一段，
+  // 前面 Pipeline-* trailer 全部失效，merge-task 以 exit 31 拒绝。
+  // git 的 %(trailers) 只解析最后一个段落，这条必须在写手侧就拦住。
+  const writer = template('writer');
+  assert.match(writer, /最后一段/, 'writer.md 必须说明 trailer 必须在最后一段');
+  assert.match(writer, /%(?:\(trailers\))?trailers|trailr?ers/,
+    'writer.md 必须点名 git 的 trailers 解析机制');
+  assert.match(writer, /exit\s*31/, 'writer.md 必须给出失败症状 exit 31');
+  assert.match(writer, /Co-Authored-By/, 'writer.md 必须点名 Co-Authored-By 这个最常见的触发源');
+  assert.match(writer, /错误/, 'writer.md 必须给出反例');
+});
+
 test('SCEN-DOC-15: Lead 模板写明 disposition 生产者契约与 wait 退出码陷阱', () => {
   const lead = template('lead');
   // 这两条是冒烟里真实付出代价的两点，不能只写在 SKILL 里。

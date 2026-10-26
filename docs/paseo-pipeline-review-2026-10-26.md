@@ -4,7 +4,7 @@
 - 输入：R1《paseo-pipeline-review-2026-10-25.md》（基线公开提交 `ae0ca49`）
 - 本次基线：本地工作区 = HEAD `ae0ca49` + 未提交改动（`git status --porcelain` 23 行；`git diff --stat` 15 文件 +2561/−458；未跟踪文件含 `lib/paseo-state.mjs`、`lib/roles.mjs`、`lib/run-state.mjs`、`lib/ledger.mjs`、`lib/lock.mjs`、`run-state.mjs`）
 - 本机：`paseo 0.12.0`；`paseo ls --json --all` 1604 行，字段 `id,shortId,name,provider,thinking,status,cwd,created`（无 labels）
-- 回归实测（2026-10-26 本轮收口，在仓库根目录执行 `bash skills/paseo-pipeline/test/run-all.sh`）：Node `tests 405 / pass 405 / fail 0`，`duration_ms 112832.790959`；contract-check（`bash skills/paseo-pipeline/test/contract-check.test.sh`）`通过 19 / 失败 0`。R1 的 244、本文初版的 349、上一轮的 378/390/391/392/397 都是历史计数。
+- 回归实测（2026-10-26 并行冒烟收口，在仓库根目录执行）：Node `tests 406 / pass 406 / fail 0 / duration_ms 114061.29475`（`bash skills/paseo-pipeline/test/run-all.sh`）；contract-check `通过 19 / 失败 0`（`bash skills/paseo-pipeline/contract-check.test.sh`）。R1 的 244、本文初版的 349、上一轮的 378/390/391/392/397/405 都是历史计数。
 - 原生 Paseo 冒烟（包 0）：**已执行**，5 任务全流程一次跑通，采集值与覆盖缺口见 §8。真实业务试点**未执行**。
 - 行号对应 2026-10-26 00:21 的工作区（`reconcile.mjs` 在走查期间仍被改动过一次，结论已按最新文件重核）。
 
@@ -18,7 +18,8 @@
 | B 合流门禁 | **已实施** | 冻结 `Verify with` 强制先跑（exit 36）；`-z --no-renames`；单写者锁（exit 37）；Pod 冻结成员校验；legacy 豁免需环境变量二次确认并记 run-log；测试内 commit 检测（exit 40）；进程组 kill；已合流重试的分项诊断（SCEN-MRG-25/26/27）；base 须同时是集成 HEAD 与 tip 的祖先（exit 34）；审查员与运行账本派发记录交叉核对（exit 32，复刻 T-02 自审） |
 | C 契约收敛 | **部分实施** | 角色/phase 单点定义（`lib/roles.mjs`）；`Review` 三档语义写入 SKILL；run-state 读改写加锁 + 候选校验入锁；证据闸门的场景 PASS、占位值与 smoke `--sha` 已补（SCEN-EVD-01/02）；§3-P1-11 的 SKILL/LESSONS 内部矛盾已逐条消除（心跳、Lead 阈值、hotfix 定位、OpenSpec 交回、审查轮数、停滞信号均已复核一致）；派发 brief 四份模板已落地并锁定必填字段（SCEN-DOC-13..16）；非 `T-` 前缀任务 ID 的 dispatch 标识已修（SCEN-REC-20）。**仅剩** `~/.paseo/task-routing.md` 与 shangshu notes 中的活态表述未改（需另行授权） |
 | D 试点 | **未执行** | 无真实业务验收，不得宣布产品验收成功 |
-| 0 唤醒冒烟 | **已执行（判断：通过）** | 5 任务串行全流程一次跑通，0 失败、0 人工催促；顺带查出「账本缺失导致因子 3b 静默消失」并已修。采集值与覆盖缺口见 §8 |
+| 0 唤醒冒烟（串行） | **已执行（判断：通过）** | 5 任务串行全流程一次跑通，0 失败、0 人工催促；顺带查出「账本缺失导致因子 3b 静默消失」并已修。采集值与覆盖缺口见 §8 |
+| 0 唤醒冒烟（并行 DAG） | **已执行（判断：通过）** | 5 任务 / cap=2：cap 真实饱和（同一时刻恰 2 写手）、scope 冲突确定性产 `BLOCKED_RESOURCE` 并在上游合流后自动释放、依赖门禁正确。查出「trailer 必须在最后一段」缺陷（5 写手 2 踩中）并已修模板+测试。采集值见 §9 |
 
 **下文 §2/§3 的行号与结论保留为当时的复核记录；已闭合项在 §2 表格中标为「已修复」，未闭合项在 §3 末尾的「仍未闭合」清单集中列出。**
 
@@ -104,7 +105,7 @@
 1. `--allow-legacy-author` 仍能整体关闭作者血统门禁。已加两道约束（`PIPELINE_ALLOW_LEGACY_AUTHOR=1` 二次确认 + run-log 记 `BYPASSED(legacy)`），未移除该路径。
 2. 通知去重（spec 要求的 message-id 复合键）只有文字描述，无实现。
 3. `Review: required` / `Review: default` 在历史 `tasks.md` 里真实出现过（11 + 1 处，均在 archive），现被 `UNKNOWN_REVIEW` 拒绝；SKILL 已注明需迁移，但未提供迁移脚本。
-4. ~~`paseo wait` 主动等待方案（§4.1）未验证~~ → **原语层与单 change 串行全流程均已验证**（见 §4.1 实测表与 §8）：阻塞语义、子 agent 完成后唤醒、退出码恒 0、5 任务一次成功率 5/5 均已采集。**仍未采集**：并行 DAG（cap>1）下的唤醒、单次 wait 540s 上限被真正触及时的行为、Lead 长回合的上下文增长。
+4. ~~`paseo wait` 主动等待方案（§4.1）未验证~~ → **原语层与单 change 串行全流程均已验证**（见 §4.1 实测表与 §8）：阻塞语义、子 agent 完成后唤醒、退出码恒 0、5 任务一次成功率 5/5 均已采集。**并行 DAG（cap>1）已补齐**（§9：cap=2 真实饱和 2 写手、T-4 `BLOCKED_RESOURCE` 确定性触发、依赖释放正确）。**仍未采集**：单次 wait 540s 上限被真正触及时的行为、并发 `paseo wait`、Lead 长回合的上下文增长。
 5. 真实业务验收、原生多 Agent 冒烟、一次成功率与耗时采集全部**未执行**。
 
 **本轮新闭合（原 2/3/4/5/7 项，均带负向对照）**
@@ -155,7 +156,7 @@
 - Heartbeat 降为可选兜底（仅 Lead 回合意外结束时），与 spec.md:153 统一；`run-state heartbeat` 只保留 register/delete 记账。
 - 风险：`paseo wait` 长时间阻塞对 Lead 上下文与超时的影响**未采集**；包 0 冒烟不过则回退现状并如实记录。
 
-**包 0 冒烟结果（2026-10-26，见 §8）：串行路径通过。** 5 任务 5 次派发 5 次合流、0 失败、0 人工催促，5 次 wait 全部 `status: idle`（40–82s，未触及 540s 上限）。§4.1 在串行 DAG 上从假设变为已验证；并行 DAG 与超时分支仍未采集。
+**包 0 冒烟结果（2026-10-26，见 §8）：串行路径通过。** 5 任务 5 次派发 5 次合流、0 失败、0 人工催促，5 次 wait 全部 `status: idle`（40–82s，未触及 540s 上限）。§4.1 在串行 DAG 上从假设变为已验证；并行 DAG 已由 §9 补齐（cap=2 饱和、scope 冲突串行化均成立）；540s 超时分支与并发 `paseo wait` 仍未采集。
 
 ### 4.2 reconcile：一次唤醒推进所有可做动作
 
@@ -306,7 +307,114 @@ f42764b  04:32:15Z  docs(spec): freeze integer-ops-smoke spec and task DAG
 
 ### 8.5 本次冒烟未能覆盖的
 
-- **并行 DAG（cap>1）**：全程串行派发，cap 并发与 scope 冲突串行化都没有被真实压测。
+- ~~**并行 DAG（cap>1）**：全程串行派发，cap 并发与 scope 冲突串行化都没有被真实压测。~~ → **已由 §9 补齐**（2026-10-26 第二轮冒烟，cap=2 真实饱和，`BLOCKED_RESOURCE` 确定性触发）。
 - **540s 上限被真正触及**：最长单次 82s，超时分支（`status: timeout` 后继续等同一 id）只在中途的原语探针里验过，没在真实任务上验过。
 - **Lead 长回合的上下文增长**：Lead 只跑 13 分 50 秒，远未到压缩边界。
 - **打回路径**：0 次打回、0 次仲裁、0 次预算消耗。
+
+## 9. 并行 DAG 冒烟：执行记录（2026-10-26）
+
+补 §8.5 的第一个缺口：上一轮全程串行，cap 从未饱和。本轮用同一沙箱仓库 `/Users/hobart/Codex/pipeline-smoke-wait`，新建 change `parallel-ops-smoke`，固定 `--cap 2`。
+
+### 9.1 冒烟契约（`tasks.md` 解析结果，`parseTasks` → `errors: []`）
+
+刻意构造三种调度形态，全部为整数运算（不含浮点误差界）：
+
+| 任务 | 依赖 | Write scope | 构造意图 |
+|---|---|---|---|
+| T-1 | none | `src/vector.mjs`, `test/vector.test.mjs` | 与 T-2 无重叠 → 应同时派发 |
+| T-2 | none | `src/stats.mjs`, `test/stats.test.mjs` | 同上 |
+| T-3 | none | `src/registry.mjs`, `test/registry.test.mjs` | 与 T-4 同写一个文件且**都无依赖** |
+| T-4 | none | `src/registry.mjs`, `test/registry4.test.mjs` | 必须被判 `BLOCKED_RESOURCE`（确定性，不靠时序） |
+| T-5 | T-1,T-2,T-3,T-4 | `src/report2.mjs`, `test/report2.test.mjs` | 四个上游全 Done 才释放 |
+
+> 设计修正：最初把 T-3 设为 `Depends on: T-1,T-2` 并让它与 T-1 共享 scope，那样依赖门禁会先触发 `BLOCKED`，**永远测不到 `BLOCKED_RESOURCE`**。改成「同 scope + 都无依赖」才是确定性触发。
+
+### 9.2 派发前契约预检（`reconcile --cap 2`，未派发任何 agent）
+
+```
+BLOCKED          T-5  (等 T-1,T-2,T-3,T-4)
+BLOCKED_RESOURCE T-4  (冲突 T-3 向量能力登记)
+READY            T-1 / T-2 / T-3
+canDispatchNow:  T-1 整数向量运算, T-2 整数统计
+```
+
+`--cap 3` 时 `canDispatchNow` 变为 T-1/T-2/T-3 三条；`--cap 2` 时恰为两条。cap 生效。
+
+### 9.3 采集值
+
+| 项 | 值 | 来源 |
+|---|---|---|
+| 任务完成 | 5/5 | `reconcile` → `DONE 5/5`、`ALL-DONE` |
+| 合流次数 | 5 | `git log main..integration/parallel-ops-smoke` 中 5 条 `merge(T-n)` |
+| 集成 tip | `b3821f9` | `git rev-parse integration/parallel-ops-smoke` |
+| 集成验证 | `tests 24 / pass 24 / fail 0` | 集成 worktree 内 `node --test` |
+| 集成工作区洁净 | `git status --porcelain` 0 行 | 同上 |
+| worktree 并发峰值 | 3 个 task worktree 同时存在 | 轮询 `git worktree list` |
+| **真实写手并发** | **2**（cap=2 饱和） | 见 9.4 时间线 |
+| 首末时间 | 13:45:31+08:00（契约提交）→ 14:06:22+08:00（终对账） | git commit 时间 + Lead 信封 |
+| 墙钟 | 12m19s（05:54:03Z 读 brief → 06:06:22Z 终对账） | Lead 自报，**未经独立复核** |
+| 合流区间（硬采集） | 335s（`06:00:31Z` 首次 merge → `06:06:06Z` 末次 merge） | `git log --format=%ct` 精确到秒 |
+| 首个 worktree → 末次 merge | 约 636s（13:55:41+08:00 → 14:06:06+08:00） | `git worktree list` 目录 ctime + git commit time |
+
+### 9.4 并发时间线（`git worktree list` 目录创建时间，非自报）
+
+| 时刻 (+08:00) | 事件 |
+|---|---|
+| 13:55:41 | T-1 worktree 创建 |
+| 13:55:50 | T-2 worktree 创建（距 T-1 **9 秒**，同一轮派发） |
+| 13:56:14 | T-2 commit（2 项并行中先完成者） |
+| 13:58:04 | T-3 worktree 创建（T-2 让出名额后补位，**T-1 此时仍在跑**） |
+| 14:00:01 | T-1 commit |
+| 14:00:31 | T-1 merge |
+| 14:00:58 | T-2 merge |
+| 14:02:19 | T-3 merge |
+| 14:04:22 | T-4 merge |
+| 14:06:06 | T-5 merge |
+
+**关键判据：13:55:41–13:58:04 之间恰好 2 个写手在跑，不是 3 个。** cap=2 是被真实遵守的，不是"撞上了"。T-3 在 T-2 完成后补位，而非首轮三个一起派——这是 cap 在起作用。
+
+### 9.5 结论
+
+1. **并行 DAG 通过。** cap=2 真实饱和、scope 冲突确定性串行化（T-4 `BLOCKED_RESOURCE` 持续 3 轮，T-3 合流后第 4 轮自动转 `READY`）、依赖释放正确（T-5 等 4 个上游全 Done）。§8.5 的第一个缺口闭合。
+2. **并行等待策略：串行前台 `paseo wait` 可行，但本次没测出空转。** Lead 在 T-1/T-2 并行段先 `wait` T-1，35s 返回 `idle` 时 T-2 已完成——**零空转**。但这属运气好（两个任务工作量接近），不是机制保证。若 T-1 早于 T-2 完成 10 分钟，串行 wait 会产生纯空转窗口。**并发 `paseo wait`（后台多起）本次未测。**
+3. **`review-attestation` 修复生效。** run-log 5 条合并记录全部带 `review-attestation=mechanical-review`，不再有静默跳过的行。上一轮那次「门禁跳过与通过长得一样」的缺陷，在本轮可观测。
+4. **并行合并产生 `baseline-drift` 记录。** T-2、T-3 的 run-log 带 `baseline-drift=dbf8af7..6a4261d` / `dbf8af7..8c6ca03`——任务分支拉出后集成基线上又合了别的任务。门禁如实记录而没有拒绝，这是对的（并行合流本就该允许基线前进），但**说明「审查基线」与「合流基线」在并行下必然分叉**，审查员看到的 diff 与最终合流点的 diff 不是一回事。
+
+### 9.6 新发现的缺陷（已修）
+
+**`Pipeline-*` trailer 必须是 commit message 的最后一段。** `merge-task.mjs` 用 `git log --format=%(trailers)` 解析，而 git **只认最后一个段落**。写手若在 trailer 之后空一行再写 `Co-Authored-By:`，前面所有 `Pipeline-Role` / `Pipeline-Author` 全部作废，合流以 `exit 31` 拒绝。
+
+实测数据（`git reflog show task/parallel-ops-smoke/<task>` 独立核实，不采信自报）：
+
+| 任务 | amend 次数 | 原始 commit |
+|---|---|---|
+| T-1 | 1 | `ca5e171`（trailer 后空行 + `Co-Authored-By`，`%(trailers:key=Pipeline-Role)` 为空） |
+| T-2 | 0 | `37ff0ad`（一次写对） |
+| T-3 | 1 | `75b6b54`（同 T-1 缺陷） |
+| T-4 | 0 | — |
+| T-5 | 0 | — |
+
+即 **2/5 写手踩中**，返工 2 次。Lead 自报「3/4 写手」与 git 证据不符，以 reflog 为准。
+
+已修：`templates/writer.md` 增加「trailer 必须在最后一段，中间不能有空行」，附正确/错误对照与 `exit 31` 症状；`test/docs.test.mjs` 新增 SCEN-DOC-17 锁住这条（负向对照：撤掉模板段落 → 红，恢复 → 绿）。
+
+### 9.7 基础设施故障（不计入机制结论）
+
+首次派发 Lead 时，agent 在首轮即终止：
+
+```
+API Error: 503 [claude/claude-sonnet-5-5] [401]
+OAuth access token has expired. Re-authenticate to continue. (reset after 1m 24s)
+```
+
+这是 claude CLI 自身登录态过期，与 `~/.claude/settings.json` 里的 `ANTHROPIC_AUTH_TOKEN`（router360 的 `sk-` 令牌）无关。**无任何副作用**（集成分支未动、无 task 分支、无 worktree）。复工方式：对**同一个 `agentId`** 用 `send_agent_prompt` 继续，保留已读上下文，比重派省一次冷启动。
+
+按「数据只写采集值」原则单列：**它不能计入派发成功率或 `merge_failures`**，否则污染度量基线。
+
+### 9.8 本轮仍未覆盖的
+
+- **`paseo wait` 超时分支在真实任务上的行为**：5 次 wait 全部 `status: idle`，0 次 timeout，540s 上限仍未触及。
+- **并发 `paseo wait`**：只验证了串行等待；多起后台 wait 的可行性与代价未测。
+- **真正的不均衡并行**：本次两个并行任务工作量接近，掩盖了串行等待的空转风险。
+- **打回路径**：0 次打回，预算与升级升级路径仍未压测。
