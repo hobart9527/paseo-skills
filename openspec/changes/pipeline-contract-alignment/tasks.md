@@ -71,3 +71,13 @@
   - Review: standard
   - Verify with: `node --test skills/paseo-pipeline/test/docs.test.mjs skills/paseo-pipeline/test/hotfix.test.mjs`
   - Scenarios: SCEN-CON-12, SCEN-CON-13
+
+## 6. Pod 单次合流与依赖门禁
+
+- [ ] 6.1 T-08 `lib/ledger.mjs` 新增 `batchDependencyClosure`（同批依赖闭包）；`merge-task.mjs` 依赖门禁只对「本批之外」的未验收依赖 exit 35；`freeze-check.mjs` 冻结时说明 Pod 成员集的依赖闭包是否落在集内
+  - Depends on: T-02
+  - Write scope: skills/paseo-pipeline/lib/ledger.mjs, skills/paseo-pipeline/merge-task.mjs, skills/paseo-pipeline/freeze-check.mjs, skills/paseo-pipeline/test/merge-task.test.mjs, skills/paseo-pipeline/test/freeze-check.test.mjs
+  - Risk-surface: [error-handling]
+  - Review: standard
+  - Verify with: `node --test skills/paseo-pipeline/test/merge-task.test.mjs skills/paseo-pipeline/test/freeze-check.test.mjs`
+  - Scenarios: SCEN-CON-14

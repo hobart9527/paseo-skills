@@ -25,3 +25,4 @@
 | SCEN-CON-11 | `node skills/paseo-pipeline/run-state.mjs status <change>` | T-06 | HEAD 不同的账本须告警不失败；无 `skill` 字段须打印「未采集」 | yes | PENDING | pending |
 | SCEN-CON-12 | 照抄 SKILL §4 的命令块执行 | T-07 | `node --test skills/paseo-pipeline/test/docs.test.mjs`（SCEN-DOC-23） | yes | PENDING | pending |
 | SCEN-CON-13 | `bash skills/paseo-pipeline/hotfix.sh <fixture 无 gongbu profile>` | T-07 | `node --test skills/paseo-pipeline/test/hotfix.test.mjs` | yes | PENDING | pending |
+| SCEN-CON-14 | `node skills/paseo-pipeline/merge-task.mjs pod/<change> T-01,T-02 pass(<rev>@<tip>/<base>) <cmd>`（成员间有依赖） | T-08 | `node --test skills/paseo-pipeline/test/merge-task.test.mjs skills/paseo-pipeline/test/freeze-check.test.mjs` | yes | PENDING | pending |

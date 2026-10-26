@@ -80,3 +80,14 @@ The skill documentation SHALL present the run-ledger commands in a form that can
 #### Scenario: SCEN-CON-13 the hotfix path resolves its profile fail-closed
 - **WHEN** `hotfix.sh` runs with a profile config lacking the writer profile it requires
 - **THEN** it exits non-zero instead of dispatching with an empty provider, and it does not consult the historical role profile as a dispatch source.
+
+### Requirement: A Pod merges as one batch, so its internal dependencies are satisfied by that merge
+The skill's Pod mode SHALL merge a `pod/<change>` branch exactly once, covering the whole frozen member set. Because that single merge is the only event that can prove its members Done, the merge entry point SHALL treat a dependency between two tasks of the same requested batch as satisfied by the batch itself, rather than requiring it to be already proven Done by a first-parent merge.
+
+The exemption SHALL be limited to the requested batch: a dependency whose task is not in the requested set SHALL still be rejected unless a first-parent merge already proves it Done, so that any two tasks cannot bypass the dependency gate merely by being requested together. A single-task merge SHALL therefore behave exactly as before.
+
+The freeze check SHALL report whether a frozen member set's dependency closure lies entirely inside the member set, because that is what decides whether one merge can satisfy it. Dependency cycles SHALL remain graph-severity errors, rejected at parse time before any batch exemption is considered.
+
+#### Scenario: SCEN-CON-14 a pod batch satisfies its own dependencies but not outside ones
+- **WHEN** a Pod merge is requested for a member set whose tasks depend on each other, and separately for a set whose task depends on a task outside the set that no merge has proven Done
+- **THEN** the first merge is accepted and marks every member, and the second is rejected naming the outside dependency; a single-task merge of a dependent task whose dependency is unproven is still rejected, and the freeze check states which of the two cases the frozen member set is in.
