@@ -1444,3 +1444,18 @@ test('SCEN-REC-19 a terminal agent with no receipt yields an arbitrate action, n
   assert.deepEqual(result.nextAction.tasks.map(taskId), ['T-01']);
   dispatch(result, []);
 });
+
+// --- 非 T- 前缀任务 ID 的 dispatch 动作 ---
+//
+// `lib/tasks.mjs` 明确定义任务 ID 为 `<前缀>-<数字>`（`TASK-01`、`BUG-3` 都合法），
+// reconcile 也直接复用它。但 `nextAction` 组装 dispatch 动作时写的是
+// `t.match(/\bT-\d+\b/)?.[0] ?? t`——只认 `T-` 前缀。于是 `TASK-01 Task TASK-01`
+// 抽不出 ID，整条 label 被当成任务标识塞给执行器，派发标签就写错。
+// 这里断言的是**动作里的任务标识必须等于真实任务 ID**，与 ID 前缀无关。
+test('SCEN-REC-20: dispatch 动作给出的任务标识等于真实任务 ID（非 T- 前缀）', (context) => {
+  const subject = fixture(context, [{ id: 'TASK-01' }]);
+  const result = output(subject);
+  const action = (result.nextAction.actions ?? []).find((a) => a.kind === 'dispatch');
+  assert.ok(action !== undefined, `必须给出 dispatch 动作：${JSON.stringify(result.nextAction)}`);
+  assert.deepEqual(action.tasks, ['TASK-01'], '动作里的任务标识必须是真实 ID，不能是「ID + 标题」整条 label');
+});

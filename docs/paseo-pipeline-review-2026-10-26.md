@@ -4,7 +4,7 @@
 - 输入：R1《paseo-pipeline-review-2026-10-25.md》（基线公开提交 `ae0ca49`）
 - 本次基线：本地工作区 = HEAD `ae0ca49` + 未提交改动（`git status --porcelain` 23 行；`git diff --stat` 15 文件 +2561/−458；未跟踪文件含 `lib/paseo-state.mjs`、`lib/roles.mjs`、`lib/run-state.mjs`、`lib/ledger.mjs`、`lib/lock.mjs`、`run-state.mjs`）
 - 本机：`paseo 0.12.0`；`paseo ls --json --all` 1604 行，字段 `id,shortId,name,provider,thinking,status,cwd,created`（无 labels）
-- 回归实测（2026-10-26 本轮收口，在仓库根目录执行 `bash skills/paseo-pipeline/test/run-all.sh`）：Node `tests 404 / pass 404 / fail 0`，`duration_ms 111424.753542`；contract-check（`bash skills/paseo-pipeline/test/contract-check.test.sh`）`通过 19 / 失败 0`。R1 的 244、本文初版的 349、上一轮的 378/390/391/392/397 都是历史计数。
+- 回归实测（2026-10-26 本轮收口，在仓库根目录执行 `bash skills/paseo-pipeline/test/run-all.sh`）：Node `tests 405 / pass 405 / fail 0`，`duration_ms 112832.790959`；contract-check（`bash skills/paseo-pipeline/test/contract-check.test.sh`）`通过 19 / 失败 0`。R1 的 244、本文初版的 349、上一轮的 378/390/391/392/397 都是历史计数。
 - 原生 Paseo 冒烟（包 0）：**已执行**，5 任务全流程一次跑通，采集值与覆盖缺口见 §8。真实业务试点**未执行**。
 - 行号对应 2026-10-26 00:21 的工作区（`reconcile.mjs` 在走查期间仍被改动过一次，结论已按最新文件重核）。
 
@@ -77,7 +77,7 @@
 7. **`nextAction` 单一 kind、严格优先级**（`reconcile.mjs:506-559`）。任一 INVALID/UNRESOLVED/预算耗尽都会输出 `arbitrate`，与之无关的任务的 merge/dispatch 也被压住；有 MERGE 时不同时给 dispatch，每次唤醒只推进一类动作。另外 `canDispatchNow` 不看 INVALID/UNRESOLVED，可能与 `nextAction` 结论不一致。
 8. **意图生命周期不闭合。** `fail` 后同一键无法再 claim（与 SKILL:150 “fail 后可重派”矛盾）；`record` 会清 `failedAt` 让已作废意图复活；不带 `--agent` 也能关闭意图；非超期的 INTENT_PENDING 若未命中 L554 分支会落到兜底“状态无法解释”。`run` 字段无代码写入，恒为 `local`。
 9. **`claimsMerged` 报错指向 `terminal[0]`**（L407），不是 latest。
-10. **角色多源。** `dispatch.mjs:25-29` 自带角色表，`yushi`/`mige` 归类与 `lib/roles.mjs` 冲突；已删除 profile `qingqibing` 仍在 `roles.mjs` 与 `dispatch.mjs` 中；`Review: standard` 出现在 SKILL 但未定义；任务 ID 两套规则：`lib/tasks.mjs` 接受 `[A-Za-z]+-\d+`，`reconcile.mjs:95` 只认 `T-\d+`。
+10. **角色多源。** `dispatch.mjs:25-29` 自带角色表，`yushi`/`mige` 归类与 `lib/roles.mjs` 冲突；已删除 profile `qingqibing` 仍在 `roles.mjs` 与 `dispatch.mjs` 中；`Review: standard` 出现在 SKILL 但未定义；任务 ID 两套规则：`lib/tasks.mjs` 接受 `[A-Za-z]+-\d+`，`reconcile.mjs:95` 只认 `T-\d+`。**部分闭合（2026-10-26）**：`reconcile.mjs` 的解析入口早已改用 `isTaskId`，只剩 `nextAction` 组装 dispatch 动作时仍用 `/\bT-\d+\b/` 从 label 里抠 ID——`TASK-01` 这类合法 ID 抠不出来，整条 `"TASK-01 Task TASK-01"` 会被当成任务标识塞进 `pipeline.task` 标签。已改为回查 `READY` 取 `id`，`SCEN-REC-20` 覆盖（撤掉修复即红）。`yushi`/`mige` 的「冲突」经复核**不成立**：两处都归控制面/只读，是同一结论的两种写法；`dispatch.mjs` 的 `ALIAS` 表是历史角色名到现行 profile 的映射，不是第二套分类。
 11. **规则冲突。**
     - 心跳：`openspec/specs/pipeline-delivery/spec.md:153` “Ordinary runs SHALL create no recurring heartbeat or schedule” 对比 `SKILL.md:164` 要求 Lead 开工 `create_heartbeat`（3 分钟），shangshu profile notes 与 `~/.paseo/task-routing.md` 同样要求。
     - Lead 阈值：CLAUDE.md 与 `SKILL.md:34` 写“预计派发 ≥6 或 >30 分钟”，task-routing 与 shangshu notes 写“任务数 ≥4”。

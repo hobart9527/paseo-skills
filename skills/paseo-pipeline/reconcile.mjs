@@ -666,11 +666,19 @@ function nextAction(out, { tasks, cap }) {
   if (out.canDispatchNow.length > 0) {
     // 任务列表必须与 canDispatchNow 同一口径（room 已扣除外部写手），
     // 否则执行器按这里的列表派发就会超出 cap。
+    //
+    // 但 `canDispatchNow` 存的是**人读的 label**（`<task-id> <title>`，公开 JSON 契约），
+    // 而动作里的 `tasks` 是给执行器打标签用的**机器标识**。早先这里用
+    // `/\bT-\d+\b/` 从 label 里抠 ID——`lib/tasks.mjs` 明明接受 `<前缀>-<数字>`
+    // （`TASK-01`、`BUG-3` 都合法），非 `T-` 前缀就抠不出来，整条 label 会被当成任务 ID
+    // 塞进 `pipeline.task` 标签。改为回查 READY（label 的产出点，同时带 id）。
     actions.push({
       kind: "dispatch",
       reason: `cap=${cap}，当前 ${out.liveWriterCount} 个本 change 写入者`
         + (out.foreignLiveWriters > 0 ? ` + ${out.foreignLiveWriters} 个同仓外部写手` : '') + ' 在跑',
-      tasks: out.canDispatchNow.map((t) => (typeof t === 'string' ? t.match(/\bT-\d+\b/)?.[0] ?? t : t.id)),
+      tasks: out.canDispatchNow.map(
+        (label) => out.READY.find((r) => r.task === label)?.id ?? label
+      ),
     });
   }
   if (actions.length === 0) {
