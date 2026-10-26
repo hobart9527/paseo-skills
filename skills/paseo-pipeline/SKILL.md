@@ -42,7 +42,7 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 
 **原生 MCP 派发（默认路径）**：派发通过 agent 作用域原生 MCP `create_agent`/`send_agent_prompt` 执行。
 
-**派发 brief 用模板，不要临时拼**：`templates/` 下四份（`writer` / `tester` / `auditor` / `lead`），固定字段为「目标与不变式、base SHA、Write scope、Verify 命令、必填 trailers、信封格式」。模板只保证**字段齐备**，行数按字段需要写，不做行数上限——2026-10-26 冒烟里跑通的那份 Lead brief 是 100 行。省略字段的后果是实测过的：brief 漏写 `pipeline.disposition` 生产者契约，Lead 只能从源码反推，T-1 被 `UNRESOLVED` 锁死一轮。
+**派发 brief 用模板，不要临时拼**：`templates/` 下五份（`writer` / `tester` / `auditor` / `arbiter` / `lead`），固定字段为「目标与不变式、base SHA、Write scope、Verify 命令、必填 trailers、信封格式」。`arbiter` 只在熔断后使用：它拿 R1/R2 的信封做单回合裁决，产出 `OVERRULE`/`PATCH`/`ESCALATE_HUMAN`。模板只保证**字段齐备**，行数按字段需要写，不做行数上限——2026-10-26 冒烟里跑通的那份 Lead brief 是 100 行。省略字段的后果是实测过的：brief 漏写 `pipeline.disposition` 生产者契约，Lead 只能从源码反推，T-1 被 `UNRESOLVED` 锁死一轮。
 
 - 参数源头：`provider`、`settings.modeId`、`settings.thinkingOptionId`、`settings.features` 均取自当前活态 `list_profiles`（其中的 `featureValues→settings.features` 逐字复制）。缺省字段直接省略，禁止编造默认值。
 - 通知约束：`notifyOnFinish: true`（默认启用，不可关闭），通知到达驱动后续流转。
@@ -69,8 +69,19 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 ### 2.0 定位与恢复
 
 1. 无 `openspec/` 先 `openspec init --tools claude`（主会话执行）。
-2. 入参匹配已有 change：由**主会话**跑 `openspec status --change <name> --json` 取断点，再把结论交给 Lead。Lead 自己只读 `openspec/changes/<name>/` 下的产物文件，不执行 `openspec` 命令（见开篇「OpenSpec CLI 主会话独占」）；它需要生命周期信息时走「OpenSpec 交回点」发请求，不得自行代跑。
-3. **任何断链、接手或不确定时刻**，先跑一次只读对账拿真实态：
+2. **安装项目内 schema**（每个目标仓库一次，主会话执行）。仓库自带的 `openspec/config.yaml` `rules` 只在 instructions 末尾追加一段文字，而上游 `spec-driven` 的 tasks 模板示范的是 `- [ ] 1.1 描述`——两个来源同时出现，写的人照模板写就写不出 pipeline 能解析的任务。因此让**模板本身**是对的：
+
+   ```bash
+   mkdir -p openspec/schemas/paseo-pipeline
+   cp -R skills/paseo-pipeline/openspec-schema/. openspec/schemas/paseo-pipeline/
+   openspec schemas    # 确认列出 paseo-pipeline (project)
+   ```
+
+   之后**每个新 change 都必须**用 `openspec new change <name> --schema paseo-pipeline` 创建。已存在的 change 在 `.openspec.yaml` 里固定了 schema，改 config 不会影响它们——它们不会拿到新模板，需要迁移时手工按模板改 `tasks.md`。
+
+   这份 schema 是 OpenSpec 1.8.0 的副本，只改了 tasks/specs 的指令并新增 `acceptance` 产物。升级 OpenSpec 后重跑一次探测：临时仓库 `new change --schema paseo-pipeline` → `openspec instructions tasks` 里出现 `T-01` 与 `Write scope` → `validate --strict` → `archive`。
+3. 入参匹配已有 change：由**主会话**跑 `openspec status --change <name> --json` 取断点，再把结论交给 Lead。Lead 自己只读 `openspec/changes/<name>/` 下的产物文件，不执行 `openspec` 命令（见开篇「OpenSpec CLI 主会话独占」）；它需要生命周期信息时走「OpenSpec 交回点」发请求，不得自行代跑。
+4. **任何断链、接手或不确定时刻**，先跑一次只读对账拿真实态：
    ```bash
    node skills/paseo-pipeline/reconcile.mjs <change>
    ```
@@ -88,18 +99,24 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 2. **风险扫描与 Review 等级**（`tasks.md` 每任务标注，取值只有三档）：
    - `Risk-surface: [error-handling|numerical|concurrency|crypto/auth|irreversible|persistence|public-api|none]`。
    - 三档语义（解析器只接受这三个字面量，其余一律 `UNKNOWN_REVIEW` 报错）：
-     - `strict`：先写 Red 测试再实现，独立 Auditor 审完整 diff。任一非 `none` 风险面自动推导为 `strict`。
+     - `strict`：先写 Red 测试再实现，独立 Auditor 审完整 diff。**显式声明的 `Review` 优先**；缺省时才按风险面推导——有非 `none` 风险面推导为 `strict`，无风险面则保持未定，合流时 fail closed。如实说明的是**调度档位**：`strict` 与 `standard` 在合流门禁上完全相同，区别只在是否先派 Tester 写测试。先写测试是流程选择而非可机械判定的事实，因此不设对应门禁（已有可靠失败复现时不必再派 Tester 造 Red）。
      - `standard`：不强制 Tester 先行，但**必须**独立 Auditor 审查后才能合流（合流门禁与 `strict` 相同，只省掉 Red 测试阶段）。
      - `mechanical`：可客观完整验证且无风险面，允许 `pass(mechanical@tip/base)` 机械审查标签。
    - 声明 `Review: mechanical` 却带风险面会被解析器判 `REVIEW_RISK_CONFLICT` 直接报错。未知风险词同样报错，不得静默按低风险处理。
    - 历史产物里出现过 `Review: required` / `Review: default`，二者不是合法取值，会被判 `UNKNOWN_REVIEW`；迁移时改写为上述三档之一。
    - `Verify with:` 必须是可执行命令；自然语言描述不算命令（`run`/`use`/`see`/`check`/`verify`/`ensure`/`manually` 等英文高频动词开头的一律按自然语言处理，不放行为命令）。冻结时校验，合流时**逐条先跑**——它是任务契约的一部分，不是注释。
      判定口径：已知命令名 / 明确的路径或变量调用（`/abs/node`、`./run.sh`、`$NODE`）/ 小写 ASCII 命令名形状（排除上述高频动词）；描述通常以中文或大写字母开头。跨模块命令请写全调用（`PYTHONPATH=runtime python3 -m pytest …`）。
-   - `Scenarios:` 列出本任务覆盖的 spec 场景编号（`SCEN-*`），收尾静态对账用。
-3. **业务验收矩阵**（L4-01，冻结的一部分，不可省）：为每条业务旅程/异常场景冻结一行，含
-   **旅程或异常场景 → 真实入口/装配点 → 承载任务 → 验证方法 → 环境与数据 → 通过判据 → 责任角色 → 必要外部依赖**。
-   覆盖实现装配与路由可达性，不只验孤立模块。外部必需依赖缺失的项，冻结时就标 `BLOCKED/未验证`，不得用 mock 通过冒充业务验收。
-4. **冻结前机械预检**：跑一次任务解析，确认无 `MISSING_SCOPE`、`UNKNOWN_REVIEW`、`UNKNOWN_RISK`、`REVIEW_RISK_CONFLICT`、`BAD_DONE_LINE`，依赖 ID 存在且无环，scope 为仓库根内合法相对路径。**scope 与老测试迁移的冲突在此解决**，不要留到执行期。
+   - `Scenarios:` 列出本任务覆盖的 spec 场景编号（`SCEN-*`）。它不只是收尾标签：`freeze-check.mjs` 用它做**双向核对**（任务引用的编号必须存在，每个声明的编号必须至少被一个任务认领），`contract-check.mjs` 用它做静态对账。场景名不带 `SCEN-` 编号会被 `freeze-check` 拦下——那种场景在静态对账时被静默跳过，change 看起来验过了，实际什么都没检。
+3. **业务验收矩阵**：`acceptance.md` 是 schema 的独立产物（不是散文段落，也不在 tasks.md 里）。冻结时填 `Result: PENDING` / `Evidence: pending`，**不填 PASS**。列固定为 `Scenario | Entry | Tasks | Verify | Required | Result | Evidence`，每列含义与示例见 `openspec-schema/templates/acceptance.md`。
+   这张表是「算不算交付」的唯一定义：任务合流、单测全绿都不回答它，因为功能可能从真实入口根本走不通。`Entry` 要写真实入口或装配点（HTTP 路由、UI 路径、CLI 命令），不是内部函数；`Required: yes` 阻断交付。冻结时外部必需依赖接不通的，标 `BLOCKED/UNVERIFIED` 并写原因，不得用 mock 通过冒充业务验收。
+   收尾时 `check-evidence --gate acceptance --matrix openspec/changes/<name>/acceptance.md` 从这个文件读必需场景（`--require-scenario` 只能追加），所以漏传不再等于漏验。
+4. **冻结前机械预检**（一条命令，不是靠人核对）：
+
+   ```bash
+   node skills/paseo-pipeline/freeze-check.mjs openspec/changes/<name>
+   ```
+
+   零阻断项才可进入确认点 1。它复用编排器同一个解析器（`lib/tasks.mjs`），因此**不存在「冻结时通过、执行时解析不出来」**：任务行/ID/依赖图/scope 合法性、场景编号双向闭环、验收矩阵的列与引用、Pod 成员全部在这一步核。输出直接贴进冻结报告（计数由命令生成）。`scope 与老测试迁移的冲突在此解决`——那是语义判断，仍由 Auditor 逐条核。跨 change 写范围重叠只出 `HINT`：两个 change 改同一文件是真实情况，先后顺序是人类在确认点 1 的决定，脚本不替人拦。
 5. **spec 撰写规则（冻结审查逐条核，不靠脚本）**：下面五条来自 2026-10-26 `hardening-governance-contracts` 的冻结后返工，每条都对应一次真实的执行期损失。它们**不写成门禁脚本**——语义判据机械化的收益低于维护成本，由 Auditor 在冻结审查时逐条核对。
    - **环境独立**：`Verify with` 必须在**干净工作树**里可执行。命令或 `Write scope` 引用了被 `.gitignore` 的文件（如 `.env.example`）就是冻结缺陷——那会让任务在合并时才发现验证不了。冻结前对新拉出的 worktree 实跑一次。
    - **scope 闭环**：任务的 `Write scope` 必须涵盖它的 `Verify with` **读到**的每个文件，以及它名下每个 `SCEN-*` 的**实现文件**。场景挂给一个 scope 排除实现文件的任务，等于让写手二选一：越权或被判失败。
@@ -143,7 +160,14 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 
 1. **集成环境真实运行**：用集成分支精确 SHA + 启动配置 + 隔离测试数据，从**真实 API/UI 入口**跑冻结的业务验收矩阵。核验服务装配、持久化、授权、异常补偿、重试/幂等与适用的重启恢复，不只调用内部函数。
 2. **有 UI 时**做实际交互与适用视口走查。截图存在不代表业务成功。
-3. **证据双闸门**（第 6 节）：`--gate structure` 留档，`--gate acceptance` 才判定通过。验收闸门只接受约定通过结论、无未验证项、且绑定本次验收 revision。
+3. **证据双闸门**（第 6 节）：`--gate structure` 留档，`--gate acceptance` 才判定通过。验收闸门只接受约定通过结论、无未验证项、且绑定本次验收 revision。收尾固定跑这两条，缺任何一条都不算验收完成：
+
+   ```bash
+   node skills/paseo-pipeline/test/check-evidence.mjs --gate acceptance --sha <集成HEAD> --matrix openspec/changes/<name>/acceptance.md <smoke 证据>
+   node skills/paseo-pipeline/contract-check.mjs <spec 目录> --tasks openspec/changes/<name>/tasks.md --final
+   ```
+
+   `--matrix` 从冻结的验收矩阵读必需场景（调用者只能追加，不能减少）；`--final` 让「测试路径一条都没产出」从 SKIPPED 变成 exit 1——收尾报告里写着「跑过 contract-check」却是空跑，是这条开关唯一的理由。
 4. **OpenSpec 交回点**：需要 `validate`/`archive` 时，Lead 在最终信封里列成**唯一待办请求**并在运行账本标等待；主会话执行后回执，Lead 才继续。文档改动不等于获得 CLI 或发布授权。
 5. **归档集成 change**：`openspec archive <name> --yes`（主会话）。
 6. **人类确认点 2：合入主干**：呈报 diff 摘要、验收 SHA、测试与业务验收记录，经用户确认后方可合入主干。未经确认绝对禁止合入 main、推送远端或发布外部服务。
@@ -171,20 +195,26 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 # 开工：领取/续期编排租约（同 run 唯一 owner + 代际 generation）
 node skills/paseo-pipeline/run-state.mjs begin  <change> --owner <owner-id>
 # 派发前：认领意图（幂等键 [run,task,attempt,phase,role,action]）
-node skills/paseo-pipeline/run-state.mjs claim  <change> --task T-01 --attempt 1 --phase impl --role gongbu
+node skills/paseo-pipeline/run-state.mjs claim  <change> --task T-01 --attempt 1 --phase impl --role gongbu --owner <owner-id>
 # 派发后：登记真实 agent/workspace
-node skills/paseo-pipeline/run-state.mjs record <change> --key <key> --agent <agent-id> [--workspace <id>]
+node skills/paseo-pipeline/run-state.mjs record <change> --key <key> --agent <agent-id> --owner <owner-id> [--workspace <id>]
 # 创建确认失败：显式作废意图，才允许重派
-node skills/paseo-pipeline/run-state.mjs fail   <change> --key <key> --reason <text>
+node skills/paseo-pipeline/run-state.mjs fail   <change> --key <key> --reason <text> --owner <owner-id>
 # 查看：租约、未回执意图
 node skills/paseo-pipeline/run-state.mjs status <change> [--json]
+# 度量：派发次数、同任务最大 attempt、作废意图（采不到的项如实写「未采集」）
+node skills/paseo-pipeline/run-state.mjs report <change> [--json]
 ```
 
+- **有租约时 `--owner` 必填**：`claim`/`record`/`fail` 三个动作在租约生效期间一律要求 `--owner` 且等于当前 owner，否则 exit 2。照抄不带 `--owner` 的写法在 `begin` 之后必然被拒——这是租约在生效，不是命令写错了。租约未启用的单机场景才允许省略。
+
 - **动作意图幂等**：同一幂等键已有未回执意图时，`claim` 以 exit 2 拒绝重复派发。**先记意图，再派发，再记回执。** 创建成功但回执丢失时，按唯一标签对账，未排除重复前不盲重派。
+- **`fail` 只作废「还没回执」的意图**：已有真实 `agent` 回执的意图不得 `fail`（exit 2）。作废的语义是「这次派发确认没有发生」，而回执证明它发生过并指向一个具体 agent——agent 中途失联是 `reconcile` 的 rework，用**新的 attempt 键**重派，不要抹掉这次派发的痕迹。
 - **单 owner 租约**：同 run 只有一个有效 owner。租约过期后旧 owner 的全部 `claim`/`record`/`fail` 一律 exit 2，必须显式 `begin` 领取新代际——防止旧 Lead 复活后继续提交动作。**租约仍有效且属于他人时不得抢占**，等其 renew 或超时。
 - **孤儿意图（`ORPHAN_INTENT`）**：意图超过 10 分钟仍无对应 agent（创建失败或回执丢失）。`reconcile` 把它列为最高优先级 `NEXT arbitrate`，**自动化不得自行重派**，须核对后显式 `fail` 或 `record`。
 - **无 heartbeat 子命令**：注册入口已删（2026-10-26）。常规运行不建周期性 heartbeat，且 `hardening-governance-contracts` 账本里 `heartbeats` 为 0——没有使用者的写入路径不留。旧账本里的 `heartbeats` 数组仍是只读兼容字段，`status` 照常打印。
 - 存放位置：git common dir 下 `paseo-pipeline/<change>/run-state.json`（不放 `openspec/`，否则弄脏工作树阻塞合流）。`PIPELINE_RUN_STATE_DIR` 可覆盖。
+- **Skill 版本留痕**：`begin` 领取租约时把当前 Skill 的 git HEAD 与是否 dirty 写进账本（`skill` 字段）。`status` 发现与当前 HEAD 不同**只警告不拦**——读旧账本、跨机器诊断都不该因为版本不同而失败。但复盘要判断「某条规则当时是否存在」只能靠这个字段，所以不许省掉；旧账本没有这个字段时如实输出「SKILL 未采集」。
 
 **唤醒模型（与 spec 一致）**：常规运行**不创建**周期性 heartbeat 或 schedule；没有经过验证的计时器或外部事件源时，静默丢失的回调无法唤醒空闲 Lead——对账只能在**下一次真实调用**时发生。这是事实，不是可以通过多写几条规则消除的缺陷。
 
@@ -230,7 +260,7 @@ node skills/paseo-pipeline/merge-task.mjs <branch> <task-id> <review-tag> <test-
 2. **依赖门禁**：任务依赖必须已在集成 HEAD 上被 first-parent 合流证明为 `DONE`（exit 35）。直接调用本脚本不能绕开调度顺序。
 3. **冻结验证命令**：本任务及本次合流涉及的每个任务，其 `Verify with` 若不可解析为可执行命令，直接 exit 36 拒绝；可解析的**先逐条执行**，位置参数 `<test-cmd>` 只作为追加（与冻结命令完全相同时不重复执行）。失败时打印 `Verify source: tasks.md (...)`，便于区分是哪个契约没过。
 4. **因子 1 写范围封闭**：`git diff` 的修改文件必须 100% 落在任务 `Write scope:` 前缀内（exit 30）。
-5. **因子 2 作者血统与控制面隔离**：**逐个 commit** 校验必须带 `Pipeline-Role`（属于 `gongbu`/`gaogong`/`ceshi`/`jiangzuo`/`qingqibing`）与 `Pipeline-Author`；缺失或属控制面（`shangshu`/`lead`/`anchasi`/`hanlin`）以 exit 31 硬阻断。逐个 commit 判定，防止一个合法提交掩盖另一个无 trailer 的提交。
+5. **因子 2 作者血统与控制面隔离**：**逐个 commit** 校验必须带 `Pipeline-Role`（属于 `gongbu`/`gaogong`/`ceshi`/`jiangzuo`）与 `Pipeline-Author`；缺失或属控制面（`shangshu`/`lead`/`anchasi`/`hanlin`）以 exit 31 硬阻断。逐个 commit 判定，防止一个合法提交掩盖另一个无 trailer 的提交。`qingqibing` 仍被 `lib/roles.mjs` 识别为写手角色，但只为读取历史标签——新派发不得再用它。
 6. **因子 3 独立非自审**：`review-tag` 必须为 `pass(<reviewer-id8>@<tip7>/<base7>)`；`reviewer` 与任一 `Pipeline-Author` 相同即 exit 32（完整 UUID 与唯一可解析前缀都比对，歧义 fail closed）。`Review: strict`/`standard` 严禁用 `mechanical`。
 6a. **因子 3b 审查员与派发记录交叉核对**（仅当该 change 的运行账本存在时生效）：只比对 commit 作者不够——历史 T-02 事故里写手提交没有 `Pipeline-Author` trailer，自审检查完全落空。有账本时，`reviewer` 不得等于本次合入任务中任一**写手意图**（`role` 属写入角色）的 `agentId`（exit 32），且必须命中其中至少一条已回执的 `anchasi` 审计意图（Pod 是一次审查覆盖整组，不要求逐任务各派一次）；账本不可解析同样 exit 32，不得按「没记录」豁免。
     - 账本不存在时沿用 trailer 检查，但**跳过必须留痕**：run-log 记 `review-attestation=SKIPPED(no-run-state)`。有账本记 `run-state`，mechanical 审查记 `mechanical-review`。门禁静默消失与门禁通过必须可区分——2026-10-26 的 5 任务冒烟就是这样全程 `present=false` 跑完，自审交叉核对一次未执行而账本无痕。
@@ -252,13 +282,17 @@ node skills/paseo-pipeline/test/check-evidence.mjs --gate acceptance --sha <acce
 node skills/paseo-pipeline/test/check-evidence.mjs --gate all --sha <acceptance-sha> <file>
 ```
 
-- **结构闸门（默认）**：只校验字段齐备、UUID/时间戳合法。**FAIL 报告的合法留档也 exit 0**——失败调查可以完成。
+- **结构闸门（默认）**：只校验字段齐备、UUID/时间戳合法。**FAIL 报告的合法留档也 exit 0**——失败调查可以完成。字段清单的唯一定义在 `lib/evidence-contract.mjs`，写证据照 `templates/evidence-smoke.md` / `templates/evidence-audit.md` 抄：三处指向同一份定义，改一处不会静默漂移。
 - **占位值不是采集值**：`PLACEHOLDER`/`TODO`/`FIXME`/`TBD` 等占位专用词按子串匹配；`LOST`/`UNKNOWN`/`TEST`/`NOT_COLLECTED` 这类通用词按词边界匹配（边界为空白/下划线/字符串边缘），因此真实标识里的子串（如 ULID 片段 `01JAXLOSTFOUND`、路径 `a.test.mjs`）不误伤，而编造收据的分隔形态（`msg_01JAX_LOST_NOTIFICATION`）仍拒绝。全同字符的退化 SHA 同样拒绝。以上与「字段缺失」同等对待，结构闸门即拒绝。采集不到就写「未采集」并说明原因，不要编一个看起来像收据的值。
+  - **判据的作用范围是「闸门读的字段」**：契约字段（`lib/evidence-contract.mjs` 里列的那些）与 `*_command` 形态的命令字段。`notes: the TEST harness was restored, for example …` 这类人话不参与判定——闸门不读它，它的措辞就不该决定收据存亡。命令字段另走整值判据：`npm --prefix packages/server test` 是命令，`TODO` 才是占位。
+  - **「未采集」是合法的留档值，不是可验收值**：验收闸门会拒掉写「未采集」的必填字段。这两条不矛盾——留档要如实，验收要真值。
 - **验收闸门**：只接受约定通过结论，且要求
   - 必须先过结构闸门；**smoke 与 audit 都必须给 `--sha`**——没有 revision 绑定的证据无法证明「当前这份代码」被验证过，smoke 已带 `reviewed_sha` 时还要与之一致；
   - smoke `result: PASS`、`unverified:` 为空、`notification_at >= dispatched_at`；
   - audit `verdict` 属约定通过集合、`reviewed_sha` 与 `--sha` 一致（7 位前缀与完整 sha 可互比）；
   - `--require-scenario <SCEN-ID>` 指定的场景不只要「被提到」：必须在 `scenario_results:` 段落里有 `<ID>: PASS` 的结论，且不得同时挂在 `unverified` 列表（自相矛盾直接拒绝）。**正文提及、注释、TODO 都不算验证**；记为 `FAIL`/`BLOCKED`/`SKIPPED` 同样阻断。
+  - `--matrix openspec/changes/<name>/acceptance.md` 从冻结的验收矩阵取必需场景（`Required: yes` 的行），矩阵里没通过的行同样阻断验收。调用者只能 **追加**（`--require-scenario`），不能减少——与 merge-task 对冻结 `Verify with` 的口径一致。
+  - `child_agent_id` 必须在 Paseo 持久记录里**真实存在**，且 `dispatched_at`/`notification_at` 不得早于该 agent 的真实 `createdAt`。Paseo 目录不在本机时用 `PIPELINE_SKIP_PASEO_LOOKUP=1` 显式豁免——豁免本身即报错，只能当结构留档。
 - **FAIL、BLOCKED、SKIPPED、未验证、非 pass verdict、过期 revision 一律不能折算 PASS。** 调查任务完成 ≠ 被调查能力完成。
 
 ## 7. 失败处置与恢复

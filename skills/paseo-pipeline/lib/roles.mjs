@@ -1,5 +1,7 @@
 // 角色与阶段集合的唯一定义点（single source of truth）。
-// reconcile.mjs / merge-task.mjs / dispatch.mjs 一律从此处引用，禁止各自复制集合。
+// reconcile.mjs / merge-task.mjs / hotfix.sh 一律从此处引用，禁止各自复制集合。
+// （`dispatch.mjs` 已于 2026-10-26 删除；hotfix.sh 用 node -e 内联读 profile，
+//   不复制角色表，只是引用同一份 config.json。）
 //
 // 实测依据（2026-10-25，68 个 pipeline agent 的真实标签分布）：
 //   role:   anchasi 36, gongbu 9, gaogong 8, ceshi 7, yushi 5, qingqibing 1, lead 1, 缺失 1
@@ -12,6 +14,8 @@ export const CONTROL_ROLES = new Set([
 ]);
 
 /** 任务面写入者：持写范围、计入 cap、合流时校验作者血统。 */
+// `qingqibing` 只为识别历史标签保留：它对应的 profile 已不在派发路径上，
+// 新任务不得再以它下发；删掉会让带该标签的历史 agent 被判成 UNMAPPED 而无法对账。
 export const WRITER_ROLES = new Set(['gongbu', 'gaogong', 'ceshi', 'jiangzuo', 'qingqibing']);
 
 /** 任务面只读：需要 task/attempt/phase 身份，但不持写范围。 */
