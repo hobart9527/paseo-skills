@@ -148,7 +148,8 @@
 
 **关键缺陷：`paseo wait` 的退出码恒为 0。** `idle`、`timeout`、`error`（如 `Agent not found`）三种终局全部 `rc=0`（分别为 `rc=0` / `rc=0` / `rc=0`）。任何 `paseo wait ... && 继续推进` 的写法都会把「超时没等到」当成「子 agent 完成了」。调用方必须解析 `--json` 的 `status` 字段。
 
-- **Lead**：派发后不结束回合，前台循环 `paseo wait <id...> --timeout 540`；返回即跑 `reconcile.mjs` 并执行动作，超时则轻量对账后继续等。回合不 idle，就不依赖 `notifyOnFinish` 唤醒 idle 父级。
+- **Lead**：派发后不结束回合，前台循环 `paseo wait <id> --timeout 540`；返回即跑 `reconcile.mjs` 并执行动作，超时则轻量对账后继续等。回合不 idle，就不依赖 `notifyOnFinish` 唤醒 idle 父级。
+  - **注意：`paseo wait` 一次只接受一个 id。** `paseo wait --help` 为 `Usage: paseo wait [options] <id>` / `Arguments: id  Agent ID (or prefix)`，不是可变参数。并行 DAG 下同时有多个子 agent 在跑时，只能（a）串行逐个 wait——先等的那个 idle 返回后其余仍在跑，会造成空转窗口；或（b）`run_in_background` 并发起多个 `paseo wait`，以先返回者为准。两种策略尚未实测，见 §8.5。
 - **主会话**（Claude Code，非 Paseo agent）：对 Lead 用后台 `paseo wait <lead-id>`（Bash `run_in_background` 或 Monitor），由 harness 通知；Lead 最终信封通过 `paseo logs` / `get_agent_activity` 读取。
 - 删除孙→Lead→父的 `send_agent_prompt` 接力要求与未实现的 message-id 去重。
 - Heartbeat 降为可选兜底（仅 Lead 回合意外结束时），与 spec.md:153 统一；`run-state heartbeat` 只保留 register/delete 记账。
