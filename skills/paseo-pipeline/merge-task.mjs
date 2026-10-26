@@ -482,10 +482,18 @@ function reviewerMatchesAny(reviewer, ids) {
 //
 // 运行账本不存在时跳过——那表示这个 change 没走流水线记账（例如热修只合并单任务），
 // 此时沿用上面的 trailer 检查。存在即按账本判定：账本在，就不得用「没记」当豁免。
+//
+// 但「跳过」必须留痕。SKILL 要求每次派发前先 claim，账本缺失说明编排并没有照做；
+// 静默跳过等于让一条本该生效的门禁无声消失（2026-10-26 的 5 任务冒烟就是这样跑完的，
+// 全程 run-state.present=false，自审交叉核对一次都没执行）。所以在 run-log 写一行
+// `review-attestation=SKIPPED(no-run-state)`，让「这条门禁本轮没生效」在账本里可查。
 const runLedger = readRunState(source.change);
 if (runLedger.error !== null) {
   fail(`run-state ledger is unreadable, refusing to attest review independence: ${runLedger.error}`, 32);
 }
+const ledgerAttestation = runLedger.present
+  ? 'run-state'
+  : (reviewer === 'mechanical' ? 'mechanical-review' : 'SKIPPED(no-run-state)');
 if (runLedger.present && reviewer !== 'mechanical') {
   const recorded = runLedger.state.intents.filter((intent) => typeof intent.agentId === 'string' && intent.agentId !== '');
   const scoped = recorded.filter((intent) => taskIds.includes(intent.task));
@@ -649,9 +657,10 @@ try {
   markTasksDone(tasksFile, requestedTasks, tip7, reviewTag);
   const driftNote = drifted ? ` baseline-drift=${reviewedBase7}..${preMergeHead.slice(0, 7)}` : '';
   const legacyNote = allowLegacyAuthor ? ' author-provenance=BYPASSED(legacy)' : '';
+  const attestNote = ` review-attestation=${ledgerAttestation}`;
   appendRunLog(
     logFile,
-    `- ${new Date().toISOString()} merge tasks=${taskIds.join(',')} branch=${branch} source=${tip} review=${reviewTag} test_cmd=${JSON.stringify(testPlan)} verify_source=${JSON.stringify(verifySource)} test_duration=${testDuration}ms${driftNote}${legacyNote}`
+    `- ${new Date().toISOString()} merge tasks=${taskIds.join(',')} branch=${branch} source=${tip} review=${reviewTag} test_cmd=${JSON.stringify(testPlan)} verify_source=${JSON.stringify(verifySource)} test_duration=${testDuration}ms${driftNote}${legacyNote}${attestNote}`
   );
   git(['add', tasksFile, logFile]);
   const trailers = [

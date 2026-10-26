@@ -626,6 +626,18 @@ function intent({ task = 'T-1', role, agentId, attempt = 1, phase = 'impl' }) {
   };
 }
 
+/**
+ * 一个**存在但没有账本文件**的状态根目录。
+ *
+ * 直接不设 `PIPELINE_RUN_STATE_DIR` 也行（默认目录里若已有别的 change 账本，读的仍是被测
+ * change 的路径），但显式给空目录能保证用例不被开发机上的真实账本污染。
+ */
+function emptyStateDir(context) {
+  const root = mkdtempSync(path.join(tmpdir(), 'pipeline-merge-empty-'));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  return root;
+}
+
 test('SCEN-MRG-16 a reviewer that run-state records as the writer is self-approval, not just the trailer author', (context) => {
   const repo = fixture(context);
   // 复刻 T-02 的本质：提交上的作者 trailer 是别人的（或缺失），而 review tag 写的是
@@ -669,6 +681,50 @@ test('SCEN-MRG-16 a reviewer recorded as the audit intent for every task merges'
   ]);
   const result = invoke(repo, { env: { PIPELINE_RUN_STATE_DIR: stateDir } });
   assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+});
+
+// --- 因子 3b 的可观测性 ---
+//
+// 账本缺失时跳过交叉核对是**有意的**（热修单任务不走记账），但跳过必须留痕。
+// 2026-10-26 的 5 任务冒烟就是这样跑完的：全程 `run-state.present=false`，
+// 自审交叉核对一次都没执行，而 run-log 里没有任何一行说明这件事——
+// 「门禁静默消失」与「门禁通过」在账本上长得一模一样。
+test('SCEN-MRG-28 merging without a run-state ledger records review-attestation=SKIPPED', (context) => {
+  const repo = fixture(context);
+  const result = invoke(repo, { env: { PIPELINE_RUN_STATE_DIR: emptyStateDir(context) } });
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  const merge = git(repo.cwd, 'rev-parse', 'HEAD');
+  const log = git(repo.cwd, 'show', `${merge}:${logPath}`);
+  assert.match(log, /review-attestation=SKIPPED\(no-run-state\)/,
+    'ledger absent must be recorded, not silently treated as attested');
+});
+
+test('SCEN-MRG-28 merging with a run-state ledger records review-attestation=run-state', (context) => {
+  const repo = fixture(context);
+  const stateDir = writeRunState(context, [
+    intent({ role: 'gongbu', agentId: 'a1b2c3d4' }),
+    intent({ role: 'anchasi', phase: 'audit', agentId: '12345678-aaaa-bbbb-cccc-dddddddddddd' }),
+  ]);
+  const result = invoke(repo, { env: { PIPELINE_RUN_STATE_DIR: stateDir } });
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  const merge = git(repo.cwd, 'rev-parse', 'HEAD');
+  const log = git(repo.cwd, 'show', `${merge}:${logPath}`);
+  assert.match(log, /review-attestation=run-state/);
+  assert.doesNotMatch(log, /SKIPPED/);
+});
+
+test('SCEN-MRG-28 mechanical review without a ledger is not reported as skipped attestation', (context) => {
+  // mechanical 本来就不做独立审计，把它记成 SKIPPED 会制造假警报。
+  const repo = fixture(context, { tasks: [{ id: 'T-1', review: 'mechanical' }] });
+  const result = invoke(repo, {
+    env: { PIPELINE_RUN_STATE_DIR: emptyStateDir(context) },
+    tag: reviewTag(repo, { reviewer: 'mechanical' }),
+  });
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  const merge = git(repo.cwd, 'rev-parse', 'HEAD');
+  const log = git(repo.cwd, 'show', `${merge}:${logPath}`);
+  assert.match(log, /review-attestation=mechanical-review/);
+  assert.doesNotMatch(log, /SKIPPED/);
 });
 
 // --- 依赖门禁（L1-03） ---

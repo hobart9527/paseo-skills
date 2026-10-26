@@ -4,8 +4,8 @@
 - 输入：R1《paseo-pipeline-review-2026-10-25.md》（基线公开提交 `ae0ca49`）
 - 本次基线：本地工作区 = HEAD `ae0ca49` + 未提交改动（`git status --porcelain` 23 行；`git diff --stat` 15 文件 +2561/−458；未跟踪文件含 `lib/paseo-state.mjs`、`lib/roles.mjs`、`lib/run-state.mjs`、`lib/ledger.mjs`、`lib/lock.mjs`、`run-state.mjs`）
 - 本机：`paseo 0.12.0`；`paseo ls --json --all` 1604 行，字段 `id,shortId,name,provider,thinking,status,cwd,created`（无 labels）
-- 回归实测（2026-10-26 本轮收口，在仓库根目录执行 `bash skills/paseo-pipeline/test/run-all.sh`）：Node `tests 397 / pass 397 / fail 0`，`duration_ms 109471.265083`；contract-check（`bash skills/paseo-pipeline/contract-check.test.sh`）`通过 19 / 失败 0`。R1 的 244、本文初版的 349、上一轮的 378/390/391/392 都是历史计数。
-- 未执行：原生 Paseo 冒烟、真实业务试点。下文 §4.1 唤醒方案为待验证假设。
+- 回归实测（2026-10-26 本轮收口，在仓库根目录执行 `bash skills/paseo-pipeline/test/run-all.sh`）：Node `tests 400 / pass 400 / fail 0`，`duration_ms 112192.486958`；contract-check（`bash skills/paseo-pipeline/test/contract-check.test.sh`）`通过 19 / 失败 0`。R1 的 244、本文初版的 349、上一轮的 378/390/391/392/397 都是历史计数。
+- 原生 Paseo 冒烟（包 0）：**已执行**，5 任务全流程一次跑通，采集值与覆盖缺口见 §8。真实业务试点**未执行**。
 - 行号对应 2026-10-26 00:21 的工作区（`reconcile.mjs` 在走查期间仍被改动过一次，结论已按最新文件重核）。
 
 ---
@@ -18,7 +18,7 @@
 | B 合流门禁 | **已实施** | 冻结 `Verify with` 强制先跑（exit 36）；`-z --no-renames`；单写者锁（exit 37）；Pod 冻结成员校验；legacy 豁免需环境变量二次确认并记 run-log；测试内 commit 检测（exit 40）；进程组 kill；已合流重试的分项诊断（SCEN-MRG-25/26/27）；base 须同时是集成 HEAD 与 tip 的祖先（exit 34）；审查员与运行账本派发记录交叉核对（exit 32，复刻 T-02 自审） |
 | C 契约收敛 | **部分实施** | 角色/phase 单点定义（`lib/roles.mjs`）；`Review` 三档语义写入 SKILL；run-state 读改写加锁 + 候选校验入锁；证据闸门的场景 PASS、占位值与 smoke `--sha` 已补（SCEN-EVD-01/02）；§3-P1-11 的 SKILL/LESSONS 内部矛盾已逐条消除，只剩 `~/.paseo/task-routing.md` 与 shangshu notes 中的活态表述未改（需另行授权） |
 | D 试点 | **未执行** | 无真实业务验收，不得宣布产品验收成功 |
-| 0 唤醒冒烟 | **进行中** | 底层原语已实测（`paseo wait` 阻塞与唤醒可用，退出码恒 0）；5 任务全流程冒烟尚未收尾，见 §8 |
+| 0 唤醒冒烟 | **已执行（判断：通过）** | 5 任务串行全流程一次跑通，0 失败、0 人工催促；顺带查出「账本缺失导致因子 3b 静默消失」并已修。采集值与覆盖缺口见 §8 |
 
 **下文 §2/§3 的行号与结论保留为当时的复核记录；已闭合项在 §2 表格中标为「已修复」，未闭合项在 §3 末尾的「仍未闭合」清单集中列出。**
 
@@ -104,7 +104,7 @@
 1. `--allow-legacy-author` 仍能整体关闭作者血统门禁。已加两道约束（`PIPELINE_ALLOW_LEGACY_AUTHOR=1` 二次确认 + run-log 记 `BYPASSED(legacy)`），未移除该路径。
 2. 通知去重（spec 要求的 message-id 复合键）只有文字描述，无实现。
 3. `Review: required` / `Review: default` 在历史 `tasks.md` 里真实出现过（11 + 1 处，均在 archive），现被 `UNKNOWN_REVIEW` 拒绝；SKILL 已注明需迁移，但未提供迁移脚本。
-4. ~~`paseo wait` 主动等待方案（§4.1）未验证~~ → **原语层已验证**（见 §4.1 实测表）：阻塞语义、子 agent 完成后唤醒、退出码恒 0 三个事实均已采集。**仍未采集**：Lead 全程前台阻塞下的上下文增长、单次 wait 540s 与回合超时的相互作用、5 任务全流程一次成功率。
+4. ~~`paseo wait` 主动等待方案（§4.1）未验证~~ → **原语层与单 change 串行全流程均已验证**（见 §4.1 实测表与 §8）：阻塞语义、子 agent 完成后唤醒、退出码恒 0、5 任务一次成功率 5/5 均已采集。**仍未采集**：并行 DAG（cap>1）下的唤醒、单次 wait 540s 上限被真正触及时的行为、Lead 长回合的上下文增长。
 5. 真实业务验收、原生多 Agent 冒烟、一次成功率与耗时采集全部**未执行**。
 
 **本轮新闭合（原 2/3/4/5/7 项，均带负向对照）**
@@ -153,6 +153,8 @@
 - 删除孙→Lead→父的 `send_agent_prompt` 接力要求与未实现的 message-id 去重。
 - Heartbeat 降为可选兜底（仅 Lead 回合意外结束时），与 spec.md:153 统一；`run-state heartbeat` 只保留 register/delete 记账。
 - 风险：`paseo wait` 长时间阻塞对 Lead 上下文与超时的影响**未采集**；包 0 冒烟不过则回退现状并如实记录。
+
+**包 0 冒烟结果（2026-10-26，见 §8）：串行路径通过。** 5 任务 5 次派发 5 次合流、0 失败、0 人工催促，5 次 wait 全部 `status: idle`（40–82s，未触及 540s 上限）。§4.1 在串行 DAG 上从假设变为已验证；并行 DAG 与超时分支仍未采集。
 
 ### 4.2 reconcile：一次唤醒推进所有可做动作
 
@@ -216,7 +218,7 @@ acceptance 先跑 structure；smoke 与 audit 都必须 `--sha`；场景按 toke
 
 | 包 | 内容 | 出口判据 | 状态 |
 |---|---|---|---|
-| 0 唤醒冒烟（先做） | 3 任务、≥1 依赖边、≥1 对共享文件（整数运算契约）；Lead 前台 `paseo wait`，主会话后台 wait Lead | 无人工催促完成派发→合流→最终信封；各段真实耗时入证据；失败记 FAIL，保留现状 | **未执行** |
+| 0 唤醒冒烟（先做） | 5 任务、4 条依赖边、1 对共享文件（`src/catalog.mjs`，整数运算契约）；Lead 前台 `paseo wait`，主会话后台 wait Lead | 无人工催促完成派发→合流→最终信封；各段真实耗时入证据；失败记 FAIL，保留现状 | **已执行**，判据全满足，采集值见 §8 |
 | A 观测与对账 | §4.2 + 角色单源 | 新增用例：permit 失败降级、archivedAt、MISSING_SCOPE 占 cap、旧 attempt 权限、`-a10`/`-a2`、rejected 不进 MERGE、局部阻塞不压独立任务 | **已实施**（`MISSING_SCOPE` 占 cap 与「同仓外部写手计 cap」本次补齐，SCEN-REC-17 ×2） |
 | B 合流门禁 | §4.3 + §4.7 | 新增用例：Verify 替换、改名越界、中文路径、改写 staged、测试内 commit、并发 merge、legacy no-op、自审复刻 T-02、重复合流幂等 | **已实施**；「重复合流幂等」按 spec 裁决落为**诊断精度**（仍 exit 非零），见 §4.3 |
 | C 契约收敛 | §4.4 + §4.5 | run-state 并发与 owner 用例；docs.test 检查规则只在一处定义；SKILL 内部矛盾清单（§3-P1-11）逐条消除 | **部分**；run-state 并发已覆盖，SKILL 矛盾清单未逐条消除 |
@@ -239,3 +241,71 @@ acceptance 先跑 structure；smoke 与 audit 都必须 `--sha`；场景按 toke
 3. hotfix 定位：L1 正式入口（推荐）还是 Legacy。
 4. 当前未提交改动是否先作为基线提交。
 5. 是否授权按 §5 从包 0 开始实施。
+
+---
+
+## 8. 包 0 唤醒冒烟：执行记录（2026-10-26）
+
+冒烟目的不是交付功能，是验证 §4.1「Lead 前台阻塞 `paseo wait`」这条唤醒链在真实多任务流程里是否成立。产物在独立仓库 `/Users/hobart/Codex/pipeline-smoke-wait`（不属于本仓库交付物）。
+
+### 8.1 冒烟契约
+
+整数精确运算，纯本地、无外部依赖、无浮点（浮点误差界会变成考察 spec 写作能力，而不是调度能力）。
+
+| 任务 | 依赖 | Write scope | Review |
+|---|---|---|---|
+| T-1 整数核心工具 | none | `src/core.mjs`, `test/core.test.mjs` | mechanical |
+| T-2 整数序列 | T-1 | `src/seq.mjs`, `test/seq.test.mjs`, **`src/catalog.mjs`** | mechanical |
+| T-3 整数数论 | T-1 | `src/numbertheory.mjs`, `test/numbertheory.test.mjs`, **`src/catalog.mjs`** | mechanical |
+| T-4 组合入口 | T-2, T-3 | `src/ops.mjs`, `test/ops.test.mjs` | mechanical |
+| T-5 整数报表 | T-4 | `src/report.mjs`, `test/report.test.mjs`, `README.md` | mechanical |
+
+判据自检：5 任务 ≥5 ✓；依赖边 4 条（T-1→T-2/T-3，T-2/T-3→T-4，T-4→T-5）✓；共享文件 1 对（T-2/T-3 同写 `src/catalog.mjs`，实测两次合流都落到了该文件）✓。
+
+### 8.2 采集值
+
+Lead（`51915b72-3011-40ad-a7df-e5961fe1b30a`）最终信封：
+
+| 字段 | 采集值 |
+|---|---|
+| `tasks_done` | 5/5 |
+| `dispatch_count` / `merge_count` / `merge_failures` | 5 / 5 / 0 |
+| `first_dispatch_at` → `last_merge_at` | `2026-10-26T04:36:07Z` → `2026-10-26T04:49:57Z`（830s） |
+| `wait_calls` / `wait_timeouts` | 5 / 0 |
+| 单次 wait 阻塞时长 | 75s / 82s / 40s / 79s / 58s，合计 334s |
+| `blockers` | none |
+
+合流账本（`git log --first-parent integration/integer-ops-smoke`，提交时间换算为 UTC）：
+
+```
+b4ffb77  04:49:57Z  merge(T-5)
+fd999c1  04:47:54Z  merge(T-4)
+fafc6eb  04:45:34Z  merge(T-3)
+bdd9949  04:43:27Z  merge(T-2)
+98c9be3  04:40:30Z  merge(T-1)
+f42764b  04:32:15Z  docs(spec): freeze integer-ops-smoke spec and task DAG
+1219219  04:30:58Z  chore: init smoke repo
+```
+
+集成 tip `b4ffb77` 复核：`node --test` → `tests 37 / pass 37 / fail 0`；`git status --porcelain=v1` → 0 行。
+
+### 8.3 结论
+
+1. **唤醒链成立。** 5 次 wait 全部以 `status: idle` 返回、0 次 timeout，单次 40–82s 即子 agent 真实停下即返回，离 540s 上限很远。全程没有一次人工催促 Lead，也没有一次靠 `notifyOnFinish` 把结果送回来——Lead 回合不 idle，就不需要回调唤醒。§4.1 从假设升为已验证（串行路径）。
+2. **空等没有消失，但可度量了。** 334s 阻塞 / 830s 墙钟 = 40%。这是子 agent 真实工作时间，不是空等；真正的空等需要并行 DAG 才能测出来（本次串行，未采集）。
+3. **退出码恒 0 的坑没踩到**，因为 Lead 按 brief 解析了 JSON `status`。但这是纪律而不是机制——只要有人写一次 `paseo wait ... && 推进` 就会把超时当完成。
+4. **门禁静默消失被查出。** 全程 `<git-common-dir>/paseo-pipeline/` 下只有 `locks/`，没有 `run-state.json`，即 `readRunState` 的 `present=false`：因子 3b（审查员与派发记录交叉核对）一次都没执行，而 run-log 里没有任何痕迹。**「门禁跳过」与「门禁通过」在账本上长得一模一样。** 已修：`merge-task.mjs` 在 run-log 追加 `review-attestation=run-state|mechanical-review|SKIPPED(no-run-state)`，账本不可解析则直接 exit 32（不再静默跳过）。SCEN-MRG-28 ×3 覆盖三种取值。
+   - 该字段是在本轮运行中途加入的（`merge-task.mjs` 落盘 `04:46:21Z`，落在 T-3 合流 `04:45:34Z` 与 T-4 合流 `04:47:54Z` 之间），所以**同一次冒烟的 T-1/T-2/T-3 三行没有该字段、T-4/T-5 两行有**（均为 `mechanical-review`）。这是采集事实，不是遗漏。
+
+### 8.4 摩擦点
+
+1. **`pipeline.disposition` 的生产者契约没写进 brief。** Lead 首轮跑 `reconcile` 时 T-1 被判 `UNRESOLVED` 并锁死，只能从 `lib/roles.mjs` 反推「编排者核对产出后 `update_agent` 打 `handed-off`」。已写入 SKILL §1 的处置表；派发 brief 必须带这一条。
+2. **zsh 的 `date +%3N` 不展开**，Lead 自报时间戳精度实为秒。要毫秒必须在 bash 下取或改用 Node。
+3. **Paseo 会自动给已存在的分支名加后缀**（`integration/<name>` → `integration/<name>-1`）。创建 workspace 后必须 `git branch --show-current` 核对，否则合流门禁会以「当前分支不是 `integration/<name>`」拒绝。
+
+### 8.5 本次冒烟未能覆盖的
+
+- **并行 DAG（cap>1）**：全程串行派发，cap 并发与 scope 冲突串行化都没有被真实压测。
+- **540s 上限被真正触及**：最长单次 82s，超时分支（`status: timeout` 后继续等同一 id）只在中途的原语探针里验过，没在真实任务上验过。
+- **Lead 长回合的上下文增长**：Lead 只跑 13 分 50 秒，远未到压缩边界。
+- **打回路径**：0 次打回、0 次仲裁、0 次预算消耗。

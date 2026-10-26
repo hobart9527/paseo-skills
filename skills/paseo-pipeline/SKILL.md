@@ -226,6 +226,7 @@ node skills/paseo-pipeline/merge-task.mjs <branch> <task-id> <review-tag> <test-
 5. **因子 2 作者血统与控制面隔离**：**逐个 commit** 校验必须带 `Pipeline-Role`（属于 `gongbu`/`gaogong`/`ceshi`/`jiangzuo`/`qingqibing`）与 `Pipeline-Author`；缺失或属控制面（`shangshu`/`lead`/`anchasi`/`hanlin`）以 exit 31 硬阻断。逐个 commit 判定，防止一个合法提交掩盖另一个无 trailer 的提交。
 6. **因子 3 独立非自审**：`review-tag` 必须为 `pass(<reviewer-id8>@<tip7>/<base7>)`；`reviewer` 与任一 `Pipeline-Author` 相同即 exit 32（完整 UUID 与唯一可解析前缀都比对，歧义 fail closed）。`Review: strict`/`standard` 严禁用 `mechanical`。
 6a. **因子 3b 审查员与派发记录交叉核对**（仅当该 change 的运行账本存在时生效）：只比对 commit 作者不够——历史 T-02 事故里写手提交没有 `Pipeline-Author` trailer，自审检查完全落空。有账本时，`reviewer` 不得等于本次合入任务中任一**写手意图**（`role` 属写入角色）的 `agentId`（exit 32），且必须命中其中至少一条已回执的 `anchasi` 审计意图（Pod 是一次审查覆盖整组，不要求逐任务各派一次）；账本不可解析同样 exit 32，不得按「没记录」豁免。
+    - 账本不存在时沿用 trailer 检查，但**跳过必须留痕**：run-log 记 `review-attestation=SKIPPED(no-run-state)`。有账本记 `run-state`，mechanical 审查记 `mechanical-review`。门禁静默消失与门禁通过必须可区分——2026-10-26 的 5 任务冒烟就是这样全程 `present=false` 跑完，自审交叉核对一次未执行而账本无痕。
 6b. **Pod 成员集合**：`pod/<change>` 分支必须附带冻结的 `openspec/changes/<change>/pod-members.json`，且 `<task-ids>` 必须**恰好等于**该成员集合（多报、少报、缺文件均 exit 31）。分支名不携带任务身份，成员真源只有这一份冻结记录。
 6c. **legacy 豁免需二次确认**：`--allow-legacy-author` 会整体关闭作者血统门禁，必须同时设置 `PIPELINE_ALLOW_LEGACY_AUTHOR=1`，否则 exit 31；放行时 run-log 记 `author-provenance=BYPASSED(legacy)`。控制面角色检查不受豁免影响。
 7. **基线锚定**：`base7` 必须同时是集成 HEAD 的祖先、以及被合入 tip 的祖先（任一不满足即 exit 34）——集成在任务分支拉出后前进一步时，那个新 HEAD 仍是集成历史祖先，但 `base..tip` 已把本任务没写过的提交算进审查范围。与当前集成 HEAD 漂移且改动文件重叠时拒绝合流要求重审，不重叠则记录漂移放行。
