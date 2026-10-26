@@ -16,7 +16,7 @@
 |---|---|---|
 | A 观测与对账 | **已实施** | `lib/paseo-state.mjs` 单一适配器 + runtime 三态；活态改为「任一源报 live 即 live」；attempt 数值绑定；`rejected` 分支不再进 MERGE；解析级 INVALID 写手与同仓外部写手均计入 cap（SCEN-REC-17 ×2） |
 | B 合流门禁 | **已实施** | 冻结 `Verify with` 强制先跑（exit 36）；`-z --no-renames`；单写者锁（exit 37）；Pod 冻结成员校验；legacy 豁免需环境变量二次确认并记 run-log；测试内 commit 检测（exit 40）；进程组 kill；已合流重试的分项诊断（SCEN-MRG-25/26/27）；base 须同时是集成 HEAD 与 tip 的祖先（exit 34）；审查员与运行账本派发记录交叉核对（exit 32，复刻 T-02 自审） |
-| C 契约收敛 | **部分实施** | 角色/phase 单点定义（`lib/roles.mjs`）；`Review` 三档语义写入 SKILL；run-state 读改写加锁 + 候选校验入锁；证据闸门的场景 PASS、占位值与 smoke `--sha` 已补（SCEN-EVD-01/02）；§3-P1-11 的 SKILL/LESSONS 内部矛盾已逐条消除，只剩 `~/.paseo/task-routing.md` 与 shangshu notes 中的活态表述未改（需另行授权） |
+| C 契约收敛 | **部分实施** | 角色/phase 单点定义（`lib/roles.mjs`）；`Review` 三档语义写入 SKILL；run-state 读改写加锁 + 候选校验入锁；证据闸门的场景 PASS、占位值与 smoke `--sha` 已补（SCEN-EVD-01/02）；§3-P1-11 的 SKILL/LESSONS 内部矛盾已逐条消除（心跳、Lead 阈值、hotfix 定位、OpenSpec 交回、审查轮数、停滞信号均已复核一致）；派发 brief 四份模板已落地并锁定必填字段（SCEN-DOC-13..16）；非 `T-` 前缀任务 ID 的 dispatch 标识已修（SCEN-REC-20）。**仅剩** `~/.paseo/task-routing.md` 与 shangshu notes 中的活态表述未改（需另行授权） |
 | D 试点 | **未执行** | 无真实业务验收，不得宣布产品验收成功 |
 | 0 唤醒冒烟 | **已执行（判断：通过）** | 5 任务串行全流程一次跑通，0 失败、0 人工催促；顺带查出「账本缺失导致因子 3b 静默消失」并已修。采集值与覆盖缺口见 §8 |
 
@@ -221,7 +221,7 @@ acceptance 先跑 structure；smoke 与 audit 都必须 `--sha`；场景按 toke
 | 0 唤醒冒烟（先做） | 5 任务、4 条依赖边、1 对共享文件（`src/catalog.mjs`，整数运算契约）；Lead 前台 `paseo wait`，主会话后台 wait Lead | 无人工催促完成派发→合流→最终信封；各段真实耗时入证据；失败记 FAIL，保留现状 | **已执行**，判据全满足，采集值见 §8 |
 | A 观测与对账 | §4.2 + 角色单源 | 新增用例：permit 失败降级、archivedAt、MISSING_SCOPE 占 cap、旧 attempt 权限、`-a10`/`-a2`、rejected 不进 MERGE、局部阻塞不压独立任务 | **已实施**（`MISSING_SCOPE` 占 cap 与「同仓外部写手计 cap」本次补齐，SCEN-REC-17 ×2） |
 | B 合流门禁 | §4.3 + §4.7 | 新增用例：Verify 替换、改名越界、中文路径、改写 staged、测试内 commit、并发 merge、legacy no-op、自审复刻 T-02、重复合流幂等 | **已实施**；「重复合流幂等」按 spec 裁决落为**诊断精度**（仍 exit 非零），见 §4.3 |
-| C 契约收敛 | §4.4 + §4.5 | run-state 并发与 owner 用例；docs.test 检查规则只在一处定义；SKILL 内部矛盾清单（§3-P1-11）逐条消除 | **部分**；run-state 并发已覆盖，SKILL 矛盾清单未逐条消除 |
+| C 契约收敛 | §4.4 + §4.5 | run-state 并发与 owner 用例；docs.test 检查规则只在一处定义；SKILL 内部矛盾清单（§3-P1-11）逐条消除 | **部分**：run-state 并发与 owner 已覆盖；SKILL 矛盾清单已逐条消除并复核；brief 模板已落地（SCEN-DOC-13..16）；仍缺「规则只在一处定义」的自动化断言（docs.test 目前只锁模板字段与既有条款，没有跨文件重复性检查），以及 `~/.paseo/task-routing.md`/shangshu notes 的活态表述（需授权） |
 | D 试点 | 1 个日常小修（L1）+ 1 个跨模块任务（L2/L3） | 如实记录首次业务验收结果、人工救援次数、READY 等待时长与原因 | **未执行** |
 
 前置：当前未提交改动需由用户确认是否作为基线提交（未经确认不提交、不推送）。建议用一个 OpenSpec change（如 `pipeline-hardening-v2`）承载 A–C，任务数 ≤8，主会话按 L2 编排。
