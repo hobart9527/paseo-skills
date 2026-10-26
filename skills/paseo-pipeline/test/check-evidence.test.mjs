@@ -7,8 +7,24 @@ import os from 'node:os';
 
 const checkEvidenceScript = path.resolve('skills/paseo-pipeline/test/check-evidence.mjs');
 
+// Paseo 持久记录的测试替身：验收闸门现在会核对 child_agent_id 是否真的被创建过。
+// 替身必须给出与证据时间线自洽的 createdAt，否则「时间线早于创建」会正确地拦下它。
+const PASEO_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'paseo-home-'));
+function seedAgent(id, createdAt, extra = {}) {
+  const dir = path.join(PASEO_HOME, 'agents', `fixture-${id.slice(0, 8)}`);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({
+    id, createdAt, lastStatus: { status: 'idle' }, labels: {}, ...extra,
+  }));
+}
+seedAgent('dfa79d7b-99f5-46aa-bd01-3829029a8d9b', '2026-10-25T04:50:00.000Z');
+seedAgent('62ce24cf-6ad9-4248-9def-7108195c73b5', '2026-10-24T20:35:00.000Z');
+
 function runCheck(args) {
-  return spawnSync('node', [checkEvidenceScript, ...args], { encoding: 'utf8' });
+  return spawnSync('node', [checkEvidenceScript, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, PIPELINE_PASEO_HOME: PASEO_HOME },
+  });
 }
 
 test('SCEN-VER-02: smoke evidence passes only with valid UUIDs, timestamps, and required fields', () => {
@@ -375,4 +391,104 @@ test('SCEN-EVD-03 command fields are judged whole-value, not by substring', () =
   const badResult = write('result-placeholder.md', PASSING_SMOKE.replace('result: PASS', 'result: TEST'));
   const badRes = runCheck([badResult]);
   assert.equal(badRes.status, 1, 'non-command fields keep substring matching');
+});
+
+test('SCEN-CON-07 SCEN-EVD-03 placeholder scanning is scoped to fields the gate owns', () => {
+  // 反例：`notes: the TEST harness was restored, for example …` 是人话，既不是采集值也不是
+  // 闸门读的字段，却被 TEST/EXAMPLE 的子串判据命中而拒绝整份收据（实测 rc=1）。
+  // 判据范围必须与「谁读这个字段」一致：闸门不读的字段，措辞不该决定收据存亡。
+  const withProse = write('prose-notes.md',
+    `${PASSING_SMOKE}\nnotes: the TEST harness was restored and, for example, the retry path worked`);
+  const prose = runCheck([withProse]);
+  assert.equal(prose.status, 0, `prose in an unread field must not reject the record\n${prose.stderr}`);
+
+  // 契约字段仍受约束：同样的话写进 relay_case 就是伪造收据。
+  const fabricated = write('prose-relay.md',
+    PASSING_SMOKE.replace('relay_case: confirmed', 'relay_case: TEST'));
+  const fab = runCheck([fabricated]);
+  assert.equal(fab.status, 1, 'contract fields keep the placeholder judgement');
+  assert.match(fab.stderr, /占位值/);
+});
+
+// --- 证据必须对得上真实事件、验收必须读冻结矩阵（2026-10-26 包 3） ---
+
+test('SCEN-EVD-04 a child_agent_id that was never created cannot be an acceptance receipt', () => {
+  // 真实事故：native-smoke.md 的 child UUID 前 8 位与真实 Senior 相同、其余不同，
+  // dispatched_at 还早于真实 createdAt 十分钟。旧实现只校验 UUID 格式，两道闸门都放行。
+  const fabricated = write('fabricated-child.md',
+    PASSING_SMOKE.replace('child_agent_id: dfa79d7b-99f5-46aa-bd01-3829029a8d9b',
+      'child_agent_id: dfa79d7b-1111-2222-3333-444444444444'));
+  const res = runCheck(['--gate', 'acceptance', '--sha', '528c69176495ee698383bc565b0ea9dfc467d897', fabricated]);
+  assert.equal(res.status, 1, 'a UUID that was never created must not pass acceptance');
+  assert.match(res.stderr, /在 Paseo 持久记录中不存在/);
+
+  // structure 闸门仍放行：留档与验收是两件事，留档不该因为采不到而写不出来。
+  const structure = runCheck([fabricated]);
+  assert.equal(structure.status, 0, structure.stderr);
+});
+
+test('SCEN-EVD-04 a dispatch timestamp earlier than the real agent creation is rejected', () => {
+  // 同一份证据：UUID 是真的，但 dispatched_at 早于该 agent 的真实创建时间。
+  const early = write('early-dispatch.md',
+    PASSING_SMOKE.replace('dispatched_at: 2026-10-25T05:00:00.000Z', 'dispatched_at: 2026-10-25T04:10:00.000Z'));
+  const res = runCheck(['--gate', 'acceptance', '--sha', '528c69176495ee698383bc565b0ea9dfc467d897', early]);
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /早于该 agent 的真实创建时间/);
+});
+
+test('SCEN-CON-07 SCEN-EVD-04 未采集 may be recorded but never accepted', () => {
+  // 采集不到写「未采集」是正确行为，structure 必须放行（否则人只能选择编造）。
+  const notCollected = write('not-collected-accept.md',
+    PASSING_SMOKE.replace('notification_message_id: msg_01JAX789ABC', 'notification_message_id: 未采集')
+      .replace('relay_case: confirmed', 'relay_case: 未采集'));
+  const structure = runCheck([notCollected]);
+  assert.equal(structure.status, 0, 'structure gate must keep 未采集 as a valid record');
+
+  const acceptance = runCheck(['--gate', 'acceptance', '--sha', '528c69176495ee698383bc565b0ea9dfc467d897', notCollected]);
+  assert.equal(acceptance.status, 1, '未采集 must not count as an acceptance receipt');
+  assert.match(acceptance.stderr, /「未采集」/);
+});
+
+const MATRIX = [
+  '# Acceptance Matrix',
+  '',
+  '| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |',
+  '| --- | --- | --- | --- | --- | --- | --- |',
+  '| SCEN-REL-07 | GET /api/x | T-01 | node probe.mjs | yes | PENDING | pending |',
+  '| SCEN-REL-08 | CLI | T-02 | node probe2.mjs | no | PENDING | pending |',
+  '',
+].join('\n');
+
+test('SCEN-CON-08 SCEN-EVD-05 required scenarios come from the frozen matrix, not from the caller', () => {
+  // 修复前必需场景只能靠 `--require-scenario` 现场给：漏传就等于没验，且不产生任何报错。
+  const matrix = write('matrix.md', MATRIX);
+  const evidence = write('matrix-evidence.md',
+    `${PASSING_SMOKE}scenario_results:\n  - SCEN-REL-07: PASS\n`);
+  const pending = runCheck(['--gate', 'acceptance', '--sha', '528c69176495ee698383bc565b0ea9dfc467d897',
+    '--matrix', matrix, evidence]);
+  assert.equal(pending.status, 1, 'a Required=yes row still PENDING must block closeout');
+  assert.match(pending.stderr, /Required 行未通过/);
+
+  const passed = write('matrix-passed.md', MATRIX.replace('| yes | PENDING |', '| yes | PASS |'));
+  const ok = runCheck(['--gate', 'acceptance', '--sha', '528c69176495ee698383bc565b0ea9dfc467d897',
+    '--matrix', passed, evidence]);
+  assert.equal(ok.status, 0, ok.stderr);
+
+  // --require-scenario 只能追加：调用者不能靠"不传"来缩小必需集合。
+  const narrowed = runCheck(['--gate', 'acceptance', '--sha', '528c69176495ee698383bc565b0ea9dfc467d897',
+    '--matrix', passed, '--require-scenario', 'SCEN-REL-07', evidence]);
+  assert.equal(narrowed.status, 0, narrowed.stderr);
+  const widened = runCheck(['--gate', 'acceptance', '--sha', '528c69176495ee698383bc565b0ea9dfc467d897',
+    '--matrix', passed, '--require-scenario', 'SCEN-REL-09', evidence]);
+  assert.equal(widened.status, 1, 'caller-supplied requirements still apply on top of the matrix');
+  assert.match(widened.stderr, /SCEN-REL-09/);
+});
+
+test('SCEN-CON-08 SCEN-EVD-05 a matrix row whose scenario is missing from the evidence is rejected', () => {
+  const matrix = write('matrix-2.md', MATRIX.replace('| yes | PENDING |', '| yes | PASS |'));
+  const evidence = write('matrix-missing.md', `${PASSING_SMOKE}scenario_results:\n  - SCEN-REL-99: PASS\n`);
+  const res = runCheck(['--gate', 'acceptance', '--sha', '528c69176495ee698383bc565b0ea9dfc467d897',
+    '--matrix', matrix, evidence]);
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /必需场景 SCEN-REL-07/);
 });
