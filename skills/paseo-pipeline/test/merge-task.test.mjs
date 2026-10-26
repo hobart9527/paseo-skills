@@ -397,6 +397,64 @@ test('pod mechanical review rejects a mixed strict/mechanical task list', (conte
   assertRejected(repo, invoke(repo, { ids: 'T-1,T-2', tag: reviewTag(repo, { reviewer: 'mechanical' }) }));
 });
 
+// --- Pod 内部依赖（dogfooding 实测缺陷） ---
+// Pod 是单次整体合流，成员之间的依赖在合流前不可能被 first-parent 证明——那个合流提交
+// 本身就是它们被证明的唯一机会。旧实现只认 first-parent，于是 Pod 成员之间只要有依赖
+// 就在合流口 exit 35 死锁，而冻结检查不看这条，报告仍说「0 阻断项」。
+// 修复前实测：`merge-task.mjs pod/... T-01..T-07` → exit 35 "T-02 depends on T-01"。
+
+test('SCEN-CON-14 a pod merge satisfies dependencies that are inside its own member set', (context) => {
+  const ids = ['T-1', 'T-2'];
+  const repo = fixture(context, {
+    branch: `pod/${change}`,
+    tasks: [{ id: 'T-1' }, { id: 'T-2', depends: 'T-1' }],
+    baselineFiles: { [`openspec/changes/${change}/pod-members.json`]: JSON.stringify({ tasks: ids }, null, 2) },
+  });
+  // T-2 依赖 T-1，两者同批合入：这一次合流同时证明它们的 Done，不应被 exit 35 拦。
+  assertMerged(repo, invoke(repo, { ids: ids.join(',') }), { ids });
+});
+
+test('SCEN-CON-14 a pod merge still rejects a dependency that is outside its member set', (context) => {
+  const ids = ['T-1'];
+  const repo = fixture(context, {
+    branch: `pod/${change}`,
+    // T-10 不在 Pod 成员里，也没有 first-parent 证明：集外依赖不得被同批豁免放宽。
+    tasks: [{ id: 'T-1', depends: 'T-10' }, { id: 'T-10' }],
+    baselineFiles: { [`openspec/changes/${change}/pod-members.json`]: JSON.stringify({ tasks: ids }, null, 2) },
+  });
+  const result = invoke(repo, { ids: ids.join(',') });
+  assert.equal(result.status, 35, `${result.stdout}${result.stderr}`);
+  assert.match(result.stderr, /depends on T-10 which are not verified Done/);
+  assertUnchanged(repo);
+});
+
+test('SCEN-CON-14 a dependency cycle is rejected at parse time, before the batch is even considered', (context) => {
+  const ids = ['T-1', 'T-2'];
+  const repo = fixture(context, {
+    branch: `pod/${change}`,
+    tasks: [{ id: 'T-1', depends: 'T-2' }, { id: 'T-2', depends: 'T-1' }],
+    baselineFiles: { [`openspec/changes/${change}/pod-members.json`]: JSON.stringify({ tasks: ids }, null, 2) },
+  });
+  // 环是 graph 级错误：解析器先于依赖门禁拒绝整份账本，同批豁免不可能放宽它。
+  // （闭包内的环检测因此不可达；保留它是防御未来的调用路径。）
+  const result = invoke(repo, { ids: ids.join(',') });
+  assert.equal(result.status, 1, `${result.stdout}${result.stderr}`);
+  assert.match(result.stderr, /CYCLE/);
+  assertUnchanged(repo);
+});
+
+test('SCEN-CON-14 a single-task merge does not get the pod batch exemption', (context) => {
+  // 豁免只属于「同批一并合入」。单任务合流里依赖仍须已被 first-parent 证明，否则
+  // 任意两个任务都能靠「一起报上去」绕过依赖门禁。
+  const repo = fixture(context, {
+    branch: `task/${change}/T-2`,
+    tasks: [{ id: 'T-1' }, { id: 'T-2', depends: 'T-1' }],
+  });
+  const result = invoke(repo, { ids: 'T-2', tag: reviewTag(repo) });
+  assert.equal(result.status, 35, `${result.stdout}${result.stderr}`);
+  assert.match(result.stderr, /depends on T-1 which are not verified Done/);
+});
+
 test('SCEN-MRG-06 abort failure exits 40 with on-site dump and manual guidance', (context) => {
   const repo = fixture(context, {
     fileDirConflict: true,

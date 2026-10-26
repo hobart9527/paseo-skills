@@ -232,6 +232,36 @@ test('SCEN-CON-04 pod members are read from the field the consumers actually rea
   assert.match(ghostResult.out, /不存在的任务 T-99/);
 });
 
+test('SCEN-CON-14 freeze check says up front whether pod members can merge in one go', () => {
+  // Pod 是单次整体合流：成员之间的依赖由那一次合流一并满足。旧实现既不在冻结时
+  // 说明，也不在合流时豁免，于是「Pod 成员间有依赖」只会在合流口变成 exit 35。
+  const inside = makeChange({
+    // T-02 本来就依赖 T-01：两者都在成员集内，属「同批可满足」。
+    'pod-members.json': JSON.stringify({ tasks: ['T-01', 'T-02'] }),
+  });
+  const insideResult = run(inside.dir);
+  assert.equal(insideResult.code, 0, insideResult.out);
+  assert.match(insideResult.out, /依赖闭包完全落在成员集内/);
+
+  // 依赖落在成员集之外：不会被同批豁免，冻结时就要说明合流前必须已被 first-parent 证明。
+  const withThird = `${TASKS}
+- [ ] 1.3 T-03 third task
+  - Depends on: none
+  - Write scope: src/c.mjs
+  - Risk-surface: [none]
+  - Review: mechanical
+  - Verify with: \`node --test src/c.test.mjs\`
+  - Scenarios: SCEN-DMO-02
+`;
+  const outside = makeChange({
+    'tasks.md': withThird.replace('Depends on: none\n  - Write scope: src/a.mjs', 'Depends on: T-03\n  - Write scope: src/a.mjs'),
+    'pod-members.json': JSON.stringify({ tasks: ['T-01', 'T-02'] }),
+  });
+  const outsideResult = run(outside.dir);
+  assert.equal(outsideResult.code, 0, outsideResult.out);
+  assert.match(outsideResult.out, /依赖 Pod 成员集之外的 T-03/);
+});
+
 test('SCEN-CON-04 --json emits the same verdict as the text form', () => {
   const { dir } = makeChange({ 'acceptance.md': null });
   let stdout;

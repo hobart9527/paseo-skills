@@ -3,7 +3,7 @@ import { spawnSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseTasks, isFileWithinScopes, graphErrors, taskErrorsFor, REVIEW_TAG } from './lib/tasks.mjs';
-import { verifyDone, buildMergeAcceptance, expandDoneSource as expandDoneSourceFor } from './lib/ledger.mjs';
+import { verifyDone, buildMergeAcceptance, expandDoneSource as expandDoneSourceFor, batchDependencyClosure } from './lib/ledger.mjs';
 import { WRITER_ROLES, CONTROL_ROLES, READONLY_ROLES, isControlRole } from './lib/roles.mjs';
 import { acquireLock } from './lib/lock.mjs';
 import { readRunState } from './lib/run-state.mjs';
@@ -332,14 +332,24 @@ for (const task of requestedTasks) {
     + `this merge would target ${tip7} — a different revision cannot be merged under the same task`, 1);
 }
 
-// --- 因子 0: 依赖必须先被 first-parent 合流证明为 Done (Dependency Gate) ---
+// --- 因子 0: 依赖必须被证明 Done (Dependency Gate) ---
 //
 // 调度器（reconcile）只在依赖 DONE 后放行，但合流入口必须独立守住同一条前置条件：
 // 直接调用本脚本就能绕开调度顺序。判定必须复用 lib/ledger.mjs 的 first-parent 验收，
 // 不能只读 tasks.md 的 `[x]` —— 勾选是账本声明，first-parent 合流才是事实。
+//
+// Pod 例外：`pod/<change>` 是**单次整体合流**（SKILL §2.1），成员之间的依赖在合流前
+// 不可能被 first-parent 证明——那个合流提交本身就是它们被证明的唯一机会。旧实现
+// 只认 first-parent 账本，于是成员间只要有依赖就在合流口 exit 35 死锁，而冻结检查
+// 不看这条，报告仍说「0 阻断项」。闭包判定放在 lib/ledger.mjs，与 reconcile 共用
+// 同一份「什么算依赖已满足」的定义。
 const { doneSet } = verifyDone(parsed.tasks, ledgerRead, preMergeHead);
+const tasksByIdForDeps = new Map(parsed.tasks.map((task) => [task.id, task]));
 for (const task of requestedTasks) {
-  const unmet = task.depends.filter((dep) => !doneSet.has(dep));
+  // 同批内的依赖由本次合流一并满足；集外的仍须 first-parent 已证明 Done。
+  // 环已在解析阶段判为 graph 级错误，走不到这里。
+  const closure = batchDependencyClosure(task, taskIds, tasksByIdForDeps);
+  const unmet = closure.outside.filter((dep) => !doneSet.has(dep));
   if (unmet.length > 0) {
     fail(`task ${task.id} depends on ${unmet.join(', ')} which are not verified Done on integration HEAD `
       + `${preMergeHead.slice(0, 7)}; merge dependencies first`, 35);

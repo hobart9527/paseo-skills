@@ -24,6 +24,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseTasks, normalizeScope } from './lib/tasks.mjs';
+import { batchDependencyClosure } from './lib/ledger.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
@@ -229,6 +230,28 @@ if (fs.existsSync(membersFile)) {
     if (!Array.isArray(frozen?.tasks) && Array.isArray(frozen?.taskIds)) {
       block('pod-members.json 用了旧字段名 taskIds：reconcile.mjs 与 merge-task.mjs 只读 tasks，'
         + 'Pod 合流会因空成员集被拒');
+    }
+    if (ids.length > 0) {
+      const byId = new Map(tasks.map((task) => [task.id, task]));
+      // Pod 是单次整体合流：成员之间的依赖由这一次合流一并满足，不要求合流前已被证明。
+      // 但依赖落在成员集之外的任务仍须靠 first-parent 已 Done，否则合流会被 exit 35 拒。
+      // 环在解析阶段已是 graph 级错误，这里不必重复判。
+      const outsideDeps = [];
+      for (const id of ids) {
+        const task = byId.get(id);
+        if (task === undefined) continue;
+        const closure = batchDependencyClosure(task, ids, byId);
+        for (const dep of closure.outside) {
+          if (!outsideDeps.some((entry) => entry.dep === dep)) outsideDeps.push({ task: id, dep });
+        }
+      }
+      for (const entry of outsideDeps) {
+        advise(`${entry.task} 依赖 Pod 成员集之外的 ${entry.dep}：合流前它必须已被 first-parent 证明 Done，`
+          + '否则 Pod 合流会因依赖未验收被拒');
+      }
+      if (outsideDeps.length === 0) {
+        advise(`Pod 成员 ${ids.length} 个的依赖闭包完全落在成员集内，单次合流可满足`);
+      }
     }
   } catch (error) {
     block(`pod-members.json 无法解析: ${error.message}`);
