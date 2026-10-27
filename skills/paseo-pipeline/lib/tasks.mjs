@@ -135,7 +135,11 @@ const COMMAND_HEADS = new Set([
   'node', 'npm', 'npx', 'pnpm', 'yarn', 'bun', 'deno', 'python', 'python3',
   'bash', 'sh', 'zsh', 'make', 'cargo', 'go', 'rustc', 'tsx', 'vitest', 'jest',
 ]);
-const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/i;
+// 认的测试文件名形状。`.test.sh` 也是测试：本仓库的 `contract-check.test.sh` 是 bash 用例表，
+// 用 `bash contract-check.test.sh` 跑。只认 JS 扩展名时，`Verify with: bash x.test.sh`
+// 的 verify.tests 是空数组，下游 contract-check 退回 Write scope 猜测试文件——它分不清
+// 实现与测试，会把实现文件当语料（本 change 实测 produced undeclared 误报）。
+const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$|\.test\.sh$/i;
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 /**
@@ -224,9 +228,16 @@ function parseVerify(raw) {
   return { raw: text, command: stripped, tests };
 }
 
-/** 剥掉包裹整个字符串的一对定界符（反引号、单/双引号、圆括号）。内部内容原样保留。 */
+/**
+ * 剥掉包裹整个字符串的一对**引号**定界符（反引号、单/双引号）。内部内容原样保留。
+ *
+ * 只收引号类，不收 `(` `[` `{`：那三种在 shell 里是语法结构而不是 Markdown 包裹。
+ * 实测 `("a" || "b")` 会被剥成 `"a" || "b"`、`(cd sub && make)` 会被剥成 `cd sub && make`——
+ * 前者无害、后者改变子 shell 语义。冻结命令是任务契约，解析器没有理由改写它的 shell 结构；
+ * 真正要治的只是「Markdown 把命令包成代码段」这一种（反引号与引号）。
+ */
 function stripWrappingQuote(text) {
-  const pairs = [['`', '`'], ['"', '"'], ["'", "'"], ['(', ')'], ['[', ']'], ['{', '}']];
+  const pairs = [['`', '`'], ['"', '"'], ["'", "'"]];
   for (const [open, close] of pairs) {
     if (text.length >= 2 && text.startsWith(open) && text.endsWith(close)) {
       // 只有当开头那个定界符就是结尾那个的配对时才算包裹：
@@ -323,18 +334,34 @@ export function parseTasks(markdown) {
     }
   }
 
-  for (const line of lines) {
+  for (const source of lines) {
     // HTML 注释里的内容不是任务契约。模板与大量 tasks.md 用注释写规则说明，
     // 里面的 `- Foo: bar` 形态本来不该参与解析（否则模板自己就解析不过）。
+    //
+    // **只剥注释本身，不剥整行**：旧实现对「含开闭标记」的行直接 `continue`，
+    // 于是 `- [ ] 1.2 T-02 标题 <!-- 待定 -->` 整条任务凭空消失，后一行的
+    // `Write scope` 还被并进前一条任务——解析零报错，任务与写范围双双错位。
+    // 注释是行内噪声，剥掉之后剩下的内容必须照常参与解析。
+    let line = source;
     if (inComment) {
-      if (line.includes('-->')) inComment = false;
-      continue;
+      const end = line.indexOf('-->');
+      if (end === -1) continue;
+      line = line.slice(end + 3);
+      inComment = false;
     }
-    if (line.includes('<!--')) {
-      // 同一行开闭（`<!-- x -->`）不进入注释态。
-      if (!line.includes('-->')) inComment = true;
-      continue;
+    for (;;) {
+      const start = line.indexOf('<!--');
+      if (start === -1) break;
+      const end = line.indexOf('-->', start + 4);
+      if (end === -1) {
+        // 注释延续到后续行：本行只保留注释之前的内容，其余交给下一轮。
+        inComment = true;
+        line = line.slice(0, start);
+        break;
+      }
+      line = line.slice(0, start) + line.slice(end + 3);
     }
+    if (line.trim() === '') continue;
 
     const taskMatch = line.match(TASK_LINE);
     if (taskMatch) {

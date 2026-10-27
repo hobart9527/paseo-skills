@@ -376,3 +376,37 @@ test('SCEN-CON-12 SCEN-DOC-23: SKILL 的 run-state 命令示例照抄即可执�
   }
   assert.match(text, /有租约时 `--owner` 必填/, '省略 --owner 的后果必须写明');
 });
+
+// --- 2026-10-27：schema 双副本一致性（实测缺少守护） ---
+//
+// `openspec-schema/` 是 OpenSpec `spec-driven` 的整份副本，安装到
+// `openspec/schemas/paseo-pipeline/`。两份内容必须一字不差：安装是 `cp -R`，
+// 但只要有人改了源头忘了重装（或反之），使用者拿到的就是不同版本的模板，
+// 而 OpenSpec 只认安装后的那份。仓库里此前没有任何测试守护这对副本。
+test('SCEN-CON-18: the packaged schema and its installed copy are byte-identical', () => {
+  const packaged = path.join(skillDir, 'openspec-schema');
+  const installed = path.resolve(skillDir, '..', '..', 'openspec', 'schemas', 'paseo-pipeline');
+  assert.ok(fs.existsSync(installed), `缺少安装副本：${installed}（见 SKILL §2 安装步骤）`);
+
+  const files = (root) => {
+    const out = [];
+    const walk = (dir, prefix) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        const rel = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+        if (entry.isDirectory()) walk(path.join(dir, entry.name), rel);
+        else out.push(rel);
+      }
+    };
+    walk(root, '');
+    return out;
+  };
+  const packagedFiles = files(packaged);
+  assert.deepEqual(files(installed), packagedFiles, '两份副本的文件列表必须相同');
+  for (const rel of packagedFiles) {
+    assert.equal(
+      fs.readFileSync(path.join(installed, rel), 'utf8'),
+      fs.readFileSync(path.join(packaged, rel), 'utf8'),
+      `schema 副本漂移：${rel}（改完 openspec-schema/ 必须重跑 SKILL §2 的 cp -R）`,
+    );
+  }
+});

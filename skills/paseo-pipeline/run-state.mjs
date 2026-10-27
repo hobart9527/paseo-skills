@@ -41,6 +41,10 @@ const SKILL_DIR = path.dirname(fileURLToPath(import.meta.url));
  * 只用于「这批任务是用哪份编排逻辑跑出来的」留痕与不一致提示。版本不一致时不拦，
  * 因为拦会让一台机器上升级 Skill 后的每一次诊断都失败；但静默不记会让复盘无从判断
  * 某条规则在当时是否存在。
+ *
+ * 采集失败必须**当场说出来**（`begin` 那侧打印一行 note）：写进账本的 `skill: null`
+ * 与「没采过」在文件里长得一模一样，事后无法区分。留痕字段的价值全在「知道它是缺的」，
+ * 一个不声不响写进去的 null 只是让账本看起来字段齐备。
  */
 function captureSkill() {
   const git = (args) => execFileSync('git', ['-C', SKILL_DIR, ...args], {
@@ -125,6 +129,7 @@ function update(action, fn) {
 switch (command) {
   case 'begin': {
     if (owner === null) fail(1, 'begin 需要 --owner <owner-id>');
+    let skillUncaptured = false;
     const result = update('begin', (draft) => {
       const previous = leaseStatus(draft, now.getTime());
       const expiresAt = new Date(now.getTime() + DEFAULT_LEASE_TTL_MS).toISOString();
@@ -139,6 +144,7 @@ switch (command) {
         };
         // 领取新代际时记录本次编排使用的 Skill 版本（覆盖上一次：账本属于当前 run）。
         draft.skill = captureSkill();
+        if (draft.skill === null) skillUncaptured = true;
         return draft.lease;
       }
       // 租约仍有效且属于别人：不抢，直接拒绝（需人工或前任显式交回）。
@@ -147,6 +153,11 @@ switch (command) {
     if (result.refused) {
       fail(2, `租约仍由 ${result.current.owner} 持有（到期 ${result.current.expiresAt}）；`
         + '不得抢占，等待其 renew 或超时');
+    }
+    if (skillUncaptured) {
+      // 不拦（旧账本、无 git 的部署都该能 begin），但必须让采集失败可见：
+      // 写进账本的 skill:null 与「从没采过」在文件里长得一样，事后无法区分。
+      console.error('[run-state] WARN Skill 版本未采集（读不到 git HEAD）：本账本将无法回答「这批任务由哪份编排逻辑产生」');
     }
     console.log(json
       ? JSON.stringify({ change, lease: result, file: readRunState(change).file })
@@ -206,7 +217,10 @@ switch (command) {
     const attempts = [...perTask.values()].map((list) =>
       Math.max(...list.map((intent) => (Number.isFinite(intent.attempt) ? intent.attempt : 0))));
     const auditRounds = state.intents.filter((intent) => normalizePhase(intent.phase) === 'audit');
-    // READY 等待时长要求「进入 READY 的时刻」，账本不记状态迁移，因此只能是「未采集」。
+    // 报告只写**能从账本算出来的**数。旧版还并排打印两项恒为「未采集」的字段
+    // （首次通过、READY 等待），理由是「账本不记这些时刻」——但一条永远是「未采集」的
+    // 字段不传递任何信息，只会让报告看起来像有结论。真要这两项，得让账本记状态迁移，
+    // 那是另一个 change 的事；在那之前不打印，比打印一个恒定占位值诚实。
     const report = {
       change,
       present,
@@ -217,8 +231,6 @@ switch (command) {
       maxAttempt: attempts.length > 0 ? Math.max(...attempts) : null,
       voidedIntents: state.intents.filter((intent) => isFailed(intent)).length,
       auditDispatches: auditRounds.length,
-      firstPassUnknown: '未采集：账本不记审查结论，首次通过与否须从 Done 行的 review 值反查',
-      readyWaitUnknown: '未采集：账本不记状态迁移时刻，无 READY 进入时间',
     };
     if (json) {
       console.log(JSON.stringify(report, null, 2));
@@ -227,10 +239,11 @@ switch (command) {
     console.log(`[run-state] ${change} 报告 ${present ? file : '（无账本）'}`);
     if (error) console.log(`  WARN ${error}`);
     console.log(`派发 ${report.dispatches} 次 / ${report.tasksDispatched} 个任务`);
-    console.log(`同任务最大 attempt ${report.maxAttempt ?? '未采集'}`);
+    console.log(`同任务最大 attempt ${report.maxAttempt ?? '无派发'}`);
     console.log(`审查派发 ${report.auditDispatches} 次；作废意图 ${report.voidedIntents} 条`);
-    console.log(`首次审查通过 ${report.firstPassUnknown}`);
-    console.log(`READY 等待时长 ${report.readyWaitUnknown}`);
+    // 采集不到的口径写在报告末尾一句话里，而不是拆成两行恒定占位值：
+    // 读者需要知道「这份报告不覆盖什么」，但不需要看见两个没有值的字段。
+    console.log('未采集：账本不记审查结论与状态迁移时刻，因此首次通过率、READY 等待时长不在本报告内');
     break;
   }
 

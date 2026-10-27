@@ -83,14 +83,47 @@ function makeChange(overrides = {}) {
   return { root, dir };
 }
 
-function run(dir) {
+function run(dir, extra = []) {
   try {
-    const stdout = execFileSync(process.execPath, [FREEZE, dir], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const stdout = execFileSync(process.execPath, [FREEZE, dir, ...extra], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     return { code: 0, out: stdout };
   } catch (error) {
     return { code: error.status ?? -1, out: `${error.stdout ?? ''}${error.stderr ?? ''}` };
   }
 }
+
+// MODIFIED 替换整个 Requirement 块，所以 delta 必须把基线原有场景原样抄回（抄漏会被
+// openspec validate 拒绝）。抄回来的编号出现在 delta 里不代表本 change 新增了它们，
+// 双向核对不能要求本 change 的任务认领它们——否则任何含 MODIFIED 的 change 都冻结不了。
+test('SCEN-CON-25 scenarios copied back from the baseline are not claimed obligations', () => {
+  const { root, dir } = makeChange({
+    // 夹具编号复用本文件已有的存量债编号（SCEN-DMO-77 / -99）：这里构造的是 spec 形状的
+    // 输入，不是场景引用，凭空造一个新编号只会让 skill 级 phantom 预算无故上涨。
+    'specs/cap/spec.md': `${SPEC}\n#### Scenario: SCEN-DMO-77 inherited scenario\n- **WHEN** inherited\n- **THEN** it stays\n`,
+  });
+  try {
+    // 不带 --baseline：抄回来的编号既没人认领、也不在本 change 的任务里 → 阻断。
+    assert.equal(run(dir).code, 1, 'without a baseline the inherited scenario looks unclaimed');
+    // 带 --baseline：同一份 delta 判可冻结。
+    const withBaseline = run(dir, ['--baseline', path.join(root, 'openspec', 'changes', 'demo', 'specs')]);
+    assert.equal(withBaseline.code, 0, withBaseline.out);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('SCEN-CON-25 a scenario declared nowhere is still blocked even with a baseline', () => {
+  const { root, dir } = makeChange({
+    'tasks.md': TASKS.replace('  - Scenarios: SCEN-DMO-02', '  - Scenarios: SCEN-DMO-99'),
+  });
+  try {
+    const result = run(dir, ['--baseline', path.join(root, 'openspec', 'changes', 'demo', 'specs')]);
+    assert.equal(result.code, 1, 'a baseline must not excuse a typo');
+    assert.match(result.out, /SCEN-DMO-99/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('SCEN-CON-05 schema templates parse clean with the production parser', () => {
   const markdown = fs.readFileSync(path.join(SCHEMA_TEMPLATES, 'tasks.md'), 'utf8');
@@ -113,6 +146,28 @@ test('SCEN-CON-05 acceptance template declares the exact columns the parser read
   // 冻结时只能 PENDING：模板里写 PASS 会教人提前宣布验收通过。
   assert.ok(!/\|\s*PASS\s*\|/.test(markdown), 'template must not ship a PASS result');
   assert.match(markdown, /\|\s*PENDING\s*\|/);
+});
+
+test('SCEN-CON-17 an archived change is a read-only diagnosis, not a freeze verdict', () => {
+  // 归档目录是历史记录。实测四个归档 change 在当前规则下全部判「不得冻结」
+  // （contract-alignment 14、wakeup-budget 30、gate-slimming 31、native-closure 1），
+  // 而多数是「写的时候规则还不存在」——例如更早的 Done 行用 `review=main-session`。
+  // 追溯执法只会让只读诊断永远红着，红到最后没人再看它。
+  const { root } = makeChange();
+  const archived = path.join(root, 'openspec', 'changes', 'archive', '2026-01-01-demo');
+  fs.mkdirSync(path.dirname(archived), { recursive: true });
+  fs.renameSync(path.join(root, 'openspec', 'changes', 'demo'), archived);
+  // 制造一个在当前规则下必然阻断的历史形态：手写 Done 行。
+  const tasksPath = path.join(archived, 'tasks.md');
+  fs.writeFileSync(tasksPath, fs.readFileSync(tasksPath, 'utf8')
+    .replace('- [ ] 1.1 T-01 first task', '- [x] 1.1 T-01 first task')
+    .replace('  - Scenarios: SCEN-DMO-01', '  - Done: source=abcdef0 review=main-session\n  - Scenarios: SCEN-DMO-01'));
+
+  const result = run(archived);
+  assert.equal(result.code, 0, result.out);
+  assert.match(result.out, /已归档：历史记录只读诊断/);
+  assert.match(result.out, /HINT  \[已归档，仅记录\] tasks\.md BAD_DONE_LINE/,
+    '历史缺陷仍要如实列出，只是不阻断');
 });
 
 test('SCEN-CON-04 a clean change passes freeze check', () => {

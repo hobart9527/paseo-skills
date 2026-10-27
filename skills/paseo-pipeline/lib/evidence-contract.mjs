@@ -32,8 +32,10 @@ export const AUDIT_REQUIRED_FIELDS = [
  *
  * 独立列出而不是混进必填字段，因为它们的约束不是「存在」而是「相对顺序」：
  * dispatched_at ≤ notification_at，且都不得早于该 agent 的真实 createdAt。
+ * （这两个名字已经被 SMOKE_REQUIRED_FIELDS 覆盖，这里只用于给判据读的人指路，
+ * 所以不单独导出——导出过一版，模块外零引用，是死导出。）
  */
-export const SMOKE_TIMELINE_FIELDS = ['dispatched_at', 'notification_at'];
+const SMOKE_TIMELINE_FIELDS = ['dispatched_at', 'notification_at'];
 
 /**
  * 验收闸门额外要求的字段：缺了它照样能留档，但不能当收据。
@@ -62,11 +64,6 @@ export const NOT_COLLECTED_BLOCKING_FIELDS = [
  */
 export const SCENARIO_RESULTS_FIELD = 'scenario_results';
 
-/** 按 kind 取必填字段。 */
-export function requiredFields(kind) {
-  return kind === 'audit' ? AUDIT_REQUIRED_FIELDS : SMOKE_REQUIRED_FIELDS;
-}
-
 /**
  * 占位值判据只作用于「闸门拥有的字段」：契约字段 + 命令型字段。
  *
@@ -74,8 +71,11 @@ export function requiredFields(kind) {
  * 它既不是采集值也不是闸门读的字段，却会被 TEST/EXAMPLE 的子串判据命中而拒绝整份收据
  * （实测 rc=1）。判据的作用范围必须与「谁读这个字段」一致——闸门不读的字段，
  * 它的措辞不该决定收据存亡。
+ *
+ * 不导出：唯一读者是本模块的 `isContractField`。消费方要判断某个字段受不受约束，
+ * 走的都是那个函数；直接拿集合会在两个地方各判一套。
  */
-export const CONTRACT_FIELDS = new Set([
+const CONTRACT_FIELDS = new Set([
   ...SMOKE_REQUIRED_FIELDS,
   ...AUDIT_REQUIRED_FIELDS,
   ...SMOKE_TIMELINE_FIELDS,

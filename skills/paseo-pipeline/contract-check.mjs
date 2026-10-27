@@ -11,6 +11,17 @@ import path from "node:path";
 import { parseTasks, identityErrors } from "./lib/tasks.mjs";
 
 const CODE_EXT = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]);
+// 测试套件不只是 Node 单测：本仓库的 `contract-check.test.sh` 是 bash 用例表，
+// 它同样用 `SCEN-*` 编号标注每一条在验什么。只扫 JS 扩展名时这些场景永远不可见——
+// 本 change 实测：三条场景由 shell 用例承载，收尾对账把它们判成「无测试引用」，
+// 于是门禁逼着作者去 JS 测试里重复标注，或者把编号改成不存在的。
+// shell 用例只进**场景通道**：场景编号写在注释里，`--max-phantom` 与 untested 都读得到；
+// 消息通道（错误字面量）仍是 JS 专属，shell 里没有 assert.throws。
+const SHELL_EXT = new Set([".sh", ".bash"]);
+// `Write scope` 里实现文件与测试文件混写，退回 scope 找测试时必须只认测试文件名形状，
+// 否则实现文件会被当成测试语料收进来（本 change 实测：contract-check.mjs 与
+// contract-check.test.sh 同在 scope 里，按扩展名过滤会把前者也当成测试）。
+const VERIFY_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$|\.test\.sh$/i;
 const DOC_EXT = new Set([".md", ".markdown"]);
 
 const walk = (p) =>
@@ -106,7 +117,16 @@ const extractTestsFromTasks = (tasksContent, targetTask) => {
   for (const task of selected) {
     // Verify with 里被识别为测试文件的 token 优先；没有就退回 Write scope 里声明的测试文件。
     const fromVerify = task.verify?.tests ?? [];
-    const fromScope = task.scope.filter((entry) => CODE_EXT.has(path.extname(entry).toLowerCase()));
+    // Write scope 里**实现文件与测试文件混在一起**，只有测试才是对账对象。
+    // VERIFY_FILE 同时认 `*.test.mjs` 与 `*.test.sh`：本仓库的 shell 用例表同样标注 SCEN-*，
+    // 只认真 JS 扩展名会让它们连 fallback 都进不来（本 change 实测：T-02 的测试文件是
+    // contract-check.test.sh，退回 scope 后连实现文件 contract-check.mjs 一起被当测试）。
+    //
+    // scope 里一个测试形状的文件都没有时退回**整个 scope**，保持旧行为：此时没有
+    // 「哪些是测试」的信息可用，而调用方要的是「声明的测试路径一条都没产出」这个判定，
+    // 空列表会让它变成 usage error（本仓 R31/R32 两条用例正是这个形态）。
+    const testShapedScope = task.scope.filter((entry) => VERIFY_FILE.test(entry));
+    const fromScope = testShapedScope.length > 0 ? testShapedScope : task.scope;
     for (const candidate of (fromVerify.length > 0 ? fromVerify : fromScope)) {
       if (!tests.includes(candidate)) tests.push(candidate);
     }
@@ -121,6 +141,17 @@ const PARTIAL = argv.includes("--partial");
 const FINAL = argv.includes("--final");
 let tasksFile = null;
 let targetTask = null;
+// `--baseline <spec 目录>`：把基线 spec 树里**已声明**的场景编号并入「已声明」集合。
+//
+// 没有它时，按 change 的 spec delta 跑合同对账会把整个 skill 的测试语料都判成 phantom：
+// delta 只声明本 change 新增的 14 条场景，而测试里必然出现历史场景（实测 change-scoped
+// 110 条 vs 并入基线后 72 条）。这些不是漂移，是口径差——用 change delta 去判一份
+// skill 级测试语料，缺的永远是「别的 change 的场景」。
+let baselineDir = null;
+// `--max-phantom <n>`：允许的 phantom 条数（默认 0）。用于把**存量债**记成预算而不是
+// 假装清零：实测 2026-10-27 本仓 72 条（测试标题声明了 spec 从未写过的编号），
+// 收尾必须贴着这个数走——新增一条就越界失败，但不会让整个门禁永远红着没人看。
+let maxPhantom = 0;
 const positional = [];
 
 for (let i = 0; i < argv.length; i++) {
@@ -134,9 +165,25 @@ for (let i = 0; i < argv.length; i++) {
     targetTask = argv[++i];
   } else if (arg.startsWith("--task=")) {
     targetTask = arg.slice("--task=".length);
+  } else if (arg === "--baseline") {
+    baselineDir = argv[++i];
+  } else if (arg.startsWith("--baseline=")) {
+    baselineDir = arg.slice("--baseline=".length);
+  } else if (arg === "--max-phantom") {
+    maxPhantom = Number(argv[++i]);
+  } else if (arg.startsWith("--max-phantom=")) {
+    maxPhantom = Number(arg.slice("--max-phantom=".length));
   } else {
     positional.push(arg);
   }
+}
+if (!Number.isInteger(maxPhantom) || maxPhantom < 0) {
+  console.error("--max-phantom 需要一个非负整数");
+  process.exit(2);
+}
+if (baselineDir !== null && !fs.existsSync(baselineDir)) {
+  console.error(`baseline 路径不存在: ${baselineDir}`);
+  process.exit(2);
 }
 
 const specPath = positional[0];
@@ -159,6 +206,9 @@ if (!specPath || testArgs.length === 0) {
   console.error("usage: contract-check.mjs <spec> <testPath...> [--final]");
   console.error("   or: contract-check.mjs <spec> --tasks <tasks.md> [--task <id>] [--partial] [--final]");
   console.error("  --final  收尾模式：测试路径一条都没产出时 exit 1，不再 SKIPPED 放行。");
+  console.error("  --baseline <spec 目录>  并入基线已声明的场景编号（change delta 只声明增量，");
+  console.error("                          不并基线会把历史场景全判成 phantom）。");
+  console.error("  --max-phantom <n>       允许的 phantom 条数（默认 0）；用于把存量债记成预算。");
   console.error("  传入本 change 在 tasks.md Write scope / Verify with 里声明的测试路径（文件或目录）。");
   console.error("  不要传整个 test/ 目录：增量仓库里历史测试会把门禁打成 undeclared 全红。");
   process.exit(2);
@@ -171,7 +221,12 @@ if (!fs.existsSync(specPath)) {
 // 阶段 1 门禁的正确语义：此刻本 change 的测试可能尚未产出（Tester 在阶段 2 才上场）。
 // 因此测试侧范围必须是「本 change 声明的测试」，不是整个 test/ 目录。
 // 全部不存在 → SKIPPED 并 exit 0；部分存在（Tester 只交了一半）→ 视为不完整，exit 1。
-const codeFiles = (p) => (fs.existsSync(p) ? walk(p).filter((f) => CODE_EXT.has(path.extname(f).toLowerCase())) : []);
+const codeFiles = (p) => (fs.existsSync(p)
+  ? walk(p).filter((f) => {
+    const ext = path.extname(f).toLowerCase();
+    return CODE_EXT.has(ext) || SHELL_EXT.has(ext);
+  })
+  : []);
 const existing = [];
 const missing = [];
 for (const arg of testArgs) {
@@ -198,8 +253,50 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
+/**
+ * shell 用例里的 `SCEN-*` 只认**注释行**：夹具数据不算声明。
+ *
+ * `contract-check.test.sh` 大量用 heredoc 造夹具（`cat > "$WORK/spec-x.md" <<'EOF'`），
+ * 这些 sed 出来的假场景编号（`SCEN-BASE-01`、`SCEN-TEST-99-PHANTOM`）是**被构造的输入**，
+ * 不是「本仓库哪个场景有人验」。整文件扫会把它们全算成 phantom（本 change 实测 31→41）。
+ * 与 JS 侧剥注释同理：测试里出现在字符串/夹具中的编号不是断言。
+ *
+ * 两步：先按 heredoc 界限剥掉整段夹具，再只保留 `#` 开头的行。只做后者不够——
+ * heredoc 里的 spec 夹具本身就写着 `#### Scenario: SCEN-…`，那一行同样以 `#` 开头。
+ */
+const shellScenarioSrc = (text) => {
+  const kept = [];
+  let heredocEnd = null;
+  for (const line of text.split(/\r?\n/)) {
+    if (heredocEnd !== null) {
+      if (line.trim() === heredocEnd) heredocEnd = null;
+      continue;
+    }
+    const open = line.match(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/);
+    if (open !== null) { heredocEnd = open[2]; continue; }
+    if (/^\s*#/.test(line)) kept.push(line);
+  }
+  return kept.join("\n");
+};
+
 const rawTestSrc = existing.map((f) => fs.readFileSync(f, "utf8")).join("\n");
-const testSrc = stripComments(rawTestSrc);
+// 消息通道只读 JS：shell 里没有 assert.throws，把 .sh 混进来只会引入噪声字面量。
+const messageTestSrc = stripComments(
+  existing.filter((f) => CODE_EXT.has(path.extname(f).toLowerCase()))
+    .map((f) => fs.readFileSync(f, "utf8")).join("\n"),
+);
+// 场景通道读 JS 全文 + shell 的注释行：`.sh` 的用例说明写在 `#` 里。
+//
+// **这里不能走 stripComments**。JS 测试大量把场景编号写在 `// SCEN-…` 行注释里
+// （既有全部测试都是这个形态）。剥注释会把它们全删掉，于是每个场景都变成 untested
+// ——实测：改成剥注释后 shell 用例表 34 条里 10 条转红，最小复现是
+// `// SCEN-A` 标注的场景被判「spec 声明但测试中未见静态引用」。
+// 场景编号在注释里是**标注**，在断言里是**引用**，两者都算数；只有 shell 的 heredoc
+// 夹具需要剥（那是被构造的输入，由 shellScenarioSrc 处理）。
+const testSrc = existing.map((f) => {
+  const text = fs.readFileSync(f, "utf8");
+  return SHELL_EXT.has(path.extname(f).toLowerCase()) ? shellScenarioSrc(text) : text;
+}).join("\n");
 const specSrc = collect(specPath, DOC_EXT) || collect(specPath, CODE_EXT);
 
 // ---- 常量表：message: 引用了标识符时先解析回字面量 ----
@@ -218,12 +315,17 @@ const specSrc = collect(specPath, DOC_EXT) || collect(specPath, CODE_EXT);
 // "isArmstrongNumber requires a safe integer" 明明有断言，却被判成无覆盖；
 // 同时 toBase 的消息在 armstrong 文件里也"有覆盖"。两个方向同时假绿灯。
 // 正解：常量表按文件建；解析 message 引用时只查**同一个文件**里的常量。
+//
+// 只扫 JS 文件：shell 用例表的 heredoc 夹具里也写着 `const TYPE = "..."` 这样的片段，
+// 它不是任何断言，混进消息通道就是 undeclared 误报（本 change 实测：夹具里的两条
+// alpha 消息被算成「测试断言但 spec 未声明」）。
+const jsTestFiles = existing.filter((f) => CODE_EXT.has(path.extname(f).toLowerCase()));
 const CONSTS = new Map(); // file -> Map(标识符 -> 字面量)
 const constRegex = new RegExp(
   String.raw`\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(["'\`])((?:\\[\s\S]|(?!\2)[^\\])*)\2`,
   "g"
 );
-for (const f of existing) {
+for (const f of jsTestFiles) {
   const fileSrc = stripComments(fs.readFileSync(f, "utf8"));
   const table = new Map();
   for (const m of fileSrc.matchAll(constRegex)) {
@@ -236,7 +338,7 @@ const constIn = (file, name) => CONSTS.get(file)?.get(name);
 // ---- 测试侧：真正构成断言的错误消息 ----
 const tested = new Set();
 // message: IDENT / message: "literal"
-for (const f of existing) {
+for (const f of jsTestFiles) {
   const fileSrc = stripComments(fs.readFileSync(f, "utf8"));
   for (const m of fileSrc.matchAll(/\bmessage\s*:\s*([A-Za-z_$][\w$]*)/g)) {
     const lit = constIn(f, m[1]);
@@ -252,8 +354,14 @@ for (const f of existing) {
 //     → 错误码被当成断言消息。
 // 断言内的这两类形态仍由断言窗口覆盖（窗口取第二实参里的全部字面量），覆盖面没有缩小。
 // err.message === "..." / assert.equal(err.message, "...")
-addStrings(tested, testSrc, new RegExp(String.raw`\.message\s*(?:,|===?|!==?)\s*${STR}`, "g"));
-addStrings(tested, testSrc, new RegExp(String.raw`${STR}\s*===?\s*[^;\n]*\.message`, "g"));
+//
+// **`typeof` 右侧的字符串不是错误消息**。实测反例：
+//   assert.equal(typeof error.message, 'string')
+// 会命中 `.message\s*(?:,|===?)\s*STR`，把类型名 `string` 判成「测试断言但 spec 未声明」，
+// 于是本仓库跑 contract-check 必然多一条 undeclared。类型名是断言写法，不是契约。
+const typeProbed = messageTestSrc.replace(/\btypeof\s+[A-Za-z_$][\w$.]*/g, "typeof");
+addStrings(tested, typeProbed, new RegExp(String.raw`\.message\s*(?:,|===?|!==?)\s*${STR}`, "g"));
+addStrings(tested, typeProbed, new RegExp(String.raw`${STR}\s*===?\s*[^;\n]*\.message`, "g"));
 
 // assert.throws(fn, "..." | /.../ | new XError("...") | { message: "..." })
 const REGEX_LIT = /\/((?![/*])(?:\\.|[^/\n\\])+)\/[gimsuy]*/g;
@@ -261,7 +369,7 @@ const CTOR_NAMES = new Set([
   "Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError",
   "EvalError", "URIError", "AggregateError",
 ]);
-for (const w of messageWindows(assertWindows(testSrc))) {
+for (const w of messageWindows(assertWindows(messageTestSrc))) {
   // 断言窗口内的字符串字面量大多是被断言的错误消息，但 `name: "RangeError"`
   // 这类**判别字段**不是消息——一旦混入 tested，就会被判成 undeclared drift。
   // 先剥掉 name 字段与裸构造器名，再取剩余字面量。实测反例：
@@ -297,14 +405,29 @@ const declared = new Set(
 const declaredScens = new Set(
   [...specSrc.matchAll(/####\s*Scenario:\s*(SCEN-[A-Za-z0-9-]+)/gi)].map((m) => m[1])
 );
+// `--baseline` 把基线 spec 树已声明的编号并入「已声明」：change delta 只声明增量，
+// 测试语料是 skill 级的，不并基线就会把历史场景全判成 phantom（实测 110 vs 72）。
+const baselineScens = baselineDir === null
+  ? new Set()
+  : new Set([...collect(baselineDir, DOC_EXT)
+    .matchAll(/####\s*Scenario:\s*(SCEN-[A-Za-z0-9-]+)/gi)].map((m) => m[1]));
+const declaredScensWithBaseline = new Set([...declaredScens, ...baselineScens]);
 // 测试侧引用的场景编号：提取所有 SCEN-... 模式（注释、描述或断言内）
 const testedScens = new Set();
-for (const m of rawTestSrc.matchAll(/\b(SCEN-[A-Za-z0-9-]+)\b/g)) {
+for (const m of testSrc.matchAll(/\b(SCEN-[A-Za-z0-9-]+)\b/g)) {
   testedScens.add(m[1]);
 }
 
-const phantomScens = [...testedScens].filter((s) => !declaredScens.has(s)).sort();
-const untestedScens = [...declaredScens].filter((s) => !testedScens.has(s)).sort();
+const phantomScens = [...testedScens].filter((s) => !declaredScensWithBaseline.has(s)).sort();
+// untested **只判本 change 自己的场景**，不判它从基线继承来的那些。
+//
+// 这不是宽松，是 MODIFIED 的语义要求：openspec 的 MODIFIED 替换整个 Requirement 块，
+// 所以写 delta 时必须把基线原有的场景原样抄回来（抄漏会被 validate 拒绝）。抄回来之后，
+// 那些编号出现在 delta 里并不代表本 change 新增了它们——它们仍由基线测试负责。
+// 按 `declaredScens`（delta 全量）判 untested，等于把「抄写义务」变成「补测试义务」：
+// 本仓实测 delta 声明 16 条、其中 11 条是抄回来的基线场景，全被判成本 change 未覆盖。
+const ownScens = baselineDir === null ? declaredScens : new Set([...declaredScens].filter((s) => !baselineScens.has(s)));
+const untestedScens = [...ownScens].filter((s) => !testedScens.has(s)).sort();
 
 // 语义：本脚本是 **change 级**判据，不是任务级。
 //   undeclared（测试断言了 spec 未声明的消息）→ 任何时候都必须清零，任务级也判。
@@ -356,7 +479,7 @@ console.log(
 // → 是测试侧解析失效，不是"没有契约"。必须让门禁失败，否则 undeclared=0 是空转得出的假绿灯。
 // 这一条**必须排在 spec 侧判定之前**：spec 即使没有错误契约，测试侧解析失效仍然是解析失效，
 // 不能因为"spec 恰好没声明"就放行（实测踩过：动态拼接消息 + 无契约 spec 曾被判 exit 0）。
-if (tested.size === 0 && messageWindows(assertWindows(testSrc)).length > 0) {
+if (tested.size === 0 && messageWindows(assertWindows(messageTestSrc)).length > 0) {
   console.error(
     "测试里有 assert.throws/rejects，但没能提取出任何断言消息（可能写成了内联箭头或动态拼接）；" +
       "门禁不成立。请把错误消息写成字面量或同文件 const 常量。"
@@ -374,11 +497,11 @@ if (declared.size === 0) {
       console.log("SKIPPED: 本 spec 也没有场景编号，无可对账内容。");
       process.exit(0);
     }
-    const scenFailed = phantomScens.length > 0 || (!PARTIAL && untestedScens.length > 0);
+    const scenFailed = phantomScens.length > maxPhantom || (!PARTIAL && untestedScens.length > 0);
     process.exit(scenFailed ? 1 : 0);
   }
   if (declaredScens.size > 0) {
-    const scenFailed = phantomScens.length > 0 || (!PARTIAL && untestedScens.length > 0);
+    const scenFailed = phantomScens.length > maxPhantom || (!PARTIAL && untestedScens.length > 0);
     process.exit(scenFailed ? 1 : 0);
   }
   console.log(
@@ -387,6 +510,6 @@ if (declared.size === 0) {
   );
   process.exit(0);
 }
-const scenFailed = declaredScens.size > 0 && (phantomScens.length > 0 || (!PARTIAL && untestedScens.length > 0));
+const scenFailed = declaredScens.size > 0 && (phantomScens.length > maxPhantom || (!PARTIAL && untestedScens.length > 0));
 const errorFailed = undeclared.length > 0 || (!PARTIAL && untested.length > 0);
 process.exit(errorFailed || scenFailed ? 1 : 0);

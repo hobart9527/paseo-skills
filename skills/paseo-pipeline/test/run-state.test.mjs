@@ -282,7 +282,7 @@ test('SCEN-RS-LOCK a stale lock from a crashed run is reclaimed instead of wedgi
 // 复盘的常见污染是「看起来精确的估算」：它比「未采集」更有害，因为会被当成实测值引用。
 // 所以 report 只从账本已有的时间戳与字段推导，做不到的项直接写「未采集」。
 
-test('SCEN-CON-10 report derives only what the ledger actually recorded', (context) => {
+test('SCEN-CON-10 SCEN-CON-22 report derives only what the ledger actually recorded', (context) => {
   const subject = fixture(context);
   subject.run('begin', '--owner', 'lead-a');
   subject.run('claim', '--task', 'T-01', '--attempt', '1', '--phase', 'impl', '--role', 'gongbu', '--owner', 'lead-a');
@@ -298,9 +298,13 @@ test('SCEN-CON-10 report derives only what the ledger actually recorded', (conte
   assert.equal(report.auditDispatches, 1);
   assert.equal(report.maxAttempt, 1, 'attempt 2 尚未回执，不能算作已发生的派发');
 
-  // 账本不记审查结论与状态迁移时刻：这两项必须如实标未采集，不得估算。
-  assert.match(report.firstPassUnknown, /^未采集/);
-  assert.match(report.readyWaitUnknown, /^未采集/);
+  // 账本不记审查结论与状态迁移时刻：这些项**不出现在报告里**，也不估算。
+  // 旧版并排打印两项恒为「未采集」的字段；一条永远是同一个占位值的字段不传递信息，
+  // 只会让报告看起来像覆盖了它。口径改成报告末尾一句「本报告不覆盖什么」。
+  assert.equal(report.firstPassUnknown, undefined, '不采集的项不占字段位');
+  assert.equal(report.readyWaitUnknown, undefined, '不采集的项不占字段位');
+  assert.match(subject.run('report').stdout, /未采集：账本不记审查结论与状态迁移时刻/,
+    '不覆盖的口径必须写出来，不能静默省略');
 });
 
 test('SCEN-CON-10 report on a missing ledger reports absence instead of zeros that look measured', (context) => {
@@ -346,4 +350,25 @@ test('SCEN-CON-11 a Skill version mismatch warns instead of blocking, and an old
   const legacyStatus = subject.run('status');
   assert.equal(legacyStatus.status, 0);
   assert.match(legacyStatus.stdout, /SKILL 未采集/);
+});
+
+test('SCEN-CON-23 an uncapturable Skill version is reported instead of silently recorded as null', (context) => {
+  // 写进账本的 skill:null 与「从没采过」在文件里长得一样：留痕字段的价值全在
+  // 「知道它是缺的」。所以采集失败必须在 begin 时当场说一行，且仍然不拦——
+  // 无 git 的部署、旧账本诊断都要能继续。
+  const root = mkdtempSync(path.join(tmpdir(), 'pipeline-run-state-nogit-'));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const env = {
+    ...process.env,
+    PIPELINE_RUN_STATE_DIR: path.join(root, 'state'),
+    // 让 `git -C <skillDir> rev-parse HEAD` 找不到仓库：GIT_DIR 指向不存在的位置。
+    // （skillDir 是真实仓库里的目录，没有这条它必然采得到。）
+    GIT_DIR: path.join(root, 'not-a-repo.git'),
+    GIT_WORK_TREE: path.join(root, 'not-a-worktree'),
+  };
+  const begin = spawnSync(process.execPath, [script, 'begin', change, '--owner', 'lead-a'], {
+    env, encoding: 'utf8', timeout: 15_000,
+  });
+  assert.equal(begin.status, 0, '采集失败不得阻断 begin');
+  assert.match(begin.stderr, /Skill 版本未采集/, '采集失败必须可见，不能静默写 null');
 });

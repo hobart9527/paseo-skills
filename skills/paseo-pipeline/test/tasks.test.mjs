@@ -522,12 +522,55 @@ test('SCEN-CON-03 HTML comments do not participate in parsing', () => {
   assert.equal(result.tasks[0].review, 'strict', '注释里的 Review 不得覆盖真实值');
 });
 
+test('SCEN-CON-15 a same-line HTML comment does not swallow the task it annotates', () => {
+  // 实测反例（2026-10-27 复核）：旧实现对含 `<!--` 的行整行 `continue`，
+  // `- [ ] 1.2 T-02 b <!-- note -->` 这条任务凭空消失，紧随其后的
+  // `Write scope: b.mjs` 还被并进 T-01——解析零报错，任务数与写范围双双错位。
+  const result = parseTasks(`- [ ] 1.1 T-01 First
+  - Write scope: a.mjs
+
+- [ ] 1.2 T-02 Second <!-- 待定，别删 -->
+  - Write scope: b.mjs
+  - Verify with: node --test b.test.mjs
+`);
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.tasks.map((task) => task.id), ['T-01', 'T-02'],
+    '行尾注释不得让任务消失');
+  assert.deepEqual(result.tasks[0].scope, ['a.mjs'], 'T-01 不得吞掉 T-02 的写范围');
+  assert.deepEqual(result.tasks[1].scope, ['b.mjs']);
+  assert.equal(result.tasks[1].verify.command, 'node --test b.test.mjs');
+});
+
+test('SCEN-CON-15 a same-line comment on a field keeps the field value', () => {
+  // 行内注释是噪声，剥掉之后字段值必须照常生效；缺了 scope 的失败模式是
+  // MISSING_SCOPE——报错本身正确，但让一条合法的 tasks.md 变红是解析缺陷。
+  const result = parseTasks(`- [ ] 1.1 T-01 Commented field
+  - Write scope: a.mjs <!-- 只写这一个文件 -->
+  - Review: strict <!-- 见 spec --> <!-- 第二个注释也无害 -->
+`);
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.tasks[0].scope, ['a.mjs']);
+  assert.equal(result.tasks[0].review, 'strict');
+});
+
+test('SCEN-CON-15 a multi-line comment keeps the text before and after it', () => {
+  // 跨行注释：开注释前的文字与闭注释后的文字都保留，只有注释区间被剥掉。
+  const result = parseTasks(`- [ ] 1.1 T-01 Multi
+  - Write scope: a.mjs
+  - Depends on: <!-- 这里开始
+  T-00 被提到但应忽略
+  --> none
+`);
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.tasks[0].depends, []);
+});
+
 // --- Verify with 的 Markdown 包裹必须剥掉再交给 shell ---
 // 实测（本 change 自己的 pod 合流）：tasks.md 里写 `` `node --test x.mjs` ``，
 // 解析器判定为可执行并把**原文**交给 /bin/sh -c。反引号在 shell 里是命令替换，
 // 整行先跑一遍测试，再把测试输出（`✔ ...`）当命令执行 → `/bin/sh: ✔: command not found`，
 // 合流 exit 20。判定对了、执行错了，等于白跑。
-test('SCEN-CON-03 Verify with strips the Markdown wrapper before handing the command to a shell', () => {
+test('SCEN-CON-16 Verify with strips the Markdown wrapper before handing the command to a shell', () => {
   const { tasks } = parseTasks(`- [ ] 1.1 T-01 Backticked
   - Depends on: none
   - Write scope: src/a.mjs
@@ -542,6 +585,28 @@ test('SCEN-CON-03 Verify with strips the Markdown wrapper before handing the com
   assert.equal(tasks[1].verify.command, 'node --test src/b.test.mjs');
   // raw 保留原文：文档读者看到的仍是他们写下的内容。
   assert.match(tasks[0].verify.raw, /^`node/);
+});
+
+test('SCEN-CON-16 Verify with does not rewrite shell structure', () => {
+  // 剥包裹只针对 **Markdown 代码段/引号**，不针对 shell 语法字符。
+  // 旧实现还剥 `(` `[` `{`：`(cd sub && make)` 被改写成 `cd sub && make`，
+  // 子 shell 语义消失（cd 会污染后续命令的 cwd），而 `[ -f x ]` 被剥成无效命令。
+  // 冻结命令是任务契约，解析器不改写它的 shell 结构。
+  const { tasks } = parseTasks(`- [ ] 1.1 T-01 Subshell
+  - Write scope: src/a.mjs
+  - Verify with: (cd sub && make)
+
+- [ ] 1.2 T-02 Test-bracket
+  - Write scope: src/b.mjs
+  - Verify with: node --test b.mjs
+`);
+  assert.equal(tasks[0].verify.command, '(cd sub && make)', '子 shell 包裹必须原样保留');
+
+  // 命令里的反引号是 shell 命令替换，只有**整行被一对反引号包裹**时才剥。
+  // `` `a` && `b` `` 有三个反引号，不是一对包裹：原样保留才能让 shell 执行两条命令。
+  const substitution = parseTasks('- [ ] 1.1 T-01 Sub\n  - Write scope: src/a.mjs\n'
+    + '  - Verify with: ' + '`a` && `b`' + '\n').tasks[0].verify.command;
+  assert.equal(substitution, '`a` && `b`', '未成对包裹的反引号不得被剥');
 });
 
 test('SCEN-CON-03 Verify with keeps inner quotes that carry shell meaning', () => {

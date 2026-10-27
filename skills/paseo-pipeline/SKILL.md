@@ -113,10 +113,12 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 4. **冻结前机械预检**（一条命令，不是靠人核对）：
 
    ```bash
-   node skills/paseo-pipeline/freeze-check.mjs openspec/changes/<name>
+   node skills/paseo-pipeline/freeze-check.mjs openspec/changes/<name> --baseline openspec/specs
    ```
 
    零阻断项才可进入确认点 1。它复用编排器同一个解析器（`lib/tasks.mjs`），因此**不存在「冻结时通过、执行时解析不出来」**：任务行/ID/依赖图/scope 合法性、场景编号双向闭环、验收矩阵的列与引用、Pod 成员全部在这一步核。输出直接贴进冻结报告（计数由命令生成）。`scope 与老测试迁移的冲突在此解决`——那是语义判断，仍由 Auditor 逐条核。跨 change 写范围重叠只出 `HINT`：两个 change 改同一文件是真实情况，先后顺序是人类在确认点 1 的决定，脚本不替人拦。
+
+   **`--baseline` 不是可选项**：`MODIFIED` 替换整个 Requirement 块，所以 delta 必须把基线原有场景原样抄回（抄漏会被 `openspec validate` 拒绝）。抄回来之后，双向核对若仍要求「每个声明场景必须被任务认领」，就会把这些继承来的历史场景当成缺陷——本 change 实测 5 条被判「没有任务认领」，任何含 MODIFIED 的 change 都冻结不了。`--baseline` 只把它们从**认领义务**里排除；引用了哪儿都没声明的编号仍照常阻断。
 5. **spec 撰写规则（冻结审查逐条核，不靠脚本）**：下面五条来自 2026-10-26 `hardening-governance-contracts` 的冻结后返工，每条都对应一次真实的执行期损失。它们**不写成门禁脚本**——语义判据机械化的收益低于维护成本，由 Auditor 在冻结审查时逐条核对。
    - **环境独立**：`Verify with` 必须在**干净工作树**里可执行。命令或 `Write scope` 引用了被 `.gitignore` 的文件（如 `.env.example`）就是冻结缺陷——那会让任务在合并时才发现验证不了。冻结前对新拉出的 worktree 实跑一次。
    - **scope 闭环**：任务的 `Write scope` 必须涵盖它的 `Verify with` **读到**的每个文件，以及它名下每个 `SCEN-*` 的**实现文件**。场景挂给一个 scope 排除实现文件的任务，等于让写手二选一：越权或被判失败。
@@ -164,10 +166,16 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 
    ```bash
    node skills/paseo-pipeline/test/check-evidence.mjs --gate acceptance --sha <集成HEAD> --matrix openspec/changes/<name>/acceptance.md <smoke 证据>
-   node skills/paseo-pipeline/contract-check.mjs <spec 目录> --tasks openspec/changes/<name>/tasks.md --final
+   node skills/paseo-pipeline/contract-check.mjs openspec/changes/<name>/specs --tasks openspec/changes/<name>/tasks.md --baseline openspec/specs --final --max-phantom <预算>
    ```
 
    `--matrix` 从冻结的验收矩阵读必需场景（调用者只能追加，不能减少）；`--final` 让「测试路径一条都没产出」从 SKIPPED 变成 exit 1——收尾报告里写着「跑过 contract-check」却是空跑，是这条开关唯一的理由。
+
+   **`--final` 不改变场景对账口径**，它只管「有没有产出」。所以收尾命令还有三个部分，缺了就会得到一份恒红的报告：
+   - **spec 传 change 的 `specs/` delta，并加 `--baseline openspec/specs`**。测试语料是整个 skill 级的，而 delta 只声明本 change 涉及的场景；不并基线，历史场景全部变成 phantom（本仓 2026-10-27 实测：只传 delta 38 条 phantom，并入基线后 31 条）。
+   - **反过来只传整树也不行**：那时基线里那些「本仓库确实没有测试引用」的场景会被算成 untested，把本 change 的收尾拖红（实测整树口径 51 条 untested）。`--baseline` 的分工是**只把基线场景从 untested 判定里排除**——本 change 没有义务给继承来的场景补测试（它们由基线负责），但仍要为自己的新增场景负责。本仓实测：delta+baseline 口径 0 条 untested。
+   - **`--max-phantom <n>` 把存量债记成预算**。本仓 2026-10-27 实测 31 条（整树 + 全测试目录口径为 83 条，多出的部分含测试夹具里临时编的编号）。这些是历史债，不是本轮交付的判断对象。**收尾时贴当轮实测数**，新增一条就越界失败——既不假装清零，也不让门禁永远红着没人看。预算不是豁免：写下的数字必须是**实测过、且该条在此前 change 里已存在**的。
+   - 场景编号写在测试注释行里也算引用：JS 的 `// SCEN-…` 与 shell 用例表的 `# SCEN-…` 都会被读到。shell 的 heredoc 夹具不算（那是被构造的输入）。
 4. **OpenSpec 交回点**：需要 `validate`/`archive` 时，Lead 在最终信封里列成**唯一待办请求**并在运行账本标等待；主会话执行后回执，Lead 才继续。文档改动不等于获得 CLI 或发布授权。
 5. **归档集成 change**：`openspec archive <name> --yes`（主会话）。
 6. **人类确认点 2：合入主干**：呈报 diff 摘要、验收 SHA、测试与业务验收记录，经用户确认后方可合入主干。未经确认绝对禁止合入 main、推送远端或发布外部服务。
@@ -202,7 +210,7 @@ node skills/paseo-pipeline/run-state.mjs record <change> --key <key> --agent <ag
 node skills/paseo-pipeline/run-state.mjs fail   <change> --key <key> --reason <text> --owner <owner-id>
 # 查看：租约、未回执意图
 node skills/paseo-pipeline/run-state.mjs status <change> [--json]
-# 度量：派发次数、同任务最大 attempt、作废意图（采不到的项如实写「未采集」）
+# 度量：派发次数、同任务最大 attempt、作废意图（只写账本能算出的数，不覆盖的项在末尾说明）
 node skills/paseo-pipeline/run-state.mjs report <change> [--json]
 ```
 

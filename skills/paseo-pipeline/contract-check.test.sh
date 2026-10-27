@@ -155,6 +155,86 @@ check 1 "场景遗漏拦截" "$(run "$WORK/spec-scen.md" "$WORK/test-scen-partia
 echo "R19 场景未完全覆盖带 --partial → 期望 0"
 check 0 "场景部分覆盖 partial" "$(run "$WORK/spec-scen.md" "$WORK/test-scen-partial.test.js" --partial)"
 
+# ---------- 2026-10-27：change-scoped 口径（--baseline / --max-phantom） ----------
+# 实测动机：SKILL 让收尾用 **change 的 spec delta** 跑收尾对账，而 delta 只声明本 change
+# 新增的场景，测试语料却是整个 skill 级的。于是历史场景全被判成 phantom——本仓实测
+# change-scoped 110 条 vs 并入基线后 72 条，rc 恒为 1，门禁与实际脱节，最后没人看它。
+mkdir -p "$WORK/baseline-specs"
+cat > "$WORK/baseline-specs/base.md" <<'EOF'
+#### Scenario: SCEN-BASE-01 historical scenario
+#### Scenario: SCEN-BASE-02 another historical scenario
+EOF
+cat > "$WORK/spec-delta.md" <<'EOF'
+#### Scenario: SCEN-NEW-01 this change's scenario
+EOF
+cat > "$WORK/test-delta.test.js" <<'EOF'
+// SCEN-NEW-01
+// SCEN-BASE-01
+EOF
+
+# SCEN-CON-19
+echo "R20 change delta 单跑：基线场景被判 phantom → 期望 1"
+check 1 "delta 单跑 phantom" "$(run "$WORK/spec-delta.md" "$WORK/test-delta.test.js" --partial)"
+
+echo "R21 并入 --baseline 后基线场景不再算 phantom → 期望 0"
+check 0 "baseline 并入" "$(run "$WORK/spec-delta.md" "$WORK/test-delta.test.js" --partial --baseline "$WORK/baseline-specs")"
+
+echo "R22 --baseline 路径不存在 → 期望 2"
+check 2 "baseline 路径不存在" "$(run "$WORK/spec-delta.md" "$WORK/test-delta.test.js" --baseline "$WORK/nope")"
+
+# SCEN-CON-20
+echo "R23 存量债记预算：phantom 超预算仍拦 → 期望 1"
+cat > "$WORK/test-debt.test.js" <<'EOF'
+// SCEN-NEW-01
+// SCEN-BASE-01
+// SCEN-LEGACY-01
+// SCEN-LEGACY-02
+EOF
+check 1 "存量债超预算" "$(run "$WORK/spec-delta.md" "$WORK/test-debt.test.js" --partial --baseline "$WORK/baseline-specs" --max-phantom 1)"
+
+echo "R24 存量债在预算内放行 → 期望 0"
+check 0 "存量债在预算内" "$(run "$WORK/spec-delta.md" "$WORK/test-debt.test.js" --partial --baseline "$WORK/baseline-specs" --max-phantom 2)"
+
+echo "R25 --max-phantom 非整数 → 期望 2"
+check 2 "--max-phantom 非法值" "$(run "$WORK/spec-delta.md" "$WORK/test-delta.test.js" --max-phantom abc)"
+
+# MODIFIED 的语义要求把基线原有场景原样抄回 delta（openspec 按整块替换，抄漏会被 validate 拒绝）。
+# 抄回来不等于本 change 新增了它们：它们仍由基线测试负责。用 delta 全量判 untested，
+# 等于把「抄写义务」变成「补测试义务」——本仓实测 delta 声明 16 条，其中 11 条是抄回来的基线场景。
+cat > "$WORK/spec-delta-inherit.md" <<'EOF'
+#### Scenario: SCEN-NEW-01 this change's scenario
+#### Scenario: SCEN-BASE-01 a baseline scenario copied back only to satisfy MODIFIED
+EOF
+# 只覆盖本 change 自己的那条：继承来的场景由基线测试负责，本 change 的测试里不该出现它。
+cat > "$WORK/test-delta-own.test.js" <<'EOF'
+// SCEN-NEW-01
+EOF
+
+echo "R25b 抄回 delta 的基线场景不算本 change 的 untested 义务 → 期望 0"
+check 0 "继承场景不判 untested" "$(run "$WORK/spec-delta-inherit.md" "$WORK/test-delta-own.test.js" --baseline "$WORK/baseline-specs")"
+
+echo "R25c 同一份 delta 不并基线时该继承场景仍是 untested → 期望 1"
+check 1 "不并基线仍判 untested" "$(run "$WORK/spec-delta-inherit.md" "$WORK/test-delta-own.test.js")"
+
+# ---------- 2026-10-27：--final 的语义边界 ----------
+# 实测反例：assert.equal(typeof error.message, 'string') 会被判成
+# 「测试断言但 spec 未声明: string」——typeof 右侧是类型名，不是错误消息契约。
+cat > "$WORK/spec-typeof.md" <<'EOF'
+### Requirement: TypeProbe
+1. `TypeError("real message")` when bad.
+
+#### Scenario: SCEN-TY-01 type probe
+EOF
+cat > "$WORK/test-typeof.test.js" <<'EOF'
+assert.equal(typeof err.message, 'string');
+assert.throws(() => f(), { name: "TypeError", message: "real message" });
+// SCEN-TY-01
+EOF
+
+# SCEN-CON-21
+echo "R26 typeof 右侧的类型名不算错误消息契约 → 期望 0"
+check 0 "typeof 类型名" "$(run "$WORK/spec-typeof.md" "$WORK/test-typeof.test.js")"
+
 # ---------- 2026-10-26 收窄：谓词窗口、全局提取、方言不适用 ----------
 cat > "$WORK/spec-code.md" <<'EOF'
 ### Requirement: CodeDialect
@@ -172,7 +252,7 @@ await assert.rejects(fn, hasErrorCode('ATTACHMENT_SIZE_INVALID'));
 await assert.rejects(fn, (err) => err instanceof TypeError && err.code === 'INVALID_LOAN_RESERVATION');
 // SCEN-CODE-01
 EOF
-echo "R20 谓词回调 + 错误码方言 → 期望 0（消息通道 N/A，只对账场景）"
+echo "R27 谓词回调 + 错误码方言 → 期望 0（消息通道 N/A，只对账场景）"
 check 0 "谓词窗口不进消息通道" "$(run "$WORK/spec-code.md" "$WORK/test-predicate.test.js")"
 
 # 全局 message: 提取已删：桩返回值不是契约。
@@ -185,7 +265,7 @@ const fakeClient = {
 await assert.rejects(fn, (err) => err.code === 'ATTACHMENT_SIZE_INVALID');
 // SCEN-CODE-01
 EOF
-echo "R21 桩返回值 message: 'ok' → 期望 0（不再被当成断言消息）"
+echo "R28 桩返回值 message: 'ok' → 期望 0（不再被当成断言消息）"
 check 0 "桩返回值不算断言" "$(run "$WORK/spec-code.md" "$WORK/test-stub-value.test.js")"
 
 # 全局 new XError(STR) 提取已删：构造输入不是断言消息。
@@ -194,7 +274,7 @@ const fetcher = { dict: new MasterDataSyncError('MASTER_DATA_FETCH_FAILED', '远
 await assert.rejects(fn, (err) => err.code === 'ATTACHMENT_SIZE_INVALID');
 // SCEN-CODE-01
 EOF
-echo "R22 构造器输入被断言 → 期望 0（不再被当成 spec 未声明）"
+echo "R29 构造器输入被断言 → 期望 0（不再被当成 spec 未声明）"
 check 0 "构造输入不算断言消息" "$(run "$WORK/spec-code.md" "$WORK/test-ctor-input.test.js")"
 
 # 方言匹配时消息通道照常双向对账：真 drift 仍要拦。
@@ -202,8 +282,28 @@ cat > "$WORK/test-code-drift.test.js" <<'EOF'
 await assert.rejects(fn, { message: "spec 没声明这条消息" });
 // SCEN-CODE-01
 EOF
-echo "R23 方言匹配时的真 drift → 期望 1"
+echo "R30 方言匹配时的真 drift → 期望 1"
 check 1 "真 drift 仍拦" "$(run "$WORK/spec-full.md" "$WORK/test-code-drift.test.js" --partial)"
+
+# shell 用例表也是测试语料：`# SCEN-…` 注释行是「这条用例验哪个场景」的标注。
+# 实测缺口：只扫 JS 扩展名时，由 bash 用例承载的场景永远被判「无测试引用」。
+# 但 heredoc 夹具里的 `#### Scenario: …` 是被构造的输入，不算引用——不剥会把它们算成 phantom。
+cat > "$WORK/spec-shell.md" <<'EOF'
+#### Scenario: SCEN-SH-01 covered by a shell case
+EOF
+cat > "$WORK/shell.test.sh" <<'EOF'
+# SCEN-SH-01
+cat > "$WORK/spec-fixture.md" <<'INNER'
+#### Scenario: SCEN-SH-99 constructed input, not a reference
+INNER
+EOF
+
+# SCEN-CON-24
+echo "R26a shell 用例的注释行算作场景引用 → 期望 0"
+check 0 "shell 注释算引用" "$(run "$WORK/spec-shell.md" "$WORK/shell.test.sh")"
+
+echo "R26b heredoc 夹具里的场景编号不算引用 → 期望 0（否则 SH-99 会被判 phantom）"
+check 0 "夹具不算引用" "$(run "$WORK/spec-shell.md" "$WORK/shell.test.sh" --partial --max-phantom 0)"
 
 # --final 收尾模式：测试路径一条都没产出时不再是「阶段 1 正常状态」。
 # 实测缺口：收尾时跑同一条命令会打印 SKIPPED 并 exit 0，收尾报告写着「跑过 contract-check」，
@@ -213,9 +313,9 @@ cat > "$WORK/tasks-notest.md" <<'EOF'
   - Write scope: src/a.mjs
   - Review: standard
 EOF
-echo "R24 默认模式：测试路径全缺 → 期望 0（SKIPPED，规划期正常）"
+echo "R31 默认模式：测试路径全缺 → 期望 0（SKIPPED，规划期正常）"
 check 0 "规划期 SKIPPED 放行" "$(run "$WORK/spec-full.md" --tasks "$WORK/tasks-notest.md")"
-echo "R25 收尾模式：测试路径全缺 → 期望 1"
+echo "R32 收尾模式：测试路径全缺 → 期望 1"
 check 1 "收尾模式不许 SKIPPED" "$(run "$WORK/spec-full.md" --tasks "$WORK/tasks-notest.md" --final)"
 
 printf '\n通过 %d / 失败 %d\n' "$pass" "$fail"

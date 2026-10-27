@@ -28,10 +28,16 @@ import { batchDependencyClosure } from './lib/ledger.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
-const changeDir = args.find((a) => !a.startsWith('--'));
+// `--baseline <dir>` 的取值不是位置参数：跳过它自己的值，否则它会被当成 change 目录。
+const baselineIndex = args.indexOf('--baseline');
+const baselineArg = args.find((a) => a.startsWith('--baseline='))?.slice('--baseline='.length)
+  ?? (baselineIndex >= 0 && baselineIndex + 1 < args.length ? args[baselineIndex + 1] : null);
+const positional = args.filter((a, i) => !a.startsWith('--')
+  && !(baselineIndex >= 0 && i === baselineIndex + 1));
+const changeDir = positional[0];
 
 if (!changeDir) {
-  console.error('Usage: node freeze-check.mjs openspec/changes/<name> [--json]');
+  console.error('Usage: node freeze-check.mjs openspec/changes/<name> [--baseline <spec 目录>] [--json]');
   process.exit(2);
 }
 if (!fs.existsSync(changeDir) || !fs.statSync(changeDir).isDirectory()) {
@@ -79,6 +85,37 @@ if (tasksMarkdown === null) {
 }
 
 // --- 2. spec 场景编号 与 任务 Scenarios 双向闭环 ---
+// `--baseline <spec 目录>`：并入基线已声明的场景编号，用于**双向核对的豁免侧**。
+//
+// 为什么需要：openspec 的 MODIFIED 替换整个 Requirement 块，所以 delta 必须把基线原有
+// 场景原样抄回来（抄漏会被 `validate` 拒绝）。抄回来之后，这些编号在 delta 里出现
+// 并不代表本 change 新增了它们——它们仍由基线负责。没有这个开关时，双向核对会把
+// 「每个声明场景必须被任务认领」施加到抄回来的历史场景上，于是任何含 MODIFIED 的
+// change 都冻结不了（本 change 实测：5 条基线场景被判「没有任何任务认领」）。
+const baselineScens = new Set();
+if (baselineArg !== null) {
+  if (!fs.existsSync(baselineArg)) {
+    console.error(`[freeze-check] baseline 路径不存在: ${baselineArg}`);
+    process.exit(2);
+  }
+  const baselineFiles = [];
+  (function walkBaseline(dir) {
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walkBaseline(full);
+      else if (entry.isFile() && entry.name.endsWith('.md')) baselineFiles.push(full);
+    }
+  })(baselineArg);
+  for (const file of baselineFiles) {
+    for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+      const heading = line.match(SCEN_HEADING);
+      const idMatch = heading?.[1].match(/^(SCEN-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/);
+      if (idMatch) baselineScens.add(idMatch[1]);
+    }
+  }
+}
+
 const specFiles = [];
 function walkSpecs(dir) {
   if (!fs.existsSync(dir)) return;
@@ -121,14 +158,18 @@ if (specFiles.length === 0) {
 const claimed = new Map(); // scen -> [taskId]
 for (const task of tasks) {
   for (const scen of task.scenarios) {
-    if (!declaredScens.has(scen)) {
+    // 任务认得一个**基线**场景不算错：delta 里的 MODIFIED 必须原样抄回基线场景
+    // （openspec 按整块替换，抄漏会被 validate 拒绝），抄回来之后任务若确实仍承载它，
+    // 标注出来是诚实的。真正要拦的是引用了**哪儿都没声明**的编号。
+    if (!declaredScens.has(scen) && !baselineScens.has(scen)) {
       block(`${task.id} 的 Scenarios 引用了未声明的场景 ${scen}`);
     }
     claimed.set(scen, [...(claimed.get(scen) ?? []), task.id]);
   }
 }
 for (const [scen, file] of declaredScens) {
-  if (!claimed.has(scen)) {
+  // 基线场景不要求本 change 的任务认领：它们由基线负责，本 change 只是抄回来保住它们。
+  if (!claimed.has(scen) && !baselineScens.has(scen)) {
     block(`场景 ${scen}（${file}）没有任何任务认领：验收时必然变成 untested 噪声或幻影声明`);
   }
 }
@@ -300,24 +341,42 @@ function scopesOverlap(a, b) {
 }
 
 // --- 输出 ---
+//
+// **归档 change 一律只出提示。** `openspec/changes/archive/` 是历史记录，不是待执行的计划：
+// 实测四个归档 change 在当前规则下全部判「不得冻结」（contract-alignment 14、wakeup-budget 30、
+// gate-slimming 31、native-closure 1），而其中绝大多数是「写的时候这条规则还不存在」——
+// 例如 2026-10-26 之前的 Done 行用 `review=main-session`，那是当时的合法形态。
+// 用今天的语法追溯执法，只会让只读诊断永远红着，红到最后没人再看它。
+// 冻结预检回答的是「这份计划现在能不能开工」，归档的东西已经没有这个问题的答案。
+const archived = path.resolve(changeDir).split(path.sep).includes('archive');
+const effectiveBlocking = archived ? [] : blocking;
+const effectiveAdvisory = archived
+  ? [...blocking.map((item) => `[已归档，仅记录] ${item}`), ...advisory]
+  : advisory;
+
 const summary = {
   change: changeDir,
+  archived,
   tasks: tasks.length,
   scenarios: declaredScens.size,
   acceptanceRows,
-  blocking,
-  advisory,
+  blocking: effectiveBlocking,
+  advisory: effectiveAdvisory,
 };
 
 if (json) {
   console.log(JSON.stringify(summary, null, 2));
 } else {
-  console.log(`[freeze-check] ${changeDir}`);
+  console.log(`[freeze-check] ${changeDir}${archived ? '（已归档）' : ''}`);
   console.log(`  tasks=${summary.tasks} scenarios=${summary.scenarios} acceptanceRows=${summary.acceptanceRows}`);
-  for (const item of advisory) console.log(`  HINT  ${item}`);
-  for (const item of blocking) console.error(`  BLOCK ${item}`);
-  console.log(blocking.length === 0
-    ? '  RESULT 可冻结（0 阻断项）；语义判据（scope 闭环、delta 对基线）仍由冻结审查逐条核'
-    : `  RESULT 不得冻结：${blocking.length} 个阻断项`);
+  for (const item of effectiveAdvisory) console.log(`  HINT  ${item}`);
+  for (const item of effectiveBlocking) console.error(`  BLOCK ${item}`);
+  if (archived) {
+    console.log('  RESULT 已归档：历史记录只读诊断，不做可冻结判定');
+  } else {
+    console.log(effectiveBlocking.length === 0
+      ? '  RESULT 可冻结（0 阻断项）；语义判据（scope 闭环、delta 对基线）仍由冻结审查逐条核'
+      : `  RESULT 不得冻结：${effectiveBlocking.length} 个阻断项`);
+  }
 }
-process.exit(blocking.length === 0 ? 0 : 1);
+process.exit(effectiveBlocking.length === 0 ? 0 : 1);
