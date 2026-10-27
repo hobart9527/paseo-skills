@@ -42,6 +42,8 @@ Scenario ids the delta carries only because a `MODIFIED` block replaces a whole 
 
 For a change located under an `archive` directory the check SHALL NOT emit a freeze verdict: it SHALL report every finding as an advisory, exit successfully, and state that the change is archived. Archived changes are historical records, not plans awaiting execution, and rules introduced after a change was written SHALL NOT be applied to it retroactively as blocking findings.
 
+The check SHALL also state the orchestrator routing implied by the frozen task set: it SHALL estimate the dispatch count as one writer per task, plus one independent auditor for every task whose review tier is not `mechanical`, plus one tester for every `strict` task, and SHALL report `lead` when that estimate reaches six and `pod` otherwise, naming the profile that must be dispatched. The routing SHALL be advisory only and SHALL NOT change the exit status.
+
 #### Scenario: SCEN-CON-04 the freeze check blocks each defect class
 - **WHEN** the freeze check runs against a change missing a task id, declaring an unclaimed scenario, or holding any other blocking defect
 - **THEN** it exits non-zero naming that defect, and a clean change exits zero.
@@ -61,6 +63,10 @@ For a change located under an `archive` directory the check SHALL NOT emit a fre
 #### Scenario: SCEN-CON-25 a MODIFIED block does not turn inherited scenarios into this change's debt
 - **WHEN** a change's delta copies baseline scenarios back into a `MODIFIED` requirement, and its tasks do not claim them
 - **THEN** the check passes with `--baseline` naming that spec tree, and blocks without it, while a scenario id declared nowhere is blocked either way.
+
+#### Scenario: SCEN-CON-26 the freeze check names the orchestrator routing
+- **WHEN** the freeze check runs against a frozen task set whose tiers imply three dispatches, and against one whose tiers imply nine
+- **THEN** the first reports `pod`, the second reports `lead` naming `agent_profile_shangshu`, the same routing appears in `--json` output, and neither verdict changes the exit status.
 
 ### Requirement: Evidence has one field contract, one template set and matrix-driven acceptance
 The required evidence field set SHALL be exported by a single module that the structure gate, the evidence templates and the documentation tests all consume, so that a field cannot be required by the gate while absent from the templates.

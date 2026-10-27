@@ -163,3 +163,27 @@
 
 - `dispatch.mjs`（117 行）+ `test/dispatch.test.mjs`（434 行）：SKILL 自述"不参与正常流水线"。**注意：该测试文件同时承载 `hotfix.sh` 的 12 条用例**，直接删会连带丢失 hotfix 保护——已拆出 `test/hotfix.test.mjs`（17 条，全绿）后再删。
 - `run-state.mjs heartbeat` 子命令 + `lib/run-state.mjs` 的 `heartbeatStatus`：`hardening-governance-contracts` 账本 `heartbeats` 为 **0**。`heartbeats` 字段保留为只读兼容（旧文件仍可读、`status` 仍打印），但不留写入路径。
+
+## 13. 2026-10-27 总控越权代写：CP-1 到执行循环之间的归属真空
+
+**事故**（`approval-hub` / change `eas-filing-and-local-ocr`，会话 `f433285`）：`/paseo-pipeline` 走完 proposal → specs → design → tasks → `freeze-check`（0 阻断）→ 确认点 1。用户确认后，主会话**没有派发任何子 Agent**，直接在本机 `Write`/`Edit` 了 `invoice-parser-service.ts`、`invoice-lease-service.ts`、`routes/api.ts` 与两个测试文件，并跑通了单测。直到用户质问「为什么走了 pipeline 却直接编码」才停手。
+
+**根因是归属真空，不是模型不听话**。四处结构缺口，任何一处补齐都不至于走到这一步：
+
+1. **主路径没写交接**。§2.1-6 确认点 1 写到「经用户确认后冻结」就结束，§2.2 直接从单任务状态机开始。中间那一步「谁执行、第一个动作是什么」在规程里**根本不存在**，模型只能自己填。`shangshu` 在 SKILL 里只出现于角色表和合流门禁，主路径一次没提。
+2. **路由判据不落地**。`freeze-check` 只输出 `tasks=8`；「≥6 次派发」要自己数档位估算。8 个任务里 6 个 `standard` 档，实为 13 次派发，但输出里没有一个字提示该交 Shangshu。
+3. **写前无拦截，写后也无痕迹**。唯一的硬门禁 `merge-task.mjs` exit 31 只在合流生效。原地写完不提交，走不到合流，等于全部门禁之外。
+4. **压缩后没重放状态**。日志有多次 `[Compacted]`。压缩摘要保留「推进 Phase 1-A」，抹掉了禁令权重；正确动作是重跑 `reconcile.mjs` 拿真实态，而不是凭摘要继续。
+
+**治理（本轮，成本极低的三处）**：
+
+- `freeze-check.mjs` 输出 `[ROUTE] lead|pod` 与 `--json` 的 `route`/`dispatches` 字段：按档位机械累加派发数，≥6 判 `lead` 并点名 `agent_profile_shangshu`。**只提示，不改退出码**（按 §12 分级：这是判断编排归属的文本，不是保护 git 历史）。
+- SKILL §2.1 新增第 7 步「交接序列」：预载派发工具 → 建集成 workspace → 按 `[ROUTE]` 派发 → 主会话停手。并规定 CP-1 的选项文案必须写明执行者，禁止只写「确认冻结并启动实施」。
+- SKILL §2.0-4 补：**上下文压缩或恢复后第一动作是 `reconcile`**。
+
+**暂缓的措施（按 §12「一进一出、无事故证据不加」，留作再次发生时的处置）**：
+
+- **PreToolUse hook 拦截主 checkout 内命中 `Write scope` 的 `Edit`/`Write`**。它能拦住最省力的那条路，但拦不住 `Bash` 重定向与 `sed -i`，且要维护 scope 解析与误伤面。本次只发生一次，先上文档与路由提示。**建议触发器：同一类越权再发生一次，就上 hook 并把 `reconcile` 的脏树检测一起加。**
+- **独立交接脚本 `handoff.mjs`**：会与 2026-10-26 删除的 `dispatch.mjs` 落入同一形态（给原生 MCP 派发再造一个入口），重新引出「哪条是主路径」的歧义。SKILL 已明确原生 MCP 是默认路径，不再加壳。
+
+**保留的局限（必须承认）**：交接序列与 `[ROUTE]` 仍然是**规程与提示**，不是物理隔离。主会话在主 checkout 写完不提交的代码，`merge-task` 与业务验收矩阵都碰不到。真正的硬防线是合流门禁与确认点 2 的人工核对，前提是代码确实经子 Agent 进入集成分支。

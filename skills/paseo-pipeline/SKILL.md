@@ -89,6 +89,7 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
    - `NEXT <kind>: <reason>` 是当前主行动；`ALSO <kind>: <reason>` 是同一轮里可并行的其余动作（例如「先仲裁 T-01 的孤儿意图，同时把已就绪的 T-02 派出去」）。**`ALSO` 不是提示，是同一决策里的可执行动作，不要再跑一次对账去拿它。**
    - 只有全局性阻断（`runtime` 非 `ok`、`UNMAPPED` 非空、无依赖的 `BLOCKED`）才会压住全部动作并给出单一 hold。单个任务的 `INVALID`/`UNRESOLVED`/预算耗尽**只压住被点名的任务**，不得冻结无关任务的派发。
    - 若 `runtime` 非 `ok`（`degraded`/`unavailable`），状态观测不可信，一律 hold，不派发不合流。
+   - **上下文压缩或会话恢复后的第一动作也是这条**。压缩摘要会保留「该推进 Phase N」，抹掉「总控禁写业务代码」这类禁令的权重；对账输出是重放状态，摘要不是。先拿到 `NEXT` 再动。2026-10-27 `eas-filing-and-local-ocr` 就是在压缩后跳过对账、直接进 `Write` 的。
 
 ### 2.1 冻结前准备（含人类确认点 1）
 
@@ -118,6 +119,8 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 
    零阻断项才可进入确认点 1。它复用编排器同一个解析器（`lib/tasks.mjs`），因此**不存在「冻结时通过、执行时解析不出来」**：任务行/ID/依赖图/scope 合法性、场景编号双向闭环、验收矩阵的列与引用、Pod 成员全部在这一步核。输出直接贴进冻结报告（计数由命令生成）。`scope 与老测试迁移的冲突在此解决`——那是语义判断，仍由 Auditor 逐条核。跨 change 写范围重叠只出 `HINT`：两个 change 改同一文件是真实情况，先后顺序是人类在确认点 1 的决定，脚本不替人拦。
 
+   **`[ROUTE]` 行是编排归属的唯一真源，不要自己估。** 它按任务审查档位机械累加预计派发数（每任务 1 次写手；非 `mechanical` 档另加 1 次独立审计；`strict` 档再加 1 次 Tester 先行），≥6 判 `lead`。它只提示、不改退出码，但**呈报时必须照抄**。
+
    **`--baseline` 不是可选项**：`MODIFIED` 替换整个 Requirement 块，所以 delta 必须把基线原有场景原样抄回（抄漏会被 `openspec validate` 拒绝）。抄回来之后，双向核对若仍要求「每个声明场景必须被任务认领」，就会把这些继承来的历史场景当成缺陷——本 change 实测 5 条被判「没有任务认领」，任何含 MODIFIED 的 change 都冻结不了。`--baseline` 只把它们从**认领义务**里排除；引用了哪儿都没声明的编号仍照常阻断。
 5. **spec 撰写规则（冻结审查逐条核，不靠脚本）**：下面五条来自 2026-10-26 `hardening-governance-contracts` 的冻结后返工，每条都对应一次真实的执行期损失。它们**不写成门禁脚本**——语义判据机械化的收益低于维护成本，由 Auditor 在冻结审查时逐条核对。
    - **环境独立**：`Verify with` 必须在**干净工作树**里可执行。命令或 `Write scope` 引用了被 `.gitignore` 的文件（如 `.env.example`）就是冻结缺陷——那会让任务在合并时才发现验证不了。冻结前对新拉出的 worktree 实跑一次。
@@ -126,7 +129,22 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
    - **delta 先对基线**：新增/修改场景前，对照 `openspec/specs/<cap>/spec.md` 的**同一输入**看既有结论。同一输入两个不同结论（如空快照是 `INVALID_BOS_UUID` 还是 `ORG_MAPPING_NOT_FOUND`）必须在冻结前裁决，不能留给两个任务各写一半。
    - **矩阵计数由命令生成**：业务验收矩阵的行数、场景数、测试数一律贴**命令输出**，不抄、不数、不凭印象。编排者口述的数字（"18 行"）不是真源，`wc -l` 与测试运行器的输出才是。
    - 任务行格式 `- [ ] 1.1 T-01 标题` 与 `- [ ] 1.1 T-01: 标题` 都合法（后者是早期产物的历史写法，`parseTasks` 与 `merge-task.mjs` 的 Done 定位都兼容）；`T-01:标题` 这种冒号紧贴 ID 的写法不合法，会被判 `MALFORMED_LINE`，因为它会让 ID 解析错位。
-6. **人类确认点 1：spec 冻结**：呈报概况、DAG 拓扑、业务验收矩阵与 Auditor 结论，经用户确认后冻结。冻结即固定本轮 spec revision。
+6. **人类确认点 1：spec 冻结**：呈报概况、DAG 拓扑、业务验收矩阵、`freeze-check` 的 `[ROUTE]` 行与 Auditor 结论，经用户确认后冻结。冻结即固定本轮 spec revision。
+
+   **确认选项必须写明下一步动作的执行者**，不能只写「确认冻结并启动实施」——那六个字把「谁编排」留给了模型的自由发挥。按 `[ROUTE]` 二选一：
+
+   - `lead`：「确认冻结，派 `agent_profile_shangshu` 接管无人值守编排，主会话进入 `paseo wait`」
+   - `pod`：「确认冻结，主会话以编排者身份派发 `agent_profile_gongbu`」
+7. **交接序列（确认点 1 之后、动任何业务文件之前）**：这是 CP-1 与执行循环之间唯一合法的过渡。**顺序固定，不可跳过、不可合并**：
+
+   1. 预载派发工具：`ToolSearch` 取 `mcp__paseo__create_agent` / `create_workspace` / `list_profiles`。它们是 deferred 工具，不预载则每次派发都要多一个回合，而 `Write`/`Edit` 本来就在手——捷径偏置就是这么产生的。
+   2. 建集成 workspace：`integration/<name>`（基点为主干），见 2.1 的 workspace 约定。
+   3. 按 `[ROUTE]` 分派：
+      - `lead`：按 `templates/lead.md` 组装 brief，派 `agent_profile_shangshu`，然后**本回合阻塞在 `paseo wait <lead-id>`**。
+      - `pod`：按 §2.2 直接派 `agent_profile_gongbu`。
+   4. 主会话从这一刻起只做三件事：确认点 2、OpenSpec CLI 交回、失联后跑 `reconcile`。
+
+   **本步严禁 `Write`/`Edit` 任何业务源码，也不读业务源码「先了解一下」**——读后写只差一次工具调用。总控代写由 `merge-task.mjs` 的 exit 31 事后拦截，但那只在合流时生效；原地写完不提交就根本走不到合流，2026-10-27 的 `eas-filing-and-local-ocr` 就是这样越过全部门禁的。
 
 ### 2.2 执行循环
 

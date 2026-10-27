@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 自动定位到仓库根目录，防止子目录执行时相对路径失效
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+cd "$REPO_ROOT"
+
 echo "=== Running contract-check test ==="
 bash skills/paseo-pipeline/contract-check.test.sh
 

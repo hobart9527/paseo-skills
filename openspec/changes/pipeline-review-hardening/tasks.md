@@ -31,7 +31,7 @@
   - Risk-surface: [none]
   - Review: standard
   - Verify with: `node --test skills/paseo-pipeline/test/freeze-check.test.mjs`
-  - Scenarios: SCEN-CON-04, SCEN-CON-05, SCEN-CON-17, SCEN-CON-25
+  - Scenarios: SCEN-CON-04, SCEN-CON-05, SCEN-CON-17, SCEN-CON-25, SCEN-CON-26
 
 ## 3. 运行账本与文档守护
 

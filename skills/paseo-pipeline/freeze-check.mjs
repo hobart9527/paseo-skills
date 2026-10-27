@@ -340,6 +340,30 @@ function scopesOverlap(a, b) {
   return true;
 }
 
+// --- 编排路由（只提示，不参与退出码） ---
+//
+// 「该谁编排」是冻结时就能数出来的事实，不该留给模型自己估：2026-10-27 `eas-filing-and-local-ocr`
+// 的 8 个任务够交 Shangshu，但冻结输出里只有 `tasks=8`，主会话确认点 1 后直接在本机写了实现代码。
+// 判据与 SKILL 的「预计派发 ≥6 次」同源，按任务档位机械累加：
+//   - 每个任务至少一次写手派发；
+//   - 非 mechanical 档另加一次独立审计；
+//   - strict 档再加一次 Tester 先行（先写 Red）。
+// 审查档位未定（既没声明 Review 也没风险面）按 standard 计，因为合流时它 fail closed，不会省掉审计。
+function estimatedDispatches(list) {
+  return list.reduce((sum, task) => {
+    const review = task.requiredReview ?? 'standard';
+    return sum + 1 + (review === 'mechanical' ? 0 : 1) + (review === 'strict' ? 1 : 0);
+  }, 0);
+}
+
+const dispatches = estimatedDispatches(tasks);
+const route = dispatches >= 6 ? 'lead' : 'pod';
+const routeNote = route === 'lead'
+  ? `[ROUTE] lead：预计派发 ${dispatches} 次（≥6），确认点 1 后必须交 agent_profile_shangshu 无人值守编排，`
+    + '主会话立即停笔、不准读写业务代码，只守确认点 1 与 2'
+  : `[ROUTE] pod：预计派发 ${dispatches} 次（<6），主会话可自行编排，`
+    + '但每个任务仍须委派 agent_profile_gongbu 在独立 workspace 完成，主会话不写实现代码';
+
 // --- 输出 ---
 //
 // **归档 change 一律只出提示。** `openspec/changes/archive/` 是历史记录，不是待执行的计划：
@@ -360,6 +384,8 @@ const summary = {
   tasks: tasks.length,
   scenarios: declaredScens.size,
   acceptanceRows,
+  dispatches,
+  route,
   blocking: effectiveBlocking,
   advisory: effectiveAdvisory,
 };
@@ -369,6 +395,7 @@ if (json) {
 } else {
   console.log(`[freeze-check] ${changeDir}${archived ? '（已归档）' : ''}`);
   console.log(`  tasks=${summary.tasks} scenarios=${summary.scenarios} acceptanceRows=${summary.acceptanceRows}`);
+  console.log(`  ${routeNote}`);
   for (const item of effectiveAdvisory) console.log(`  HINT  ${item}`);
   for (const item of effectiveBlocking) console.error(`  BLOCK ${item}`);
   if (archived) {

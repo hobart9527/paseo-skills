@@ -330,3 +330,44 @@ test('SCEN-CON-04 --json emits the same verdict as the text form', () => {
   assert.ok(summary.blocking.some((item) => item.includes('acceptance.md')));
   assert.equal(summary.tasks, 2);
 });
+
+test('SCEN-CON-26 freeze check names the orchestrator routing in its own output', () => {
+  // 2026-10-27 `eas-filing-and-local-ocr`：8 个任务够交 Shangshu，但冻结输出里只有 `tasks=8`，
+  // 主会话在确认点 1 之后自己估「可以开工」，直接在本机写了实现。路由是冻结时数得出来的
+  // 事实，必须由命令写出，不留给模型估算。
+  //
+  // 默认夹具：T-01 mechanical（1 次派发）+ T-02 standard（写手 + 审计 2 次）= 3 次 → pod。
+  const pod = makeChange({});
+  const podResult = run(pod.dir);
+  assert.equal(podResult.code, 0, podResult.out);
+  assert.match(podResult.out, /\[ROUTE\] pod：预计派发 3 次（<6）/);
+
+  // 加一个 standard 任务补到 4 次仍不够；再加两个到 6 次必须转 lead。strict 档另算一次 Tester。
+  const extra = ['1.3 T-03 third task', '1.4 T-04 fourth task', '1.5 T-05 fifth task']
+    .map((title, index) => `
+- [ ] ${title}
+  - Depends on: none
+  - Write scope: src/e${index}.mjs
+  - Risk-surface: [none]
+  - Review: standard
+  - Verify with: \`node --test src/e${index}.test.mjs\`
+  - Scenarios: SCEN-DMO-02
+`).join('');
+  const lead = makeChange({ 'tasks.md': `${TASKS}${extra}` });
+  const leadResult = run(lead.dir);
+  assert.equal(leadResult.code, 0, leadResult.out);
+  // 3 + 3×2 = 9 次。
+  assert.match(leadResult.out, /\[ROUTE\] lead：预计派发 9 次（≥6）/);
+  assert.match(leadResult.out, /agent_profile_shangshu/);
+
+  // --json 侧同一结论，便于编排器直接读取。
+  let stdout;
+  try {
+    stdout = execFileSync(process.execPath, [FREEZE, lead.dir, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (error) {
+    stdout = error.stdout;
+  }
+  const summary = JSON.parse(stdout);
+  assert.equal(summary.route, 'lead');
+  assert.equal(summary.dispatches, 9);
+});
