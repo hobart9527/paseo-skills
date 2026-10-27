@@ -70,6 +70,46 @@ export function doneVerified(task, acceptance, read) {
 }
 
 /**
+ * 同批合流内的依赖闭包：判定「这批任务一起合入时，哪些依赖算作已满足」。
+ *
+ * 为什么需要它：Pod 模式（`SKILL.md` §2.1）是**单次整体合流**，成员之间的依赖边在
+ * 合流前不可能被 first-parent 证明——那个合流提交本身就是它们被证明的唯一机会。
+ * 旧实现只认 first-parent 账本，于是「Pod 成员之间存在任何依赖」都会在合流口
+ * exit 35 死锁，而冻结检查不看这条，报告仍说「0 阻断项」——门禁发现得太晚。
+ *
+ * 语义边界（不得放宽）：
+ *   - 只有**本次请求合入的任务集合**内部才算满足；集合外的一概不豁免。
+ *   - 依赖必须真的在集合里。集合里没声明这个依赖任务 → 不豁免，仍按 first-parent 判。
+ *
+ * 环不在本函数处理：`lib/tasks.mjs` 的 Kahn 检测把环判为 graph 级错误，
+ * 整份账本在到达依赖门禁前就已被拒绝。这里再判一次是不可达的死代码。
+ *
+ * @param {{id: string, depends: string[]}} task 被检查的任务
+ * @param {string[]} batchIds 本次一并合入的任务 id 集合
+ * @param {Map<string, {id: string, depends: string[]}>} byId 全量任务索引，用于递归
+ * @returns {{satisfied: string[], outside: string[]}}
+ *   satisfied = 由本批次满足的依赖（传递闭包）；outside = 仍需 first-parent 证明的依赖
+ */
+export function batchDependencyClosure(task, batchIds, byId) {
+  const batch = new Set(batchIds);
+  const satisfied = new Set();
+  const outside = new Set();
+  // 显式栈而不是递归：依赖图在真实 change 里是两位数深度，但显式栈让『同批满足』
+  // 这一条判据的传播路径一眼可读，不必在脑子里展开调用栈。
+  const stack = [...task.depends];
+  while (stack.length > 0) {
+    const id = stack.pop();
+    if (!batch.has(id)) { outside.add(id); continue; }
+    if (satisfied.has(id)) continue;
+    satisfied.add(id);
+    const next = byId.get(id);
+    if (next === undefined) continue;
+    for (const dep of next.depends) stack.push(dep);
+  }
+  return { satisfied: [...satisfied], outside: [...outside] };
+}
+
+/**
  * 一次性算出一组任务的 Done 状态。
  *
  * @returns {{doneSet: Set<string>, unverified: Array<{id: string, reason: string}>}}

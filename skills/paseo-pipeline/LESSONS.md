@@ -79,7 +79,7 @@
 - 原生 MCP `create_agent`/`send_agent_prompt`：profile 字段机械复制、title 自动 ≤60。
 - `merge-task.mjs`：合流后自动追加 sha/测试命令/test_duration 到 run-log。
 - `reconcile.mjs <change>`：tasks.md + git + Paseo 运行态 + 运行账本对账，输出任务分类、hold 原因与唯一 `NEXT` 动作；Lead 失联后重跑即可接力。
-- `hotfix.sh`：合规小修走 qingqibing worktree → merge-task。**前置机械校验 `Review: mechanical` 且 `Risk-surface: [none]`；review 标签用真实 tip/base 生成。**
+- `hotfix.sh`：合规小修走 gongbu worktree → merge-task。**前置机械校验 `Review: mechanical` 且 `Risk-surface: [none]`；review 标签用真实 tip/base 生成。**
 - `contract-check.mjs`：`undeclared>0` 时直接给出可粘贴的 spec 声明行。
 
 硬底线：不抓凭据/直连 API/冒用身份；push、`rm -rf`、`--amend` 先问；两个人类确认点。
@@ -107,7 +107,7 @@
 - **现象**：主会话在 task workspace 亲自写代码并提交，`merge-task.mjs` 当时仅验审计标签，作者血统与写范围完全没验，制度防线失守。
 - **治理**：`merge-task.mjs` 引入三因子机械门禁：
   1. 写范围封闭（越界 exit 30）；
-  2. 作者血统与控制面隔离（**逐个 commit** 必须含 `Pipeline-Role: gongbu/gaogong/ceshi/jiangzuo/qingqibing` 与 `Pipeline-Author`，控制面角色 exit 31 硬阻断）；
+  2. 作者血统与控制面隔离（**逐个 commit** 必须含 `Pipeline-Role: gongbu/gaogong/ceshi/jiangzuo` 与 `Pipeline-Author`，控制面角色 exit 31 硬阻断；`qingqibing` 只为读历史标签保留识别，新派发不得使用）；
   3. 非自审隔离（完整 UUID / 唯一可解析前缀比对，歧义 fail closed，exit 32）；
   4. **依赖门禁**（依赖未 first-parent 验收即 exit 35）与**基线锚定**（base 非集成 HEAD 祖先即 exit 34）。
 - **限制（必须承认）**：提示词与 trailers 是**协作契约与自报元数据**，不是工具级身份隔离或可信来源证明。真实防线是上述机械门禁 + 独立业务验收。**不得声称提示词能物理封死总控代写。**

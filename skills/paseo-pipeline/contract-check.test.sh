@@ -205,5 +205,18 @@ EOF
 echo "R23 方言匹配时的真 drift → 期望 1"
 check 1 "真 drift 仍拦" "$(run "$WORK/spec-full.md" "$WORK/test-code-drift.test.js" --partial)"
 
+# --final 收尾模式：测试路径一条都没产出时不再是「阶段 1 正常状态」。
+# 实测缺口：收尾时跑同一条命令会打印 SKIPPED 并 exit 0，收尾报告写着「跑过 contract-check」，
+# 实际一条契约都没对账。
+cat > "$WORK/tasks-notest.md" <<'EOF'
+- [ ] 1.1 T-01 只有 scope 没有测试
+  - Write scope: src/a.mjs
+  - Review: standard
+EOF
+echo "R24 默认模式：测试路径全缺 → 期望 0（SKIPPED，规划期正常）"
+check 0 "规划期 SKIPPED 放行" "$(run "$WORK/spec-full.md" --tasks "$WORK/tasks-notest.md")"
+echo "R25 收尾模式：测试路径全缺 → 期望 1"
+check 1 "收尾模式不许 SKIPPED" "$(run "$WORK/spec-full.md" --tasks "$WORK/tasks-notest.md" --final)"
+
 printf '\n通过 %d / 失败 %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -2,8 +2,8 @@
 import { spawnSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseTasks, isFileWithinScopes } from './lib/tasks.mjs';
-import { verifyDone, buildMergeAcceptance, expandDoneSource as expandDoneSourceFor } from './lib/ledger.mjs';
+import { parseTasks, isFileWithinScopes, graphErrors, taskErrorsFor, REVIEW_TAG } from './lib/tasks.mjs';
+import { verifyDone, buildMergeAcceptance, expandDoneSource as expandDoneSourceFor, batchDependencyClosure } from './lib/ledger.mjs';
 import { WRITER_ROLES, CONTROL_ROLES, READONLY_ROLES, isControlRole } from './lib/roles.mjs';
 import { acquireLock } from './lib/lock.mjs';
 import { readRunState } from './lib/run-state.mjs';
@@ -193,8 +193,8 @@ const tip = git(['rev-parse', '--verify', `${branch}^{commit}`]);
 const tip7 = tip.slice(0, 7);
 
 // reviewer 可以是 8 位短 ID（日常用法）、完整 UUID（便于与 Paseo 原生 id 对照），
-// 或 mechanical（仅限显式声明 Review: mechanical 的任务）。
-const REVIEW_TAG = /^pass\((mechanical|[0-9a-f]{8}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})@([0-9a-f]{7})\/([0-9a-f]{7})\)$/;
+// 或 mechanical（仅限显式声明 Review: mechanical 的任务）。语法与 Done 行的 review 值
+// 共用 lib/tasks.mjs 的 REVIEW_TAG：两处若各写一份，一处收紧另一处就会放行。
 const reviewMatch = reviewTag.match(REVIEW_TAG);
 if (!reviewMatch) fail(`malformed review tag: ${reviewTag}`);
 const [, reviewer, reviewedTip7, reviewedBase7] = reviewMatch;
@@ -276,8 +276,15 @@ if (source.taskId === null) {
 }
 
 const parsed = parseTasks(fs.readFileSync(tasksFile, 'utf8'));
-if (parsed.errors.length > 0) {
-  fail(`invalid tasks ledger:\n${parsed.errors.map((error) => `${error.code}: ${error.message}`).join('\n')}`);
+
+// 只拒「让整份文件不可信」的错误 + 「被合流任务（及其依赖）自身的错误」。
+//
+// 旧实现对任意解析错误一律 exit，于是别的任务漏写 Write scope 会挡住本任务合流——
+// 这与「单个任务的问题只压住被点名的任务」直接矛盾，也让合流入口成为全 change 的串行瓶颈。
+// 严重度归属由 lib/tasks.mjs 的 ERROR_SCOPE 单点定义，这里不另立集合。
+const graphProblems = graphErrors(parsed.errors);
+if (graphProblems.length > 0) {
+  fail(`invalid tasks ledger:\n${graphProblems.map((error) => `${error.code}: ${error.message}`).join('\n')}`);
 }
 
 const tasksById = new Map(parsed.tasks.map((task) => [task.id, task]));
@@ -286,6 +293,20 @@ const requestedTasks = taskIds.map((id) => {
   if (!task) fail(`unknown task ID: ${id}`);
   return task;
 });
+
+// 被合流的任务自身与它的直接依赖若有 task 级错误，合流仍然拒绝：
+// 这两者是本次合流真正消费的约束（自己的 scope/Review/Done、依赖的账本完整性）。
+const scopedProblems = [];
+for (const task of requestedTasks) {
+  for (const id of [task.id, ...task.depends]) {
+    for (const error of taskErrorsFor(parsed.errors, id)) {
+      scopedProblems.push(`${error.code}: ${error.message}`);
+    }
+  }
+}
+if (scopedProblems.length > 0) {
+  fail(`tasks ledger errors for the requested task(s):\n${scopedProblems.join('\n')}`);
+}
 
 // --- 已 Done 的拒绝必须区分「已合过」与「换了 revision」 ---
 //
@@ -311,14 +332,24 @@ for (const task of requestedTasks) {
     + `this merge would target ${tip7} — a different revision cannot be merged under the same task`, 1);
 }
 
-// --- 因子 0: 依赖必须先被 first-parent 合流证明为 Done (Dependency Gate) ---
+// --- 因子 0: 依赖必须被证明 Done (Dependency Gate) ---
 //
 // 调度器（reconcile）只在依赖 DONE 后放行，但合流入口必须独立守住同一条前置条件：
 // 直接调用本脚本就能绕开调度顺序。判定必须复用 lib/ledger.mjs 的 first-parent 验收，
 // 不能只读 tasks.md 的 `[x]` —— 勾选是账本声明，first-parent 合流才是事实。
+//
+// Pod 例外：`pod/<change>` 是**单次整体合流**（SKILL §2.1），成员之间的依赖在合流前
+// 不可能被 first-parent 证明——那个合流提交本身就是它们被证明的唯一机会。旧实现
+// 只认 first-parent 账本，于是成员间只要有依赖就在合流口 exit 35 死锁，而冻结检查
+// 不看这条，报告仍说「0 阻断项」。闭包判定放在 lib/ledger.mjs，与 reconcile 共用
+// 同一份「什么算依赖已满足」的定义。
 const { doneSet } = verifyDone(parsed.tasks, ledgerRead, preMergeHead);
+const tasksByIdForDeps = new Map(parsed.tasks.map((task) => [task.id, task]));
 for (const task of requestedTasks) {
-  const unmet = task.depends.filter((dep) => !doneSet.has(dep));
+  // 同批内的依赖由本次合流一并满足；集外的仍须 first-parent 已证明 Done。
+  // 环已在解析阶段判为 graph 级错误，走不到这里。
+  const closure = batchDependencyClosure(task, taskIds, tasksByIdForDeps);
+  const unmet = closure.outside.filter((dep) => !doneSet.has(dep));
   if (unmet.length > 0) {
     fail(`task ${task.id} depends on ${unmet.join(', ')} which are not verified Done on integration HEAD `
       + `${preMergeHead.slice(0, 7)}; merge dependencies first`, 35);

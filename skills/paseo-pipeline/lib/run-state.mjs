@@ -51,7 +51,7 @@ export function runStatePath(change, cwd = process.cwd()) {
 }
 
 function emptyState() {
-  return { version: STATE_VERSION, run: null, lease: null, intents: [], heartbeats: [] };
+  return { version: STATE_VERSION, run: null, lease: null, intents: [], heartbeats: [], skill: null };
 }
 
 function normalize(raw) {
@@ -71,6 +71,18 @@ function normalize(raw) {
   }
   if (Array.isArray(raw.intents)) state.intents = raw.intents.filter((entry) => entry && typeof entry.key === 'string');
   if (Array.isArray(raw.heartbeats)) state.heartbeats = raw.heartbeats.filter((entry) => entry && typeof entry.id === 'string');
+  // 派发时使用的 Skill 版本。只做「不一致提示」，不做强制：账本可以在同一台机器的不同
+  // Skill 版本之间被读取（只读诊断不该因此失败），但「这批任务是用哪份编排逻辑跑出来的」
+  // 必须留痕——否则复盘时无法判断某条规则当时是否存在。
+  const skill = raw.skill;
+  if (skill && typeof skill === 'object' && typeof skill.head === 'string' && skill.head !== '') {
+    state.skill = {
+      head: skill.head,
+      dirty: skill.dirty === true,
+      dir: typeof skill.dir === 'string' ? skill.dir : null,
+      at: typeof skill.at === 'string' ? skill.at : null,
+    };
+  }
   return state;
 }
 

@@ -218,6 +218,32 @@ test('a failed intent cannot be revived by record', (context) => {
   assert.equal(intent.agentId, null);
 });
 
+test('SCEN-CON-09 an intent with a real receipt cannot be voided, so its key cannot be reused', (context) => {
+  // 实际复现的缺陷：claim → record → fail 三步都 rc=0，随后同一幂等键可以再次 claim，
+  // 于是同一 attempt 派出了第二个写手，账本上却只写着「上次失败」。
+  // 作废的语义是「这次派发确认没有发生」；回执证明它发生过并指向一个真实 agent。
+  const subject = fixture(context);
+  subject.run('begin', '--owner', 'lead-a');
+  const args = ['--task', 'T-06', '--attempt', '1', '--phase', 'impl', '--role', 'gongbu', '--owner', 'lead-a'];
+  const key = intentKey({ run: null, task: 'T-06', attempt: 1, phase: 'impl', role: 'gongbu', action: 'dispatch' });
+  subject.run('claim', ...args);
+  subject.run('record', '--key', key, '--agent', '01234567-89ab-cdef-0123-456789abcdef', '--owner', 'lead-a');
+
+  const voided = subject.run('fail', '--key', key, '--reason', 'agent went silent', '--owner', 'lead-a');
+  assert.equal(voided.status, 2, 'a recorded intent must not be voided');
+  assert.match(voided.stderr, /已有真实回执/);
+  const intent = findByKey(subject.read(), key);
+  assert.equal(intent.failedAt, undefined, '账本不得留下 failedAt');
+  assert.equal(intent.agentId, '01234567-89ab-cdef-0123-456789abcdef', '回执必须原样保留');
+
+  // 真正的处置路径：新的 attempt 键。旧键仍被锁住，重复派发依旧被拒。
+  const reClaim = subject.run('claim', ...args);
+  assert.equal(reClaim.status, 2, 'the same attempt key must stay occupied');
+  const nextAttempt = subject.run('claim', '--task', 'T-06', '--attempt', '2',
+    '--phase', 'impl', '--role', 'gongbu', '--owner', 'lead-a');
+  assert.equal(nextAttempt.status, 0, nextAttempt.stderr);
+});
+
 // --- 读改写互斥（L4-03 幂等的前提） ---
 // tmp + rename 只保证「写入原子」，不保证「读改写互斥」：两个进程同时 claim 同一 run
 // 会各自读到旧快照、各自写回，幂等键双双成功，同一动作被派发两次。
@@ -249,4 +275,75 @@ test('SCEN-RS-LOCK a stale lock from a crashed run is reclaimed instead of wedgi
   const result = subject.run('claim', '--task', 'T-01');
   assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
   assert.equal(subject.read().intents.length, 1);
+});
+
+// --- report：度量只写采集值（2026-10-27 包 5） ---
+//
+// 复盘的常见污染是「看起来精确的估算」：它比「未采集」更有害，因为会被当成实测值引用。
+// 所以 report 只从账本已有的时间戳与字段推导，做不到的项直接写「未采集」。
+
+test('SCEN-CON-10 report derives only what the ledger actually recorded', (context) => {
+  const subject = fixture(context);
+  subject.run('begin', '--owner', 'lead-a');
+  subject.run('claim', '--task', 'T-01', '--attempt', '1', '--phase', 'impl', '--role', 'gongbu', '--owner', 'lead-a');
+  subject.run('record', '--key', intentKey({ run: null, task: 'T-01', attempt: 1, phase: 'impl', role: 'gongbu', action: 'dispatch' }),
+    '--agent', '01234567-89ab-cdef-0123-456789abcdef', '--owner', 'lead-a');
+  subject.run('claim', '--task', 'T-01', '--attempt', '2', '--phase', 'impl', '--role', 'gongbu', '--owner', 'lead-a');
+  subject.run('claim', '--task', 'T-02', '--attempt', '1', '--phase', 'impl', '--role', 'gongbu', '--owner', 'lead-a');
+  subject.run('claim', '--task', 'T-02', '--attempt', '1', '--phase', 'audit', '--role', 'anchasi', '--owner', 'lead-a');
+
+  const report = JSON.parse(subject.run('report', '--json').stdout);
+  assert.equal(report.dispatches, 1, '只有带真实 agent 回执的意图算派发');
+  assert.equal(report.tasksDispatched, 1);
+  assert.equal(report.auditDispatches, 1);
+  assert.equal(report.maxAttempt, 1, 'attempt 2 尚未回执，不能算作已发生的派发');
+
+  // 账本不记审查结论与状态迁移时刻：这两项必须如实标未采集，不得估算。
+  assert.match(report.firstPassUnknown, /^未采集/);
+  assert.match(report.readyWaitUnknown, /^未采集/);
+});
+
+test('SCEN-CON-10 report on a missing ledger reports absence instead of zeros that look measured', (context) => {
+  const subject = fixture(context);
+  const report = JSON.parse(subject.run('report', '--json').stdout);
+  assert.equal(report.present, false);
+  assert.equal(report.dispatches, 0);
+  assert.equal(report.maxAttempt, null, '无派发时最大 attempt 是 null，不是 0');
+});
+
+// --- Skill 版本留痕（2026-10-27 包 5 轻量版） ---
+//
+// 不允许强制：读旧账本、在另一台机器上诊断，都不该因为 Skill HEAD 不同而失败。
+// 但「这批任务由哪一份编排逻辑产生」必须留痕——复盘时要判断某条规则当时是否存在，
+// 只能靠这个字段。
+
+test('SCEN-CON-11 begin records the Skill version so a later review can tell which rules applied', (context) => {
+  const subject = fixture(context);
+  subject.run('begin', '--owner', 'lead-a');
+  const skill = subject.read().skill;
+  assert.ok(skill, 'begin 必须记录 Skill 版本');
+  assert.match(skill.head, /^[0-9a-f]{40}$/, '记录完整 HEAD，不是分支名');
+  assert.equal(typeof skill.dirty, 'boolean');
+  assert.ok(skill.dir.endsWith('paseo-pipeline'), '目录要能指回是哪份 Skill');
+});
+
+test('SCEN-CON-11 a Skill version mismatch warns instead of blocking, and an old ledger stays readable', (context) => {
+  const subject = fixture(context);
+  subject.run('begin', '--owner', 'lead-a');
+  // 模拟「账本由旧版 Skill 产生」：改写成另一个 HEAD。
+  const state = subject.read();
+  state.skill = { ...state.skill, head: 'f'.repeat(40) };
+  writeFileSync(subject.file, JSON.stringify(state, null, 2));
+
+  const status = subject.run('status');
+  assert.equal(status.status, 0, '版本不同不得让诊断失败');
+  assert.match(status.stdout, /与当前 .* 不同|不同：本账本/);
+
+  // 旧账本没有 skill 字段：如实说未采集，不猜。
+  const legacy = subject.read();
+  delete legacy.skill;
+  writeFileSync(subject.file, JSON.stringify(legacy, null, 2));
+  const legacyStatus = subject.run('status');
+  assert.equal(legacyStatus.status, 0);
+  assert.match(legacyStatus.stdout, /SKILL 未采集/);
 });
