@@ -128,6 +128,12 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
    - **一场景一承载**：每条 `SCEN-*` 必须能指到一个测试文件，或者是静态检查（此时必须在 spec 里写明检查命令，且该命令不需要新增测试文件）。没有承载的场景在验收时必然变成 `untested_scens` 噪声，或者被写成幻影声明。
    - **delta 先对基线**：新增/修改场景前，对照 `openspec/specs/<cap>/spec.md` 的**同一输入**看既有结论。同一输入两个不同结论（如空快照是 `INVALID_BOS_UUID` 还是 `ORG_MAPPING_NOT_FOUND`）必须在冻结前裁决，不能留给两个任务各写一半。
    - **矩阵计数由命令生成**：业务验收矩阵的行数、场景数、测试数一律贴**命令输出**，不抄、不数、不凭印象。编排者口述的数字（"18 行"）不是真源，`wc -l` 与测试运行器的输出才是。
+   - **任务切片与工程架构准则（冻结前设计审查）**：
+     - **垂直切片（Vertical Slice Architecture）**：严禁按技术分层（Model/Service/API）切浅模块任务；必须按功能业务垂直端到端切片，每个 Task 封装完整业务链路与自包含验证。
+     - **AST / 符号级边界与爆炸半径**：Write scope 明确符号级边界（Symbols/Interfaces）；派发前使用 CodeGraph 扫描符号引用链，共享写入符号的任务必须补显式依赖边。
+     - **深模块设计（Deep Modules）**：小接口 + 大实现；参数收敛，复杂性内聚在实现内部；显式隔离外部依赖 Seam；拒绝 Speculative Generality（臆想泛化，未在 spec 要求的抽象/参数一律不加）。
+     - **双轴独立审计（Two-Axis Review）**：审计员正交解耦 Spec 忠实度轴与 Standards/Smell 坏味道轴。
+     - **返工红灯环优先（Tight Red Loop First）**：返工（attempt ≥ 2）严禁猜改业务源码，第一步必须构造确定性、极速（<2s）的红灯测试，精准捕获 Blocker 后再动手修改。
    - 任务行格式 `- [ ] 1.1 T-01 标题` 与 `- [ ] 1.1 T-01: 标题` 都合法（后者是早期产物的历史写法，`parseTasks` 与 `merge-task.mjs` 的 Done 定位都兼容）；`T-01:标题` 这种冒号紧贴 ID 的写法不合法，会被判 `MALFORMED_LINE`，因为它会让 ID 解析错位。
 6. **人类确认点 1：spec 冻结**：呈报概况、DAG 拓扑、业务验收矩阵、`freeze-check` 的 `[ROUTE]` 行与 Auditor 结论，经用户确认后冻结。冻结即固定本轮 spec revision。
 

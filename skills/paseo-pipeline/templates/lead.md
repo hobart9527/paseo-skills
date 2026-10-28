@@ -56,6 +56,17 @@ wait          # 等全部返回；也可以只 poll 文件，谁先有 status �
 > 空等或资源耗尽型负载）。要制造耗时任务，必须是真实工作。
 
 
+## DAG 任务图编排与切片纪律
+
+- **垂直切片（Vertical Slice Architecture）**：
+  严禁按技术层水平切任务（如 T-01 改数据模型、T-02 声明接口、T-03 写路由与控制器）。水平拆分属于浅模块（Shallow Modules），必然造成大量中间薄封装与跨任务 merge 冲突。必须按功能垂直端到端切片，每个 Task 封装完整业务链路与独立测试。
+- **AST / 符号级边界与爆炸半径（Blast Radius Sweep）**：
+  Write scope 不仅锁定文件，还需锚定被改动的核心符号与导出接口。调度前通过 CodeGraph 扫描符号引用链路；凡存在共享写入符号或共用测试夹具的并行任务，必须在 DAG 中补全显式依赖边，禁止盲目并行。
+- **轻量上下文指针（Context Pointers）**：
+  派发 Brief 必须保持高信噪比：只传递文件绝对路径、`SCEN-*` 锚点和 SHA 指针，严禁在 Brief 中整段拷贝长篇 spec，让子 agent 定点读取单一真源。
+- **前沿任务（Task Graph Frontier）全并发推进**：
+  识别所有依赖均已合流的就绪任务（Frontier），在 cap 预算许可内一次性并发派发，紧随并发 wait，最大化流水线吞吐。
+
 ## 每轮动作
 
 1. 在集成 workspace 里跑对账：
