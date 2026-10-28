@@ -24,7 +24,8 @@ import { parseTasks, normalizeScope, isTaskId, graphErrors } from "./lib/tasks.m
 import { verifyDone } from "./lib/ledger.mjs";
 import { readPaseoState, selectChange, hasPipelineMarker } from "./lib/paseo-state.mjs";
 import {
-  WRITER_ROLES, READONLY_ROLES, isControlRole, normalizePhase, PHASE_ORDER, DISPOSITIONS,
+  WRITER_ROLES, READONLY_ROLES, REVIEWER_ROLES, isControlRole, isReviewerRole,
+  normalizePhase, PHASE_ORDER, DISPOSITIONS,
   DISPOSITION_EFFECT, consumesRetryBudget, retryPolicy,
 } from "./lib/roles.mjs";
 import {
@@ -262,7 +263,9 @@ for (const agent of state.agents) {
   if (suspicious.some((s) => s.id === agent.id)) continue;
   FOREIGN.push({ id: agent.id, name: agent.title ?? agent.id, status: agent.status });
   const foreignRole = agent.labels?.['pipeline.role'];
-  if (WRITER_ROLES.has(foreignRole) || READONLY_ROLES.has(foreignRole) === false) foreignLiveWriters += 1;
+  const isForeignWriter = WRITER_ROLES.has(foreignRole)
+    || (!isControlRole(foreignRole) && !isReviewerRole(foreignRole));
+  if (isForeignWriter) foreignLiveWriters += 1;
 }
 
 for (const agent of members) {
@@ -276,9 +279,11 @@ for (const agent of members) {
   // 两个通道的 task 都必须能在 tasks.md 中解析：标签写了 tasks.md 里不存在的 T-NN 同样是身份不可信。
   const taskId = resolveTaskToken(attributed.task);
 
-  if (isControlRole(role)) continue;
+  // 控制面角色（Lead、PM、预冻结架构师）不持任务身份，直接跳过。
+  // 仲裁员虽用 hanlin profile，但持具体 task/attempt/phase，属于任务面只读仲裁者。
+  if (isControlRole(role) && taskId === null) continue;
 
-  const taskPlane = WRITER_ROLES.has(role) || READONLY_ROLES.has(role);
+  const taskPlane = WRITER_ROLES.has(role) || isReviewerRole(role);
   // 标题通道：无法证明是只读，保守按写入者处理（持写范围、计入 cap）。
   const titleOnlyWriter = !attributed.trusted && taskId !== null;
   const writer = titleOnlyWriter || WRITER_ROLES.has(role);

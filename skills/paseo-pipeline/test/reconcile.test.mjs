@@ -428,6 +428,19 @@ test('SCEN-REC-17 live writers of other changes are counted against the shared r
   heldClosed(saturated, /外部写手/);
 });
 
+test('SCEN-REC-15 live auditor or arbiter or lead of another change is FOREIGN but not foreignLiveWriters', (context) => {
+  const subject = fixture(context, [{ id: 'T-01', scope: 'src/alpha/' }]);
+  subject.runtime([
+    agent({ id: 'other-auditor' }, { 'pipeline.change': 'other-change', 'pipeline.role': 'anchasi', 'pipeline.phase': 'audit' }),
+    agent({ id: 'other-arbiter' }, { 'pipeline.change': 'other-change', 'pipeline.role': 'hanlin', 'pipeline.phase': 'arbitrate' }),
+    agent({ id: 'other-lead' }, { 'pipeline.change': 'other-change', 'pipeline.role': 'shangshu' }),
+  ]);
+  const result = output(subject, ['--cap', '2']);
+  assert.equal(result.FOREIGN.length, 3);
+  assert.equal(result.foreignLiveWriters, 0);
+  dispatch(result, ['T-01']);
+});
+
 test('SCEN-REC-15 liveWriterCount equals real writers, so cap counts truthfully', (context) => {
   const subject = fixture(context, [
     { id: 'T-01', scope: 'src/alpha/' },
@@ -523,6 +536,19 @@ test('mapped anchasi auditor is ACTIVE but holds no write scope', (context) => {
   dispatch(result, ['T-02']);
 });
 
+test('mapped hanlin arbiter is ACTIVE but holds no write scope', (context) => {
+  const subject = fixture(context, [
+    { id: 'T-01', scope: 'src/shared/' },
+    { id: 'T-02', scope: 'src/shared/file.mjs' },
+  ]);
+  subject.runtime([agent({}, { 'pipeline.role': 'hanlin', 'pipeline.phase': 'arbitrate' })]);
+  const result = output(subject);
+  assert.deepEqual(result.UNMAPPED, []);
+  state(result, 'T-01', 'ACTIVE');
+  state(result, 'T-02', 'READY');
+  dispatch(result, ['T-02']);
+});
+
 for (const role of [undefined, 'unknown-role']) {
   test(`SCEN-REC-07 initializing agent with ${role ?? 'missing role'} fails closed`, (context) => {
     const subject = fixture(context);
@@ -546,7 +572,7 @@ test('SCEN-REC-08 all control-plane roles need no task identity and consume no d
   dispatch(result, ['T-01']);
 });
 
-for (const [earlier, later] of [['test', 'impl'], ['impl', 'audit'], ['audit', 'merge']]) {
+for (const [earlier, later] of [['test', 'impl'], ['impl', 'audit'], ['audit', 'arbitrate'], ['arbitrate', 'merge']]) {
   test(`SCEN-REC-09 disposed ${later} supersedes historical idle ${earlier}, regardless of list order`, (context) => {
     const subject = fixture(context);
     subject.runtime([

@@ -216,7 +216,10 @@ switch (command) {
     }
     const attempts = [...perTask.values()].map((list) =>
       Math.max(...list.map((intent) => (Number.isFinite(intent.attempt) ? intent.attempt : 0))));
-    const auditRounds = state.intents.filter((intent) => normalizePhase(intent.phase) === 'audit');
+    const auditRounds = state.intents.filter((intent) => {
+      const p = normalizePhase(intent.phase);
+      return p === 'audit' || p === 'arbitrate';
+    });
     // 报告只写**能从账本算出来的**数。旧版还并排打印两项恒为「未采集」的字段
     // （首次通过、READY 等待），理由是「账本不记这些时刻」——但一条永远是「未采集」的
     // 字段不传递任何信息，只会让报告看起来像有结论。真要这两项，得让账本记状态迁移，

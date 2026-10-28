@@ -17,7 +17,10 @@ import {
   readPaseoState, selectChange, attributeAgent, belongsToChange, hasPipelineMarker,
   LIVE_STATUSES, KNOWN_STATUSES,
 } from '../lib/paseo-state.mjs';
-import { CONTROL_ROLES, WRITER_ROLES, READONLY_ROLES, KNOWN_ROLES, isControlRole, normalizePhase, PHASE_ORDER, DISPOSITIONS } from '../lib/roles.mjs';
+import {
+  CONTROL_ROLES, WRITER_ROLES, READONLY_ROLES, REVIEWER_ROLES, KNOWN_ROLES,
+  isControlRole, isReviewerRole, normalizePhase, PHASE_ORDER, DISPOSITIONS,
+} from '../lib/roles.mjs';
 
 const fixtureDir = fileURLToPath(new URL('./fixtures/paseo-state', import.meta.url));
 const sample = (name) => JSON.parse(readFileSync(path.join(fixtureDir, name), 'utf8'));
@@ -332,6 +335,13 @@ test('role sets are single-sourced and match the observed production distributio
   assert.ok(READONLY_ROLES.has('anchasi'));
   assert.equal(CONTROL_ROLES.size + WRITER_ROLES.size + READONLY_ROLES.size, KNOWN_ROLES.size, '集合不得重叠');
 
+  // 审查/仲裁资格角色校验
+  assert.ok(isReviewerRole('anchasi'));
+  assert.ok(isReviewerRole('hanlin'));
+  assert.equal(isReviewerRole('gongbu'), false);
+  assert.equal(isReviewerRole('shangshu'), false);
+  assert.equal(isReviewerRole('unknown'), false);
+
   // 未知角色不能被当成控制面静默放行。
   for (const role of [undefined, null, '', 'unknown-role', 'T-01']) {
     assert.equal(isControlRole(role), false, `${String(role)} 不得被视为控制面`);
@@ -344,6 +354,7 @@ test('phase normalization accepts the two real case styles and rejects the rest'
     ['impl', 'impl'], ['IMPL', 'impl'],
     ['test', 'test'], ['TEST_FIRST', 'test'], ['test-first', 'test'],
     ['audit', 'audit'], ['AUDITING', 'audit'],
+    ['arbitrate', 'arbitrate'], ['ARBITRATION', 'arbitrate'], ['arbitrating', 'arbitrate'],
     ['spec', 'spec'], ['spec-review', 'spec'],
     ['merge', 'merge'],
   ]) {
@@ -354,7 +365,7 @@ test('phase normalization accepts the two real case styles and rejects the rest'
   }
   // 阶段序用于在多个终态 agent 中选「最新」：spec/test 同属最早，merge 最晚。
   assert.ok(PHASE_ORDER.test === PHASE_ORDER.spec);
-  assert.ok(PHASE_ORDER.test < PHASE_ORDER.impl && PHASE_ORDER.impl < PHASE_ORDER.audit && PHASE_ORDER.audit < PHASE_ORDER.merge);
+  assert.ok(PHASE_ORDER.test < PHASE_ORDER.impl && PHASE_ORDER.impl < PHASE_ORDER.audit && PHASE_ORDER.audit < PHASE_ORDER.arbitrate && PHASE_ORDER.arbitrate < PHASE_ORDER.merge);
 
   // disposition 枚举：实测只出现过 rejected，但枚举必须覆盖监察与合流会写的全部取值。
   assert.deepEqual([...DISPOSITIONS].sort(), ['abandoned', 'handed-off', 'merged', 'rejected', 'superseded']);

@@ -4,7 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseTasks, isFileWithinScopes, graphErrors, taskErrorsFor, REVIEW_TAG } from './lib/tasks.mjs';
 import { verifyDone, buildMergeAcceptance, expandDoneSource as expandDoneSourceFor, batchDependencyClosure } from './lib/ledger.mjs';
-import { WRITER_ROLES, CONTROL_ROLES, READONLY_ROLES, isControlRole } from './lib/roles.mjs';
+import {
+  WRITER_ROLES, CONTROL_ROLES, READONLY_ROLES, REVIEWER_ROLES,
+  isControlRole, isWriterRole, isReadonlyRole, isReviewerRole,
+} from './lib/roles.mjs';
 import { acquireLock } from './lib/lock.mjs';
 import { readRunState } from './lib/run-state.mjs';
 
@@ -475,14 +478,6 @@ if (reviewer === 'mechanical' && requestedTasks.some((task) => task.review !== '
   fail('mechanical review requires Review: mechanical on every requested task');
 }
 
-function isWriterRole(role) {
-  return typeof role === 'string' && WRITER_ROLES.has(role.toLowerCase());
-}
-
-function isReadonlyRole(role) {
-  return typeof role === 'string' && READONLY_ROLES.has(role.toLowerCase());
-}
-
 /**
  * reviewer 是否指向候选集合中的某个 id。
  *
@@ -508,8 +503,8 @@ function reviewerMatchesAny(reviewer, ids) {
 //
 // 根因是审查员身份只看提交元数据。运行账本记录了「谁被派去做什么」，两份记录必须对齐：
 //   1) reviewer 不得等于本任务任一写手意图的 agent（即使 commit 上没有作者 trailer）；
-//   2) reviewer 必须是本任务至少一条已回执的审计意图（role=anchasi）的 agent
-//      ——Pod 是一次审查覆盖整组成员，因此按「任一成员有该审计派发」判定，不要求逐任务各派一次。
+//   2) reviewer 必须是本任务至少一条已回执的审查意图（role 属于 REVIEWER_ROLES：anchasi 或 hanlin）的 agent
+//      ——Pod 是一次审查覆盖整组成员，因此按「任一成员有该审计/仲裁派发」判定，不要求逐任务各派一次。
 //
 // 运行账本不存在时跳过——那表示这个 change 没走流水线记账（例如热修只合并单任务），
 // 此时沿用上面的 trailer 检查。存在即按账本判定：账本在，就不得用「没记」当豁免。
@@ -534,12 +529,12 @@ if (runLedger.present && reviewer !== 'mechanical') {
     fail(`anti-self-approval violation: reviewer '${reviewer}' is the agent dispatched as a writer for ${writerAgent.task} `
       + `(run-state intent ${writerAgent.key}); review by the implementer is never independent`, 32);
   }
-  const auditIntent = scoped.find((intent) => isReadonlyRole(intent.role)
+  const auditIntent = scoped.find((intent) => isReviewerRole(intent.role)
     && reviewerMatchesAny(reviewer, [intent.agentId]));
   if (auditIntent === undefined) {
-    fail(`reviewer '${reviewer}' has no recorded audit dispatch for ${taskIds.join(',')}: `
-      + 'run-state holds no resolved anchasi intent for this reviewer, so independent review is unproven '
-      + '(dispatch the auditor through run-state claim/record before merging)', 32);
+    fail(`reviewer '${reviewer}' has no recorded audit or arbitration dispatch for ${taskIds.join(',')}: `
+      + 'run-state holds no resolved anchasi or hanlin intent for this reviewer, so independent review is unproven '
+      + '(dispatch the auditor or arbiter through run-state claim/record before merging)', 32);
   }
 }
 

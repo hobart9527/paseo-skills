@@ -21,6 +21,9 @@ export const WRITER_ROLES = new Set(['gongbu', 'gaogong', 'ceshi', 'jiangzuo', '
 /** 任务面只读：需要 task/attempt/phase 身份，但不持写范围。 */
 export const READONLY_ROLES = new Set(['anchasi']);
 
+/** 具备代码审查/仲裁资格并可签发 pass(...) 的角色。 */
+export const REVIEWER_ROLES = new Set(['anchasi', 'hanlin']);
+
 /** 全部被识别的角色（未识别角色按 fail-closed 处理为 UNMAPPED）。 */
 export const KNOWN_ROLES = new Set([
   ...CONTROL_ROLES, ...WRITER_ROLES, ...READONLY_ROLES,
@@ -29,7 +32,23 @@ export const KNOWN_ROLES = new Set([
 /** dalisi* 为历史别名族（dalisi / dalisi_gemini），一律归控制面。 */
 export function isControlRole(role) {
   if (typeof role !== 'string') return false;
-  return CONTROL_ROLES.has(role) || role.startsWith('dalisi');
+  const lower = role.toLowerCase();
+  return CONTROL_ROLES.has(lower) || lower.startsWith('dalisi');
+}
+
+export function isWriterRole(role) {
+  if (typeof role !== 'string') return false;
+  return WRITER_ROLES.has(role.toLowerCase());
+}
+
+export function isReadonlyRole(role) {
+  if (typeof role !== 'string') return false;
+  return READONLY_ROLES.has(role.toLowerCase());
+}
+
+export function isReviewerRole(role) {
+  if (typeof role !== 'string') return false;
+  return REVIEWER_ROLES.has(role.toLowerCase());
 }
 
 /**
@@ -46,6 +65,7 @@ const PHASE_ALIASES = new Map([
   ['impl', 'impl'], ['implementing', 'impl'], ['implementation', 'impl'],
   ['execution', 'impl'], ['executing', 'impl'], ['coding', 'impl'], ['build', 'impl'],
   ['review', 'audit'], ['audit', 'audit'], ['auditing', 'audit'], ['reviewing', 'audit'],
+  ['arbitrate', 'arbitrate'], ['arbitration', 'arbitrate'], ['arbitrating', 'arbitrate'],
   ['merge', 'merge'], ['merging', 'merge'],
 ]);
 
@@ -60,7 +80,7 @@ export function normalizePhase(raw) {
  * 阶段序：用于在多个终态 agent 中选出「最新」的一条。
  * spec/test 同属最早阶段（Tester 先写 Red 测试或 spec 复核）。
  */
-export const PHASE_ORDER = { spec: 0, test: 0, impl: 1, audit: 2, merge: 3 };
+export const PHASE_ORDER = { spec: 0, test: 0, impl: 1, audit: 2, arbitrate: 3, merge: 4 };
 
 /** 处置枚举：只有这些取值能让终态 agent 视为「已了结」。 */
 export const DISPOSITIONS = new Set(['handed-off', 'merged', 'rejected', 'abandoned', 'superseded']);

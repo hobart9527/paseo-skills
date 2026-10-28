@@ -733,7 +733,7 @@ test('SCEN-MRG-16 a reviewer with no recorded audit dispatch is rejected when ru
     tag: reviewTag(repo, { reviewer: '12345678' }),
   });
   assert.equal(result.status, 32, `${result.stdout}${result.stderr}`);
-  assert.match(result.stderr, /no recorded audit dispatch/);
+  assert.match(result.stderr, /no recorded audit or arbitration dispatch/);
   assertUnchanged(repo);
 });
 
@@ -744,6 +744,19 @@ test('SCEN-MRG-16 a reviewer recorded as the audit intent for every task merges'
     intent({ role: 'anchasi', phase: 'audit', agentId: '12345678-aaaa-bbbb-cccc-dddddddddddd' }),
   ]);
   const result = invoke(repo, { env: { PIPELINE_RUN_STATE_DIR: stateDir } });
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+});
+
+test('SCEN-MRG-16 an arbiter (hanlin) recorded as the arbitration intent for tasks merges', (context) => {
+  const repo = fixture(context);
+  const stateDir = writeRunState(context, [
+    intent({ role: 'gongbu', agentId: 'a1b2c3d4' }),
+    intent({ role: 'hanlin', phase: 'arbitrate', agentId: '4321abcd-aaaa-bbbb-cccc-dddddddddddd' }),
+  ]);
+  const result = invoke(repo, {
+    env: { PIPELINE_RUN_STATE_DIR: stateDir },
+    tag: reviewTag(repo, { reviewer: '4321abcd' }),
+  });
   assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
 });
 
