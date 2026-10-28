@@ -414,7 +414,9 @@ for (const task of tasks) {
   // 打回预算：消耗预算的处置（rejected/abandoned）累加到本任务的审计历史。
   // 预算耗尽后不再重派，转 BLOCKED 交人类裁决——否则一个反复被打回的任务会无限自旋。
   // 前 MAX_REJECTIONS 次按原角色重派，其后一次升级改派 ESCALATION_ROLE（见 retryPolicy）。
-  const rejections = terminal.filter((m) => consumesRetryBudget(m.disposition)).length;
+  // 只数写入者：预算衡量的是「写手产出被拒几次」。审计员/仲裁员被打 rejected/abandoned
+  // （例如审计员失联）不代表写手又被打回一轮；一并计数会让一次 R1 打回直接触发升级。
+  const rejections = terminal.filter((m) => m.writer && consumesRetryBudget(m.disposition)).length;
   const policy = retryPolicy(rejections);
   // agent 自称 disposition=merged。自报不是验收：留到最后判定，先让「分支领先」这一
   // 可核验事实说话（分支仍在 → 其实没合流，进 MERGE；分支没了又没账本 → 才是矛盾）。
@@ -481,6 +483,11 @@ for (const task of tasks) {
     }
   }
   const latestAttempt = latest?.attempt ?? null;
+  // 审计打回时 latest 是该 attempt 的 Auditor（audit 阶段序更高，处置 handed-off），
+  // 被打 `rejected` 的是同一 attempt 的写手。只看 latest 的处置，会把这轮被判回的分支
+  // 当成合流目标：对账给出 NEXT merge，而手上没有 pass 标签，任务既合不了也不回 READY。
+  const latestRejected = latestAttempt !== null && terminal.some((m) =>
+    m.writer && m.attempt === latestAttempt && consumesRetryBudget(m.disposition));
   const ranked = (list) => list.slice().sort((x, y) => {
     const ax = branchAttempt(x); const ay = branchAttempt(y);
     if (ax === null || ay === null) {
@@ -490,11 +497,11 @@ for (const task of tasks) {
     if (ax !== ay) return ay - ax;                          // 数值降序
     return String(x) < String(y) ? -1 : 1;
   });
-  const exact = latestAttempt === null ? [] : leading.filter((b) => branchAttempt(b) === latestAttempt);
+  const exact = latestAttempt === null || latestRejected ? [] : leading.filter((b) => branchAttempt(b) === latestAttempt);
   const unknownAttempt = leading.filter((b) => branchAttempt(b) === null);
   const stale = latestAttempt === null ? [] : leading.filter((b) => {
     const attempt = branchAttempt(b);
-    return attempt !== null && attempt !== latestAttempt;
+    return attempt !== null && (attempt !== latestAttempt || latestRejected);
   });
   for (const b of stale) {
     out.staleBranches.push({ task: label, id: task.id, branch: b, attempt: branchAttempt(b), latestAttempt });
@@ -768,7 +775,8 @@ if (asJson) {
   // 旧 attempt 的领先分支不合流，但必须被看见：它是被判回的那一轮产物，留在仓库里会被下一次对账
   // 重新误当成可合流目标，或被人手工合掉。
   for (const e of out.staleBranches) {
-    console.log(`STALE_BRANCH ${e.task}  <- ${e.branch}（attempt ${e.attempt} < latest ${e.latestAttempt}；不合流，按需清理）`);
+    const why = e.attempt === e.latestAttempt ? `attempt ${e.attempt} 已被打回` : `attempt ${e.attempt} < latest ${e.latestAttempt}`;
+    console.log(`STALE_BRANCH ${e.task}  <- ${e.branch}（${why}；不合流，按需清理）`);
   }
   for (const e of out.BLOCKED) console.log(`BLOCKED  ${e.task}  ${e.reason ? `(${e.reason})` : `(等 ${e.waitFor.join(",")})`}`);
   for (const e of out.BLOCKED_RESOURCE) console.log(`BLOCKED_RESOURCE ${e.task}  (冲突 ${e.conflict})`);

@@ -58,14 +58,50 @@ wait          # 等全部返回；也可以只 poll 文件，谁先有 status �
 
 ## DAG 任务图编排与切片纪律
 
-- **垂直切片（Vertical Slice Architecture）**：
-  严禁按技术层水平切任务（如 T-01 改数据模型、T-02 声明接口、T-03 写路由与控制器）。水平拆分属于浅模块（Shallow Modules），必然造成大量中间薄封装与跨任务 merge 冲突。必须按功能垂直端到端切片，每个 Task 封装完整业务链路与独立测试。
-- **AST / 符号级边界与爆炸半径（Blast Radius Sweep）**：
-  Write scope 不仅锁定文件，还需锚定被改动的核心符号与导出接口。调度前通过 CodeGraph 扫描符号引用链路；凡存在共享写入符号或共用测试夹具的并行任务，必须在 DAG 中补全显式依赖边，禁止盲目并行。
+- **垂直切片（Vertical Slice Architecture）**：切片在冻结前由起草者完成（见 SKILL §2.1 第 5 条），Lead 照冻结的 DAG 执行，不重切。
+  读 DAG 时要知道它为什么长这样：任务按功能端到端切、自带测试；唯一允许的横切是**共享契约先行任务**（规约演进协议），其余任务对它有显式依赖。
+- **符号级爆炸半径（Blast Radius Sweep）**：
+  DAG 与 `Write scope` 在冻结时已固定，**Lead 不改 `tasks.md` 的依赖边与 scope**（那是规范变更，回确认点 1）。
+  `Write scope` 只认路径，`reconcile` 只按路径前缀判冲突，看不见「两个文件不重叠但改同一个导出符号/共用测试夹具」。
+  派发同一批并行任务前，用 `rg -n '<导出符号>'`（或可用时的 codegraph）核对；发现冻结时漏掉的符号级共享，
+  **只少派**：本轮只派其中一个，另一个等前者合流再派（cap 是上限，少派永远合法），并把发现写进最终信封 `notes`，留给下一个 change 修 DAG。
 - **轻量上下文指针（Context Pointers）**：
   派发 Brief 必须保持高信噪比：只传递文件绝对路径、`SCEN-*` 锚点和 SHA 指针，严禁在 Brief 中整段拷贝长篇 spec，让子 agent 定点读取单一真源。
 - **前沿任务（Task Graph Frontier）全并发推进**：
   识别所有依赖均已合流的就绪任务（Frontier），在 cap 预算许可内一次性并发派发，紧随并发 wait，最大化流水线吞吐。
+
+## 单任务阶段推进（reconcile 不替你排阶段）
+
+`reconcile` 只回答「这个任务现在有没有产出、能不能派」：分支领先就报 `MERGE`，没有产出就报 `READY`。
+**`MERGE` 只说明分支上有东西，不说明它审过了。** 合流前的阶段由你按 `Review` 档推进：
+
+| 档位 | 阶段链（同一 attempt 内） |
+|---|---|
+| `strict` | `test`（`ceshi`，写 Red）→ `impl`（写手在**同一 workspace** 续写到变绿）→ `audit`（`anchasi`） |
+| `standard` | `impl` → `audit` |
+| `mechanical` | `impl`（不派审计，合流用 `mechanical` 标签） |
+
+每个阶段都先 `run-state.mjs claim --task <task> --attempt <n> --phase <phase> --role <role> --owner <owner>`，
+派发时五个 `pipeline.*` 标签与 claim 参数一致；拿到 agent 立刻 `record`。
+
+**审计结论到处置标签的映射**（标签是 `reconcile` 唯一能读的事实）。写手完成、你核对过产出后先打 `handed-off` 再派审计；
+审计结论出来后按下表**改写**写手的标签：
+
+| 审计/仲裁结论 | 写手 agent | 审计/仲裁 agent | 下一步 |
+|---|---|---|---|
+| `PASS` / `PASS_WITH_NITS` | `handed-off` | `handed-off` | 用该审计员 id 拼 `pass(...)` 合流 |
+| R1 `BLOCK` | `rejected` | `handed-off` | `reconcile` 报 `READY`，派 attempt+1 写手，brief 带上 R1 的 Blockers 原文 |
+| R2 `BLOCK` | 保持 `handed-off` | `handed-off` | 熔断：派 `hanlin`（`--phase arbitrate --role hanlin`，attempt 不变），用 `templates/arbiter.md`。此时 `reconcile` 仍报 `MERGE`——**不要合**，仲裁未出结论就没有可用的 `pass(...)` |
+| 仲裁 `OVERRULE` | `handed-off` | `handed-off` | 用**仲裁员** id 拼 `pass(...)` 合流 |
+| 仲裁 `PATCH` | `rejected` | `handed-off` | `reconcile` 报升级重派（`escalate: true`），派 `gaogong` 按仲裁指定范围修；修完再派一个 `hanlin` 核 `closing_criteria` 并签发 |
+| 仲裁 `ESCALATE_HUMAN` | 保持 `handed-off` | **不打** | 仲裁员是该任务最新的终态 agent，无 disposition 即 `UNRESOLVED`，任务被压住；保留 workspace，报人类 |
+
+- `ESCALATE_HUMAN` 故意不给仲裁员打标签、也不把写手改成 `rejected`：前者打上就放行合流，后者会被预算当成又一次打回而回到 `READY`，等于把要人类裁决的任务自动重派。
+- 打回预算只数**写手**的 `rejected`/`abandoned`；审计员失联打 `abandoned` 不会把写手推向升级。
+- **返工基点**：attempt+1 的 workspace 用 `baseBranch: "task/<change>/<task>"`（上一 attempt 的分支，`-aN` 同理）续改，
+  `branchName` 追加 `-a<attempt>`。从集成分支重拉会丢掉上一轮产出，R2 也就不再是「增量复核」。
+  被打回那一轮的分支 `reconcile` 报 `STALE_BRANCH`，不会被当成合流目标。
+- **审计员 brief 的 base/tip**：R1 用 `<分支拉出点>..<写手 tip>`；R2 同一 base、新 tip，并附 R1 信封。
 
 ## 每轮动作
 

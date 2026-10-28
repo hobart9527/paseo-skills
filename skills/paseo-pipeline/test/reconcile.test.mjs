@@ -1194,6 +1194,21 @@ test('SCEN-REC-16 mixed rejected and abandoned both consume the retry budget', (
   assert.equal(ready.escalate, true, 'abandoned 与 rejected 同样消耗预算，达到阈值即升级');
 });
 
+test('SCEN-REC-16 a read-only reviewer tagged rejected does not consume the writer retry budget', (context) => {
+  // 一次 R1 打回：写手 rejected。若审计员也被顺手打成 rejected（或失联后 abandoned），
+  // 旧实现按两次打回计数，第一轮返工就被升级成 gaogong，「2 轮 + 升级 1 次」被压成 1 轮。
+  const subject = fixture(context);
+  subject.runtime([
+    agent({ id: 'w1', status: 'idle' }, { 'pipeline.attempt': '1', 'pipeline.phase': 'impl', 'pipeline.disposition': 'rejected' }),
+    agent({ id: 'a1', status: 'idle' }, {
+      'pipeline.attempt': '1', 'pipeline.phase': 'audit', 'pipeline.role': 'anchasi', 'pipeline.disposition': 'rejected',
+    }),
+  ]);
+  const result = output(subject);
+  state(result, 'T-01', 'READY');
+  assert.equal(result.READY.find((r) => r.id === 'T-01').escalate, undefined, '一次写手打回不得触发升级');
+});
+
 test('SCEN-REC-16 handed-off and superseded do not consume the retry budget', (context) => {
   const subject = fixture(context);
   subject.runtime([
@@ -1223,6 +1238,39 @@ test('SCEN-REC-16 a rejected attempt branch is STALE, never the merge target', (
   assert.equal(result.staleBranches.length, 1);
   assert.equal(result.staleBranches[0].attempt, 1);
   assert.equal(result.staleBranches[0].latestAttempt, 2);
+});
+
+test('SCEN-REC-16 an audit-rejected attempt is never the merge target, even when the auditor is the latest agent', (context) => {
+  // 审计打回的真实形态：同一 attempt 里写手被打 rejected、Auditor 打 handed-off，
+  // 而 audit 阶段序高于 impl，latest 是 Auditor。旧实现只看 latest 的处置，把被判回的分支
+  // 当成 MERGE：对账给 NEXT merge，Lead 手上没有 pass 标签，任务既合不了也不回 READY。
+  const subject = fixture(context);
+  subject.taskBranch();
+  subject.runtime([
+    agent({ id: 'w1', status: 'idle' }, { 'pipeline.attempt': '1', 'pipeline.phase': 'impl', 'pipeline.disposition': 'rejected' }),
+    agent({ id: 'a1', status: 'idle' }, {
+      'pipeline.attempt': '1', 'pipeline.phase': 'audit', 'pipeline.role': 'anchasi', 'pipeline.disposition': 'handed-off',
+    }),
+  ]);
+  const result = output(subject);
+  state(result, 'T-01', 'READY');
+  dispatch(result, ['T-01']);
+  assert.deepEqual(result.staleBranches.map((e) => [e.attempt, e.latestAttempt]), [[1, 1]]);
+});
+
+test('SCEN-REC-16 an audited attempt whose writer was handed off stays the merge target (negative control)', (context) => {
+  const subject = fixture(context);
+  const source = subject.taskBranch();
+  subject.runtime([
+    agent({ id: 'w1', status: 'idle' }, { 'pipeline.attempt': '1', 'pipeline.phase': 'impl', 'pipeline.disposition': 'handed-off' }),
+    agent({ id: 'a1', status: 'idle' }, {
+      'pipeline.attempt': '1', 'pipeline.phase': 'audit', 'pipeline.role': 'anchasi', 'pipeline.disposition': 'handed-off',
+    }),
+  ]);
+  const result = output(subject);
+  state(result, 'T-01', 'MERGE');
+  assert.equal(result.MERGE[0].branch, source.branch);
+  assert.deepEqual(result.staleBranches, []);
 });
 
 test('SCEN-REC-16 the latest attempt branch is the merge target, attempts compared numerically', (context) => {

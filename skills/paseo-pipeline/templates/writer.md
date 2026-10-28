@@ -9,17 +9,24 @@
 - 场景：读 `openspec/changes/<change>/specs/<spec>.md` 里的 `SCEN-*`，**自己读文件**，不要等人转述。
 - 不变式：<不许破坏的既有契约；没有就写「无」>
 - **深模块原则（Deep Modules）**：接口尽量小且稳定，复杂性在实现内部消化，杜绝浅层包装（Shallow Modules）；拒绝 Speculative Generality（臆想泛化，未在 spec 要求的参数/抽象一律不加）。
-- **TDD 节奏**：测试先行或紧随，红-绿-重构循环。断言针对公开接口行为与不变式，不对准私有实现细节。
+- **TDD 节奏**：红-绿-重构。断言针对公开接口行为与不变式，不对准私有实现细节。
+  - `Review: strict`：Tester 已在本 workspace 提交了 Red 测试。你的工作是让它变绿，**不改 Tester 提交的断言**；
+    认为断言错了就抛 `kind: blocked` 说明哪条、为什么，不要自己改。
+  - `standard` / `mechanical`：测试由你自己写，先写失败断言再实现。
 
-## 返工严律（attempt ≥ 2，红灯反馈环优先）
+## 返工（本 brief 附带上一轮 Blockers 时适用）
 
-若本任务是因 Auditor 提出 Blocker 打回（attempt ≥ 2）：
-1. **严禁直接盲改业务代码**：不建反馈环的猜改 90% 会引入连带破坏。
-2. **第一步必须构造确定性红灯测试（Tight Red-Capable Loop）**：
-   - 在测试文件中针对信封给出的 `repro` 编写复现断言；
-   - 运行该单测，确认**必须明确失败（RED）**，且失败原因精准对应 Blocker 描述；
-3. **第二步定点修改业务实现**，转为通过（GREEN）；
-4. **第三步执行全量验证**，确保既有场景无任何回归。
+本节只在 Lead 给你附上上一轮审计/仲裁的 Blockers 时生效（attempt ≥ 2 但没有 Blockers 的，
+例如上一轮写手失联，按普通任务做）。你在上一轮分支的基础上续改，不是从头重写。
+
+对每条 Blocker，按 `repro` → 红 → 绿的顺序：
+1. **先复现，不先改**：把 `repro` 写成一条测试断言（测试文件必须在 `Write scope` 内；不在就抛
+   `kind: blocked`，`reason: REPRO_OUT_OF_SCOPE`，不要越界提交），运行它，确认**失败**且失败原因就是 Blocker 描述的问题。
+   `repro` 无法写成自动断言（例如纯文档或配置类问题）时，在信封 `red_evidence` 里写明原因与你手工复现的命令输出。
+2. **再定点修改实现**，让这条断言变绿。
+3. **最后跑完整 `Verify` 命令**，确认既有场景没有回归。
+
+信封的 `red_evidence` 逐条贴「修复前失败输出的关键行」，审计员会在 R2 复核它。没有红灯证据的返工会被视为未闭环。
 
 ## 边界
 
@@ -88,6 +95,7 @@ phase: impl | test
 result: <一句话>
 reviewed_sha: <你的提交 sha>
 conflicting_tests: <与既有测试冲突的断言；无则 none>
+red_evidence: <返工时逐条：Blocker id + 修复前失败输出关键行；非返工写 none>
 blockers: <无则 none>
 next_action: merge | blocked
 ```

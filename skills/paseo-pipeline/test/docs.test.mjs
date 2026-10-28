@@ -317,6 +317,52 @@ test('SCEN-DOC-20: Lead 模板列出分叉核对命令，并要求 brief 事实�
   assert.match(text, /brief 里的事实必须由命令输出生成/);
 });
 
+test('SCEN-DOC-24: 返工、双轴审计与仲裁在模板之间首尾相接，且不依赖不存在的执行载体', () => {
+  // 2026-10-28 排查：方法论条款曾只停在提示词层——返工要求写红灯测试，但信封没有字段承载证据、
+  // 审计员也不核；「符号级 Write scope」既没有解析字段也没有门禁；Lead 模板完全没写审计结论
+  // 怎样映射成 disposition，审计打回后对账仍报 MERGE。每一环缺失都会在执行期断成一次空转。
+  const writer = template('writer');
+  const auditor = template('auditor');
+  const arbiter = template('arbiter');
+  const lead = template('lead');
+
+  // 生产者与消费者：写手产出 red_evidence，审计员在 R2 以它判闭环。
+  assert.match(writer, /^red_evidence:/m, 'writer 信封必须有 red_evidence 字段');
+  assert.match(auditor, /`red_evidence`[\s\S]{0,200}缺红灯证据[^\n]{0,40}未闭环/,
+    'auditor 必须把缺红灯证据判为未闭环');
+  // 复现测试不在 scope 时不得越界提交（否则 exit 30），必须有明确出口。
+  assert.match(writer, /REPRO_OUT_OF_SCOPE/);
+  // strict 档分工：写手不改 Tester 的断言。
+  assert.match(writer, /不改 Tester 提交的断言/);
+
+  // 双轴分开落在信封，Standards 轴不扩大 4 类准入。
+  assert.match(auditor, /^spec_axis:/m);
+  assert.match(auditor, /^standards_axis:/m);
+  assert.match(auditor, /Standards 轴[\s\S]{0,200}NIT/);
+
+  // 仲裁员不写代码；PATCH 由 Lead 派写手执行。
+  assert.match(arbiter, /你不写代码/);
+  assert.match(arbiter, /不扩大 4 类准入/);
+
+  // Lead 拿得到完整的阶段链与 disposition 映射。
+  assert.match(lead, /单任务阶段推进/);
+  for (const verdict of ['R1 `BLOCK`', 'R2 `BLOCK`', 'OVERRULE', 'PATCH', 'ESCALATE_HUMAN']) {
+    assert.ok(lead.includes(verdict), `lead.md 的映射表必须覆盖 ${verdict}`);
+  }
+  assert.match(lead, /--phase arbitrate --role hanlin/);
+  assert.match(lead, /baseBranch:\s*"task\/<change>\/<task>"/, '返工必须从上一 attempt 的分支续改');
+  assert.match(lead, /STALE_BRANCH/);
+  assert.match(lead, /`MERGE` 只说明分支上有东西，不说明它审过了/);
+
+  // 执行期不改冻结的 DAG，也不承诺不存在的符号级 scope 门禁。
+  assert.match(lead, /Lead 不改 `tasks\.md` 的依赖边与 scope/);
+  assert.match(lead, /只少派/);
+  assert.doesNotMatch(lead, /必须在 DAG 中补全显式依赖边/);
+  const freeze = section('冻结前准备');
+  assert.match(freeze, /UNKNOWN_FIELD/, 'SKILL 必须写明不得发明符号级 scope 字段');
+  assert.match(freeze, /Depends on/);
+});
+
 // --- 契约三环：模板 / 闸门 / 文档必须指向同一份定义（2026-10-27 包 5） ---
 //
 // 三环中缺任何一环，缺陷都要顺流到下游才暴露：只有模板没有闸门 → 写错也没人拦；

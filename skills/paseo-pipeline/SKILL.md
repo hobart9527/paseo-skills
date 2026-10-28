@@ -128,12 +128,12 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
    - **一场景一承载**：每条 `SCEN-*` 必须能指到一个测试文件，或者是静态检查（此时必须在 spec 里写明检查命令，且该命令不需要新增测试文件）。没有承载的场景在验收时必然变成 `untested_scens` 噪声，或者被写成幻影声明。
    - **delta 先对基线**：新增/修改场景前，对照 `openspec/specs/<cap>/spec.md` 的**同一输入**看既有结论。同一输入两个不同结论（如空快照是 `INVALID_BOS_UUID` 还是 `ORG_MAPPING_NOT_FOUND`）必须在冻结前裁决，不能留给两个任务各写一半。
    - **矩阵计数由命令生成**：业务验收矩阵的行数、场景数、测试数一律贴**命令输出**，不抄、不数、不凭印象。编排者口述的数字（"18 行"）不是真源，`wc -l` 与测试运行器的输出才是。
-   - **任务切片与工程架构准则（冻结前设计审查）**：
-     - **垂直切片（Vertical Slice Architecture）**：严禁按技术分层（Model/Service/API）切浅模块任务；必须按功能业务垂直端到端切片，每个 Task 封装完整业务链路与自包含验证。
-     - **AST / 符号级边界与爆炸半径**：Write scope 明确符号级边界（Symbols/Interfaces）；派发前使用 CodeGraph 扫描符号引用链，共享写入符号的任务必须补显式依赖边。
-     - **深模块设计（Deep Modules）**：小接口 + 大实现；参数收敛，复杂性内聚在实现内部；显式隔离外部依赖 Seam；拒绝 Speculative Generality（臆想泛化，未在 spec 要求的抽象/参数一律不加）。
-     - **双轴独立审计（Two-Axis Review）**：审计员正交解耦 Spec 忠实度轴与 Standards/Smell 坏味道轴。
-     - **返工红灯环优先（Tight Red Loop First）**：返工（attempt ≥ 2）严禁猜改业务源码，第一步必须构造确定性、极速（<2s）的红灯测试，精准捕获 Blocker 后再动手修改。
+   - **任务切片与工程架构准则（冻结前设计审查）**：这几条在**起草 tasks.md 时**落实，冻结后 DAG 与 scope 不再改（改即规范变更，回确认点 1）。
+     - **垂直切片（Vertical Slice Architecture）**：按功能端到端切，每个任务带自己的测试与 `Verify with`；不按技术层（Model/Service/API）切出彼此空转的薄任务。**唯一允许的横切**是规约演进协议（§2.2）里的共享契约先行任务，其余任务对它写显式 `Depends on`。
+     - **符号级爆炸半径**：`Write scope` 只认路径，`reconcile` 只按路径前缀判冲突。起草时对每个要改的导出符号跑 `rg -n '<符号>'`（可用时用 codegraph）；两个任务 scope 不重叠但改同一导出符号或共用测试夹具时，**在 `Depends on` 里写依赖边**。不要发明符号级 scope 字段——`lib/tasks.mjs` 会以 `UNKNOWN_FIELD` 拒绝。执行期 Lead 只能少派，不能补边（见 `templates/lead.md`）。
+     - **深模块设计（Deep Modules）**：小接口 + 大实现；参数收敛，复杂性内聚在实现内部；外部依赖经 Seam 隔离；spec 没要求的抽象/参数不加（Speculative Generality）。它指导写手与审计员的 Nit，不扩大 4 类 Blocker 准入。
+     - **双轴审计（Two-Axis Review）**：同一个 Auditor 按 Spec 轴（场景是否都实现、行为是否一致）与 Standards 轴（坏味道、模块深度）各过一遍，信封分 `spec_axis` / `standards_axis` 写。Blocker 只来自 4 类准入；Standards 轴默认只产出 Nit。
+     - **返工先复现（Red Before Fix）**：带上一轮 Blockers 的返工，写手先把每条 `repro` 写成失败断言再改实现，信封贴 `red_evidence`；R2 以此判定闭环。复现测试文件必须在 `Write scope` 内——所以起草时每个任务的 scope 都要含它的测试文件（与「scope 闭环」同一条要求）。
    - 任务行格式 `- [ ] 1.1 T-01 标题` 与 `- [ ] 1.1 T-01: 标题` 都合法（后者是早期产物的历史写法，`parseTasks` 与 `merge-task.mjs` 的 Done 定位都兼容）；`T-01:标题` 这种冒号紧贴 ID 的写法不合法，会被判 `MALFORMED_LINE`，因为它会让 ID 解析错位。
 6. **人类确认点 1：spec 冻结**：呈报概况、DAG 拓扑、业务验收矩阵、`freeze-check` 的 `[ROUTE]` 行与 Auditor 结论，经用户确认后冻结。冻结即固定本轮 spec revision。
 
@@ -162,7 +162,7 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 
 **单任务标准状态机**（严禁总控跳步代写）
 1. **`READY`**：依赖全部 `DONE` 且 `Write scope` 无冲突 → 先 `claim` 意图，再派发。
-2. **`TEST_FIRST`**（若 `Review: strict`）：派 `agent_profile_ceshi` 进独立工作区。
+2. **`TEST_FIRST`**（若 `Review: strict`）：派 `agent_profile_ceshi` 进该任务的 `task/<name>/<task>` 工作区（与 Writer 同一个，Writer 随后在其 Red 提交上续写；工作区与集成分支隔离）。Writer 不改 Tester 提交的断言，认为断言错就抛 `blocked`。
    - **爆炸半径扫雷（Blast Radius Sweep）**：写新 Red 测试前，强制 `rg` 全局扫描变更枚举/契约在老测试中的断言引用；发现破坏性断言就在信封输出 `conflicting_tests`，报备 Lead 扩大 `Write scope` 涵盖旧测试同步迁移。
 3. **`IMPLEMENTING`**：派 `agent_profile_gongbu`（普通）或 `agent_profile_gaogong`（复杂）进 `task/<name>/<task>` 工作区。
    - 提交必须附 `Pipeline-Role: gongbu`（或相应写入角色）与 `Pipeline-Author: <agentId>` trailers；trailer 块必须是最后一个非空段落（块后空行再跟任何一行即整块作废；消息尾部空行本身无害，2026-10-26 探针实测），提交后必跑 `git log -1 --format='%(trailers:key=Pipeline-Author,valueonly)'` 自验非空（模板 `templates/writer.md` 同此要求）。
@@ -171,10 +171,11 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
    - **第 1 轮全量审计（R1）**：检视完整 diff。**4 类 Blocker 准入**：`SPEC_VIOLATION`、`CORRECTNESS_BUG`、`SECURITY_DEFECT`、`SCOPE_VIOLATION`；非 4 类问题（命名、注释、偏好）标 `NIT:` 并签发 `PASS_WITH_NITS`。
    - **第 2 轮增量审计（R2）**：R1 有 Blocker 时，写手针对性修复后 Auditor 复核。**R2 优先复核 R1 Blocker 是否闭环与修复影响面**；修复引入或暴露的**新的**正确性、安全、规范问题，照常作为 Blocker 阻断，并记录新增原因。不得因为「发生在原 diff 之外」而放过。
    - **硬轮次熔断**：单任务最多 2 轮审查。R2 仍未通过即熔断，进仲裁。**熔断是「暂停并裁决」，不是降低通过条件。**
-5. **`ARBITRATION`**（熔断后）：派 `agent_profile_hanlin`（Arbiter）单回合裁决。
+5. **`ARBITRATION`**（熔断后）：派 `agent_profile_hanlin`（Arbiter）单回合裁决，标签 `pipeline.phase=arbitrate`、`pipeline.role=hanlin`、attempt 与 R2 相同，`claim --phase arbitrate --role hanlin`。仲裁员不写代码。
    - `OVERRULE`：驳回无依据的 Blocker，须给出理由与收据，签发 `pass(...)`；
-   - `PATCH`：委派写手修复后**重新跑测试并重新独立复核**，再由 Arbiter 签发 `pass(...)`。**不按行数放行**；
-   - `ESCALATE_HUMAN`：确属规范语义分歧 → 标记 `BLOCKED`，保留工作区，回冻结确认（规范变化由人类决策，不是仲裁员越权改需求）。
+   - `PATCH`：Lead 把写手标 `rejected`，`reconcile` 给出升级重派（`gaogong`），写手按仲裁指定的范围与 `closing_criteria` 修复；修完再派一个 `hanlin` 实例**重新跑测试并独立复核**后签发 `pass(...)`。**不按行数放行**；
+   - `ESCALATE_HUMAN`：确属规范语义分歧 → 写手与仲裁员都**不打** disposition，`reconcile` 以 `UNRESOLVED` 压住该任务；保留工作区，回冻结确认（规范变化由人类决策，不是仲裁员越权改需求）。
+   - 审计/仲裁结论到 `pipeline.disposition` 的完整映射、返工 workspace 的基点（上一 attempt 的分支）见 `templates/lead.md`「单任务阶段推进」。`reconcile` 只判产出与预算，**阶段顺序由编排者按 `Review` 档推进**：分支领先即报 `MERGE`，不代表已审。
 6. **`MERGING`**：调用 `merge-task.mjs`（第 5 节门禁）。
 7. **`DONE`**：释放下游依赖。
 

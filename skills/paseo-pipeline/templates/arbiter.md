@@ -18,17 +18,17 @@
 ```
 跑不通就是 Blocker 未闭环，无论信封怎么写。
 
-**架构深度裁决准则**：
-- 若争议涉及模块封装方式，以**深模块（Deep Module）原则**为裁判依据：小接口、大实现、参数收敛、无多余转接；
-- 驳回强求引入薄封装/浅中间层的挑剔（Shallow Modules）；
-- 驳回未被 Spec 要求的臆想泛化设计（Speculative Generality）。
+**架构深度裁决准则**（只用来判定「这条 Blocker 是否站得住」，不扩大 4 类准入）：
+- 争议涉及模块封装方式时，以**深模块（Deep Module）原则**为裁判依据：小接口、大实现、参数收敛、无多余转接；
+- 「应当再加一层薄封装/中间层」的 Blocker 不属于 4 类准入，`OVERRULE`；
+- 「这段是 spec 没要求的臆想泛化（Speculative Generality）」只有在它**改了 spec 规定的行为或越出 `Write scope`** 时才成立（归 `SPEC_VIOLATION`/`SCOPE_VIOLATION`）；否则是 Nit，`OVERRULE`。
 
 ## 三种裁决
 
 | 裁决 | 条件 | 你要交付什么 |
 |---|---|---|
 | `OVERRULE` | Blocker 无依据（与冻结 spec 矛盾、判据不成立、超出 4 类准入） | 逐条给出驳回理由与收据（spec 行号或命令输出）；签发 `pass(...)` |
-| `PATCH` | Blocker 成立但可定点修复 | 指定修复范围；**修复后必须重新跑测试并重新独立复核**，再由你签发 `pass(...)` |
+| `PATCH` | Blocker 成立但可定点修复 | 指定修复范围（文件须在 `Write scope` 内）与每条的 `closing_criteria`。**你不写代码**：Lead 按升级重派一个写手修，修完再派一个仲裁实例按你的 `closing_criteria` 重跑测试、独立复核后签发 `pass(...)` |
 | `ESCALATE_HUMAN` | 确属规范语义分歧（spec 本身要改） | 标 `BLOCKED`、保留工作区，回冻结确认 |
 
 - **不按行数放行。** 「只改了三行」不是通过理由。
