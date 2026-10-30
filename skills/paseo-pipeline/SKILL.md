@@ -386,4 +386,6 @@ node skills/paseo-pipeline/hooks/scope-guard-hook.mjs --install-help
 
 刻意保守：无有效租约放行（门禁只在一次 run 内成立）、`openspec/` 放行、路径不在任何 scope 内放行（越界提交由 `merge-task` exit 30 兜底）、读不到 `tasks.md` 放行（fail-open）。**Bash 的 `sed -i`、`>` 重定向、`git apply` 拦不住**——这是减速带，不能拿它宣称物理隔离。关闭方式：`PIPELINE_GUARD_SCOPE=off`（排障用）。
 
+账本位置由**目标路径**反推仓库，不是由调用方 cwd 决定：hook 由 Claude Code 在 session 的 cwd 下启动，而 session cwd 与写入目标所在仓库可以不同（往另一个 checkout 写绝对路径很常见）。曾把账本锚在 `process.cwd()`，从别的仓库调用时扫不到目标仓库的租约，守卫输出为空、deny 静默退化成 allow。目标落在 cwd 所在仓库内时仍按 cwd 判定，相对路径语义不变。
+
 **只读角色约束**：Auditor、Arbiter、Scout 等只读角色要求最小权限，brief 显式声明**禁调 memory 工具与不必要的网络访问**——但**允许完成审查所需的授权本地查询**（如读仓库、跑 `rg`、用 codegraph），不要一刀切禁 MCP 后又要求同一角色使用 codegraph。

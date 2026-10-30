@@ -64,6 +64,50 @@ function realpathLoose(target) {
 }
 
 /**
+ * 目标路径所在目录（沿父目录向上找到**最深的存在目录**）。
+ *
+ * 用来把「以哪个仓库为准」从调用方的 cwd 解耦：PreToolUse hook 由 Claude Code 在
+ * session 的 cwd 下启动，而 session 的 cwd 与写入目标所在的仓库可以不同（写绝对路径
+ * 到另一个 checkout 很常见）。若拿 cwd 去找账本，目标仓库的租约就完全看不见，
+ * 守卫静默放行——实际测到过：从 paseo-skills 目录调用，对 /tmp 下带租约的仓库写入
+ * 得到空输出（= 放行）。
+ */
+function deepestExistingDir(target) {
+  let current = path.resolve(target);
+  for (;;) {
+    try {
+      if (fs.statSync(current).isDirectory()) return current;
+    } catch {
+      // 不存在：继续向上。
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return path.resolve(target);
+    current = parent;
+  }
+}
+
+/**
+ * 选定判定所用的仓库上下文。
+ *
+ * 优先用调用方的 cwd（相对路径与常规调用都依赖它）；只有当解析后的目标**落在
+ * cwd 所在仓库之外**时，才改用目标自身的目录反推仓库。这样既能保持 `guard-scope.mjs
+ * <change> --path src/x.mjs` 的旧语义，也能覆盖 hook 从别的仓库 cwd 启动、对绝对路径
+ * 写入另一个 checkout 的场景。
+ *
+ * @returns {{root: string, base: string}} root=仓库根（realpath），base=查账本用的目录
+ */
+function contextForTarget(target, cwd) {
+  const resolved = path.resolve(cwd, target);
+  const cwdRoot = realpathLoose(repoRoot(cwd));
+  const relativeToCwdRoot = path.relative(cwdRoot, realpathLoose(resolved));
+  if (!relativeToCwdRoot.startsWith('..') && !path.isAbsolute(relativeToCwdRoot)) {
+    return { root: cwdRoot, base: cwd };
+  }
+  const base = deepestExistingDir(resolved);
+  return { root: realpathLoose(repoRoot(base)), base };
+}
+
+/**
  * 枚举当前持有**有效租约**的 change。
  *
  * 没有有效租约的 change 不拦截：租约过期意味着上一任编排者已死，此时任何写入都不该
@@ -102,42 +146,42 @@ export function activeLeases(cwd = process.cwd(), now = Date.now()) {
  *            scopeOwners: string[], covered: string[], lease: object|null}}
  */
 export function assessWrite({ change, target, cwd = process.cwd(), state = null, now = Date.now() }) {
-  const base = { path: null, scopeOwners: [], covered: [], lease: null };
-  const ledgerState = state ?? readRunState(change, cwd).state;
+  const blank = { path: null, scopeOwners: [], covered: [], lease: null };
+  const { root, base: ledgerCwd } = contextForTarget(target, cwd);
+  const ledgerState = state ?? readRunState(change, ledgerCwd).state;
   const lease = leaseStatus(ledgerState, now);
   if (lease === null || !lease.valid) {
     return {
-      ...base,
+      ...blank,
       verdict: 'allow',
       reason: lease === null ? '无编排租约（未在 run 内）' : `租约已过期（owner=${lease.owner}，到期 ${lease.expiresAt}）`,
     };
   }
-  const root = realpathLoose(repoRoot(cwd));
   const relative = path.relative(root, realpathLoose(path.resolve(cwd, target)));
   if (relative.startsWith('..') || path.isAbsolute(relative)) {
-    return { ...base, lease, verdict: 'allow', reason: '目标不在本仓库内' };
+    return { ...blank, lease, verdict: 'allow', reason: '目标不在本仓库内' };
   }
   const normalized = relative.split(path.sep).join('/');
   if (normalized === 'openspec' || normalized.startsWith('openspec/')) {
     // 账本与规范产物是流程自身的写入范围，不属于任何任务的业务 scope。
-    return { ...base, path: normalized, lease, verdict: 'allow', reason: 'openspec/ 下的流程产物' };
+    return { ...blank, path: normalized, lease, verdict: 'allow', reason: 'openspec/ 下的流程产物' };
   }
 
   const tasksFile = path.join(root, 'openspec', 'changes', change, 'tasks.md');
   if (!fs.existsSync(tasksFile)) {
-    return { ...base, path: normalized, lease, verdict: 'allow', reason: `读不到 ${tasksFile}；无法判定 scope（fail-open）` };
+    return { ...blank, path: normalized, lease, verdict: 'allow', reason: `读不到 ${tasksFile}；无法判定 scope（fail-open）` };
   }
   const { tasks, errors } = parseTasks(fs.readFileSync(tasksFile, 'utf8'));
   if (errors.length > 0 || tasks.length === 0) {
     return {
-      ...base, path: normalized, lease, verdict: 'allow',
+      ...blank, path: normalized, lease, verdict: 'allow',
       reason: `tasks.md 解析异常（${errors.length} 条）；无法判定 scope（fail-open）`,
     };
   }
   const owners = tasks.filter((task) => isFileWithinScopes(normalized, task.scope));
   if (owners.length === 0) {
     return {
-      ...base, path: normalized, lease, verdict: 'allow',
+      ...blank, path: normalized, lease, verdict: 'allow',
       reason: '不在任何任务的 Write scope 内（越界提交由 merge-task exit 30 兜底）',
     };
   }
@@ -171,8 +215,10 @@ export function assessAnyWrite({ target, cwd = process.cwd(), now = Date.now() }
   if (process.env.PIPELINE_GUARD_SCOPE === 'off') {
     return { verdict: 'allow', reason: 'PIPELINE_GUARD_SCOPE=off 显式关闭', change: null, path: null };
   }
+  // 账本目录同样按目标反推，否则 hook 从别的仓库 cwd 启动时扫不到目标仓库的租约。
+  const { base: ledgerCwd } = contextForTarget(target, cwd);
   let first = null;
-  for (const { change, state } of activeLeases(cwd, now)) {
+  for (const { change, state } of activeLeases(ledgerCwd, now)) {
     const verdict = assessWrite({ change, target, cwd, state, now });
     if (verdict.verdict === 'deny') return { ...verdict, change };
     if (first === null) first = { ...verdict, change };

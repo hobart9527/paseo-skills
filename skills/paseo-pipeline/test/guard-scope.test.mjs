@@ -272,3 +272,52 @@ test('SCEN-GRD-07 --install-help prints a settings.json fragment naming this hoo
   assert.match(result.stdout, /scope-guard-hook\.mjs/);
   assert.match(result.stdout, /PreToolUse|matcher/);
 });
+
+// SCEN-GRD-08 跨仓库 cwd：Claude Code 在 session 的 cwd 下启动 hook，而 session 的 cwd
+// 与写入目标所在的仓库可以不同（往另一个 checkout 写绝对路径很常见）。曾把账本目录锚在
+// process.cwd()，于是从 paseo-skills 调用、对 /tmp 下带租约的仓库写入时扫不到租约，
+// 守卫输出为空 —— deny 静默退化成 allow。判据必须由**目标路径**反推仓库。
+function runHookFrom(subject, payload, cwd) {
+  return spawnSync(process.execPath, [hook], {
+    cwd, env: subject.env, encoding: 'utf8', timeout: 30_000, input: JSON.stringify(payload),
+  });
+}
+
+test('SCEN-GRD-08 hook still denies a scoped write when invoked from a foreign cwd', (context) => {
+  const subject = fixture(context, { tasks: TASKS, lease: validLease() });
+  const foreign = mkdtempSync(path.join(tmpdir(), 'pipeline-guard-cwd-'));
+  context.after(() => rmSync(foreign, { recursive: true, force: true }));
+  const result = runHookFrom(subject, {
+    session_id: 'hook-test', tool_name: 'Write',
+    tool_input: { file_path: path.join(subject.repo, 'src', 'T-01.mjs') },
+  }, foreign);
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.hookSpecificOutput.permissionDecision, 'deny',
+    '从别的 cwd 调用时守卫不得静默放行');
+  assert.match(output.hookSpecificOutput.permissionDecisionReason, /T-01 的 Write scope/);
+});
+
+test('SCEN-GRD-08 foreign cwd keeps the allow paths intact', (context) => {
+  const subject = fixture(context, { tasks: TASKS, lease: validLease(), intents: [writerIntent()] });
+  const foreign = mkdtempSync(path.join(tmpdir(), 'pipeline-guard-cwd-'));
+  context.after(() => rmSync(foreign, { recursive: true, force: true }));
+  const covered = runHookFrom(subject, {
+    session_id: 'hook-test', tool_name: 'Edit',
+    tool_input: { file_path: path.join(subject.repo, 'src', 'T-01.mjs') },
+  }, foreign);
+  assert.equal(covered.stdout.trim(), '', '有在途写手意图时仍应放行');
+  const outside = runHookFrom(subject, {
+    session_id: 'hook-test', tool_name: 'Write',
+    tool_input: { file_path: path.join(subject.repo, 'src', 'other.mjs') },
+  }, foreign);
+  assert.equal(outside.stdout.trim(), '', 'scope 外的写入不受影响');
+});
+
+test('SCEN-GRD-08 the CLI keeps cwd-relative semantics when target lives under cwd', (context) => {
+  const subject = fixture(context, { tasks: TASKS, lease: validLease() });
+  const result = subject.run('src/T-01.mjs');
+  const verdict = verdictOf(result);
+  assert.equal(verdict.verdict, 'deny', '相对路径仍按 cwd 所在仓库判定');
+  assert.equal(verdict.path, 'src/T-01.mjs');
+});

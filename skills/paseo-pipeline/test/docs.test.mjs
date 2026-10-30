@@ -503,6 +503,8 @@ test('SCEN-DOC-28: 写范围守卫与脏树检测都被写进 SKILL，且不宣�
   assert.match(text, /Bash[^\n]{0,60}(?:sed -i|重定向)[^\n]{0,40}拦不住|拦不住[^\n]{0,40}sed -i/,
     '已知覆盖缺口必须如实写明');
   assert.match(text, /PIPELINE_GUARD_SCOPE=off/, '关闭方式必须写明');
+  assert.match(text, /账本位置由\*\*目标路径\*\*反推仓库|目标路径[^\n]{0,20}反推仓库/,
+    '账本锚点必须写明是按目标路径而非 cwd 反推');
   const recover = section('失败处置与恢复');
   assert.match(recover, /UNEXPLAINED/, '脏树分级必须写进恢复流程');
 });
