@@ -38,24 +38,3 @@ export function changeIdProblem(value, label = 'change') {
   return null;
 }
 
-/**
- * 从 argv 里取第一个位置参数作 change 名。
- *
- * 必须跳过**已知带值旗标**的值：旧写法 `args.find((a) => !a.startsWith("--"))` 在
- * `--cap 1 <change>` 里会把 `1` 当成 change（它不满足后续的 `!== "--cap"` 判断吗？
- * 不：`1` 的前一项是 `--cap`，所以被跳过了），但在 `--change foo` 这种写法里第一个
- * 非旗标实参恰恰是旗标自己的值。统一按「谁带值」跳过，判据只有一处。
- */
-export function positionalChange(argv, knownValueFlags = []) {
-  const flags = new Set(knownValueFlags);
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (flags.has(arg)) {
-      i += 1; // 跳过该旗标的值：它是参数，不是 change 名
-      continue;
-    }
-    if (arg.startsWith('-')) continue;
-    return arg;
-  }
-  return null;
-}

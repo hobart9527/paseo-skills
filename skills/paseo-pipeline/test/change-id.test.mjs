@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CHANGE_ID_RE, isChangeId, changeIdProblem, positionalChange } from '../lib/change-id.mjs';
+import { CHANGE_ID_RE, isChangeId, changeIdProblem } from '../lib/change-id.mjs';
 
 const runState = fileURLToPath(new URL('../run-state.mjs', import.meta.url));
 const reconcile = fileURLToPath(new URL('../reconcile.mjs', import.meta.url));
@@ -48,14 +48,6 @@ test('an illegal-character change name names the regex it must match', () => {
 test('an empty change name is reported rather than defaulted', () => {
   assert.match(changeIdProblem(''), /为空/);
   assert.equal(changeIdProblem('ok-change'), null);
-});
-
-test('positionalChange skips the value of a known value flag instead of returning it as the change', () => {
-  // `status --change foo` 里 foo 是 --change 的值，不是位置参数；直接取「第一个非 - 开头」
-  // 会把 foo 当成 change 名，于是校验通过、状态落到另一个目录。
-  assert.equal(positionalChange(['--change', 'foo'], ['--change']), null);
-  assert.equal(positionalChange(['my-change', '--owner', 'lead'], ['--owner']), 'my-change');
-  assert.equal(positionalChange(['--owner', 'lead', 'my-change'], ['--owner']), 'my-change');
 });
 
 // --- CLI 层：真实入口必须挡住 ---
