@@ -20,17 +20,18 @@
 // fail closed：canDispatchNow 清空。runtime != ok → canDispatchNow 恒空。
 import fs from "node:fs";
 import path from "node:path";
-import { parseTasks, normalizeScope, isTaskId, graphErrors } from "./lib/tasks.mjs";
+import { parseTasks, normalizeScope, isTaskId, graphErrors, isFileWithinScopes } from "./lib/tasks.mjs";
 import { verifyDone } from "./lib/ledger.mjs";
 import { readPaseoState, selectChange, hasPipelineMarker } from "./lib/paseo-state.mjs";
 import {
   WRITER_ROLES, READONLY_ROLES, REVIEWER_ROLES, isControlRole, isReviewerRole,
   normalizePhase, PHASE_ORDER, DISPOSITIONS,
-  DISPOSITION_EFFECT, consumesRetryBudget, retryPolicy,
+  DISPOSITION_EFFECT, consumesRetryBudget, retryPolicy, deriveRejections,
 } from "./lib/roles.mjs";
 import {
-  readRunState, openIntents, leaseStatus, intentAgeMs, DEFAULT_INTENT_GRACE_MS,
+  readRunState, openIntents, leaseStatus, intentAgeMs, isFailed, DEFAULT_INTENT_GRACE_MS,
 } from "./lib/run-state.mjs";
+import { changeIdProblem } from "./lib/change-id.mjs";
 import { execFileSync } from "node:child_process";
 
 const args = process.argv.slice(2);
@@ -43,6 +44,10 @@ if (!change) {
   console.error("Usage: node reconcile.mjs <change> [--cap 3] [--json]");
   process.exit(1);
 }
+// change 名必须过形态校验：旗标形态的位置参数会静默把状态分裂到 paseo-pipeline/<flag>/
+// 这份没人读的账本里（实测 approval-hub 已存在 `--change`、`--key` 两份游离账本）。
+const changeProblem = changeIdProblem(change);
+if (changeProblem !== null) fatal(changeProblem);
 
 const emptyGroups = () => ({
   INVALID: [], DONE: [], ACTIVE: [], UNRESOLVED: [], MERGE: [],
@@ -411,12 +416,17 @@ for (const task of tasks) {
     continue;
   }
   const terminal = taskMembers.filter((m) => !m.live);
-  // 打回预算：消耗预算的处置（rejected/abandoned）累加到本任务的审计历史。
-  // 预算耗尽后不再重派，转 BLOCKED 交人类裁决——否则一个反复被打回的任务会无限自旋。
-  // 前 MAX_REJECTIONS 次按原角色重派，其后一次升级改派 ESCALATION_ROLE（见 retryPolicy）。
+  // 打回预算：两条来源取最大值（见 lib/roles.mjs 的 deriveRejections）。
+  //   1. 消耗预算的处置（rejected/abandoned）累加到本任务的审计历史；
+  //   2. 已出现的写手 attempt 序列——attempt N+1 存在即证明 attempt N 未被接受，
+  //      这条下界不受「标签漏贴/贴成 handed-off」影响。
   // 只数写入者：预算衡量的是「写手产出被拒几次」。审计员/仲裁员被打 rejected/abandoned
   // （例如审计员失联）不代表写手又被打回一轮；一并计数会让一次 R1 打回直接触发升级。
-  const rejections = terminal.filter((m) => m.writer && consumesRetryBudget(m.disposition)).length;
+  const dispositionRejections = terminal.filter((m) => m.writer && consumesRetryBudget(m.disposition)).length;
+  const writerAttempts = taskMembers
+    .filter((m) => m.writer && m.attempt !== null && Number.isInteger(m.attempt))
+    .map((m) => m.attempt);
+  const rejections = deriveRejections({ dispositionRejections, writerAttempts });
   const policy = retryPolicy(rejections);
   // agent 自称 disposition=merged。自报不是验收：留到最后判定，先让「分支领先」这一
   // 可核验事实说话（分支仍在 → 其实没合流，进 MERGE；分支没了又没账本 → 才是矛盾）。
@@ -613,6 +623,58 @@ out.openIntentCount = pendingIntents.length + orphanIntents.length;
 // 执行器必须先 begin 领取新代际才能提交动作；这是执行侧门禁，不是对账侧的判定依据。
 out.lease = lease;
 
+// --- 脏树检测：集成工作区被就地写了什么（LESSONS §13 的越权代写就发生在这里） ---
+//
+// `merge-task.mjs` 要求工作区干净，所以脏树本身会阻断合流——但那是**合流时**才发现，
+// 而此时任务可能已经「跑完了」。更糟的是原地写完不提交根本走不到合流：2026-10-27
+// `eas-filing-and-local-ocr` 的总控就是这样改完 `invoice-parser-service.ts` 并跑通单测的。
+// 对账在每次推进时都看一眼脏树，成本是一次 `git status`，换来「越权写」在下一步就可见。
+//
+// 分级（按 §12）：
+//   - 脏文件落在某任务 Write scope 内、且账本有该任务的在途写手 → 正常（写手在自己的
+//     worktree 之外改集成树是异常，但意图存在，交 merge 门禁判）；只报告，不阻断派发。
+//   - 落在 scope 内、**无**对应在途写手意图 → 越权写入的强信号，进 holdReasons。
+//   - 不在任何 scope 内 → 报告但不阻断：可能是临时脚本或产物，且越界提交由 exit 30 兜底。
+const dirtyFiles = (() => {
+  const raw = sh("git", ["status", "--porcelain=v1", "--untracked-files=all"]);
+  if (!raw) return [];
+  const entries = [];
+  for (const line of raw.split("\n")) {
+    if (line.trim() === "") continue;
+    // porcelain v1：XY<space>path；重命名形如 `R  old -> new`，取新路径。
+    const file = line.slice(3).trim().split(" -> ").pop();
+    if (typeof file !== "string" || file === "") continue;
+    const rel = file.replace(/^"(.*)"$/, "$1");
+    entries.push(rel);
+  }
+  return entries;
+})();
+// 已作废（fail）的写手意图不算覆盖：作废的语义是「这次派发没有发生」。
+const inFlightWriterTasks = new Set(
+  runLedger.state.intents
+    .filter((intent) => WRITER_ROLES.has(intent.role) && !isFailed(intent))
+    .map((intent) => intent.task)
+);
+const dirty = dirtyFiles.map((file) => {
+  const owners = tasks.filter((task) => isFileWithinScopes(file, task.scope)).map((task) => task.id);
+  const covered = owners.filter((id) => inFlightWriterTasks.has(id));
+  return {
+    path: file,
+    scopeOwners: owners,
+    coveredBy: covered,
+    unexplained: owners.length > 0 && covered.length === 0,
+  };
+});
+out.dirty = dirty;
+out.dirtyUnexplained = dirty.filter((entry) => entry.unexplained);
+out.dirtyOutsideScope = dirty.filter((entry) => entry.scopeOwners.length === 0);
+if (out.dirtyUnexplained.length > 0) {
+  out.holdReasons.push(
+    `${out.dirtyUnexplained.length} 个集成工作区脏文件落在任务 Write scope 内但没有在途写手意图`
+    + `（${out.dirtyUnexplained.slice(0, 3).map((e) => `${e.path}@${e.scopeOwners.join("/")}`).join(", ")}）：`
+    + '疑似就地代写，先核对来源再推进'
+  );
+}
 // 本 change 的可用名额必须同时扣掉外部写手：cap 保护的是共享工作区容量，不是任务图。
 const room = Math.max(0, cap - liveWriterCount - foreignLiveWriters);
 if (runtime !== "ok") out.holdReasons.push(`runtime=${runtime}（非 ok 一律不放行）`);
@@ -634,6 +696,7 @@ out.liveWriterCount = liveWriterCount;
 out.foreignLiveWriters = foreignLiveWriters;
 out.integrationHead = sh("git", ["rev-parse", "--short", "HEAD"]);
 out.behindMain = Number(sh("git", ["rev-list", "--count", "HEAD..main"]) || 0);
+
 out.nextAction = nextAction(out, { tasks, cap });
 
 /**
@@ -795,6 +858,16 @@ if (asJson) {
     ? `LEASE    owner=${out.lease.owner} gen=${out.lease.generation} ${out.lease.valid ? "有效" : "已过期"} 到期=${out.lease.expiresAt}`
     : "LEASE    (未启用)");
   for (const r of out.holdReasons) console.log(`HOLD     ${r}`);
+  // 脏树必须总是可见（哪怕不阻断）：它是「有人就地改过集成树」的唯一运行时痕迹。
+  if (out.dirty.length > 0) {
+    console.log(`DIRTY    ${out.dirty.length} 个未提交文件（${out.dirtyUnexplained.length} 个无在途写手、${out.dirtyOutsideScope.length} 个在 scope 外）`);
+    for (const entry of out.dirty) {
+      const tag = entry.unexplained ? 'UNEXPLAINED' : entry.scopeOwners.length === 0 ? 'OUTSIDE_SCOPE' : `covered(${entry.coveredBy.join(',')})`;
+      console.log(`  ${tag} ${entry.path}${entry.scopeOwners.length > 0 ? `  @${entry.scopeOwners.join(',')}` : ''}`);
+    }
+  } else {
+    console.log('DIRTY    0 个未提交文件');
+  }
   console.log(`canDispatchNow: ${out.canDispatchNow.join(", ") || "(空)"}`);
   console.log(`NEXT ${out.nextAction.kind}: ${out.nextAction.reason}`);
   if (out.nextAction.tasks) {

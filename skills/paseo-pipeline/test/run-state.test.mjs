@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import fs, { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import fs, { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -298,13 +298,16 @@ test('SCEN-CON-10 SCEN-CON-22 report derives only what the ledger actually recor
   assert.equal(report.auditDispatches, 1);
   assert.equal(report.maxAttempt, 1, 'attempt 2 尚未回执，不能算作已发生的派发');
 
-  // 账本不记审查结论与状态迁移时刻：这些项**不出现在报告里**，也不估算。
-  // 旧版并排打印两项恒为「未采集」的字段；一条永远是同一个占位值的字段不传递信息，
-  // 只会让报告看起来像覆盖了它。口径改成报告末尾一句「本报告不覆盖什么」。
-  assert.equal(report.firstPassUnknown, undefined, '不采集的项不占字段位');
-  assert.equal(report.readyWaitUnknown, undefined, '不采集的项不占字段位');
-  assert.match(subject.run('report').stdout, /未采集：账本不记审查结论与状态迁移时刻/,
-    '不覆盖的口径必须写出来，不能静默省略');
+  // 2026-10-31 起账本新增 reviews/merges/readyObs：这两项不再是「恒为未采集」的占位字段。
+  // 没有 review 记录时如实写未采集（不能拿派发次数冒充分母）。
+  assert.equal(report.auditedTasks, 0);
+  assert.equal(report.firstPassRate, null, '无审计结论时通过率是 null，不是 0');
+  assert.match(subject.run('report').stdout, /首次通过率 未采集/,
+    '缺数据必须写未采集，不能打印 0%');
+  // attempt 2 的 claim 发生在 attempt 1 的 record 之后：账本确实采到了这一对相邻动作，
+  // 所以 READY 等待必须给出样本数与口径，而不是「未采集」。
+  assert.equal(report.readyWait.samples, 1, '上一动作结束→本次 claim 这对动作必须被计时');
+  assert.match(report.readyWait.basis, /上一动作结束/);
 });
 
 test('SCEN-CON-10 report on a missing ledger reports absence instead of zeros that look measured', (context) => {
@@ -371,4 +374,170 @@ test('SCEN-CON-23 an uncapturable Skill version is reported instead of silently 
   });
   assert.equal(begin.status, 0, '采集失败不得阻断 begin');
   assert.match(begin.stderr, /Skill 版本未采集/, '采集失败必须可见，不能静默写 null');
+});
+
+// --- review / merge：首次通过率与合流事实的写入点（2026-10-31） ---
+//
+// 这两个子命令存在的理由只有一个：让 `report` 的分母与分子有真实来源。
+// 它们只登记调用者声明的事实，不读 Paseo 离线状态——事实成立与否由 merge-task 的
+// reviewer 交叉核对负责，账本不假装自己验过。
+
+test('SCEN-CON-10 review registers the first-round verdict so the rate has a denominator', (context) => {
+  const subject = fixture(context);
+  subject.run('review', '--task', 'T-01', '--verdict', 'PASS', '--agent', 'reviewer-1', '--round', '1');
+  subject.run('review', '--task', 'T-02', '--verdict', 'BLOCK', '--agent', 'reviewer-1', '--round', '1');
+  // 第二轮复核不改写首轮结论：一次通过率问的是「第一轮就过没有」。
+  subject.run('review', '--task', 'T-02', '--verdict', 'PASS', '--agent', 'reviewer-1', '--round', '2');
+
+  const report = JSON.parse(subject.run('report', '--json').stdout);
+  assert.equal(report.auditedTasks, 2);
+  assert.equal(report.firstPassTasks, 1, 'T-02 的第二轮 PASS 不能把首轮 BLOCK 洗白');
+  assert.equal(report.firstPassRate, 0.5);
+  assert.equal(subject.read().reviews.length, 3, '每轮结论各存一条');
+});
+
+test('SCEN-CON-10 a re-recorded verdict for the same round replaces instead of double counting', (context) => {
+  const subject = fixture(context);
+  subject.run('review', '--task', 'T-01', '--verdict', 'BLOCK', '--agent', 'r1', '--round', '1');
+  subject.run('review', '--task', 'T-01', '--verdict', 'PASS_WITH_NITS', '--agent', 'r1', '--round', '1');
+  const state = subject.read();
+  assert.equal(state.reviews.length, 1, '同一 (task, attempt, round) 只留一条');
+  assert.equal(state.reviews[0].verdict, 'PASS_WITH_NITS');
+});
+
+test('SCEN-CON-10 review rejects an unknown verdict and a missing reviewer', (context) => {
+  const subject = fixture(context);
+  const badVerdict = subject.run('review', '--task', 'T-01', '--verdict', 'LGTM', '--agent', 'r1');
+  assert.equal(badVerdict.status, 1);
+  assert.match(badVerdict.stderr, /--verdict 取值未知/);
+  const noAgent = subject.run('review', '--task', 'T-01', '--verdict', 'PASS');
+  assert.equal(noAgent.status, 1);
+  assert.match(noAgent.stderr, /结论必须能对上人/);
+  assert.equal(existsSync(subject.file), false, '被拒的结论不得落盘（连空账本都不该建）');
+});
+
+test('SCEN-CON-10 merge records the first-parent fact per task and stays idempotent', (context) => {
+  const subject = fixture(context);
+  const first = subject.run('merge', '--task', 'T-01,T-02', '--sha', 'abc1234', '--attempt', '2', '--review-tag', 'review-T-01');
+  assert.equal(first.status, 0, first.stderr);
+  const again = subject.run('merge', '--task', 'T-01', '--sha', 'abc1234');
+  assert.equal(again.status, 0, again.stderr);
+  const state = subject.read();
+  assert.equal(state.merges.length, 2, '同一 (task, sha) 不得重复记账');
+  assert.equal(state.merges[0].attempt, 2);
+  assert.equal(state.merges[0].reviewTag, 'review-T-01');
+  const report = JSON.parse(subject.run('report', '--json').stdout);
+  assert.equal(report.mergedTasks, 2);
+});
+
+test('SCEN-CON-10 merge refuses an empty task list instead of writing a nameless fact', (context) => {
+  const subject = fixture(context);
+  const result = subject.run('merge', '--task', ' , ', '--sha', 'abc1234');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--task 不能为空/);
+});
+
+// --- record --envelope：信封过去完全没有被代码读过 ---
+//
+// 后果：漏字段、自相矛盾、超行的信封在账本上零痕迹，Lead 只能自己猜 next_action。
+// 校验不过即拒绝回执，因为回执是「这次派发产出了什么」的唯一入口。
+
+const ENVELOPE = (overrides = {}) => {
+  const base = {
+    kind: 'phase-complete',
+    task: 'T-01',
+    attempt: '1',
+    phase: 'impl',
+    result: '实现完成',
+    reviewed_sha: '528c69176495ee698383bc565b0ea9dfc467d897',
+    blockers: 'none',
+    next_action: 'merge',
+    ...overrides,
+  };
+  return Object.entries(base).map(([k, v]) => `${k}: ${v}`).join('\n');
+};
+
+function envelopeFile(subject, text) {
+  const file = path.join(subject.root, 'envelope.md');
+  writeFileSync(file, `${text}\n`);
+  return file;
+}
+
+function claimAndRecord(subject, extra = [], keyArgs = { attempt: '1', phase: 'impl', role: 'gongbu' }) {
+  subject.run('begin', '--owner', 'lead-a');
+  subject.run('claim', '--task', 'T-01', '--attempt', keyArgs.attempt, '--phase', keyArgs.phase,
+    '--role', keyArgs.role, '--owner', 'lead-a');
+  const key = intentKey({
+    run: null, task: 'T-01', attempt: Number(keyArgs.attempt), phase: keyArgs.phase,
+    role: keyArgs.role, action: 'dispatch',
+  });
+  return subject.run('record', '--key', key, '--agent', 'agent-env', '--role', keyArgs.role, '--owner', 'lead-a', ...extra);
+}
+
+test('SCEN-ENV-02 record accepts a well-formed envelope and snapshots its fields', (context) => {
+  const subject = fixture(context);
+  const result = claimAndRecord(subject, ['--envelope', envelopeFile(subject, ENVELOPE())]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /envelope=8行\/8字段/);
+  const intent = subject.read().intents[0];
+  assert.equal(intent.envelope.next_action, 'merge');
+  assert.equal(intent.envelope.task, 'T-01');
+});
+
+test('SCEN-ENV-02 a malformed envelope blocks the receipt instead of being stored as prose', (context) => {
+  const subject = fixture(context);
+  const result = claimAndRecord(subject, [
+    '--envelope', envelopeFile(subject, ENVELOPE({ next_action: 'ship-it' })),
+  ]);
+  assert.equal(result.status, 2, '结构不合格的信封不得关掉意图');
+  assert.match(result.stderr, /信封结构不合格/);
+  assert.match(result.stderr, /next_action="ship-it"/);
+  assert.equal(subject.read().intents[0].resolvedAt, null, '被拒的回执不得留下已回执状态');
+});
+
+test('SCEN-ENV-02 the line ceiling depends on who wrote the envelope', (context) => {
+  // 审计员逐场景写结论：同一份 22 行信封，写手越界，审计员不越界。
+  const long = `${ENVELOPE()}\n${Array.from({ length: 14 }, (_, i) => `  - 场景 ${i}`).join('\n')}`;
+  const writer = fixture(context);
+  const blocked = claimAndRecord(writer, ['--envelope', envelopeFile(writer, long)]);
+  assert.equal(blocked.status, 2);
+  assert.match(blocked.stderr, /超过上限 20 行/);
+
+  const auditor = fixture(context);
+  const ok = claimAndRecord(auditor, ['--envelope', envelopeFile(auditor, long)],
+    { attempt: '1', phase: 'audit', role: 'anchasi' });
+  assert.equal(ok.status, 0, ok.stderr);
+});
+
+test('SCEN-ENV-02 a missing envelope file is a usage error, not a silent skip', (context) => {
+  const subject = fixture(context);
+  const result = claimAndRecord(subject, ['--envelope', path.join(subject.root, 'nope.md')]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--envelope 指向的文件不存在/);
+});
+
+// --- READY 等待观测：上一动作结束 → 本次 claim ---
+
+test('SCEN-CON-10 SCEN-CON-22 ready wait is measured from the previous action, and a repeated pair is not re-counted', (context) => {
+  const subject = fixture(context);
+  subject.run('begin', '--owner', 'lead-a');
+  subject.run('claim', '--task', 'T-01', '--attempt', '1', '--phase', 'impl', '--role', 'gongbu', '--owner', 'lead-a');
+  // 没有上一动作结束的观测点：此时不能编造一个等待样本。
+  assert.equal(subject.read().readyObs.length, 0, '首派没有「上一动作结束」可参照');
+
+  subject.run('record', '--key', intentKey({
+    run: null, task: 'T-01', attempt: 1, phase: 'impl', role: 'gongbu', action: 'dispatch',
+  }), '--agent', 'agent-1', '--owner', 'lead-a');
+  subject.run('claim', '--task', 'T-01', '--attempt', '2', '--phase', 'impl', '--role', 'gongbu', '--owner', 'lead-a');
+  const after = subject.read().readyObs;
+  assert.equal(after.length, 1);
+  assert.ok(after[0].waitMs >= 0);
+  assert.equal(after[0].basis, 'prev-end→claim', '口径必须写进数据，否则报告会把排队时长说成端到端等待');
+
+  // fail 掉 attempt 2 后重派同一 attempt：上一动作变成刚才那次 claim 的作废，
+  // 但 (task, afterKey) 已观测过，不能重复计时（重复计时把中位数拉向最慢的一次）。
+  const key2 = intentKey({ run: null, task: 'T-01', attempt: 2, phase: 'impl', role: 'gongbu', action: 'dispatch' });
+  subject.run('fail', '--key', key2, '--reason', 'create failed', '--owner', 'lead-a');
+  subject.run('claim', '--task', 'T-01', '--attempt', '2', '--phase', 'impl', '--role', 'gongbu', '--owner', 'lead-a');
+  assert.equal(subject.read().readyObs.filter((obs) => obs.afterKey === after[0].afterKey).length, 1);
 });

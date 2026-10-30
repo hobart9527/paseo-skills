@@ -208,6 +208,12 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 
 **主会话不是 Paseo agent**：主会话（Claude Code）不在 agent 图里，`send_agent_prompt` 发不到它。主会话等 Lead 的正确方式是**阻塞在 `paseo wait <lead-id>`**（后台 Bash / Monitor 均可，由 harness 通知），返回后读 Lead 的最终信封（`paseo logs` 或 `get_agent_activity`），再执行它列出的待办请求。不要设计「Lead 主动 push 给主会话」的路径——那条路在结构上不通。
 
+**矩阵的 `Verify` 列必须先被执行**：`check-evidence --matrix` 只读 `Required`/`Result` 两列，`Result` 是自报值。回填 `PASS` 之前先跑执行器（退出码 0/1/2/3/4 见第 6 节）：
+
+```bash
+node skills/paseo-pipeline/acceptance-run.mjs <name> [--only SCEN-1,SCEN-2] [--write]
+```
+
 ## 3. Workspace 与分支生命周期（全交 Paseo）
 
 **禁止 `git worktree add/remove/prune` 与 `git branch -D`**；允许收尾用 `git branch -d` 安全删除已合入主干的临时分支。工作树全交 Paseo 管理。
@@ -229,13 +235,17 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 node skills/paseo-pipeline/run-state.mjs begin  <change> --owner <owner-id>
 # 派发前：认领意图（幂等键 [run,task,attempt,phase,role,action]）
 node skills/paseo-pipeline/run-state.mjs claim  <change> --task T-01 --attempt 1 --phase impl --role gongbu --owner <owner-id>
-# 派发后：登记真实 agent/workspace
-node skills/paseo-pipeline/run-state.mjs record <change> --key <key> --agent <agent-id> --owner <owner-id> [--workspace <id>]
+# 派发后：登记真实 agent/workspace；--envelope 顺带交给机器校验阶段信封
+node skills/paseo-pipeline/run-state.mjs record <change> --key <key> --agent <agent-id> --owner <owner-id> [--workspace <id>] [--envelope <file>] [--role <role>]
 # 创建确认失败：显式作废意图，才允许重派
 node skills/paseo-pipeline/run-state.mjs fail   <change> --key <key> --reason <text> --owner <owner-id>
+# 审计结论：登记到账本才能算首次通过率（由 Lead 在收到审计信封后写入）
+node skills/paseo-pipeline/run-state.mjs review <change> --task T-01 --round 1 --verdict PASS --agent <auditor-agent-id> --owner <owner-id>
+# 合流事实：由 merge-task.mjs 提交成功后自动写入，不手敲
+node skills/paseo-pipeline/run-state.mjs merge  <change> --task T-01 --sha <merge-sha> [--attempt 1] [--review-tag <tag>]
 # 查看：租约、未回执意图
 node skills/paseo-pipeline/run-state.mjs status <change> [--json]
-# 度量：派发次数、同任务最大 attempt、作废意图（只写账本能算出的数，不覆盖的项在末尾说明）
+# 度量：派发次数、首次通过率、READY 等待（只写账本能算出的数，采不到的项打印「未采集」）
 node skills/paseo-pipeline/run-state.mjs report <change> [--json]
 ```
 
@@ -244,6 +254,10 @@ node skills/paseo-pipeline/run-state.mjs report <change> [--json]
 - **动作意图幂等**：同一幂等键已有未回执意图时，`claim` 以 exit 2 拒绝重复派发。**先记意图，再派发，再记回执。** 创建成功但回执丢失时，按唯一标签对账，未排除重复前不盲重派。
 - **`fail` 只作废「还没回执」的意图**：已有真实 `agent` 回执的意图不得 `fail`（exit 2）。作废的语义是「这次派发确认没有发生」，而回执证明它发生过并指向一个具体 agent——agent 中途失联是 `reconcile` 的 rework，用**新的 attempt 键**重派，不要抹掉这次派发的痕迹。
 - **单 owner 租约**：同 run 只有一个有效 owner。租约过期后旧 owner 的全部 `claim`/`record`/`fail` 一律 exit 2，必须显式 `begin` 领取新代际——防止旧 Lead 复活后继续提交动作。**租约仍有效且属于他人时不得抢占**，等其 renew 或超时。
+- **信封进机器校验（`record --envelope`）**：`record` 可带 `--envelope <file>`，把子 Agent 的信封交给 `lib/envelope.mjs` 校验：7 个统一字段（`task`/`attempt`/`phase`/`result`/`reviewed_sha`/`blockers`/`next_action`）齐全、枚举合法、`result` 与 `next_action` 不自相矛盾、无重复字段、行数不超限（写手 20 行，`anchasi`/`hanlin` 审计信封 25 行；行数上限由 `--role` 决定，不给就按写手算）。不合格即**拒绝回执**（exit 2）——回执是「这次派发产出了什么」的唯一入口，放行一封结构不合格的信封等于把下游判断推回自由心证。字段快照写进意图的 `envelope`，不留原文（账本是状态，不是日志）。
+- **`review` 与 `merge` 是度量的事实来源，不是可选装饰**：`review` 登记审计结论（`task`/`attempt`/`round`/`verdict`/`agent`/`sha`），同一 `(task, attempt, round)` 幂等覆盖；`merge` 由 `merge-task.mjs` 写入合流事实（任务列表 + 合流 sha + review-tag）。`report` 的首次通过率只数 `reviews[]` 里每个任务**首轮**（round 最小）的 verdict：分母是「有审计结论的任务数」，不是派发数；没有 review 记录就是「未采集」，不是「100%」。
+- **READY 等待的口径写死在数据里**：`claim` 在新意图建立时，若同任务存在更早、已了结（`resolvedAt`/`failedAt`）的意图，就记一条 `readyObs`（`waitMs` + `basis: 'prev-end→claim'`），同一对相邻动作不重复计时。`report` 打印中位数/最大值并回显口径——依赖解除的时刻账本不一定知道（依赖可能在别处合流），所以这是「排队时长」，不是 end-to-end 的 READY 时间。
+- **change 名必须是位置参数形态**：命令后的第一个位置参数（change）若以 `--` 开头或含非法字符，一律 exit 1 并给出正确写法。历史上把 `--change foo` 照抄进 `status` 会静默新建一份游离账本（实测 `approval-hub` 里已留下 `--change/`、`--key/` 两份 `run-state.json`，前者还持有租约）。
 - **孤儿意图（`ORPHAN_INTENT`）**：意图超过 10 分钟仍无对应 agent（创建失败或回执丢失）。`reconcile` 把它列为最高优先级 `NEXT arbitrate`，**自动化不得自行重派**，须核对后显式 `fail` 或 `record`。
 - **无 heartbeat 子命令**：注册入口已删（2026-10-26）。常规运行不建周期性 heartbeat，且 `hardening-governance-contracts` 账本里 `heartbeats` 为 0——没有使用者的写入路径不留。旧账本里的 `heartbeats` 数组仍是只读兼容字段，`status` 照常打印。
 - 存放位置：git common dir 下 `paseo-pipeline/<change>/run-state.json`（不放 `openspec/`，否则弄脏工作树阻塞合流）。`PIPELINE_RUN_STATE_DIR` 可覆盖。
@@ -299,13 +313,16 @@ node skills/paseo-pipeline/merge-task.mjs <branch> <task-id> <review-tag> <test-
     - 账本不存在时沿用 trailer 检查，但**跳过必须留痕**：run-log 记 `review-attestation=SKIPPED(no-run-state)`。有账本记 `run-state`，mechanical 审查记 `mechanical-review`。门禁静默消失与门禁通过必须可区分——2026-10-26 的 5 任务冒烟就是这样全程 `present=false` 跑完，自审交叉核对一次未执行而账本无痕。
 6b. **Pod 成员集合**：`pod/<change>` 分支必须附带冻结的 `openspec/changes/<change>/pod-members.json`，且 `<task-ids>` 必须**恰好等于**该成员集合（多报、少报、缺文件均 exit 31）。分支名不携带任务身份，成员真源只有这一份冻结记录。
 6c. **legacy 豁免需二次确认**：`--allow-legacy-author` 会整体关闭作者血统门禁，必须同时设置 `PIPELINE_ALLOW_LEGACY_AUTHOR=1`，否则 exit 31；放行时 run-log 记 `author-provenance=BYPASSED(legacy)`。控制面角色检查不受豁免影响。
+6d. **因子 3c 异构审查**（有账本时生效，紧跟 3b）：3b 只证明「审查者不是写手本人」（agent id 不同），没证明两者不是同一个模型跑出来的。实测角色分布里 `gaogong` 与 `anchasi` 同在 codex 家族——一条 codex 写的任务被另一个 codex agent 审，账本上「独立审查」齐全，实际是同源自证；换 profile 名或 model alias 都不改 provider。因此从 Paseo 持久记录取 `reviewer` 与各写手意图的**真实 provider** 比对：相同即 exit 38。`lib/heterogeneity.mjs` 只比 `provider`，不比 model（同 provider 下的 model alias 在会话间会漂移，拿来判「不同模型」会假阳性）。
+    - 显式豁免：`PIPELINE_ALLOW_HOMOGENEOUS_REVIEW=1` 时放行并在 run-log 记 `heterogeneity=BYPASSED(homogeneous; …)`——豁免是给人看的，不是给门禁消失用的。
+    - provider 读不到记 `heterogeneity=unresolved(...)`，**不阻断**（拿不到的记录不能既当证据又当免责），但那行必须落进 run-log；mechanical 审查记 `not-applicable`；无账本记 `heterogeneity=NOT-CHECKED(no-run-state)`。
 7. **基线锚定**：`base7` 必须同时是集成 HEAD 的祖先、以及被合入 tip 的祖先（任一不满足即 exit 34）——集成在任务分支拉出后前进一步时，那个新 HEAD 仍是集成历史祖先，但 `base..tip` 已把本任务没写过的提交算进审查范围。与当前集成 HEAD 漂移且改动文件重叠时拒绝合流要求重审，不重叠则记录漂移放行。
 8. **合流固定 tip**：用审查收据绑定的那个 commit（而非可变分支名）合流，避免「审查过的内容」与「实际合入的内容」漂移。
 9. **显式测试命令 + 截止时间 + 整树清理**：执行冻结命令与 `test-cmd`，默认超时 30 分钟（`MERGE_TEST_TIMEOUT_MS` 可调）。超时按**进程组**终止（SIGTERM，2 秒后 SIGKILL），不是只杀外层 shell——否则测试拉起的孙进程会继续写工作区。失败、超时、或**测试改写了工作树**（前后 `git status --porcelain=v1 --untracked-files=all` 指纹不一致）一律拒绝提交测试副作用；先撤掉对已跟踪文件的改写，再 `git merge --abort` 恢复现场，**严禁 `reset --hard` 回滚**。abort 失败、或 `MERGE_HEAD` 消失而 HEAD 已被推进（测试命令自己执行了 `git commit`）时保留现场并打印人工指引（exit 40）。
 10. **原子记账与血统透传**：自动勾 `tasks.md`、追加 `Done: source=<tip7> review=<review-tag>`，原子提交附 `Pipeline-Task`、`Pipeline-Source`、`Pipeline-Author`、`Pipeline-Role`、`Pipeline-Reviewer` trailers。
 11. **回执丢失的处置**：任务已 Done 一律 exit 非零且不产生新提交。错误文案区分两种情形——Done 行绑定的 source 就是本次 tip 时报「已从该 tip 合过，这是回执丢失后的重试，合流其实已成功，不要重派任务」；source 是别的 revision 时报「不同 revision 不能用同一任务合流」。**收到前一种报错时禁止重派写手**，去核对 `git log --first-parent` 即可。
 
-退出码：30 写范围 / 31 作者血统或 Pod 成员不符 / 32 非自审（含审查员与运行账本派发记录不符）/ 34 base 非集成 HEAD 或非 tip 祖先 / 35 依赖未验收 / **36 不允许的 `Verify with`** / **37 并发合流被锁拒绝** / 10 冲突 / 20 测试失败或改树 / 40 abort 失败。
+退出码：30 写范围 / 31 作者血统或 Pod 成员不符 / 32 非自审（含审查员与运行账本派发记录不符）/ 34 base 非集成 HEAD 或非 tip 祖先 / 35 依赖未验收 / **36 不允许的 `Verify with`** / **37 并发合流被锁拒绝** / **38 审查者与写手同 provider（同源自证）** / 10 冲突 / 20 测试失败或改树 / 40 abort 失败。
 
 ## 6. 证据双闸门（`test/check-evidence.mjs`）
 
@@ -325,6 +342,16 @@ node skills/paseo-pipeline/test/check-evidence.mjs --gate all --sha <acceptance-
   - audit `verdict` 属约定通过集合、`reviewed_sha` 与 `--sha` 一致（7 位前缀与完整 sha 可互比）；
   - `--require-scenario <SCEN-ID>` 指定的场景不只要「被提到」：必须在 `scenario_results:` 段落里有 `<ID>: PASS` 的结论，且不得同时挂在 `unverified` 列表（自相矛盾直接拒绝）。**正文提及、注释、TODO 都不算验证**；记为 `FAIL`/`BLOCKED`/`SKIPPED` 同样阻断。
   - `--matrix openspec/changes/<name>/acceptance.md` 从冻结的验收矩阵取必需场景（`Required: yes` 的行），矩阵里没通过的行同样阻断验收。调用者只能 **追加**（`--require-scenario`），不能减少——与 merge-task 对冻结 `Verify with` 的口径一致。
+  - **矩阵的 `Verify` 列由 `acceptance-run.mjs` 真正执行**：`--matrix` 只是把矩阵当「必需清单」读，矩阵行里的 `Result` 仍是自报值。收尾回填前必须先跑执行器，把 `Required: yes` 行 `Verify` 列的命令逐条执行（与 `tasks.md` 共用同一套「是否可执行命令」判据，见 `lib/acceptance-matrix.mjs` + `lib/tasks.mjs` 的 `parseVerify`）：
+
+```bash
+node skills/paseo-pipeline/acceptance-run.mjs <change> [--only SCEN-1,SCEN-2] [--timeout <ms>] [--dry-run] [--write] [--json]
+# 0 全通过 / 1 有失败或超时 / 2 用法错误或 Verify 不是可执行命令 / 3 仍有必需行未被本次执行覆盖 / 4 仍有 BLOCKED 行
+```
+
+    - **自然语言 `Verify` 是硬失败（exit 2），不是「跳过未验证」**：跳过等于让那行永远不需要证据。
+    - `--only` 是**局部重跑**，不能当全量验收：有必需行未被覆盖即 exit 3。窄跑不得冒充全通过。
+    - `--write` 只回填本次真正执行过的行的 `Result`/`Evidence`（按行改写，保留列宽与人工标的 `BLOCKED`）；收据固定落在 `<run-state>/<change>/acceptance-receipt.json`，`head` 采不到就写 `null`，不伪造 SHA。
   - `child_agent_id` 必须在 Paseo 持久记录里**真实存在**，且 `dispatched_at`/`notification_at` 不得早于该 agent 的真实 `createdAt`。Paseo 目录不在本机时用 `PIPELINE_SKIP_PASEO_LOOKUP=1` 显式豁免——豁免本身即报错，只能当结构留档。
 - **FAIL、BLOCKED、SKIPPED、未验证、非 pass verdict、过期 revision 一律不能折算 PASS。** 调查任务完成 ≠ 被调查能力完成。
 
@@ -333,7 +360,8 @@ node skills/paseo-pipeline/test/check-evidence.mjs --gate all --sha <acceptance-
 1. 读 `git log --first-parent integration/<name>` 与 `tasks.md` Done 行，二者是**已合流事实**的唯一账本。
 2. 任何时候断链：`reconcile.mjs <change>` 拿真实任务图与 `NEXT` 动作，按其推进。
 3. 运行态未知（`UNMAPPED`/`degraded`/`unavailable`/孤儿意图）→ 先归类或仲裁，不盲目重派，不盲目合流。
-4. 无法自动恢复时**明确挂起**并报告人类：保留 workspace 与运行账本现场，说明卡点、已知事实与需要的决策。
+4. **脏树先归因再推进**：`reconcile` 的 `DIRTY` 行逐条标 `UNEXPLAINED` / `OUTSIDE_SCOPE` / `covered(...)`。`UNEXPLAINED`（落在某任务 Write scope 内、账本却没有该任务的在途写手意图）是就地代写的强信号，进 `HOLD` 且不清空派发以外的动作——先核对来源（是某写手误在集成树里改的，还是总控代写），再决定保留或丢弃。作废（`fail`）的意图不构成覆盖。
+5. 无法自动恢复时**明确挂起**并报告人类：保留 workspace 与运行账本现场，说明卡点、已知事实与需要的决策。
 
 ## 8. 硬底线与硬红线
 
@@ -345,6 +373,17 @@ node skills/paseo-pipeline/test/check-evidence.mjs --gate all --sha <acceptance-
 - 总控**严禁**手工勾选 `tasks.md` 的 `[x]` 或追加 `Done:` 行（`merge-task.mjs` 原子记账）；
 - 总控**严禁**自产自审；必须由独立 Auditor（`anchasi`）或机械验证生成合流 review 标签。
 
-**这些是协作契约与自报元数据，不是工具级身份隔离或可信来源证明。** 真实防线是 `merge-task.mjs` 的机械门禁（写范围、作者血统、非自审、依赖、基线），加上独立的业务验收。不得声称提示词能物理封死总控代写。
+**这些是协作契约与自报元数据，不是工具级身份隔离或可信来源证明。** 真实防线是 `merge-task.mjs` 的机械门禁（写范围、作者血统、非自审、异构 provider、依赖、基线），加上独立的业务验收。不得声称提示词能物理封死总控代写。
+
+**写范围守卫（减速带，不是沙箱）**：有编排租约期间，命中某任务 `Write scope` 的 `Write`/`Edit` 必须能对上一个在途写手意图，否则拒绝。判据只有一份（`lib/scope-guard.mjs`），两个入口：
+
+```bash
+# 诊断 / 事后复核（单 change 或扫描全部活跃租约）
+node skills/paseo-pipeline/guard-scope.mjs [<change>] --path <file> [--json]
+# PreToolUse hook 的安装片段（需人工加进 ~/.claude/settings.json）
+node skills/paseo-pipeline/hooks/scope-guard-hook.mjs --install-help
+```
+
+刻意保守：无有效租约放行（门禁只在一次 run 内成立）、`openspec/` 放行、路径不在任何 scope 内放行（越界提交由 `merge-task` exit 30 兜底）、读不到 `tasks.md` 放行（fail-open）。**Bash 的 `sed -i`、`>` 重定向、`git apply` 拦不住**——这是减速带，不能拿它宣称物理隔离。关闭方式：`PIPELINE_GUARD_SCOPE=off`（排障用）。
 
 **只读角色约束**：Auditor、Arbiter、Scout 等只读角色要求最小权限，brief 显式声明**禁调 memory 工具与不必要的网络访问**——但**允许完成审查所需的授权本地查询**（如读仓库、跑 `rg`、用 codegraph），不要一刀切禁 MCP 后又要求同一角色使用 codegraph。

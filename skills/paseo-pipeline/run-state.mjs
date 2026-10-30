@@ -6,8 +6,10 @@
 //   node run-state.mjs status   <change> [--json]
 //   node run-state.mjs report   <change> [--json]
 //   node run-state.mjs claim    <change> --task T-01 [--attempt 1] [--phase impl] [--role gongbu] [--action dispatch]
-//   node run-state.mjs record   <change> --key <key> --agent <agent-id> [--workspace <id>] [--owner <id>]
+//   node run-state.mjs record   <change> --key <key> --agent <agent-id> [--workspace <id>] [--owner <id>] [--envelope <file>]
 //   node run-state.mjs fail     <change> --key <key> --reason <text> [--owner <id>]
+//   node run-state.mjs review   <change> --task T-01 [--attempt 1] [--round 1] --verdict PASS|PASS_WITH_NITS|BLOCK --agent <id> [--sha <sha>] [--owner <id>]
+//   node run-state.mjs merge    <change> --task T-01 --sha <merge-sha> [--attempt 1] [--review-tag <tag>]
 //
 // 无 heartbeat 子命令：SKILL 已声明常规运行不建周期性 heartbeat，2026-10-26 的
 // `hardening-governance-contracts` 账本里 heartbeats 为 0，注册入口没有使用者。
@@ -29,7 +31,12 @@ import {
   isFailed, intentAgeMs, DEFAULT_LEASE_TTL_MS,
 } from './lib/run-state.mjs';
 import { normalizePhase } from './lib/roles.mjs';
+import { changeIdProblem } from './lib/change-id.mjs';
+import {
+  validateEnvelope, ENVELOPE_MAX_LINES, ENVELOPE_MAX_LINES_AUDIT,
+} from './lib/envelope.mjs';
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -70,9 +77,13 @@ const json = argv.includes('--json');
 const command = argv[0];
 const change = argv[1];
 if (!command || !change) {
-  console.error('Usage: node run-state.mjs <begin|status|report|claim|record|fail> <change> [flags]');
+  console.error('Usage: node run-state.mjs <begin|status|report|claim|record|fail|review|merge> <change> [flags]');
   process.exit(1);
 }
+// change 名必须是位置参数形态：把 `--change` 这类旗标当成 change 会静默新建一份游离账本
+// （实测 approval-hub 已因此产生 `--change/`、`--key/` 两份 run-state.json，前者还持有租约）。
+const changeProblem = changeIdProblem(change);
+if (changeProblem !== null) fail(1, `${changeProblem}\n正确写法：node run-state.mjs ${command} <change> [--flags]`);
 
 /** 取 `--name value`，缺失返回 null。 */
 function flag(name) {
@@ -220,10 +231,37 @@ switch (command) {
       const p = normalizePhase(intent.phase);
       return p === 'audit' || p === 'arbitrate';
     });
-    // 报告只写**能从账本算出来的**数。旧版还并排打印两项恒为「未采集」的字段
-    // （首次通过、READY 等待），理由是「账本不记这些时刻」——但一条永远是「未采集」的
-    // 字段不传递任何信息，只会让报告看起来像有结论。真要这两项，得让账本记状态迁移，
-    // 那是另一个 change 的事；在那之前不打印，比打印一个恒定占位值诚实。
+
+    // --- 首次通过率：只数「审计结论」这一层，不数派发次数 ---
+    //
+    // 判据是 reviews[] 里每个任务**首轮**（round 最小）的 verdict。首轮 PASS 即一次通过；
+    // 首轮 BLOCK 即需要返工。分母是「有审计结论的任务数」，不是派发数——
+    // 用派发数做分母会让「同一任务多派几次」看起来像「多个任务失败了」。
+    const firstRound = new Map();
+    for (const review of state.reviews) {
+      const round = Number.isFinite(review.round) ? review.round : 1;
+      const current = firstRound.get(review.task);
+      if (current === undefined || round < current.round) firstRound.set(review.task, { round, verdict: review.verdict });
+    }
+    // 没有审计结论的任务不计入分母（那是「未采集」，不是「通过」）。
+    const auditedTasks = firstRound.size;
+    const firstPassTasks = [...firstRound.values()].filter((entry) => entry.verdict === 'PASS').length;
+    const firstPassRate = auditedTasks > 0 ? Math.round((firstPassTasks / auditedTasks) * 1000) / 1000 : null;
+
+    // --- READY 等待：上一动作结束 → 本次派发 ---
+    //
+    // 这是账本能独立算出的「排队时长」，与「任务何时变成 READY」的严格定义差一步：
+    // 依赖解除的时刻账本不一定知道（依赖可能是在别处被合流的）。因此如实标出口径，
+    // 不冒充 end-to-end 的 READY 等待。
+    const waits = state.readyObs.map((entry) => entry.waitMs).filter((v) => Number.isFinite(v) && v >= 0);
+    waits.sort((a, b) => a - b);
+    const readyWait = {
+      samples: waits.length,
+      medianMs: waits.length > 0 ? waits[Math.floor(waits.length / 2)] : null,
+      maxMs: waits.length > 0 ? waits[waits.length - 1] : null,
+      basis: '上一动作结束(resolvedAt/failedAt) → 本次 claim',
+    };
+
     const report = {
       change,
       present,
@@ -234,6 +272,12 @@ switch (command) {
       maxAttempt: attempts.length > 0 ? Math.max(...attempts) : null,
       voidedIntents: state.intents.filter((intent) => isFailed(intent)).length,
       auditDispatches: auditRounds.length,
+      // 实测算出的三项：有数据才给值，没有就是 null（打印成「未采集」）。
+      auditedTasks,
+      firstPassTasks,
+      firstPassRate,
+      mergedTasks: state.merges.length,
+      readyWait,
     };
     if (json) {
       console.log(JSON.stringify(report, null, 2));
@@ -244,9 +288,13 @@ switch (command) {
     console.log(`派发 ${report.dispatches} 次 / ${report.tasksDispatched} 个任务`);
     console.log(`同任务最大 attempt ${report.maxAttempt ?? '无派发'}`);
     console.log(`审查派发 ${report.auditDispatches} 次；作废意图 ${report.voidedIntents} 条`);
-    // 采集不到的口径写在报告末尾一句话里，而不是拆成两行恒定占位值：
-    // 读者需要知道「这份报告不覆盖什么」，但不需要看见两个没有值的字段。
-    console.log('未采集：账本不记审查结论与状态迁移时刻，因此首次通过率、READY 等待时长不在本报告内');
+    console.log(auditedTasks > 0
+      ? `首次通过率 ${firstPassTasks}/${auditedTasks}（${(firstPassRate * 100).toFixed(1)}%）；作废与仲裁不计入分母`
+      : '首次通过率 未采集（账本没有任何 review 记录；用 run-state.mjs review 登记审计结论）');
+    console.log(waits.length > 0
+      ? `READY 等待 中位 ${Math.round(readyWait.medianMs / 1000)}s / 最大 ${Math.round(readyWait.maxMs / 1000)}s（${waits.length} 个样本，口径：${readyWait.basis}）`
+      : `READY 等待 未采集（口径：${readyWait.basis}；需至少一次 claim 发生在上一动作结束之后）`);
+    console.log(`已合流任务 ${state.merges.length} 个（由 merge-task.mjs 写入）`);
     break;
   }
 
@@ -283,6 +331,30 @@ switch (command) {
         createdAt: nowIso, resolvedAt: null, agentId: null, workspaceId: null,
       };
       draft.intents.push(intent);
+      // --- READY 等待观测：上一动作结束 → 本次 claim ---
+      //
+      // 口径必须写死在数据里（basis 字段），否则报告读出来的「等待 4 分钟」会被当成
+      // end-to-end 的 READY 时间：依赖解除的时刻账本并不总是知道（依赖可能在别处合流）。
+      // 只取同一任务的上一条已了结意图，且只在它之后没有更晚的观测点时记录，
+      // 避免同一对相邻动作被重复计时（重复计时会把中位数拉向最慢的那次）。
+      const ended = draft.intents
+        .filter((other) => other !== intent && other.task === task)
+        .map((other) => ({ at: other.resolvedAt ?? other.failedAt, key: other.key }))
+        .filter((entry) => typeof entry.at === 'string');
+      if (ended.length > 0) {
+        ended.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+        const lastEnded = ended[0];
+        const lastMs = Date.parse(lastEnded.at);
+        const nowMs = Date.parse(nowIso);
+        if (Number.isFinite(lastMs) && Number.isFinite(nowMs) && nowMs >= lastMs) {
+          const alreadyObserved = draft.readyObs.some((obs) => obs.task === task && obs.afterKey === lastEnded.key);
+          if (!alreadyObserved) {
+            draft.readyObs.push({
+              task, afterKey: lastEnded.key, at: nowIso, waitMs: nowMs - lastMs, basis: 'prev-end→claim',
+            });
+          }
+        }
+      }
       return { intent };
     });
     const key = result.intent?.key ?? result.existing?.key ?? '(unknown)';
@@ -305,6 +377,24 @@ switch (command) {
     // 对账只能靠猜。宁可让调用方补参数，也不要留下无法追溯的「已回执」。
     if (agentId === null) fail(1, 'record 需要 --agent <agent-id>（回执必须登记真实 agent）');
     const workspaceId = flag('workspace');
+    // --envelope <file>：把子 Agent 的阶段信封交给机器校验。
+    // 信封过去完全不被解析，于是漏字段、自相矛盾、超行的信封在账本上毫无痕迹。
+    // 校验不过即拒绝回执（exit 2）：回执是账本里「这次派发产出了什么」的唯一入口，
+    // 让它带着一份结构不合格的信封通过，等于把下游所有判断重新推回自由心证。
+    const envelopeFile = flag('envelope');
+    let envelope = null;
+    if (envelopeFile !== null) {
+      if (!fs.existsSync(envelopeFile)) fail(1, `--envelope 指向的文件不存在：${envelopeFile}`);
+      const text = fs.readFileSync(envelopeFile, 'utf8');
+      const roleForLimit = flag('role');
+      const maxLines = roleForLimit === 'anchasi' || roleForLimit === 'hanlin'
+        ? ENVELOPE_MAX_LINES_AUDIT : ENVELOPE_MAX_LINES;
+      envelope = validateEnvelope(text, { maxLines });
+      if (envelope.problems.length > 0) {
+        fail(2, `信封结构不合格，拒绝回执：\n${envelope.problems.map((p) => `  - ${p}`).join('\n')}\n`
+          + '（信封格式见 templates/writer.md 与 SKILL 的「信封规范」）');
+      }
+    }
     const result = update(`record ${key}`, (draft) => {
       const refusal = ownerRefusal(draft, `record ${key}`);
       if (refusal !== null) return { refusal, skipWrite: true };
@@ -315,13 +405,104 @@ switch (command) {
       intent.resolvedAt = nowIso;
       intent.agentId = agentId;
       intent.workspaceId = workspaceId;
+      if (envelope !== null) {
+        // 只留字段快照，不留原文：原文可能很长，账本是状态不是日志。
+        intent.envelope = Object.fromEntries(envelope.fields);
+      }
       return { intent };
     });
     if (result.missing) fail(1, `未知意图键：${key}（先 claim 再 record）`);
     if (result.failed) {
       fail(2, `意图已于 ${result.failedAt} 显式作废，不得用 record 复活：${key}（需重派请重新 claim）`);
     }
-    console.log(json ? JSON.stringify({ change, intent: result.intent }) : `[run-state] record ok ${key} agent=${agentId}`);
+    console.log(json ? JSON.stringify({ change, intent: result.intent, envelope: envelope?.fields.size ?? null })
+      : `[run-state] record ok ${key} agent=${agentId}${envelope ? ` envelope=${envelope.lines}行/${envelope.fields.size}字段` : ''}`);
+    break;
+  }
+
+  /**
+   * review：登记审计结论。
+   *
+   * 为什么单独一个子命令而不是从信封里顺手取：信封的 `verdict` 是审计员的话，
+   * 一次通过率要的是**可计数的结论 + 能对上的人**。把结论写进 reviews[] 之后，
+   * `report` 才能算出分母与分子；否则「首次通过率」永远是「未采集」。
+   *
+   * 不做自动推导：本命令不读 Paseo 离线状态，只登记调用者声明的事实。
+   * 事实是否成立由 merge-task 的 reviewer 交叉核对与 check-evidence 的 verdict 校验各自把关。
+   */
+  case 'review': {
+    const task = flag('task');
+    if (task === null) fail(1, 'review 需要 --task <id>');
+    const verdict = flag('verdict');
+    if (verdict === null) fail(1, 'review 需要 --verdict PASS|PASS_WITH_NITS|BLOCK');
+    const normalizedVerdict = verdict.toUpperCase();
+    if (!['PASS', 'PASS_WITH_NITS', 'BLOCK'].includes(normalizedVerdict)) {
+      fail(1, `--verdict 取值未知：${verdict}（PASS/PASS_WITH_NITS/BLOCK）`);
+    }
+    const agentId = flag('agent');
+    if (agentId === null) fail(1, 'review 需要 --agent <reviewer-agent-id>（结论必须能对上人）');
+    const attemptRaw = flag('attempt');
+    const roundRaw = flag('round');
+    const attempt = attemptRaw === null ? null : Number(attemptRaw);
+    const round = roundRaw === null ? null : Number(roundRaw);
+    if (attempt !== null && (!Number.isInteger(attempt) || attempt <= 0)) fail(1, `--attempt 必须是正整数：${attemptRaw}`);
+    if (round !== null && (!Number.isInteger(round) || round <= 0)) fail(1, `--round 必须是正整数：${roundRaw}`);
+    const sha = flag('sha');
+    const result = update(`review ${task}`, (draft) => {
+      const refusal = ownerRefusal(draft, `review ${task}`);
+      if (refusal !== null) return { refusal, skipWrite: true };
+      // 幂等：同一 (task, attempt, round) 只保留一条，后写覆盖先写（复核会比首轮更晚到，
+      // 但同一轮次的结论不该有两条——两条会让「首轮结论」变成随机取自其中一条）。
+      const existing = draft.reviews.find((entry) => entry.task === task
+        && (entry.attempt ?? null) === attempt && (entry.round ?? 1) === (round ?? 1));
+      const record = {
+        task, attempt, round: round ?? 1, verdict: normalizedVerdict, agentId,
+        sha: sha ?? null, at: nowIso,
+      };
+      if (existing) {
+        Object.assign(existing, record);
+        return { review: existing, replaced: true };
+      }
+      draft.reviews.push(record);
+      return { review: record };
+    });
+    console.log(json ? JSON.stringify({ change, review: result.review, replaced: result.replaced === true })
+      : `[run-state] review ok ${task} attempt=${attempt ?? '-'} round=${result.review.round} verdict=${normalizedVerdict}`);
+    break;
+  }
+
+  /**
+   * merge：登记合流事实。
+   *
+   * 由 merge-task.mjs 在提交成功后调用，不是给人手敲的。写在这里而不是让报告去反推 git，
+   * 是因为账本要回答的是「这个 change 的哪些任务被合流过、用哪次审查合的」，而这个映射
+   * 只有合流那一刻知道（Done 行只有 source/review，没有任务与 attempt 的对应）。
+   */
+  case 'merge': {
+    const taskIds = flag('task');
+    if (taskIds === null) fail(1, 'merge 需要 --task <id[,id...]>');
+    const sha = flag('sha');
+    if (sha === null) fail(1, 'merge 需要 --sha <merge-sha>');
+    const attemptRaw = flag('attempt');
+    const attempt = attemptRaw === null ? null : Number(attemptRaw);
+    const reviewTag = flag('review-tag');
+    const tasks = taskIds.split(',').map((id) => id.trim()).filter(Boolean);
+    if (tasks.length === 0) fail(1, '--task 不能为空');
+    const result = update(`merge ${tasks.join(',')}`, (draft) => {
+      const refusal = ownerRefusal(draft, `merge ${tasks.join(',')}`);
+      if (refusal !== null) return { refusal, skipWrite: true };
+      const recorded = [];
+      for (const task of tasks) {
+        const existing = draft.merges.find((entry) => entry.task === task && entry.sha === sha);
+        if (existing) { recorded.push(existing); continue; }
+        const entry = { task, sha, attempt, reviewTag: reviewTag ?? null, at: nowIso };
+        draft.merges.push(entry);
+        recorded.push(entry);
+      }
+      return { merges: recorded };
+    });
+    console.log(json ? JSON.stringify({ change, merges: result.merges })
+      : `[run-state] merge ok ${tasks.join(',')} sha=${sha}`);
     break;
   }
 

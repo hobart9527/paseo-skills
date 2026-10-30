@@ -19,6 +19,11 @@ node --test \
   skills/paseo-pipeline/test/check-evidence.test.mjs \
   skills/paseo-pipeline/test/run-state.test.mjs \
   skills/paseo-pipeline/test/freeze-check.test.mjs \
-  skills/paseo-pipeline/test/lock.test.mjs
+  skills/paseo-pipeline/test/lock.test.mjs \
+  skills/paseo-pipeline/test/change-id.test.mjs \
+  skills/paseo-pipeline/test/envelope.test.mjs \
+  skills/paseo-pipeline/test/roles.test.mjs \
+  skills/paseo-pipeline/test/acceptance-run.test.mjs \
+  skills/paseo-pipeline/test/guard-scope.test.mjs
 
 echo "=== All regression test suites completed successfully ==="

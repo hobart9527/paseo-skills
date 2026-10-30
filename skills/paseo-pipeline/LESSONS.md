@@ -183,7 +183,104 @@
 
 **暂缓的措施（按 §12「一进一出、无事故证据不加」，留作再次发生时的处置）**：
 
-- **PreToolUse hook 拦截主 checkout 内命中 `Write scope` 的 `Edit`/`Write`**。它能拦住最省力的那条路，但拦不住 `Bash` 重定向与 `sed -i`，且要维护 scope 解析与误伤面。本次只发生一次，先上文档与路由提示。**建议触发器：同一类越权再发生一次，就上 hook 并把 `reconcile` 的脏树检测一起加。**
+- **PreToolUse hook 拦截主 checkout 内命中 `Write scope` 的 `Edit`/`Write`**。它能拦住最省力的那条路，但拦不住 `Bash` 重定向与 `sed -i`，且要维护 scope 解析与误伤面。本次只发生一次，先上文档与路由提示。**建议触发器：同一类越权再发生一次，就上 hook 并把 `reconcile` 的脏树检测一起加。**（2026-10-31 已兑现，见 §14。）
 - **独立交接脚本 `handoff.mjs`**：会与 2026-10-26 删除的 `dispatch.mjs` 落入同一形态（给原生 MCP 派发再造一个入口），重新引出「哪条是主路径」的歧义。SKILL 已明确原生 MCP 是默认路径，不再加壳。
 
 **保留的局限（必须承认）**：交接序列与 `[ROUTE]` 仍然是**规程与提示**，不是物理隔离。主会话在主 checkout 写完不提交的代码，`merge-task` 与业务验收矩阵都碰不到。真正的硬防线是合流门禁与确认点 2 的人工核对，前提是代码确实经子 Agent 进入集成分支。
+
+## 14. 2026-10-31 八项加固：自报验收、返工预算与同源自证（本轮全部有事故引用）
+
+本轮不是「再加几条规则」，而是补上四类**证据链路断点**：账本能算但不记、矩阵写了但不执行、
+门禁核了身份但没核模型家族、写保护只有事后可见。按 §12「一进一出、无事故证据不加」，
+每条都写明触发事故与降级/豁免路径。
+
+### 1. 返工预算可以被标签抹掉（P0，`eas-reverse-coverage-100` T-03）
+
+**事故形态**：`deriveRejections` 只数 disposition 里的打回次数。T-03 的 attempt 6、3 次仲裁、
+2 次升级，但账本上只数出 2 次打回——因为 `a2` 的 disposition 是 `null`，`a3`/`a6` 是
+`handed-off`（交接不消费预算）。**「生产者忘了打标签」与「真的没打回」在账本里长得一模一样。**
+
+**修法**：写手 attempt 序号本身提供了不依赖标签的下界——同一任务出现过 N 个不同 attempt，
+至少被打回 N−1 次。取 `max(有标签的打回次数, 不同 attempt 数 − 1)`。
+**不能取 `max(attempt) − 1`**：attempt 号只增不减（`SCEN-REC-09` 实测 attempt 9/10 被判成
+9 次打回直接 BLOCKED），而「不同 attempt 的个数」才是真的有几次重来。
+
+**分级**：这是账本侧计算，不改退出码；它影响的是 `reconcile` 的 READY/升级/阻塞判定，
+本身已经是阻断型语义。
+
+### 2. 验收矩阵的 `Verify` 列从没有任何代码执行（P1）
+
+**事故形态**：`acceptance.md` 的 `Verify` 列写着可执行命令，但三个消费方（freeze-check、
+check-evidence、人工）都只读 `Result` 列。于是「矩阵全 PASS」可以由一次手工回填构成——
+这正是「自报验收」的原始缺陷。三处还各自实现了一份表格解析器，任何一处漂移都无人发现。
+
+**修法**：`lib/acceptance-matrix.mjs` 成为唯一解析器；新增 `acceptance-run.mjs` 真正执行
+`Required: yes` 行的 `Verify` 列。
+- **自然语言 `Verify` 是硬失败（exit 2），不是「跳过未验证」**——跳过等于让那一行永远不需要证据。
+- `--only` 是局部重跑：有必需行未覆盖即 exit 3，**窄跑不得冒充全通过**。
+- `--write` 只回填本次执行过的行，人工标的 `BLOCKED` 保留；收据写 `<run-state>/<change>/acceptance-receipt.json`，`head` 采不到写 `null`。
+
+「是否可执行命令」的判定复用 `lib/tasks.mjs` 的 `parseVerify`（与 `tasks.md` 的
+`Verify with` 同一属主），不再各写一套。
+
+### 3. 「独立审查」只验了 agent id，没验模型家族（P1）
+
+**事故形态**：`merge-task.mjs` 因子 3b 只证明 reviewer ≠ 写手（agent id 不同）。但实测角色
+分布里 `gaogong` 与 `anchasi` **都在 codex 家族**（2026-10-25，68 个 pipeline agent：
+gaogong = codex/glm 24 + gpt-6.1-sol 7，anchasi = codex/codex 120）。一条 codex 写的任务被
+另一个 codex agent 审，账本上「独立审查」齐全，实质是同源自证。换 profile 名或 model alias
+都不改变 provider。
+
+**修法**：因子 3c 从 Paseo 持久记录取 reviewer 与各写手意图的**真实 provider**，相同即
+**exit 38**。只比 provider 不比 model（同 provider 下的 model alias 在会话间会漂移，
+拿它判「不同模型」会假阳性）。
+- 显式豁免：`PIPELINE_ALLOW_HOMOGENEOUS_REVIEW=1`，run-log 记 `heterogeneity=BYPASSED(homogeneous; …)`。
+- provider 读不到记 `unresolved`，**不阻断**但必须落 run-log（读不到既不能当证据，也不该反过来定罪）。
+- 无账本记 `NOT-CHECKED(no-run-state)`，mechanical 记 `not-applicable`。门禁静默消失与门禁通过必须可区分。
+
+**分级**：exit 38 属「保护 git 历史/合流正确性」类，按 §12 判据 1 可以阻断。
+
+### 4. 写保护只有事后可见（P1，§13 的暂缓措施兑现）
+
+**事故形态**：§13 记的 `eas-filing-and-local-ocr` 越权代写。事后 `reconcile` 通过 DIRTY
+输出能看见脏树，但看见时人已经写完了；`merge-task` 的 exit 30/31 只在合流时生效，
+原地写完不提交根本走不到合流。
+
+**修法**（三层，判据只有一份 `lib/scope-guard.mjs`）：
+- `reconcile.mjs` 的 **DIRTY 分级**：脏文件落在任务 Write scope 内且账本有对应在途写手意图
+  → 只报告；落在 scope 内但**无**在途写手 → 进 `holdReasons`（「疑似就地代写」）；
+  不在任何 scope 内 → 只报告（越界提交由 exit 30 兜底）。作废（fail）的意图不算授权。
+- `guard-scope.mjs`：写之前的判定 CLI，单 change 或扫描全部活跃租约两种形态，退出码表达裁决。
+- `hooks/scope-guard-hook.mjs`：PreToolUse 适配层，输出 Claude Code 的 `permissionDecision=deny`。
+  **安装需人工**：`node hooks/scope-guard-hook.mjs --install-help` 打印 settings.json 片段。
+
+**边界照实说**：无有效租约放行（门禁只在一次 run 内成立）、scope 外放行、读不到 tasks.md
+放行（fail-open）。**Bash 的 `sed -i`/`>` 重定向/`git apply` 仍拦不住**——这是减速带，不是沙箱。
+macOS 的 `/tmp` → `/private/tmp` 符号链接会让路径比较全部落空，两个入口共用 `realpathLoose`
+沿最深存在祖先做 realpath，否则守卫会静默失效（本轮的实测缺陷，有回归用例）。
+
+### 5. change 名被旗标吞掉，静默新建游离账本（P0）
+
+**事故形态**：`approval-hub` 里实测存在 `--change/`、`--key/` 两份 `run-state.json`，
+前者还持有租约。原因是 `run-state.mjs status --change foo` 把 `--change` 当成了 change 名：
+命令成功执行，只是账本落在了另一个目录。**错得很安静**——没有任何报错。
+
+**修法**：`lib/change-id.mjs` 的 `changeIdProblem` 在校验位置参数形态（旗标形态 / 非法字符 / 空）
+并给出正确写法；`run-state.mjs`、`reconcile.mjs`、`hotfix.sh`、`guard-scope.mjs` 全部接入。
+扫描活跃租约时跳过 `-` 开头的目录（历史遗留的游离账本不得被当成 change）。
+
+### 6. 度量从「未采集」变成可算（P2）
+
+`reviews[]` / `merges[]` / `readyObs[]` 三个数组的写入点都在**事实发生的那一步**（审计回执、
+合流提交、派发 claim），报告只做汇总：
+- **首次通过率**：分母是「有审计结论的任务数」，分子是首轮（round 最小）`PASS`；没有 review
+  记录就是「未采集」，不是 100%。
+- **READY 等待**：口径写死在数据里（`basis: 'prev-end→claim'`），只取同任务上一条已了结意图，
+  同一对相邻动作不重复计时。依赖解除的时刻账本不一定知道，所以这是「排队时长」不是
+  end-to-end READY 时间。
+- **信封机器校验**：`record --envelope` 走 `lib/envelope.mjs`——字段齐全、枚举合法、
+  `result` 与 `next_action` 不自相矛盾、无重复字段、行数受 `--role` 决定的上限约束（写手 20 行，
+  审计 25 行）。不合格即拒绝回执（exit 2）。
+
+**统一口径**：采不到写「未采集」并说明原因，不估算、不用候选名冒充实测值（§6 的既有纪律，
+本轮所有新增报告字段都遵守）。

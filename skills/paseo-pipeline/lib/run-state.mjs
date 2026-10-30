@@ -8,7 +8,15 @@
 // 本模块只补这一层最小事实，不建第二套任务真源：
 //   lease        —— 同一 run 唯一编排 owner（代际租约，旧 Lead 复活后不能继续提交动作）
 //   intents      —— 动作意图（先记意图 → 执行 → 记真实 agent/workspace 回执）
+//   reviews      —— 审计结论（task/attempt/round/verdict/agent/时间戳），首次通过率的唯一来源
+//   merges       —— first-parent 合流事实（task/sha/attempt/reviewTag），由 merge-task.mjs 写入
+//   readyObs     —— 写手意图的派发间隔观测（上一动作结束 → 本次 claim 的时间差）
 //   heartbeats   —— 只读兼容字段：旧账本可能带该数组，新代码不再写入（heartbeat 子命令已删）
+//
+// 为什么新增 reviews/merges/readyObs：旧版 `report` 只能打印两项恒为「未采集」的度量，
+// 因为账本不记审查结论，也不记合流事实。一次通过率、返工分布这些判断交付质量的关键数
+// 就永远只能靠人回忆——而回忆出来的数字会被当成实测值写进复盘。三者的写入点在
+// 「事实发生的那一步」（审计回执、合流提交、派发 claim），不在报告生成时补算。
 //
 // 存放位置：git common dir 下的 `paseo-pipeline/<change>/run-state.json`。
 // 为什么不放工作树：合流要求工作树干净，把运行时状态写进 openspec/ 会让每次派发都弄脏
@@ -51,7 +59,17 @@ export function runStatePath(change, cwd = process.cwd()) {
 }
 
 function emptyState() {
-  return { version: STATE_VERSION, run: null, lease: null, intents: [], heartbeats: [], skill: null };
+  return {
+    version: STATE_VERSION,
+    run: null,
+    lease: null,
+    intents: [],
+    heartbeats: [],
+    reviews: [],
+    merges: [],
+    readyObs: [],
+    skill: null,
+  };
 }
 
 function normalize(raw) {
@@ -71,6 +89,20 @@ function normalize(raw) {
   }
   if (Array.isArray(raw.intents)) state.intents = raw.intents.filter((entry) => entry && typeof entry.key === 'string');
   if (Array.isArray(raw.heartbeats)) state.heartbeats = raw.heartbeats.filter((entry) => entry && typeof entry.id === 'string');
+  // 审计结论与合流事实：两者的判据在规范化层收紧到「能被报告直接使用的形状」。
+  // 缺字段的记录整条丢弃而不是补默认值——补出来的 verdict=unknown 会污染一次通过率的分母。
+  if (Array.isArray(raw.reviews)) {
+    state.reviews = raw.reviews.filter((entry) => entry && typeof entry.task === 'string'
+      && typeof entry.verdict === 'string' && typeof entry.at === 'string');
+  }
+  if (Array.isArray(raw.merges)) {
+    state.merges = raw.merges.filter((entry) => entry && typeof entry.task === 'string'
+      && typeof entry.sha === 'string' && typeof entry.at === 'string');
+  }
+  if (Array.isArray(raw.readyObs)) {
+    state.readyObs = raw.readyObs.filter((entry) => entry && typeof entry.task === 'string'
+      && Number.isFinite(entry.waitMs));
+  }
   // 派发时使用的 Skill 版本。只做「不一致提示」，不做强制：账本可以在同一台机器的不同
   // Skill 版本之间被读取（只读诊断不该因此失败），但「这批任务是用哪份编排逻辑跑出来的」
   // 必须留痕——否则复盘时无法判断某条规则当时是否存在。

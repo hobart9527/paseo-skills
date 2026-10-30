@@ -24,6 +24,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseTasks, normalizeScope } from './lib/tasks.mjs';
+import {
+  parseMatrix, scenarioIds, isRequired, resultOf, ACCEPTANCE_COLUMNS,
+} from './lib/acceptance-matrix.mjs';
 import { batchDependencyClosure } from './lib/ledger.mjs';
 
 const args = process.argv.slice(2);
@@ -45,7 +48,6 @@ if (!fs.existsSync(changeDir) || !fs.statSync(changeDir).isDirectory()) {
   process.exit(2);
 }
 
-const SCEN_RE = /SCEN-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/g;
 const SCEN_HEADING = /^#{3,6}\s*Scenario\s*:\s*(.+?)\s*$/i;
 
 const blocking = [];
@@ -177,31 +179,8 @@ for (const [scen, file] of declaredScens) {
 // --- 3. acceptance.md：业务验收矩阵 ---
 const acceptanceFile = path.join(changeDir, 'acceptance.md');
 const acceptanceMarkdown = readIfExists(acceptanceFile);
-const ACCEPT_COLUMNS = ['Scenario', 'Entry', 'Tasks', 'Verify', 'Required', 'Result', 'Evidence'];
+const ACCEPT_COLUMNS = ACCEPTANCE_COLUMNS;
 let acceptanceRows = 0;
-
-function parseMatrix(markdown) {
-  const lines = markdown.split(/\r?\n/);
-  const headerIndex = lines.findIndex((line) => /^\s*\|/.test(line) && /\bScenario\b/i.test(line));
-  if (headerIndex === -1) return null;
-  const header = splitRow(lines[headerIndex]).map((cell) => cell.trim());
-  const rows = [];
-  for (let i = headerIndex + 1; i < lines.length; i += 1) {
-    const line = lines[i];
-    if (!/^\s*\|/.test(line)) continue;
-    const cells = splitRow(line);
-    if (cells.every((cell) => /^:?-{2,}:?$/.test(cell.trim()))) continue; // 分隔行
-    const row = {};
-    header.forEach((name, index) => { row[name] = (cells[index] ?? '').trim(); });
-    rows.push(row);
-  }
-  return { header, rows };
-}
-
-function splitRow(line) {
-  const trimmed = line.trim().replace(/^\|/, '').replace(/\|$/, '');
-  return trimmed.split('|');
-}
 
 if (acceptanceMarkdown === null) {
   block(`缺少 ${acceptanceFile}：业务验收矩阵是「算不算交付」的唯一定义，缺了收尾只能临场发挥`);
@@ -223,13 +202,13 @@ if (acceptanceMarkdown === null) {
     const requiredScens = new Set();
     for (const [index, row] of matrix.rows.entries()) {
       const label = `验收矩阵第 ${index + 1} 行（${row.Scenario || '无场景'}）`;
-      const scenIds = (row.Scenario ?? '').match(SCEN_RE) ?? [];
+      const scenIds = scenarioIds(row);
       if (scenIds.length === 0) {
         block(`${label} 的 Scenario 列没有 SCEN- 编号`);
       }
       for (const scen of scenIds) {
         if (!declaredScens.has(scen)) block(`${label} 引用了未声明的场景 ${scen}`);
-        if (row.Required?.toLowerCase() === 'yes') requiredScens.add(scen);
+        if (isRequired(row)) requiredScens.add(scen);
       }
       for (const raw of (row.Tasks ?? '').split(/[,\s]+/).filter(Boolean)) {
         if (!taskIds.has(raw)) block(`${label} 引用了不存在的任务 ${raw}`);
@@ -240,7 +219,7 @@ if (acceptanceMarkdown === null) {
       if (!['yes', 'no'].includes(required)) {
         block(`${label} 的 Required 必须是 yes/no，实际是「${row.Required ?? ''}」`);
       }
-      const result = (row.Result ?? '').toUpperCase();
+      const result = resultOf(row);
       // 冻结时只能写 PENDING：提前写 PASS 等于在什么都没跑之前就宣布验收通过。
       if (!['PENDING', 'BLOCKED', 'UNVERIFIED'].includes(result)) {
         block(`${label} 的 Result 是 ${row.Result || '(空)'}：冻结时只能是 PENDING`

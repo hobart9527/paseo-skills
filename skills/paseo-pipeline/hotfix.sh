@@ -21,6 +21,15 @@ BRANCH="task/${CHANGE}/${TID}"
 BASE="$(git rev-parse --abbrev-ref HEAD)"
 
 [ -f "$BRIEF" ] || { echo "[hotfix] brief 不存在: $BRIEF" >&2; exit 1; }
+# change 名必须是位置参数形态：`hotfix.sh --change foo T-1 ...` 会把 `--change` 当成 change
+# 名，建出 `task/--change/T-1` 这样的分支、写进 `openspec/changes/--change/`（实测同类误用在
+# run-state 里留下过 `--change/` 游离账本）。不猜意图，直接拒绝。
+node --input-type=module -e '
+const [skillDir, value] = process.argv.slice(1);
+const { changeIdProblem } = await import(new URL(`file://${skillDir}/lib/change-id.mjs`).href);
+const problem = changeIdProblem(value);
+if (problem) { console.error(`[hotfix] ${problem}\n正确写法：hotfix.sh <change> <task-id> <brief-file> <test-cmd>`); process.exit(1); }
+' "$DIR" "$CHANGE"
 [ -z "$(git status --porcelain)" ] || { echo "[hotfix] 工作区不干净，先提交或清理" >&2; exit 1; }
 
 # --- 派发前机械校验：mechanical 档与风险面（不得靠提示词自觉） ---

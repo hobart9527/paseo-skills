@@ -1210,6 +1210,10 @@ test('SCEN-REC-16 a read-only reviewer tagged rejected does not consume the writ
 });
 
 test('SCEN-REC-16 handed-off and superseded do not consume the retry budget', (context) => {
+  // 单个 handed-off 的**处置**不消耗预算（阶段交接确实是正常路径）。但 attempt 1→2→3
+  // 这个序列本身证明前两轮没被接受：2026-10-31 起预算由「处置计数」与「已出现的不同
+  // attempt 数 − 1」取最大值（见 lib/roles.mjs 的 deriveRejections）。
+  // 这条用例因此断言：任务仍可派发，但已进升级档——除非标签把返工痕迹抹掉，否则不该出现。
   const subject = fixture(context);
   subject.runtime([
     agent({ id: 'h1', status: 'idle' }, { 'pipeline.attempt': '1', 'pipeline.disposition': 'handed-off' }),
@@ -1219,6 +1223,28 @@ test('SCEN-REC-16 handed-off and superseded do not consume the retry budget', (c
   const result = output(subject);
   state(result, 'T-01', 'READY');
   dispatch(result, ['T-01']);
+  const ready = result.READY.find((r) => r.id === 'T-01');
+  assert.equal(ready.rejections, 2, '下界来自 attempt 序列，不来自 self-reported disposition');
+  assert.equal(ready.escalate, true, '第 3 个 attempt 必须进升级档');
+});
+
+test('SCEN-REC-16 a single handoff within attempt 1 costs no budget', (context) => {
+  // 负向控制：同一 attempt 内的 impl→audit 交接不产生新 attempt，所以 handed-off 本身
+  // 永远不消耗预算——被消耗的是「又开了一轮」。
+  const subject = fixture(context);
+  subject.runtime([
+    agent({ id: 'w', status: 'idle' }, { 'pipeline.attempt': '1', 'pipeline.phase': 'impl', 'pipeline.disposition': 'handed-off' }),
+    agent({ id: 'a', status: 'idle' }, {
+      'pipeline.attempt': '1', 'pipeline.phase': 'audit', 'pipeline.role': 'anchasi', 'pipeline.disposition': 'handed-off',
+    }),
+  ]);
+  const result = output(subject);
+  const ready = result.READY.find((r) => r.id === 'T-01');
+  if (ready) {
+    // READY 只在升级档携带 rejections/escalate；阈值以下不带这两个字段（负向控制）。
+    assert.ok(!(ready.rejections > 0), '同一 attempt 内的交接不得计入打回');
+    assert.equal(ready.escalate, undefined);
+  }
 });
 
 test('SCEN-REC-16 a rejected attempt branch is STALE, never the merge target', (context) => {
@@ -1595,4 +1621,67 @@ test('SCEN-REC-20: dispatch 动作给出的任务标识等于真实任务 ID（�
   const action = (result.nextAction.actions ?? []).find((a) => a.kind === 'dispatch');
   assert.ok(action !== undefined, `必须给出 dispatch 动作：${JSON.stringify(result.nextAction)}`);
   assert.deepEqual(action.tasks, ['TASK-01'], '动作里的任务标识必须是真实 ID，不能是「ID + 标题」整条 label');
+});
+
+// --- 脏树检测（LESSONS §13 的越权代写在此可见） ---
+//
+// 2026-10-27 `eas-filing-and-local-ocr`：总控在主 checkout 就地写了 T-02 的 Write scope
+// 文件并跑通单测，全部门禁都没看见——merge-task 只在合流时检查，而原地写完不提交走不到合流。
+// 对账现在每次推进都看一眼脏树，并按「有无对应在途写手意图」分级。
+
+test('SCEN-REC-21 a clean integration tree reports zero dirty files', (context) => {
+  const subject = fixture(context, [{ id: 'T-01' }]);
+  const result = output(subject);
+  assert.deepEqual(result.dirty, []);
+  assert.deepEqual(result.dirtyUnexplained, []);
+  assert.deepEqual(result.dirtyOutsideScope, []);
+});
+
+test('SCEN-REC-21 a dirty file in Write scope without a writer intent is unexplained and holds dispatch', (context) => {
+  const subject = fixture(context, [{ id: 'T-01' }]);
+  const top = subject.git('rev-parse', '--show-toplevel');
+  mkdirSync(path.join(top, 'src'), { recursive: true });
+  writeFileSync(path.join(top, 'src', 'T-01.mjs'), '// 就地代写\n');
+  const result = output(subject);
+  assert.equal(result.dirtyUnexplained.length, 1, JSON.stringify(result.dirty));
+  assert.equal(result.dirtyUnexplained[0].path, 'src/T-01.mjs');
+  assert.deepEqual(result.dirtyUnexplained[0].scopeOwners, ['T-01']);
+  assert.ok(result.holdReasons.some((reason) => /疑似就地代写/.test(reason)),
+    `必须进 holdReasons：${JSON.stringify(result.holdReasons)}`);
+  assert.deepEqual(result.canDispatchNow, []);
+});
+
+test('SCEN-REC-21 a dirty file covered by an in-flight writer intent is reported but does not hold dispatch', (context) => {
+  const subject = fixture(context, [{ id: 'T-01' }]);
+  mkdirSync(path.join(subject.git('rev-parse', '--show-toplevel'), 'src'), { recursive: true });
+  writeFileSync(path.join(subject.git('rev-parse', '--show-toplevel'), 'src', 'T-01.mjs'), '// writer\n');
+  subject.runState({ version: 1, run: 'local', lease: null, intents: [intent()], heartbeats: [] });
+  const result = output(subject);
+  assert.equal(result.dirtyUnexplained.length, 0, JSON.stringify(result.dirty));
+  const entry = result.dirty.find((item) => item.path === 'src/T-01.mjs');
+  assert.deepEqual(entry.coveredBy, ['T-01']);
+  assert.ok(!result.holdReasons.some((reason) => /疑似就地代写/.test(reason)));
+});
+
+test('SCEN-REC-21 a dirty file outside every Write scope is reported, never held', (context) => {
+  const subject = fixture(context, [{ id: 'T-01' }]);
+  writeFileSync(path.join(subject.git('rev-parse', '--show-toplevel'), 'scratch.tmp'), 'x\n');
+  const result = output(subject);
+  assert.equal(result.dirtyOutsideScope.length, 1);
+  assert.equal(result.dirtyOutsideScope[0].path, 'scratch.tmp');
+  assert.equal(result.dirtyUnexplained.length, 0, 'scope 外不算越权写（越界提交由 merge exit 30 兜底）');
+  assert.ok(!result.holdReasons.some((reason) => /疑似就地代写/.test(reason)));
+});
+
+test('SCEN-REC-21 a voided writer intent does not explain a dirty file', (context) => {
+  const subject = fixture(context, [{ id: 'T-01' }]);
+  mkdirSync(path.join(subject.git('rev-parse', '--show-toplevel'), 'src'), { recursive: true });
+  writeFileSync(path.join(subject.git('rev-parse', '--show-toplevel'), 'src', 'T-01.mjs'), '// x\n');
+  // 作废的语义是「这次派发没有发生」，它不能再当任何写入的授权。
+  subject.runState({
+    version: 1, run: 'local', lease: null, heartbeats: [],
+    intents: [{ ...intent(), failedAt: new Date().toISOString(), reason: '创建失败' }],
+  });
+  const result = output(subject);
+  assert.equal(result.dirtyUnexplained.length, 1, JSON.stringify(result.dirty));
 });

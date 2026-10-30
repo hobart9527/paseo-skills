@@ -117,6 +117,40 @@ export const ESCALATION_ROLE = 'gaogong';
 export const MAX_ESCALATED_RETRIES = 1;
 
 /**
+ * 打回次数：**两条来源取最大值**，缺一条也能算出来。
+ *
+ * 事故依据（2026-10-29 实测 `eas-reverse-coverage-100` 的 T-03）：实现走到 attempt 6，
+ * 仲裁跑了 3 次、升级高工用了 2 次，远超「2 轮 + 升级 1 次」。但按 disposition 计数只有
+ * 2 次——因为 a2 的 disposition 是 null、a3/a6 被贴成 handed-off。**预算是靠编排者
+ * 手工贴标签来计的，漏贴或贴错就整轮不计**，一条自旋了 6 轮的任务在账本上看起来只花了一半预算。
+ *
+ * 现在的判据分两路，任一成立即消耗：
+ *   1. `dispositionRejections` —— 终态写手被打 rejected/abandoned 的次数（原有口径）；
+ *   2. `writerAttempts` —— 出现过的写手 attempt 序列。**attempt N+1 的存在本身就证明
+ *      attempt N 没有被接受**：没有任何路径会在上一轮成功后再新建一个 attempt。
+ *      因此「已出现过的不同 attempt 数 − 1」是不能再被标签抹掉的打回下界。
+ *
+ * 下界用「不同 attempt 的**个数**」而不是「最大 attempt − 1」：attempt 编号不一定从 1 连续
+ * 递增（仲裁轮的 agent 可能不带 attempt，也可能直接跳到下一档），拿最大值减一会把编号本身
+ * 当成打回次数，把一条只返工过一次的任务判成预算耗尽（SCEN-REC-09 的 attempt 9/10 即此）。
+ *
+ * 取 max 而不是相加：两个数描述的是同一批打回，相加会把一次打回算成两次，
+ * 让一次正常返工直接跳到升级档。
+ *
+ * 注意 attempt 的语义边界：同一 attempt 内部的阶段交接（impl→audit、test→impl）
+ * 不产生新的 attempt，所以 handed-off 本身永远不消耗预算——被消耗的是「又开了一轮」。
+ */
+export function deriveRejections({ dispositionRejections = 0, writerAttempts = [] } = {}) {
+  const numeric = writerAttempts.filter((value) => Number.isInteger(value) && value > 0);
+  const distinct = new Set(numeric);
+  const superseded = distinct.size > 0 ? distinct.size - 1 : 0;
+  const disposition = Number.isFinite(dispositionRejections) && dispositionRejections > 0
+    ? dispositionRejections
+    : 0;
+  return Math.max(disposition, superseded);
+}
+
+/**
  * 打回预算策略——这是「还能不能再派一次、派给谁」的唯一判定点。
  *
  * 口径（SKILL「重试与返工预算」）：每任务最多打回 2 轮 + 升级高工 1 次，超出即 Blocked。

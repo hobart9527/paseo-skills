@@ -202,8 +202,12 @@ function parseScenarios(value) {
  * command 仅在整行是一个可执行调用时给出（允许前置 `KEY=VALUE` 环境赋值）；
  * 纯自然语言描述（实测治理 change 的 7 条全是）保留在 raw 里，command 为 null，
  * 调用方必须据此拒绝「用描述当测试命令」。
+ *
+ * 导出给 acceptance-run.mjs 复用：验收矩阵的 Verify 单元格与 tasks.md 的 Verify with
+ * 是同一类判据（是不是可执行命令），必须共用一份识别逻辑，否则两处对「什么算命令」
+ * 的判定会漂移（冻结时能过、收尾真跑时判成自然语言，或反之）。
  */
-function parseVerify(raw) {
+export function parseVerify(raw) {
   const text = raw.trim();
   const tests = text
     .split(/\s+/)

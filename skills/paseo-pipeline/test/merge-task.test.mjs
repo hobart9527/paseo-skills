@@ -1118,3 +1118,162 @@ test('SCEN-CON-01 a graph-level error blocks every merge regardless of the reque
   assertRejected(repo, result);
   assert.match(result.stderr, /UNKNOWN_DEP/);
 });
+
+// --- 因子 3c：异构审查（reviewer 与写手不得同 provider） ---
+//
+// 事故依据（2026-10-25 实测角色分布）：gaogong（写手）= codex/glm 与 gpt-6.1-sol，
+// anchasi（审计）= codex/codex。一条 codex 写的任务被另一个 codex agent 审，
+// 因子 3b 的「不是写手本人」全部通过，但审查与被审出自同一模型家族——账本上是
+// 独立审查，实质是同源自证。判据只能取真实 agent 记录里的 provider：
+// 换 profile 名、换 model 别名都不改变它。
+//
+// 强度：provider 相同 → exit 38；provider 读不到 → 不阻断但 run-log 留痕；
+// PIPELINE_ALLOW_HOMOGENEOUS_REVIEW=1 显式接受（同样留痕）。
+
+/** 在临时 Paseo home 里写一份带 provider 的真实 agent 记录。 */
+function paseoHome(context, agents) {
+  const home = mkdtempSync(path.join(tmpdir(), 'pipeline-merge-paseo-'));
+  context.after(() => rmSync(home, { recursive: true, force: true }));
+  for (const { id, provider, model = 'fixture-model' } of agents) {
+    const dir = path.join(home, 'agents', `slug-${id.slice(0, 8)}`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({
+      id,
+      createdAt: '2026-10-26T00:00:00.000Z',
+      lastStatus: { status: 'idle' },
+      labels: { 'pipeline.change': change },
+      provider,
+      runtimeInfo: { provider, model },
+    }));
+  }
+  return home;
+}
+
+const WRITER_UUID = 'aaaaaaaa-1111-2222-3333-444444444444';
+const REVIEWER_UUID = 'bbbbbbbb-1111-2222-3333-444444444444';
+
+function heterogeneityState(context, { writer = WRITER_UUID, reviewer = REVIEWER_UUID } = {}) {
+  return writeRunState(context, [
+    intent({ role: 'gongbu', agentId: writer }),
+    intent({ role: 'anchasi', phase: 'audit', agentId: reviewer }),
+  ]);
+}
+
+test('SCEN-MRG-29 a reviewer from the same provider as the writer is rejected (exit 38)', (context) => {
+  const repo = fixture(context);
+  const stateDir = heterogeneityState(context);
+  const home = paseoHome(context, [
+    { id: WRITER_UUID, provider: 'codex' },
+    { id: REVIEWER_UUID, provider: 'codex' },
+  ]);
+  const result = invoke(repo, {
+    env: { PIPELINE_RUN_STATE_DIR: stateDir, PIPELINE_PASEO_HOME: home },
+    tag: reviewTag(repo, { reviewer: REVIEWER_UUID.slice(0, 8) }),
+  });
+  assert.equal(result.status, 38, `${result.stdout}${result.stderr}`);
+  assert.match(result.stderr, /same provider/);
+  assertUnchanged(repo);
+});
+
+test('SCEN-MRG-29 a reviewer from a different provider merges and records the assessment', (context) => {
+  const repo = fixture(context);
+  const stateDir = heterogeneityState(context);
+  const home = paseoHome(context, [
+    { id: WRITER_UUID, provider: 'codex' },
+    { id: REVIEWER_UUID, provider: 'claude' },
+  ]);
+  const result = invoke(repo, {
+    env: { PIPELINE_RUN_STATE_DIR: stateDir, PIPELINE_PASEO_HOME: home },
+    tag: reviewTag(repo, { reviewer: REVIEWER_UUID.slice(0, 8) }),
+  });
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  const log = git(repo.cwd, 'show', `${git(repo.cwd, 'rev-parse', 'HEAD')}:${logPath}`);
+  assert.match(log, /heterogeneity=ok\(/);
+});
+
+test('SCEN-MRG-29 an explicit override accepts a homogeneous review but leaves a trace', (context) => {
+  const repo = fixture(context);
+  const stateDir = heterogeneityState(context);
+  const home = paseoHome(context, [
+    { id: WRITER_UUID, provider: 'codex' },
+    { id: REVIEWER_UUID, provider: 'codex' },
+  ]);
+  const result = invoke(repo, {
+    env: {
+      PIPELINE_RUN_STATE_DIR: stateDir,
+      PIPELINE_PASEO_HOME: home,
+      PIPELINE_ALLOW_HOMOGENEOUS_REVIEW: '1',
+    },
+    tag: reviewTag(repo, { reviewer: REVIEWER_UUID.slice(0, 8) }),
+  });
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  const log = git(repo.cwd, 'show', `${git(repo.cwd, 'rev-parse', 'HEAD')}:${logPath}`);
+  assert.match(log, /heterogeneity=BYPASSED\(homogeneous/, '豁免必须留痕，否则同源审查会变成默认');
+});
+
+test('SCEN-MRG-29 an unresolvable provider warns instead of blocking, and says so in the log', (context) => {
+  // 短 id（'a1b2c3d4' 这类历史写法）读不到持久记录：既不能当证据，也不该反过来定罪。
+  const repo = fixture(context);
+  const stateDir = writeRunState(context, [
+    intent({ role: 'gongbu', agentId: 'a1b2c3d4' }),
+    intent({ role: 'anchasi', phase: 'audit', agentId: '12345678-aaaa-bbbb-cccc-dddddddddddd' }),
+  ]);
+  const home = paseoHome(context, []); // 没有任何可读记录
+  const result = invoke(repo, {
+    env: { PIPELINE_RUN_STATE_DIR: stateDir, PIPELINE_PASEO_HOME: home },
+  });
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  const log = git(repo.cwd, 'show', `${git(repo.cwd, 'rev-parse', 'HEAD')}:${logPath}`);
+  assert.match(log, /heterogeneity=unresolved\(/);
+});
+
+test('SCEN-MRG-29 with no run-state ledger the heterogeneity check is reported as not checked', (context) => {
+  const repo = fixture(context);
+  const result = invoke(repo, { env: { PIPELINE_RUN_STATE_DIR: emptyStateDir(context) } });
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  const log = git(repo.cwd, 'show', `${git(repo.cwd, 'rev-parse', 'HEAD')}:${logPath}`);
+  assert.match(log, /heterogeneity=NOT-CHECKED\(no-run-state\)/,
+    '没跑过的门禁不能与「跑过且通过」在账本上长得一样');
+});
+
+// --- 合流事实入账（run-state merges[]） ---
+//
+// SKILL 说 `run-state.mjs report` 的「已合流任务数」由 merge-task 写入。本轮走查发现代码里
+// 根本没有这条路径：`merge` 子命令有测试、有文档，唯一的生产调用点却不存在。于是报告里
+// 那个字段恒为 0——一个写着 metric 却永远读不到数据的字段，比没有这个字段更糟。
+test('SCEN-MRG-30 a successful merge records itself in the run-state ledger', (context) => {
+  const repo = fixture(context);
+  const stateDir = heterogeneityState(context);
+  const home = paseoHome(context, [
+    { id: WRITER_UUID, provider: 'codex' },
+    { id: REVIEWER_UUID, provider: 'claude' },
+  ]);
+  const result = invoke(repo, {
+    env: { PIPELINE_RUN_STATE_DIR: stateDir, PIPELINE_PASEO_HOME: home },
+    tag: reviewTag(repo, { reviewer: REVIEWER_UUID.slice(0, 8) }),
+  });
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  const mergeSha = git(repo.cwd, 'rev-parse', 'HEAD');
+  const ledger = JSON.parse(readFileSync(path.join(stateDir, change, 'run-state.json'), 'utf8'));
+  assert.equal(ledger.merges.length, 1, JSON.stringify(ledger.merges));
+  assert.equal(ledger.merges[0].task, 'T-1');
+  assert.equal(ledger.merges[0].sha, mergeSha);
+  assert.equal(ledger.merges[0].attempt, 1, '无 -a<n> 后缀即 attempt 1');
+  assert.match(ledger.merges[0].reviewTag, /^pass\(/);
+});
+
+test('SCEN-MRG-30 re-running the same merge never duplicates the ledger entry', (context) => {
+  const repo = fixture(context);
+  const stateDir = heterogeneityState(context);
+  const home = paseoHome(context, [
+    { id: WRITER_UUID, provider: 'codex' },
+    { id: REVIEWER_UUID, provider: 'claude' },
+  ]);
+  const env = { PIPELINE_RUN_STATE_DIR: stateDir, PIPELINE_PASEO_HOME: home };
+  const tag = reviewTag(repo, { reviewer: REVIEWER_UUID.slice(0, 8) });
+  assert.equal(invoke(repo, { env, tag }).status, 0);
+  // 第二次用同一 tip 合流会被「已 Done」拒绝（exit 非零），账本不能因此少一条或多一条。
+  invoke(repo, { env, tag });
+  const ledger = JSON.parse(readFileSync(path.join(stateDir, change, 'run-state.json'), 'utf8'));
+  assert.equal(ledger.merges.length, 1, JSON.stringify(ledger.merges));
+});

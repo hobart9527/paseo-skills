@@ -17,6 +17,9 @@
 //   --matrix 从冻结的验收矩阵读必需场景：调用者只能追加（--require-scenario），不能减少。
 import fs from 'node:fs';
 import { findAgentRecord } from '../lib/paseo-state.mjs';
+import {
+  parseMatrix, isRequired, requiredNotPassed, scenarioIds,
+} from '../lib/acceptance-matrix.mjs';
 import { NOT_COLLECTED_BLOCKING_FIELDS, SMOKE_REQUIRED_FIELDS, isContractField, COMMAND_FIELD_RE } from '../lib/evidence-contract.mjs';
 
 const PASSING_VERDICTS = new Set(['pass', 'pass_with_nits', 'passed']);
@@ -205,32 +208,22 @@ function scenarioResults() {
 // 产生任何报错。这里改为从冻结的 acceptance.md 读 Required=yes 的行，`--require-scenario`
 // 只能**追加**（与 merge-task 对冻结 Verify 的口径一致：调用者只能收紧，不能放宽）。
 function matrixRequiredScenarios(matrixFile) {
-  const text = fs.readFileSync(matrixFile, 'utf8');
-  const lines = text.split(/\r?\n/);
-  const headerIndex = lines.findIndex((line) => /^\s*\|/.test(line) && /\bScenario\b/i.test(line));
-  if (headerIndex === -1) {
+  const matrix = parseMatrix(fs.readFileSync(matrixFile, 'utf8'));
+  if (matrix === null) {
     throw new Error(`${matrixFile} 没有可解析的表格（表头须含 Scenario 列）`);
   }
-  const header = lines[headerIndex].trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
-  const scenCol = header.indexOf('Scenario');
-  const reqCol = header.indexOf('Required');
-  const resCol = header.indexOf('Result');
-  if (scenCol === -1 || reqCol === -1) {
+  if (!matrix.header.includes('Scenario') || !matrix.header.includes('Required')) {
     throw new Error(`${matrixFile} 表格缺 Scenario 或 Required 列`);
   }
+  // 大小写保持原样：调用者用 `--require-scenario` 追加的是同一批编号，两边比较时统一大写。
   const required = [];
-  const notPassed = [];
-  for (const line of lines.slice(headerIndex + 1)) {
-    if (!/^\s*\|/.test(line)) continue;
-    const cells = line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
-    if (cells.every((c) => /^:?-{2,}:?$/.test(c))) continue;
-    if ((cells[reqCol] ?? '').toLowerCase() !== 'yes') continue;
-    const scen = (cells[scenCol] ?? '').match(/SCEN-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/i)?.[0];
-    if (!scen) continue;
-    required.push(scen);
-    const result = (cells[resCol] ?? '').toUpperCase();
-    if (result !== 'PASS') notPassed.push(`${scen}=${result || '(空)'}`);
+  for (const row of matrix.rows) {
+    if (!isRequired(row)) continue;
+    for (const scen of scenarioIds(row)) {
+      if (!required.includes(scen)) required.push(scen);
+    }
   }
+  const notPassed = requiredNotPassed(matrix).map((entry) => `${entry.scenario}=${entry.result || '(空)'}`);
   return { required, notPassed };
 }
 

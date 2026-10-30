@@ -456,3 +456,53 @@ test('SCEN-CON-18: the packaged schema and its installed copy are byte-identical
     );
   }
 });
+
+// --- 2026-10-31 八项加固的文档对齐（每项都必须写进 SKILL，否则等于没落地） ---
+//
+// 这些门禁的共同点是「代码里有、文档里没有」就没人会用：acceptance-run 存在但 SKILL
+// 只写 check-evidence，收尾仍然只跑自报矩阵；异构审查 exit 38 不写进退出码表，执行器
+// 拿到 38 只能猜。断言的是**可执行示例与退出码表**，不是关键词出现。
+test('SCEN-DOC-25: 合流退出码表包含异构审查 38，且写明豁免与未采集两种情形', () => {
+  const text = section('安全原子合流门禁');
+  assert.match(text, /38[^\n]{0,40}同 provider|同 provider[^\n]{0,40}38/,
+    '退出码表必须列出 38');
+  assert.match(text, /PIPELINE_ALLOW_HOMOGENEOUS_REVIEW=1/, '显式豁免必须写明');
+  assert.match(text, /heterogeneity=BYPASSED\(homogeneous/, '豁免必须留痕');
+  assert.match(text, /heterogeneity=unresolved/, 'provider 未采集时不阻断但必须留痕');
+  assert.match(text, /heterogeneity=NOT-CHECKED\(no-run-state\)/, '无账本必须可与「通过」区分');
+});
+
+test('SCEN-DOC-26: 验收矩阵的 Verify 列由 acceptance-run 执行，且示例可照抄', () => {
+  const text = skillText;
+  assert.match(text, /acceptance-run\.mjs <change>|acceptance-run\.mjs <name>/,
+    'SKILL 必须给出可照抄的执行器命令');
+  assert.match(text, /自然语言\s*`?Verify`?\s*是硬失败|自然语言 Verify 是硬失败/,
+    'prose Verify 的处置必须写明');
+  assert.match(text, /--only[^\n]{0,80}不能当全量验收|窄跑不得冒充全通过|exit 3/,
+    '局部重跑不得冒充全通过');
+  // 收尾那一节也必须指向执行器，否则读者只会在第 6 节看到它，收尾时想不起来。
+  assert.match(text, /acceptance-run\.mjs/, 'execute 器必须在收尾步骤里出现');
+});
+
+test('SCEN-DOC-27: 运行账本的 review/merge/record --envelope 都有可照抄示例', () => {
+  const text = section('运行账本');
+  for (const sub of ['review', 'merge']) {
+    assert.match(text, new RegExp(`run-state\\.mjs ${sub}\\b`), `缺少 ${sub} 子命令示例`);
+  }
+  assert.match(text, /record[^\n]*--envelope/, 'record --envelope 必须在示例里');
+  assert.match(text, /首次通过率/, '首次通过率的口径必须写明');
+  assert.match(text, /READY 等待/, 'READY 等待的口径必须写明');
+  assert.match(text, /change 名必须是位置参数形态|位置参数/, 'change 名形态校验必须写明');
+});
+
+test('SCEN-DOC-28: 写范围守卫与脏树检测都被写进 SKILL，且不宣称物理隔离', () => {
+  const text = skillText;
+  assert.match(text, /guard-scope\.mjs/, 'SKILL 必须指向守卫脚本');
+  assert.match(text, /scope-guard-hook\.mjs/, 'PreToolUse hook 的安装入口必须写明');
+  assert.match(text, /减速带/, '必须说明它是减速带而非沙箱');
+  assert.match(text, /Bash[^\n]{0,60}(?:sed -i|重定向)[^\n]{0,40}拦不住|拦不住[^\n]{0,40}sed -i/,
+    '已知覆盖缺口必须如实写明');
+  assert.match(text, /PIPELINE_GUARD_SCOPE=off/, '关闭方式必须写明');
+  const recover = section('失败处置与恢复');
+  assert.match(recover, /UNEXPLAINED/, '脏树分级必须写进恢复流程');
+});
