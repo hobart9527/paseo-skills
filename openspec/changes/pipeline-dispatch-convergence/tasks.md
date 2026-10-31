@@ -7,7 +7,8 @@
 
 ## 1. 机械门禁
 
-- [ ] 1.1 T-01 交接门禁：`handoff-check.mjs` 与共享判据 `lib/handoff.mjs`
+- [x] 1.1 T-01 交接门禁：`handoff-check.mjs` 与共享判据 `lib/handoff.mjs`
+  - Done: source=fc5df03 review=pass(94d49a23@fc5df03/51d53dc)
   - Depends on: none
   - Write scope: skills/paseo-pipeline/handoff-check.mjs, skills/paseo-pipeline/lib/handoff.mjs, skills/paseo-pipeline/test/handoff-check.test.mjs
   - Risk-surface: [error-handling]
