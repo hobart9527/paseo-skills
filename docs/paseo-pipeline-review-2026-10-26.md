@@ -17,7 +17,7 @@
 | A 观测与对账 | **已实施** | `lib/paseo-state.mjs` 单一适配器 + runtime 三态；活态改为「任一源报 live 即 live」；attempt 数值绑定；`rejected` 分支不再进 MERGE；解析级 INVALID 写手与同仓外部写手均计入 cap（SCEN-REC-17 ×2） |
 | B 合流门禁 | **已实施** | 冻结 `Verify with` 强制先跑（exit 36）；`-z --no-renames`；单写者锁（exit 37）；Pod 冻结成员校验；legacy 豁免需环境变量二次确认并记 run-log；测试内 commit 检测（exit 40）；进程组 kill；已合流重试的分项诊断（SCEN-MRG-25/26/27）；base 须同时是集成 HEAD 与 tip 的祖先（exit 34）；审查员与运行账本派发记录交叉核对（exit 32，复刻 T-02 自审） |
 | C 契约收敛 | **部分实施** | 角色/phase 单点定义（`lib/roles.mjs`）；`Review` 三档语义写入 SKILL；run-state 读改写加锁 + 候选校验入锁；证据闸门的场景 PASS、占位值与 smoke `--sha` 已补（SCEN-EVD-01/02）；§3-P1-11 的 SKILL/LESSONS 内部矛盾已逐条消除（心跳、Lead 阈值、hotfix 定位、OpenSpec 交回、审查轮数、停滞信号均已复核一致；**`send_agent_prompt` 接力与打回预算两条当时未闭合，见 §3.10，已于本轮按用户裁决落地**：接力改 spec 并已归档合并进正式 spec（change `pipeline-wakeup-budget-alignment` → `archive/2026-10-26-pipeline-wakeup-budget-alignment/`），预算补代码（`retryPolicy()` + `escalations` 输出））；派发 brief 四份模板已落地并锁定必填字段（SCEN-DOC-13..16）；非 `T-` 前缀任务 ID 的 dispatch 标识已修（SCEN-REC-20）。**仅剩** `~/.paseo/task-routing.md` 与 shangshu notes 中的活态表述未改（需另行授权） |
-| D 试点 | **L1 已执行 / L2 未执行** | 2026-10-31 L1 小修 `run-ledger-dispatch-attribution` 闭环（1 任务 / 1 次派发 / attempt 1 / CP-1→CP-2 跨度 1752s / 人工救援 3 次，均为流程缺口而非业务失败；采集值见 §5 D 试点行）。L2 跨模块任务仍未执行，产品验收不得宣布成功 |
+| D 试点 | **L1 已执行 ×2 / L2 未执行** | 2026-10-31 L1 小修 `run-ledger-dispatch-attribution` 闭环（1 任务 / 1 次派发 / attempt 1 / CP-1→CP-2 跨度 1752s / 人工救援 3 次，均为流程缺口而非业务失败）；同日 L1 收敛 `pipeline-dispatch-convergence` 闭环（6 任务 / 19 次派发 / CP-1→CP-2 跨度 14260s，0 人工救援，采集值见 §5 第二张表）。L2 跨模块任务仍未执行，产品验收不得宣布成功 |
 | 0 唤醒冒烟（串行） | **已执行（判断：通过）** | 5 任务串行全流程一次跑通，0 失败、0 人工催促；顺带查出「账本缺失导致因子 3b 静默消失」并已修。采集值与覆盖缺口见 §8 |
 | 0 唤醒冒烟（并行 DAG） | **已执行（判断：通过）** | 5 任务 / cap=2：cap 真实饱和（同一时刻恰 2 写手）、scope 冲突确定性产 `BLOCKED_RESOURCE` 并在上游合流后自动释放、依赖门禁正确。查出「trailer 必须在最后一段」缺陷（5 写手 2 踩中）并已修模板+测试。采集值见 §9 |
 
@@ -333,6 +333,34 @@ acceptance 先跑 structure；smoke 与 audit 都必须 `--sha`；场景按 toke
 `RC=1` + `{"error":{"code":"WAIT_FAILED","message":"Failed to wait for agent: Liveness check timed out (15000ms)"}}`，
 调用区间 2026-10-31T06:21:12Z → 06:25:03Z（231s，远未到 540s 上限），而文档描述为恒 rc=0。
 主会话改用 `get_agent_status` 轮询确认完成。该现象未在本轮归因。
+
+**D 试点第二次 L1 实测（2026-10-31，change `pipeline-dispatch-convergence`）**
+
+来源：`node skills/paseo-pipeline/run-state.mjs report pipeline-dispatch-convergence`、
+`.git/paseo-pipeline/pipeline-dispatch-convergence/run-state.json` 的 `merges[]`/`confirmations[]`，
+以及 Lead `5e2d33f8` 的阶段信封。这是首次由 `[ROUTE]` 判 `lead`、Shangshu 无人值守完成的 L1 收敛。
+
+| 指标 | 采集值 | 说明 |
+| --- | --- | --- |
+| 任务数 / 派发次数 | 6 / 19 | `派发 19 次 / 7 个任务`（含 Lead 自身 1 次） |
+| 同任务最大 attempt | 3 | T-03、T-05 各重派 1 次 |
+| 审查派发 | 10 | `审查派发 10 次`，首次通过率 3/6（50.0%） |
+| 作废意图 | 0 | `未回执 0 / 共 19` |
+| CP-1 时间 | 2026-10-31T09:03:18.813Z | 当场登记 |
+| CP-2 时间 | 2026-10-31T13:00:58.953Z | 用户确认后当场登记 |
+| CP-1→CP-2 跨度 | 14260s | `run-state report` 输出 |
+| READY 等待中位 / 最大 | 534s / 1795s | 12 个样本 |
+| 合流时间（`merges[].at`） | T-01 09:26:35Z · T-02 09:33:44Z · T-03 10:06:24Z · T-04 10:40:32Z · T-05 12:07:16Z · T-06 12:25:05Z | 由 `merge-task.mjs` 写入 |
+| 合入主干 sha | `7031e96` | 快进 + 与远端新增提交合并（2 处冲突） |
+| 全量测试 | 归档后复跑 619 pass / 0 fail；合入远端后 628 pass / 0 fail | 均 rc=0，E2E OK 5 步 |
+| 人工救援 | 0 次 | 全部阻断由流水线自身交回，未出现主会话代写/代跑 |
+
+**本轮验证到什么**：`task-runner.mjs` 成为唯一 CLI 派发入口、`hotfix.sh` 降为包装且脚本内零 `paseo run`；
+`handoff-check` + `run-state record` 的集成分支拦截（exit 2）落地；非 mechanical 档不再伪造审计收据（exit 50）。
+三个入口的分支与基点推导收敛为一份 `lib/handoff.mjs` 判据。
+
+**仍需注意**：`paseo wait` 的 rc=1 未复现（本轮 26 次调用恒 rc=0，其中 6 次 `timeout` 需对同一 id 重 wait），
+原现象仍未归因，证据基数 n=2。
 
 前置：当前未提交改动需由用户确认是否作为基线提交（未经确认不提交、不推送）。建议用一个 OpenSpec change（如 `pipeline-hardening-v2`）承载 A–C，任务数 ≤8，主会话按 L2 编排。
 
