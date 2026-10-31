@@ -69,6 +69,16 @@ async function main() {
   const verdict = assessAnyWrite({ target });
   if (verdict.verdict === 'deny') {
     emitDeny(`[paseo-pipeline scope-guard] ${verdict.reason}`);
+    return 0;
+  }
+
+  // 租约之外的兜底：主 checkout 的 main 上，单会话写入超过 Tier 1 上限。
+  // 放在 scope-guard 之后，所以有租约时仍由 scope-guard 先裁决。
+  const { assessTierGate } = await import(path.join(
+    path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'lib', 'tier-gate.mjs'));
+  const gate = assessTierGate({ target, sessionId: payload?.session_id });
+  if (gate.verdict === 'deny') {
+    emitDeny(`[paseo-pipeline tier-gate] ${gate.reason}`);
   }
   return 0;
 }
