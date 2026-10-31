@@ -68,6 +68,7 @@ function emptyState() {
     reviews: [],
     merges: [],
     readyObs: [],
+    confirmations: [],
     skill: null,
   };
 }
@@ -102,6 +103,13 @@ function normalize(raw) {
   if (Array.isArray(raw.readyObs)) {
     state.readyObs = raw.readyObs.filter((entry) => entry && typeof entry.task === 'string'
       && Number.isFinite(entry.waitMs));
+  }
+  // 人类确认点的时间戳。只认 cp1/cp2 两个点位且必须有可解析的时间：
+  // 确认点是「人做过这个决定」的唯一占位，记一条无法解析时间的记录等于没有记。
+  if (Array.isArray(raw.confirmations)) {
+    state.confirmations = raw.confirmations.filter((entry) => entry
+      && (entry.checkpoint === 'cp1' || entry.checkpoint === 'cp2')
+      && typeof entry.at === 'string' && Number.isFinite(Date.parse(entry.at)));
   }
   // 派发时使用的 Skill 版本。只做「不一致提示」，不做强制：账本可以在同一台机器的不同
   // Skill 版本之间被读取（只读诊断不该因此失败），但「这批任务是用哪份编排逻辑跑出来的」

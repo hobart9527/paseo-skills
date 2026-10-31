@@ -9,7 +9,7 @@
 ## 1. 角色与派发
 
 - **角色边界只认活态 profiles**：角色职责以 `list_profiles` 的 `notes` 为唯一真源。历史上曾把 Tester 误写成「只写单测」，而 notes 里其实支持 E2E 与跨模块集成测试。禁止在 skill 中硬编码或自创角色边界。
-- **编排者不留在主会话**（2026-10-23 `vector-ops`、2026-10-24 `number-theory-factors` 两次实测）：主会话亲自编排均遭遇上下文压缩。判据：预计派发 ≥6 次或预计 >30 分钟的任务交 `agent_profile_shangshu` 无人值守；微型 Pod 任务（通常 ≤3 次派发）主会话直接编排。
+- **编排者不留在主会话**（2026-10-23 `vector-ops`、2026-10-24 `number-theory-factors` 两次实测）：主会话亲自编排均遭遇上下文压缩。判据统一为 `freeze-check` 的 `[ROUTE]` 行（预计派发 ≥6 次判 `lead`）；时长无法机械预估，不另设阈值。判 `lead` 交 `agent_profile_shangshu` 无人值守，判 `pod`（通常 ≤3 次派发）主会话直接编排。
 - **只读角色静音**（2026-10-23 `vector-ops`）：Auditor 因调用 memory MCP 工具被安全策略拦截，停在等待权限状态，整条完成通知链挂起数分钟。只读角色 brief 须显式声明禁调 memory 与不必要网络工具——**但允许完成审查所需的授权本地查询**（读仓库、`rg`、codegraph）。一刀切禁 MCP 会让同一角色无法使用 codegraph。
 - **create_agent 参数防御**（2026-10-24 `integer-sequence-ops`）：漏传 `title` 触发 `MCP error -32602`。`title` 为 Schema 必填且 ≤60 字符，统一格式 `[Pipeline] ${role} ${task} ${change}` 截断。
 - **tasks.md 标题序号漂移**：任务标题若在 DAG 设计中调整过层级序号（`1.4` → `2.1`），按带序号长字符串查找替换会报 `String to replace not found`。Done 行定位必须基于任务 ID 锚点（`T-NN:`）。
@@ -61,7 +61,7 @@
 - **微型算子过度施压与 Task Pod**：69 行核心实现消耗 14 个 agent、7 个 worktree、10 次集成分支提交。同域微型任务改用 Task Pod（`pod/<name>`）：单 workspace、Tester/Runner 批量接力、Auditor 单次复核合并 diff、单次合流。
 - **合流记账原子化**：旧流程把 merge 与更新 `tasks.md` 拆成两步提交，靠人记执行全量测试与退出码捕获，实测多次漏跑全量测试。现由 `merge-task.mjs` 自动化：工作区干净检查 → 合流测试 → 更新 `tasks.md` → 原子提交；失败或冲突自动 abort 恢复。**（2026-10-25 补强：固定审查过的 tip、测试超时、测试前后状态指纹、先恢复再 abort。）**
 - **审计分级而非豁免**：静态门禁不能替代独立审计。Pod 级合并审计批次，按风险调整深度（strict 或改共享入口用高 thinking，其余用低 thinking）。数学/算法类由 Tester 补差分对拍与小定义域穷举。
-- **编排权属判据**：`agent_profile_shangshu` 承接判据为「预计派发 ≥6 次或预计 >30 分钟」；微型 Pod（通常 2–3 次派发）主会话直接编排。
+- **编排权属判据**：`agent_profile_shangshu` 承接判据为 `freeze-check` 的 `[ROUTE]` 判 `lead`（预计派发 ≥6 次）；判 `pod`（通常 2–3 次派发）主会话直接编排。时长不进判据。
 - **派发参数严格机械化**：从 `list_profiles` 逐字段复制，未声明字段直接省略。派发后一次快照核对并采集时间戳。
 - **分支清理与模板闭环**：禁止 `git branch -D`，允许 `git branch -d` 安全清理已合入主干的分支；`proposal.md` 必须含 `## What Changes`；归档命令统一 `--yes` 杜绝终端交互阻塞。
 

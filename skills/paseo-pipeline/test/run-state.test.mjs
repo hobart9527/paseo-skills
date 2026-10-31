@@ -49,7 +49,7 @@ test('an expired lease is reclaimable and bumps the generation so the old lead c
   assert.equal(taken.status, 0, taken.stderr);
   assert.equal(subject.read().lease.generation, 2, 'a new generation must be issued');
 
-  const stale = subject.run('claim', '--task', 'T-01', '--owner', 'lead-a');
+  const stale = subject.run('claim', '--task', 'T-01', '--attempt', '1', '--phase', 'impl', '--role', 'gongbu', '--owner', 'lead-a');
   assert.equal(stale.status, 2, 'the previous generation must not be able to submit actions');
   assert.match(stale.stderr, /无权|旧 Lead/);
 });
@@ -106,8 +106,69 @@ test('fail releases the intent so the task can be dispatched again', (context) =
 
 test('claim without a lease is allowed (bare single-run usage) but a stale lease still blocks', (context) => {
   const subject = fixture(context);
-  const noLease = subject.run('claim', '--task', 'T-01', '--attempt', '1');
+  const noLease = subject.run('claim', '--task', 'T-01', '--attempt', '1', '--phase', 'impl', '--role', 'gongbu');
   assert.equal(noLease.status, 0, 'no lease record means the lease feature is not in use');
+});
+
+test('claim refuses an incomplete intent key instead of writing a `-` placeholder entry', (context) => {
+  const subject = fixture(context);
+  // 真实账本里出现过 `local:T-06:-:-:-:dispatch`：缺 attempt/phase/role 的 claim 被默默接受。
+  for (const args of [
+    ['--task', 'T-01'],
+    ['--task', 'T-01', '--attempt', '1'],
+    ['--task', 'T-01', '--attempt', '1', '--phase', 'impl'],
+    ['--task', 'T-01', '--phase', 'impl', '--role', 'gongbu'],
+  ]) {
+    const result = subject.run('claim', ...args);
+    assert.equal(result.status, 1, `${args.join(' ')}: ${result.stdout}${result.stderr}`);
+    assert.match(result.stderr, /claim 缺少/);
+  }
+  const bad = subject.run('claim', '--task', 'T-01', '--attempt', 'x', '--phase', 'impl', '--role', 'gongbu');
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /正整数/);
+  assert.equal(existsSync(subject.file), false, '被拒的 claim 不得创建账本');
+});
+
+// 派发标签自检：漏打 pipeline.* 标签的 agent 会被 reconcile 判 UNMAPPED，并且 write-guard
+// 不把它当派生 agent 豁免（首写即被拦、无人可回复）。record 拿到真实 agent id，正好核对。
+const AGENT_ID = '3f2b8c1e-5a4d-4e6f-9b7a-1c2d3e4f5a6b';
+const ALL_LABELS = {
+  'pipeline.change': change, 'pipeline.task': 'T-01', 'pipeline.attempt': '1',
+  'pipeline.phase': 'impl', 'pipeline.role': 'gongbu',
+};
+
+function recordWithAgentLabels(context, labels) {
+  const subject = fixture(context);
+  const paseoHome = path.join(subject.root, 'paseo-home');
+  if (labels !== undefined) {
+    const dir = path.join(paseoHome, 'agents', 'slug');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, `${AGENT_ID}.json`), JSON.stringify({ id: AGENT_ID, labels }));
+  }
+  const withHome = { ...subject.env, PIPELINE_PASEO_HOME: paseoHome };
+  const run = (...args) => spawnSync(process.execPath, [script, args[0], change, ...args.slice(1)], {
+    env: withHome, encoding: 'utf8', timeout: 15_000,
+  });
+  assert.equal(run('claim', '--task', 'T-01', '--attempt', '1', '--phase', 'impl', '--role', 'gongbu').status, 0);
+  const key = intentKey({ run: null, task: 'T-01', attempt: 1, phase: 'impl', role: 'gongbu', action: 'dispatch' });
+  return { subject, result: run('record', '--key', key, '--agent', AGENT_ID) };
+}
+
+test('record warns (but still records) when the dispatched agent lacks pipeline labels', (context) => {
+  const { subject, result } = recordWithAgentLabels(context, { 'pipeline.change': change, 'pipeline.task': 'T-01' });
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  assert.match(result.stderr, /缺派发标签：pipeline\.attempt, pipeline\.phase, pipeline\.role/);
+  assert.match(result.stderr, /write-guard/);
+  assert.ok(subject.read().intents[0].resolvedAt, '告警不改变回执：agent 已建成，拒绝回执只会让它失联');
+});
+
+test('record stays silent when every pipeline label is present or the agent record is unreadable', (context) => {
+  const complete = recordWithAgentLabels(context, ALL_LABELS);
+  assert.equal(complete.result.status, 0);
+  assert.doesNotMatch(complete.result.stderr, /缺派发标签/);
+  const unreadable = recordWithAgentLabels(context, undefined);
+  assert.equal(unreadable.result.status, 0);
+  assert.doesNotMatch(unreadable.result.stderr, /缺派发标签/, '读不到记录不等于缺标签');
 });
 
 test('unknown key on record is a usage error, not a silent success', (context) => {
@@ -250,13 +311,13 @@ test('SCEN-CON-09 an intent with a real receipt cannot be voided, so its key can
 
 test('SCEN-RS-LOCK concurrent claims of the same intent can never both succeed', (context) => {
   const subject = fixture(context);
-  assert.equal(subject.run('claim', '--task', 'T-01').status, 0);
+  assert.equal(subject.run('claim', '--task', 'T-01', '--attempt', '1', '--phase', 'impl', '--role', 'gongbu').status, 0);
   // 手工占住账本锁，模拟另一个进程正在读改写。
   const lockDir = path.join(subject.root, 'state', change);
   writeFileSync(path.join(lockDir, 'run-state.lock'),
     JSON.stringify({ pid: 99999, host: 'other-host', acquiredAt: new Date().toISOString() }));
 
-  const blocked = subject.run('claim', '--task', 'T-02');
+  const blocked = subject.run('claim', '--task', 'T-02', '--attempt', '1', '--phase', 'impl', '--role', 'gongbu');
   assert.equal(blocked.status, 2, `${blocked.stdout}${blocked.stderr}`);
   assert.match(blocked.stderr, /运行账本被占用/);
   // 被锁挡住的动作不得留下半条记录。
@@ -272,7 +333,7 @@ test('SCEN-RS-LOCK a stale lock from a crashed run is reclaimed instead of wedgi
   const old = new Date('2020-01-01T00:00:00.000Z');
   fs.utimesSync(lockFile, old, old);
 
-  const result = subject.run('claim', '--task', 'T-01');
+  const result = subject.run('claim', '--task', 'T-01', '--attempt', '1', '--phase', 'impl', '--role', 'gongbu');
   assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
   assert.equal(subject.read().intents.length, 1);
 });
@@ -540,4 +601,68 @@ test('SCEN-CON-10 SCEN-CON-22 ready wait is measured from the previous action, a
   subject.run('fail', '--key', key2, '--reason', 'create failed', '--owner', 'lead-a');
   subject.run('claim', '--task', 'T-01', '--attempt', '2', '--phase', 'impl', '--role', 'gongbu', '--owner', 'lead-a');
   assert.equal(subject.read().readyObs.filter((obs) => obs.afterKey === after[0].afterKey).length, 1);
+});
+
+// --- 人类确认点时间戳（2026-10-31 D 试点前置） ---
+//
+// 「确认点等待时长」过去只能报「未采集」：账本知道派发与合流的时间，不知道人什么时候点头。
+// 缺口不在算法，在没有写入点。confirm 必须在确认发生的当下调用；事后补记的是回忆，不是采集值。
+
+test('SCEN-CON-10 confirm records cp1/cp2 in the order a run actually reaches them', (context) => {
+  const subject = fixture(context);
+  subject.run('begin', '--owner', 'lead-a');
+
+  // 未登记时报告必须写未采集，不能拿「无跨度」冒充 0 秒。
+  const empty = JSON.parse(subject.run('report', '--json').stdout);
+  assert.deepEqual(empty.confirmations, { cp1At: null, cp2At: null, cp1ToCp2Ms: null });
+  assert.match(subject.run('report').stdout, /确认点 未采集/);
+
+  const cp1 = subject.run('confirm', '--checkpoint', 'cp1', '--owner', 'lead-a');
+  assert.equal(cp1.status, 0, cp1.stderr);
+  const onlyCp1 = JSON.parse(subject.run('report', '--json').stdout);
+  assert.ok(onlyCp1.confirmations.cp1At);
+  assert.equal(onlyCp1.confirmations.cp2At, null);
+  assert.equal(onlyCp1.confirmations.cp1ToCp2Ms, null, '只有一个确认点时没有跨度可算');
+
+  const cp2 = subject.run('confirm', '--checkpoint', 'cp2', '--note', 'merged to main', '--owner', 'lead-a');
+  assert.equal(cp2.status, 0, cp2.stderr);
+  const both = JSON.parse(subject.run('report', '--json').stdout);
+  assert.ok(both.confirmations.cp1ToCp2Ms >= 0);
+  assert.equal(subject.read().confirmations.length, 2);
+});
+
+test('confirm is idempotent per checkpoint and never rewrites the first timestamp', (context) => {
+  const subject = fixture(context);
+  subject.run('begin', '--owner', 'lead-a');
+  subject.run('confirm', '--checkpoint', 'cp1', '--owner', 'lead-a');
+  const first = subject.read().confirmations[0];
+
+  const again = subject.run('confirm', '--checkpoint', 'cp1', '--owner', 'lead-a');
+  assert.equal(again.status, 0, again.stderr);
+  assert.match(again.stdout, /已登记过/);
+  const after = subject.read().confirmations;
+  assert.equal(after.length, 1, '重复确认不得新增第二条记录');
+  assert.equal(after[0].at, first.at, '首次时间是不可改写的采集值');
+  assert.equal(after[0].repeated, 1);
+  assert.ok(after[0].lastAt);
+});
+
+test('confirm rejects an unknown checkpoint and values that are not timestamps in the ledger', (context) => {
+  const subject = fixture(context);
+  subject.run('begin', '--owner', 'lead-a');
+  const bad = subject.run('confirm', '--checkpoint', 'cp3', '--owner', 'lead-a');
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /cp1/);
+
+  // 规范化层丢弃无法解析时间的记录：一条读不出时间的确认等于没确认过。
+  const state = subject.read();
+  state.confirmations = [
+    { checkpoint: 'cp1', at: 'not-a-date' },
+    { checkpoint: 'cp9', at: new Date().toISOString() },
+  ];
+  writeFileSync(subject.file, JSON.stringify(state, null, 2));
+  // `fixture.read()` 读的是原始文件；规范化在 readRunState 里，用 status --json 观察结果。
+  const listed = JSON.parse(subject.run('status', '--json').stdout).confirmations;
+  assert.deepEqual(listed, [], '非法确认记录被丢弃，不补默认值');
+  assert.equal(JSON.parse(subject.run('report', '--json').stdout).confirmations.cp1At, null);
 });

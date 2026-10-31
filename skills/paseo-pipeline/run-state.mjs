@@ -10,6 +10,7 @@
 //   node run-state.mjs fail     <change> --key <key> --reason <text> [--owner <id>]
 //   node run-state.mjs review   <change> --task T-01 [--attempt 1] [--round 1] --verdict PASS|PASS_WITH_NITS|BLOCK --agent <id> [--sha <sha>] [--owner <id>]
 //   node run-state.mjs merge    <change> --task T-01 --sha <merge-sha> [--attempt 1] [--review-tag <tag>]
+//   node run-state.mjs confirm  <change> --checkpoint cp1|cp2 [--note <text>] [--owner <id>]
 //
 // 无 heartbeat 子命令：SKILL 已声明常规运行不建周期性 heartbeat，2026-10-26 的
 // `hardening-governance-contracts` 账本里 heartbeats 为 0，注册入口没有使用者。
@@ -31,6 +32,7 @@ import {
   isFailed, intentAgeMs, DEFAULT_LEASE_TTL_MS,
 } from './lib/run-state.mjs';
 import { normalizePhase } from './lib/roles.mjs';
+import { findAgentRecord } from './lib/paseo-state.mjs';
 import { changeIdProblem } from './lib/change-id.mjs';
 import {
   validateEnvelope, ENVELOPE_MAX_LINES, ENVELOPE_MAX_LINES_AUDIT,
@@ -72,12 +74,14 @@ function fail(code, message) {
   process.exit(code);
 }
 
+const REQUIRED_LABELS = ['pipeline.change', 'pipeline.task', 'pipeline.attempt', 'pipeline.phase', 'pipeline.role'];
+
 const argv = process.argv.slice(2);
 const json = argv.includes('--json');
 const command = argv[0];
 const change = argv[1];
 if (!command || !change) {
-  console.error('Usage: node run-state.mjs <begin|status|report|claim|record|fail|review|merge> <change> [flags]');
+  console.error('Usage: node run-state.mjs <begin|status|report|claim|record|fail|review|merge|confirm> <change> [flags]');
   process.exit(1);
 }
 // change 名必须是位置参数形态：把 `--change` 这类旗标当成 change 会静默新建一份游离账本
@@ -183,7 +187,8 @@ switch (command) {
     if (json) {
       console.log(JSON.stringify({
         change, present, file, error, run: state.run, lease,
-        openIntents: open, heartbeats: state.heartbeats, resolvedCount: state.intents.length - open.length,
+        openIntents: open, heartbeats: state.heartbeats, confirmations: state.confirmations,
+        resolvedCount: state.intents.length - open.length,
       }, null, 2));
       break;
     }
@@ -193,6 +198,9 @@ switch (command) {
       ? `LEASE owner=${lease.owner} gen=${lease.generation} ${lease.valid ? '有效' : '已过期'} 到期=${lease.expiresAt}`
       : 'LEASE (未启用)');
     console.log(`INTENTS 未回执 ${open.length} / 共 ${state.intents.length}`);
+    console.log(state.confirmations.length === 0
+      ? 'CONFIRM 未登记（cp1 = spec 冻结，cp2 = 合入主干）'
+      : `CONFIRM ${state.confirmations.map((entry) => `${entry.checkpoint}=${entry.at}`).join(' ')}`);
     // 版本漂移只警告，不拦：一台机器升级 Skill 之后，旧账本仍然应该可读。
     // 但「这批任务是用哪份编排逻辑跑出来的」不能默默丢掉，否则复盘无法判断规则是否存在。
     if (state.skill) {
@@ -278,6 +286,17 @@ switch (command) {
       firstPassRate,
       mergedTasks: state.merges.length,
       readyWait,
+      // 确认点：只回显账本里记下的时间，不推算「本该多早」。两者都齐才给 CP-1→CP-2 跨度。
+      confirmations: (() => {
+        const cp1 = state.confirmations.find((entry) => entry.checkpoint === 'cp1') ?? null;
+        const cp2 = state.confirmations.find((entry) => entry.checkpoint === 'cp2') ?? null;
+        const span = cp1 && cp2 ? Date.parse(cp2.at) - Date.parse(cp1.at) : null;
+        return {
+          cp1At: cp1 ? cp1.at : null,
+          cp2At: cp2 ? cp2.at : null,
+          cp1ToCp2Ms: Number.isFinite(span) && span >= 0 ? span : null,
+        };
+      })(),
     };
     if (json) {
       console.log(JSON.stringify(report, null, 2));
@@ -295,6 +314,11 @@ switch (command) {
       ? `READY 等待 中位 ${Math.round(readyWait.medianMs / 1000)}s / 最大 ${Math.round(readyWait.maxMs / 1000)}s（${waits.length} 个样本，口径：${readyWait.basis}）`
       : `READY 等待 未采集（口径：${readyWait.basis}；需至少一次 claim 发生在上一动作结束之后）`);
     console.log(`已合流任务 ${state.merges.length} 个（由 merge-task.mjs 写入）`);
+    const cp = report.confirmations;
+    console.log(cp.cp1ToCp2Ms !== null
+      ? `确认点 cp1=${cp.cp1At} → cp2=${cp.cp2At}（跨度 ${Math.round(cp.cp1ToCp2Ms / 1000)}s）`
+      : `确认点 未采集（cp1=${cp.cp1At ?? '未登记'}，cp2=${cp.cp2At ?? '未登记'}；`
+        + '确认发生的那一刻用 run-state.mjs confirm 登记，事后补记的时间是回忆不是采集值）');
     break;
   }
 
@@ -305,6 +329,14 @@ switch (command) {
     const phase = flag('phase');
     const role = flag('role');
     const action = flag('action') ?? 'dispatch';
+    // 意图键 = run:task:attempt:phase:role:action。缺任何一段都会落成 `-` 占位的脏键，
+    // 而 reconcile 与 report 都按这些字段归因（真实账本里出现过 `local:T-06:-:-:-:dispatch`）。
+    const missing = [['--attempt', attempt], ['--phase', phase], ['--role', role]]
+      .filter(([, value]) => value === null || value === '').map(([name]) => name);
+    if (missing.length > 0) {
+      fail(1, `claim 缺少 ${missing.join(' ')}：意图键必须完整（--task --attempt --phase --role），否则对账无法归因`);
+    }
+    if (!/^[1-9][0-9]*$/.test(attempt)) fail(1, `claim --attempt 必须是正整数，收到 ${attempt}`);
     const result = update(`claim ${task}`, (draft) => {
       const refusal = ownerRefusal(draft, `claim ${task}`);
       if (refusal !== null) return { refusal, skipWrite: true };
@@ -415,6 +447,23 @@ switch (command) {
     if (result.failed) {
       fail(2, `意图已于 ${result.failedAt} 显式作废，不得用 record 复活：${key}（需重派请重新 claim）`);
     }
+    // 派发标签自检：五个 pipeline.* 标签是 reconcile 归属、cap 计数的唯一依据，也是
+    // ~/.claude/hooks/write-guard.py 识别「Paseo 派生 agent」的依据——漏打标签的写手既会被判
+    // UNMAPPED，也会在无人可回复的 write-guard 首写拦截上永久卡死。
+    // 只告警不拒绝：record 发生在 create_agent 之后，拒绝回执改变不了 agent 已经建成的事实，
+    // 只会让它在账本上失联。读不到记录（Paseo 目录不存在）时不发声，不当成缺标签。
+    const created = findAgentRecord(agentId);
+    if (created !== null) {
+      const absent = REQUIRED_LABELS.filter((name) => {
+        const value = created.labels?.[name];
+        return typeof value !== 'string' || value === '';
+      });
+      if (absent.length > 0) {
+        console.error(`[run-state] WARN agent ${agentId} 缺派发标签：${absent.join(', ')}。`
+          + '它会被 reconcile 判 UNMAPPED，且 write-guard 不会把它当派生 agent 豁免（首写即被拦、无人可回复）。'
+          + '请 archive 该 agent，用齐全标签重新 claim/派发。');
+      }
+    }
     console.log(json ? JSON.stringify({ change, intent: result.intent, envelope: envelope?.fields.size ?? null })
       : `[run-state] record ok ${key} agent=${agentId}${envelope ? ` envelope=${envelope.lines}行/${envelope.fields.size}字段` : ''}`);
     break;
@@ -503,6 +552,44 @@ switch (command) {
     });
     console.log(json ? JSON.stringify({ change, merges: result.merges })
       : `[run-state] merge ok ${tasks.join(',')} sha=${sha}`);
+    break;
+  }
+
+  /**
+   * confirm：登记人类确认点真正发生的时间（CP-1 冻结 / CP-2 合入主干）。
+   *
+   * 为什么需要它：`report` 里「确认点等待时长」过去只能写「未采集」，因为账本只知道
+   * 派发与合流什么时候发生，不知道人是什么时候点头的。缺口不是算法问题，是**没有人写这一笔**。
+   * 这一笔必须在确认发生的那一刻写，事后补记的时间是回忆，不是采集值。
+   *
+   * 同一 checkpoint 重复登记按幂等处理：保留首次时间并记 `repeated` 次数——真实流程里
+   * 「再次确认」往往意味着冻结被推翻，覆盖时间会让等待时长永远看起来很短。
+   */
+  case 'confirm': {
+    const checkpoint = flag('checkpoint');
+    if (checkpoint === null) fail(1, 'confirm 需要 --checkpoint cp1|cp2');
+    const normalized = checkpoint.toLowerCase();
+    if (normalized !== 'cp1' && normalized !== 'cp2') {
+      fail(1, `--checkpoint 取值未知：${checkpoint}（cp1 = spec 冻结，cp2 = 合入主干）`);
+    }
+    const note = flag('note');
+    const result = update(`confirm ${normalized}`, (draft) => {
+      const refusal = ownerRefusal(draft, `confirm ${normalized}`);
+      if (refusal !== null) return { refusal, skipWrite: true };
+      const existing = draft.confirmations.find((entry) => entry.checkpoint === normalized);
+      if (existing) {
+        existing.repeated = (Number.isInteger(existing.repeated) ? existing.repeated : 0) + 1;
+        existing.lastAt = nowIso;
+        return { entry: existing, repeated: true, firstAt: existing.at };
+      }
+      const entry = { checkpoint: normalized, at: nowIso, note: note ?? null };
+      draft.confirmations.push(entry);
+      return { entry, repeated: false };
+    });
+    console.log(json
+      ? JSON.stringify({ change, confirmation: result.entry, repeated: result.repeated })
+      : `[run-state] confirm ${normalized} at=${result.entry.at}`
+        + (result.repeated ? `（已登记过，首次 ${result.firstAt}；本次只记重复次数，不改首次时间）` : ''));
     break;
   }
 

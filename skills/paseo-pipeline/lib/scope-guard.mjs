@@ -108,6 +108,22 @@ function contextForTarget(target, cwd) {
 }
 
 /**
+ * `root` 是否主 checkout（`git-dir` 与 `git-common-dir` 指向同一处）。
+ * linked worktree 的 git-dir 是 `<common>/worktrees/<name>`，两者不同。
+ * 任何一步读不出来都返回 false（不当作主 checkout）：守卫是减速带，拿不准就放行。
+ */
+function isMainCheckout(root) {
+  try {
+    const read = (flag) => fs.realpathSync(path.resolve(root, execFileSync('git', ['rev-parse', flag], {
+      cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000,
+    }).trim()));
+    return read('--git-dir') === read('--git-common-dir');
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 枚举当前持有**有效租约**的 change。
  *
  * 没有有效租约的 change 不拦截：租约过期意味着上一任编排者已死，此时任何写入都不该
@@ -192,6 +208,20 @@ export function assessWrite({ change, target, cwd = process.cwd(), state = null,
   const owned = owners.map((task) => task.id);
   const covered = owners.filter((task) => writerIntents.some((intent) => intent.task === task.id));
   const scopeOwners = owned;
+  if (covered.length > 0 && isMainCheckout(root)) {
+    // 意图在账本里只证明「这个任务派过写手」，不证明**此刻写入者就是那个写手**：
+    // record 紧随 create_agent，写手干活时意图早已回执，所以不能用「未回执」收紧。
+    // 能区分的是位置——写手一律在自己的 linked worktree 里（SKILL §8），主 checkout 属于
+    // 编排者。有租约期间编排者在主 checkout 写任务 scope，就是 §13 的代写，意图存在也不例外。
+    const coveredIds = covered.map((task) => task.id);
+    return {
+      path: normalized, scopeOwners, covered: coveredIds, lease, verdict: 'deny',
+      reason: `${normalized} 落在 ${coveredIds.join(', ')} 的 Write scope 内，账本虽有写手意图，`
+        + '但这里是主 checkout（不是写手的 linked worktree）。有租约期间业务代码只能由写手在其 worktree 里写，'
+        + `编排者不得代写（owner=${lease.owner} gen=${lease.generation}；SKILL §8 硬红线）。`
+        + '若这是人工排障，设 PIPELINE_GUARD_SCOPE=off 显式豁免。',
+    };
+  }
   if (covered.length > 0) {
     const coveredIds = covered.map((task) => task.id);
     const coveredOpen = covered.filter((task) => writerIntents.some((intent) =>

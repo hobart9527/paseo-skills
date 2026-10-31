@@ -31,7 +31,7 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 
 | 阶段 / 职责 | profile | 说明 |
 |---|---|---|
-| 总控编排 | 主会话 / `agent_profile_shangshu` | 预计派发 ≥6 次或预计 >30 分钟时交 Shangshu 无人值守，主会话只守确认点 1 与 2；微型 Pod 任务（通常 ≤3 次派发）主会话直接编排 |
+| 总控编排 | 主会话 / `agent_profile_shangshu` | `[ROUTE]` 判 `lead`（预计派发 ≥6 次）时交 Shangshu 无人值守，主会话只守确认点 1 与 2；微型 Pod 任务（通常 ≤3 次派发）主会话直接编排 |
 | 需求调研 | `agent_profile_chanpin` | 产品需求规划与现状调研（吸收原 Scout 侦察兵职能，提取 Codebase Digest） |
 | 契约制宪 | `agent_profile_hanlin` | 架构与契约设计；微型/中型由编排者起草；兼任架构争议裁决（吸收原 Arbiter 仲裁官职能） |
 | 测试先行 | `agent_profile_ceshi` | 严格档（`Review: strict`）任务使用，先写 Red 测试；数学类任务写差分对拍或小定义域穷举 |
@@ -135,7 +135,7 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
      - **双轴审计（Two-Axis Review）**：同一个 Auditor 按 Spec 轴（场景是否都实现、行为是否一致）与 Standards 轴（坏味道、模块深度）各过一遍，信封分 `spec_axis` / `standards_axis` 写。Blocker 只来自 4 类准入；Standards 轴默认只产出 Nit。
      - **返工先复现（Red Before Fix）**：带上一轮 Blockers 的返工，写手先把每条 `repro` 写成失败断言再改实现，信封贴 `red_evidence`；R2 以此判定闭环。复现测试文件必须在 `Write scope` 内——所以起草时每个任务的 scope 都要含它的测试文件（与「scope 闭环」同一条要求）。
    - 任务行格式 `- [ ] 1.1 T-01 标题` 与 `- [ ] 1.1 T-01: 标题` 都合法（后者是早期产物的历史写法，`parseTasks` 与 `merge-task.mjs` 的 Done 定位都兼容）；`T-01:标题` 这种冒号紧贴 ID 的写法不合法，会被判 `MALFORMED_LINE`，因为它会让 ID 解析错位。
-6. **人类确认点 1：spec 冻结**：呈报概况、DAG 拓扑、业务验收矩阵、`freeze-check` 的 `[ROUTE]` 行与 Auditor 结论，经用户确认后冻结。冻结即固定本轮 spec revision。
+6. **人类确认点 1：spec 冻结**：呈报概况、DAG 拓扑、业务验收矩阵、`freeze-check` 的 `[ROUTE]` 行与 Auditor 结论，经用户确认后冻结。冻结即固定本轮 spec revision，并在同一回合 `run-state.mjs confirm --checkpoint cp1` 记下确认时间（§4）。
 
    **确认选项必须写明下一步动作的执行者**，不能只写「确认冻结并启动实施」——那六个字把「谁编排」留给了模型的自由发挥。按 `[ROUTE]` 二选一：
 
@@ -203,7 +203,7 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
    - 场景编号写在测试注释行里也算引用：JS 的 `// SCEN-…` 与 shell 用例表的 `# SCEN-…` 都会被读到。shell 的 heredoc 夹具不算（那是被构造的输入）。
 4. **OpenSpec 交回点**：需要 `validate`/`archive` 时，Lead 在最终信封里列成**唯一待办请求**并在运行账本标等待；主会话执行后回执，Lead 才继续。文档改动不等于获得 CLI 或发布授权。
 5. **归档集成 change**：`openspec archive <name> --yes`（主会话）。
-6. **人类确认点 2：合入主干**：呈报 diff 摘要、验收 SHA、测试与业务验收记录，经用户确认后方可合入主干。未经确认绝对禁止合入 main、推送远端或发布外部服务。
+6. **人类确认点 2：合入主干**：呈报 diff 摘要、验收 SHA、测试与业务验收记录，经用户确认后方可合入主干。未经确认绝对禁止合入 main、推送远端或发布外部服务。确认后同一回合 `run-state.mjs confirm --checkpoint cp2` 登记时间。
 7. 归档工作区，`git branch -d` 清理已合入主干的分支。
 
 **主会话不是 Paseo agent**：主会话（Claude Code）不在 agent 图里，`send_agent_prompt` 发不到它。主会话等 Lead 的正确方式是**阻塞在 `paseo wait <lead-id>`**（后台 Bash / Monitor 均可，由 harness 通知），返回后读 Lead 的最终信封（`paseo logs` 或 `get_agent_activity`），再执行它列出的待办请求。不要设计「Lead 主动 push 给主会话」的路径——那条路在结构上不通。
@@ -243,19 +243,24 @@ node skills/paseo-pipeline/run-state.mjs fail   <change> --key <key> --reason <t
 node skills/paseo-pipeline/run-state.mjs review <change> --task T-01 --round 1 --verdict PASS --agent <auditor-agent-id> --owner <owner-id>
 # 合流事实：由 merge-task.mjs 提交成功后自动写入，不手敲
 node skills/paseo-pipeline/run-state.mjs merge  <change> --task T-01 --sha <merge-sha> [--attempt 1] [--review-tag <tag>]
+# 人类确认点：确认发生的那一刻登记（cp1=spec 冻结，cp2=合入主干），不要事后补记
+node skills/paseo-pipeline/run-state.mjs confirm <change> --checkpoint cp1|cp2 [--note <text>] [--owner <owner-id>]
 # 查看：租约、未回执意图
 node skills/paseo-pipeline/run-state.mjs status <change> [--json]
-# 度量：派发次数、首次通过率、READY 等待（只写账本能算出的数，采不到的项打印「未采集」）
+# 度量：派发次数、首次通过率、READY 等待、确认点跨度（只写账本能算出的数，采不到的项打印「未采集」）
 node skills/paseo-pipeline/run-state.mjs report <change> [--json]
 ```
 
 - **有租约时 `--owner` 必填**：`claim`/`record`/`fail` 三个动作在租约生效期间一律要求 `--owner` 且等于当前 owner，否则 exit 2。照抄不带 `--owner` 的写法在 `begin` 之后必然被拒——这是租约在生效，不是命令写错了。租约未启用的单机场景才允许省略。
 
+- **意图键必须完整**：`claim` 要求 `--task --attempt --phase --role` 全部给出（`--attempt` 为正整数），缺一项直接 exit 1。半截键写进账本后，`reconcile` 既归不了因也排不进 `NEXT`，等于制造一条看不见的意图。
+- **`record` 校验派发标签**：登记真实 agent 后回读该 agent 的 Paseo 记录，缺 `pipeline.change/task/attempt/phase/role` 任一标签时在 stderr 打 `WARN`（提及会造成 `UNMAPPED` 与 write-guard 失豁免），**只告警不拒绝**——标签是归属依据，`record` 不该因为标签写错而把已经在跑的回执丢掉。读不到记录（`PIPELINE_PASEO_HOME` 无此项等）时不发声。
 - **动作意图幂等**：同一幂等键已有未回执意图时，`claim` 以 exit 2 拒绝重复派发。**先记意图，再派发，再记回执。** 创建成功但回执丢失时，按唯一标签对账，未排除重复前不盲重派。
 - **`fail` 只作废「还没回执」的意图**：已有真实 `agent` 回执的意图不得 `fail`（exit 2）。作废的语义是「这次派发确认没有发生」，而回执证明它发生过并指向一个具体 agent——agent 中途失联是 `reconcile` 的 rework，用**新的 attempt 键**重派，不要抹掉这次派发的痕迹。
 - **单 owner 租约**：同 run 只有一个有效 owner。租约过期后旧 owner 的全部 `claim`/`record`/`fail` 一律 exit 2，必须显式 `begin` 领取新代际——防止旧 Lead 复活后继续提交动作。**租约仍有效且属于他人时不得抢占**，等其 renew 或超时。
 - **信封进机器校验（`record --envelope`）**：`record` 可带 `--envelope <file>`，把子 Agent 的信封交给 `lib/envelope.mjs` 校验：7 个统一字段（`task`/`attempt`/`phase`/`result`/`reviewed_sha`/`blockers`/`next_action`）齐全、枚举合法、`result` 与 `next_action` 不自相矛盾、无重复字段、行数不超限（写手 20 行，`anchasi`/`hanlin` 审计信封 25 行；行数上限由 `--role` 决定，不给就按写手算）。不合格即**拒绝回执**（exit 2）——回执是「这次派发产出了什么」的唯一入口，放行一封结构不合格的信封等于把下游判断推回自由心证。字段快照写进意图的 `envelope`，不留原文（账本是状态，不是日志）。
 - **`review` 与 `merge` 是度量的事实来源，不是可选装饰**：`review` 登记审计结论（`task`/`attempt`/`round`/`verdict`/`agent`/`sha`），同一 `(task, attempt, round)` 幂等覆盖；`merge` 由 `merge-task.mjs` 写入合流事实（任务列表 + 合流 sha + review-tag）。`report` 的首次通过率只数 `reviews[]` 里每个任务**首轮**（round 最小）的 verdict：分母是「有审计结论的任务数」，不是派发数；没有 review 记录就是「未采集」，不是「100%」。
+- **确认点时间只在确认当下登记**：`confirm --checkpoint cp1|cp2` 由收到人类确认的那一方在同一回合写入。同一 checkpoint 重复登记是幂等的——保留首次时间、只累加 `repeated` 与 `lastAt`，因为「再次确认」通常意味着冻结被推翻，覆盖时间会让等待跨度永远看起来很短。`report` 的 `confirmations` 只回显账本里的时间；两项不齐就打印「未采集」，不推算「本该多早」。
 - **READY 等待的口径写死在数据里**：`claim` 在新意图建立时，若同任务存在更早、已了结（`resolvedAt`/`failedAt`）的意图，就记一条 `readyObs`（`waitMs` + `basis: 'prev-end→claim'`），同一对相邻动作不重复计时。`report` 打印中位数/最大值并回显口径——依赖解除的时刻账本不一定知道（依赖可能在别处合流），所以这是「排队时长」，不是 end-to-end 的 READY 时间。
 - **change 名必须是位置参数形态**：命令后的第一个位置参数（change）若以 `--` 开头或含非法字符，一律 exit 1 并给出正确写法。历史上把 `--change foo` 照抄进 `status` 会静默新建一份游离账本（实测 `approval-hub` 里已留下 `--change/`、`--key/` 两份 `run-state.json`，前者还持有租约）。
 - **孤儿意图（`ORPHAN_INTENT`）**：意图超过 10 分钟仍无对应 agent（创建失败或回执丢失）。`reconcile` 把它列为最高优先级 `NEXT arbitrate`，**自动化不得自行重派**，须核对后显式 `fail` 或 `record`。
@@ -375,7 +380,7 @@ node skills/paseo-pipeline/acceptance-run.mjs <change> [--only SCEN-1,SCEN-2] [-
 
 **这些是协作契约与自报元数据，不是工具级身份隔离或可信来源证明。** 真实防线是 `merge-task.mjs` 的机械门禁（写范围、作者血统、非自审、异构 provider、依赖、基线），加上独立的业务验收。不得声称提示词能物理封死总控代写。
 
-**写范围守卫（减速带，不是沙箱）**：有编排租约期间，命中某任务 `Write scope` 的 `Write`/`Edit` 必须能对上一个在途写手意图，否则拒绝。判据只有一份（`lib/scope-guard.mjs`），两个入口：
+**写范围守卫（减速带，不是沙箱）**：有编排租约期间，命中某任务 `Write scope` 的 `Write`/`Edit` 必须能对上一个在途写手意图，否则拒绝。**位置优先于意图**：主 checkout（`git rev-parse --git-dir` 与 `--git-common-dir` 指向同一处）里的任务 scope 写入一律拒绝，即使账本里有该任务的写手意图——意图只证明「这个任务派过写手」，不证明此刻的写入者就是那个写手，而写手一律在自己的 linked worktree 里。判据只有一份（`lib/scope-guard.mjs`），两个入口：
 
 ```bash
 # 诊断 / 事后复核（单 change 或扫描全部活跃租约）
@@ -384,7 +389,7 @@ node skills/paseo-pipeline/guard-scope.mjs [<change>] --path <file> [--json]
 node skills/paseo-pipeline/hooks/scope-guard-hook.mjs --install-help
 ```
 
-刻意保守：无有效租约放行（门禁只在一次 run 内成立）、`openspec/` 放行、路径不在任何 scope 内放行（越界提交由 `merge-task` exit 30 兜底）、读不到 `tasks.md` 放行（fail-open）。**Bash 的 `sed -i`、`>` 重定向、`git apply` 拦不住**——这是减速带，不能拿它宣称物理隔离。关闭方式：`PIPELINE_GUARD_SCOPE=off`（排障用）。
+刻意保守：无有效租约放行（门禁只在一次 run 内成立）、`openspec/` 放行、路径不在任何 scope 内放行（越界提交由 `merge-task` exit 30 兜底）、读不到 `tasks.md` 放行（fail-open）。**Bash 的 `sed -i`、`>` 重定向、`git apply` 拦不住**，也**拦不住 Codex 写手**——它们不跑 Claude 的 PreToolUse hook，所以写手的 linked worktree 判定只对 Claude 侧生效。这是减速带，不能拿它宣称物理隔离。关闭方式：`PIPELINE_GUARD_SCOPE=off`（排障用）。
 
 账本位置由**目标路径**反推仓库，不是由调用方 cwd 决定：hook 由 Claude Code 在 session 的 cwd 下启动，而 session cwd 与写入目标所在仓库可以不同（往另一个 checkout 写绝对路径很常见）。曾把账本锚在 `process.cwd()`，从别的仓库调用时扫不到目标仓库的租约，守卫输出为空、deny 静默退化成 allow。目标落在 cwd 所在仓库内时仍按 cwd 判定，相对路径语义不变。
 

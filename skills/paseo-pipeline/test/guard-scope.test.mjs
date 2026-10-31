@@ -72,6 +72,22 @@ function verdictOf(result) {
   return JSON.parse(result.stdout);
 }
 
+// 写手在自己的 linked worktree 里工作（SKILL §8）；主 checkout 属于编排者。
+// worktree 从已提交的 HEAD 拉出，所以 tasks.md 必须先提交——真实流程里它在 integration 分支上。
+function linkedWorktree(subject) {
+  const git = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], {
+    cwd: subject.repo, env: subject.env, stdio: 'ignore',
+  });
+  git('add', '-A');
+  git('commit', '-q', '--allow-empty', '-m', 'freeze');
+  const dir = path.join(subject.root, 'writer-wt');
+  git('worktree', 'add', '-q', '-b', 'task/guard-demo/T-01', dir);
+  const run = (file) => spawnSync(process.execPath, [script, change, '--path', file, '--json'], {
+    cwd: dir, env: subject.env, encoding: 'utf8', timeout: 30_000,
+  });
+  return { dir, run };
+}
+
 test('SCEN-GRD-01 no lease means the guard does not apply (daily edits are not a pipeline run)', (context) => {
   const subject = fixture(context, { tasks: TASKS });
   const result = verdictOf(subject.run('src/T-01.mjs'));
@@ -93,7 +109,7 @@ test('SCEN-GRD-02 a pending writer intent for the scope owner allows the write',
   const subject = fixture(context, {
     tasks: TASKS, lease: validLease(), intents: [writerIntent({ resolvedAt: null, agentId: null })],
   });
-  const result = verdictOf(subject.run('src/T-01.mjs'));
+  const result = verdictOf(linkedWorktree(subject).run('src/T-01.mjs'));
   assert.equal(result.verdict, 'allow');
   assert.deepEqual(result.covered, ['T-01']);
   assert.match(result.reason, /含在途未回执/);
@@ -101,9 +117,29 @@ test('SCEN-GRD-02 a pending writer intent for the scope owner allows the write',
 
 test('SCEN-GRD-02 a recorded writer intent (real agent) also allows the write', (context) => {
   const subject = fixture(context, { tasks: TASKS, lease: validLease(), intents: [writerIntent()] });
-  const result = verdictOf(subject.run('src/T-01.mjs'));
+  const result = verdictOf(linkedWorktree(subject).run('src/T-01.mjs'));
   assert.equal(result.verdict, 'allow');
   assert.deepEqual(result.scopeOwners, ['T-01']);
+});
+
+test('SCEN-GRD-02 the same recorded writer intent does NOT authorise a write from the main checkout', (context) => {
+  // 评审发现：只要账本有一条未作废的写手意图就放行，写手回执之后编排者在主 checkout 代写
+  // 同一 scope 照样通过（LESSONS §13 的形状）。record 紧随 create_agent，所以不能用「未回执」
+  // 区分；能区分的是位置：写手在 linked worktree，主 checkout 属于编排者。
+  for (const intents of [[writerIntent()], [writerIntent({ resolvedAt: null, agentId: null })]]) {
+    const subject = fixture(context, { tasks: TASKS, lease: validLease(), intents });
+    const raw = subject.run('src/T-01.mjs');
+    assert.equal(raw.status, 2, `${raw.stdout}${raw.stderr}`);
+    const result = verdictOf(raw);
+    assert.equal(result.verdict, 'deny');
+    assert.match(result.reason, /主 checkout/);
+    assert.deepEqual(result.covered, ['T-01']);
+  }
+});
+
+test('SCEN-GRD-02 a scope-external path in the main checkout is still allowed', (context) => {
+  const subject = fixture(context, { tasks: TASKS, lease: validLease(), intents: [writerIntent()] });
+  assert.equal(verdictOf(subject.run('src/other.mjs')).verdict, 'allow');
 });
 
 test('SCEN-GRD-03 the exact LESSONS §13 shape is denied: lease active, scope hit, no writer intent', (context) => {
@@ -245,11 +281,15 @@ test('SCEN-GRD-07 the hook emits a real PreToolUse deny for an unexplained scope
   assert.match(output.hookSpecificOutput.permissionDecisionReason, /T-01 的 Write scope/);
 });
 
-test('SCEN-GRD-07 the hook allows a scope write that has a writer intent', (context) => {
+test('SCEN-GRD-07 the hook allows a scope write that has a writer intent, from the writer worktree', (context) => {
   const subject = fixture(context, { tasks: TASKS, lease: validLease(), intents: [writerIntent()] });
-  const result = runHook(subject, {
-    session_id: 'hook-test', tool_name: 'Edit',
-    tool_input: { file_path: path.join(subject.repo, 'src', 'T-01.mjs') },
+  const writer = linkedWorktree(subject);
+  const result = spawnSync(process.execPath, [hook], {
+    cwd: writer.dir, env: subject.env, encoding: 'utf8', timeout: 30_000,
+    input: JSON.stringify({
+      session_id: 'hook-test', tool_name: 'Edit',
+      tool_input: { file_path: path.join(writer.dir, 'src', 'T-01.mjs') },
+    }),
   });
   assert.equal(result.status, 0);
   assert.equal(result.stdout.trim(), '');
@@ -302,11 +342,12 @@ test('SCEN-GRD-08 foreign cwd keeps the allow paths intact', (context) => {
   const subject = fixture(context, { tasks: TASKS, lease: validLease(), intents: [writerIntent()] });
   const foreign = mkdtempSync(path.join(tmpdir(), 'pipeline-guard-cwd-'));
   context.after(() => rmSync(foreign, { recursive: true, force: true }));
+  const writer = linkedWorktree(subject);
   const covered = runHookFrom(subject, {
     session_id: 'hook-test', tool_name: 'Edit',
-    tool_input: { file_path: path.join(subject.repo, 'src', 'T-01.mjs') },
+    tool_input: { file_path: path.join(writer.dir, 'src', 'T-01.mjs') },
   }, foreign);
-  assert.equal(covered.stdout.trim(), '', '有在途写手意图时仍应放行');
+  assert.equal(covered.stdout.trim(), '', '写手 worktree 里有写手意图时仍应放行');
   const outside = runHookFrom(subject, {
     session_id: 'hook-test', tool_name: 'Write',
     tool_input: { file_path: path.join(subject.repo, 'src', 'other.mjs') },
