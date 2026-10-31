@@ -290,7 +290,7 @@ node "$PIPELINE_HOME"/run-state.mjs report <change> [--json]
 
 1. **主轨（事件驱动）**：子 Agent 完成经 `notifyOnFinish: true` 唤醒父 Agent 处理合流与下游派发。回调到达即推进，这是正常路径。
 2. **主动等待（不依赖事件）**：派发后在**前台阻塞** `paseo wait <agent-id> --timeout 540 --json`，返回即读产出一轮。回合不 idle 就不依赖 `notifyOnFinish` 去唤醒一个空闲父级，这是 2026-10-25 停摆事故的直接对策。
-   - **`paseo wait` 的退出码恒为 0**（实测 `idle`、`timeout`、`Agent not found` 三种终局均 `rc=0`）。必须解析 `--json` 的 `status`：`idle` 才是子 agent 停了，`timeout` 要继续等同一 id（不得重派），`error` 按失败处置。`paseo wait ... && 推进` 这类写法会把超时当成完成。
+   - **`paseo wait` 的退出码不是完成判据**：`rc=0` 不代表完成，`rc≠0` 也不代表失败（实测 `Agent not found` 也 `rc=0`；2026-10-31 等满 231s 返回 `rc=1` `WAIT_FAILED` 时写手仍在正常跑）。必须解析 `--json` 的 `status`：`idle` 才是子 agent 停了，`timeout` 要继续等同一 id（不得重派），`error` 按 `message` 处置；**拿不到 `status`（含 `rc=1` / `WAIT_FAILED`）不中断判定**，回 `reconcile.mjs` 或轮询 `paseo inspect <agent-id> --json` 取真实态。`paseo wait ... && 推进` 这类写法会把超时当成完成。
    - 等待期间的真实耗时与起止时间戳要采集，它们是判断「空等」还是「有效长任务」的唯一依据。
 3. **外部唤醒（可选，需确证来源）**：只有当主会话 harness 或人类确实提供了会定期唤醒 Lead 的机制时，才把它写进当次信封并如实记录来源 id 与到期时间。**没有可证伪的来源就不写进规则**——运行账本已无 heartbeat 注册入口，这条只能靠当次记录兑现，不得写成默认行为。
 4. **惰性对账**：任何一次真实唤醒（事件、外部唤醒、人类追问、接手）都先跑 `reconcile.mjs <change>`。**通知只是唤醒；终态以可核验产物为准。** 空闲时只做轻量增量核对，避免每次全量长日志。

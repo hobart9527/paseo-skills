@@ -10,12 +10,14 @@
 paseo wait <agent-id> --timeout 540 --json; echo "EXIT=$?"
 ```
 
-`paseo wait` 的**退出码恒为 0**（`idle` / `timeout` / `error` 三种终局全是 0）。
+`paseo wait` 的**退出码不是完成判据**：`rc=0` 不代表完成，`rc≠0` 也不代表失败。
+实测两种反例：不存在的 id 也 `rc=0`；等满 231s 曾返回 `rc=1` `WAIT_FAILED`，而写手其实仍在正常跑。
 只能靠 JSON 的 `status` 区分：
 
 - `"status": "idle"` → 子 agent 停了，读产出继续
 - `"status": "timeout"` → 没等到，对**同一 id** 重新 wait，**不要重派**
 - `"status": "error"` → 查 `message`，按失败处置
+- 拿不到 `status`（含 `rc=1` / `WAIT_FAILED`）→ 不中断判定，回 `reconcile.mjs`，或轮询 `paseo inspect <agent-id> --json` 取真实态
 
 **`paseo wait ... && 推进` 会把超时当成完成。** 每次等待记开始/结束 UTC 时间。
 

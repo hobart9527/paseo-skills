@@ -274,9 +274,13 @@ test('SCEN-DOC-15: Lead 模板写明 disposition 生产者契约与 wait 退出�
   assert.match(lead, /pipeline\.disposition|disposition/,
     'lead.md 必须写明阶段完成后由 Lead 打 disposition');
   assert.match(lead, /handed-off/, 'lead.md 必须给出 disposition 的合法取值');
-  assert.match(lead, /退出码恒为\s*0|恒为\s*0/,
-    'lead.md 必须警告 paseo wait 退出码恒为 0');
+  assert.match(lead, /退出码(不是|不能)/,
+    'lead.md 必须警告 paseo wait 退出码不能当完成判据');
+  assert.match(lead, /WAIT_FAILED/, 'lead.md 必须给出 rc≠0 的真实反例（WAIT_FAILED）');
   assert.match(lead, /timeout/, 'lead.md 必须写明 status=timeout 时不重派');
+  assert.match(lead, /inspect/, 'lead.md 必须写明拿不到 status 时轮询 inspect 取真实态');
+  assert.doesNotMatch(lead, /退出码恒为\s*0|恒为\s*0/,
+    'lead.md 不得再断言 paseo wait 退出码恒为 0');
 });
 
 test('SCEN-DOC-16: Auditor 模板禁止自拼 review-tag，且只接受 4 类 Blocker', () => {
