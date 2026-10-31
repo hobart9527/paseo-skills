@@ -315,13 +315,19 @@ acceptance 先跑 structure；smoke 与 audit 都必须 `--sha`；场景按 toke
 
 **人工救援 3 次，全部是流程缺口，不是业务缺陷：**
 
-1. `merge-task.mjs` 报 `git rev-parse --verify task/…^{commit}` 失败——写手把提交直接落在
-   `integration/<name>` 上、没建 `task/<name>/<task>` 分支。主会话补建分支指针并回退集成分支后重跑。
-   **缺口：派发 brief 未显式要求「在任务分支上提交」。**
-2. `merge-task.mjs` 报 `missing tasks ledger`——change 产物只在工作区、未进 main，集成 worktree
-   读不到 `tasks.md`。主会话补提交冻结产物后重跑。**缺口：CP-1 确认后的产物落盘没有写进 SKILL 的交接序列第 2 步。**
+1. `merge-task.mjs` 报 `git rev-parse --verify task/…^{commit}` 失败——写手的 `cwd` 是
+   `…/run-ledger-dispatch-attribution-integration`（`paseo inspect` 实测），即主会话把写手直接派进了
+   集成 workspace，跳过 SKILL §3 要求的 `task/<name>/<task>` 任务 workspace，提交自然落在 `integration/<name>`。
+   主会话补建分支指针并回退集成分支后重跑。
+   **归因更正（2026-10-31）：原写「brief 未要求在任务分支提交」不成立，写手无过错；缺口是主会话手动编排
+   跳步，且无任何机械检查拦截（直到 `merge-task` 才报错）。**
+2. `merge-task.mjs` 报 `missing tasks ledger`——主会话在主 checkout 里直接起草 change 产物、从未提交，
+   集成 worktree 读不到 `tasks.md`；SKILL §3 本有「spec 在 `spec/<name>` 起草并合入集成分支」的规定，主会话未照做。
+   主会话补提交冻结产物后重跑。
+   **归因更正（2026-10-31）：原写「交接序列第 2 步缺落盘」不准确；规则已有，缺的是门禁——`freeze-check`
+   不检查 change 目录是否已提交到集成基点。**
 3. `node --test skills/paseo-pipeline/test/`（传目录）报 `Cannot find module`；改用
-   `test/*.test.mjs` glob 后通过。**缺口：收尾全量测试的命令形态在文档里未固定。**
+   `test/*.test.mjs` glob 后通过。**归因：操作失误，仓库已有 `test/run-all.sh`（清单与 `*.test.mjs` 核对一致），SKILL 收尾未指向它。**
 
 另发现 1 处工具行为与文档不符：`paseo wait 0dc99e7a-… --timeout 540 --json` 在本次会话返回
 `RC=1` + `{"error":{"code":"WAIT_FAILED","message":"Failed to wait for agent: Liveness check timed out (15000ms)"}}`，
