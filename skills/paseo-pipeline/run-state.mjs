@@ -226,7 +226,11 @@ switch (command) {
     // 不估算、不用文件时间戳冒充事件时间：一份看起来精确的估算比「未采集」更有害，
     // 它会被当成实测值写进复盘。
     const { present, state, error, file } = readRunState(change);
-    const dispatches = state.intents.filter((intent) => typeof intent.agentId === 'string' && intent.agentId !== '');
+    // 「这次派发真的发生过」只有一个判据：账本里有真实 agent 回执。
+    // 未回执（仍在跑或已被 fail 作废）都不算——作废的语义正是「确认没有发生」，
+    // 把它折进派发数会让「实际做了几次审计」与「试图派发几次审计」混淆。
+    const hasReceipt = (intent) => typeof intent.agentId === 'string' && intent.agentId !== '';
+    const dispatches = state.intents.filter(hasReceipt);
     const perTask = new Map();
     for (const intent of dispatches) {
       const task = intent.task ?? '(unknown)';
@@ -237,7 +241,7 @@ switch (command) {
       Math.max(...list.map((intent) => (Number.isFinite(intent.attempt) ? intent.attempt : 0))));
     const auditRounds = state.intents.filter((intent) => {
       const p = normalizePhase(intent.phase);
-      return p === 'audit' || p === 'arbitrate';
+      return (p === 'audit' || p === 'arbitrate') && hasReceipt(intent);
     });
 
     // --- 首次通过率：只数「审计结论」这一层，不数派发次数 ---
