@@ -53,6 +53,6 @@ run-state.mjs claim  → create_workspace（如需）→ git branch -m → creat
   → 读终态与产出 → update_agent 写 pipeline.disposition → merge-task.mjs
 ```
 
-- `paseo wait` **无论 agent 成败都 exit 0**：必须解析 JSON 的 `status`，不能看退出码。
+- `paseo wait` 的**退出码不是完成判据**：`rc=0` 不代表完成，`rc≠0` 也不代表失败（含 `rc=1` `WAIT_FAILED`）。必须解析 JSON 的 `status`：`idle` 读产出；`timeout` 等同一 id、不重派；`error` 按 `message` 处置；拿不到 `status` 就回 `reconcile` 或轮询 `paseo inspect <agent-id> --json` 取真实态。
 - `--timeout` 超时只代表还没结束，不代表失败；回到 `reconcile` 取真实态再决定。
 - create_agent 失败（校验错误、没拿到 id）：`run-state.mjs fail` 作废意图后才允许重派。

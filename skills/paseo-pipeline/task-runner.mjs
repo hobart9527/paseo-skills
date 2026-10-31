@@ -318,6 +318,39 @@ function mechanicalTag(branch) {
 }
 
 /**
+ * 交付诚实：任务分支 tip 必须领先 workspace 创建时的基点 `baseSha`。
+ *
+ * 写手一个提交都没产出时，Verify 跑的不是任何写手的实现——它绿不绿都与本次交付无关
+ * （写手可能改了工作区没提交，此时验的是脏树；也可能什么都没改）。旧实现两种档位都静默
+ * 放行：非 mechanical 档向编排者报「已交付并通过 Verify」并派出一轮无意义审计；mechanical
+ * 档最终被 merge-task 的 `commits.length === 0`（exit 31）拦住，可那时错误信息指向
+ * 「nothing to merge」，而不是「写手没干活」。
+ *
+ * 所有 Review 档位一致在这里拦住，且只陈述可核验的 git 事实。`--review-tag` 重入不派发
+ * 写手，但**同样适用**：重入时 tip 等于基点说明那条分支没有交付内容，合流的就是空交付；
+ * 而合并门禁只会报「没有东西可合」，分不清空交付与「已被吸收的交付」。
+ */
+function ensureBranchAdvanced(branch, { writerAgentId = null, attemptNo = null } = {}) {
+  const tipRes = git(['rev-parse', '--verify', `${branch}^{commit}`], { cwd: repoRoot });
+  if (tipRes.status !== 0) {
+    fatal(`Task branch ${branch} cannot be resolved: ${tipRes.stderr || tipRes.stdout}`, 1);
+  }
+  const tip = tipRes.stdout.trim();
+  const next = attemptNo !== null
+    ? `redispatch the writer (attempt ${attemptNo + 1})`
+    : 'redispatch the writer or inspect what that attempt delivered';
+  const agentHint = writerAgentId === null ? '' : ` or inspect agent ${writerAgentId}'s output first`;
+  if (tip === baseSha) {
+    fatal(`写手未产出提交：task branch ${branch} tip (${tip.slice(0, 7)}) equals the `
+      + `workspace base (${baseSha.slice(0, 7)}). The branch has no writer commits, so the `
+      + `Verify result cannot prove the implementation was delivered. Do NOT dispatch an `
+      + `auditor or merge: ${next}${agentHint}.`, 52);
+  }
+  log(`Branch advanced: ${branch} tip=${tip.slice(0, 7)} base=${baseSha.slice(0, 7)}`);
+  return tip;
+}
+
+/**
  * 调 `merge-task.mjs` 合流。
  *
  * 门禁（tag 与 SHA 一致、作者来源、写范围、测试、审查独立性）全部由 merge-task 自己判——
@@ -477,6 +510,9 @@ if (reviewTagOption !== null) {
   if (latest === null) {
     fatal(`--review-tag given but no task branch for ${task.id} exists: nothing has been delivered to review`);
   }
+  // 重入不派发写手，但零提交判据同样适用：tip 等于基点说明那条分支没有交付内容可合。
+  // 合流门禁只会报「没有东西可合」，分不清空交付与「工作已被吸收」，所以必须在合流前判。
+  ensureBranchAdvanced(latest.branch, { attemptNo: latest.attempt });
   mergeIntoIntegration({ branch: latest.branch, tag: reviewTagOption });
   process.exit(0);
 }
@@ -595,27 +631,8 @@ if (task.verify?.command) {
   }
 }
 
-// 8b. 交付诚实：任务分支 tip 必须领先 workspace 创建时的基点。
-//
-// 写手一个提交都没产出时，第 8 步的 Verify 跑的不是任何写手的实现——它绿不绿都与本次
-// 交付无关（写手可能改了工作区没提交，此时验的是脏树；也可能什么都没改）。旧实现两种
-// 档位都静默放行：非 mechanical 档向编排者报「已交付并通过 Verify」并派出一轮无意义审计；
-// mechanical 档最终被 merge-task 的 `commits.length === 0`（exit 31）拦住，可那时错误信息
-// 指向「nothing to merge」，而不是「写手没干活」。
-// 所有 Review 档位一致在这里拦住，且只陈述可核验的 git 事实。
-const tipRes = git(['rev-parse', '--verify', `${branchName}^{commit}`], { cwd: repoRoot });
-if (tipRes.status !== 0) {
-  fatal(`Task branch ${branchName} cannot be resolved after the writer settled: `
-    + `${tipRes.stderr || tipRes.stdout}`, 1);
-}
-const taskTip = tipRes.stdout.trim();
-if (taskTip === baseSha) {
-  fatal(`写手未产出提交：task branch ${branchName} tip (${taskTip.slice(0, 7)}) equals the `
-    + `workspace base (${baseSha.slice(0, 7)}). The branch has no writer commits, so the `
-    + `Verify result cannot prove the implementation was delivered. Do NOT dispatch an `
-    + `auditor or merge: redispatch the writer (attempt ${attempt + 1}) or inspect agent `
-    + `${writerAgentId}'s output first.`, 52);
-}
+// 8b. 交付诚实：任务分支 tip 必须领先 workspace 创建时的基点（判据见 ensureBranchAdvanced）。
+ensureBranchAdvanced(branchName, { writerAgentId, attemptNo: attempt });
 
 // 9. 审计诚实：非 mechanical 档到这里就停。
 //
