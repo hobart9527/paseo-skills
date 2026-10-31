@@ -17,7 +17,7 @@
 | A 观测与对账 | **已实施** | `lib/paseo-state.mjs` 单一适配器 + runtime 三态；活态改为「任一源报 live 即 live」；attempt 数值绑定；`rejected` 分支不再进 MERGE；解析级 INVALID 写手与同仓外部写手均计入 cap（SCEN-REC-17 ×2） |
 | B 合流门禁 | **已实施** | 冻结 `Verify with` 强制先跑（exit 36）；`-z --no-renames`；单写者锁（exit 37）；Pod 冻结成员校验；legacy 豁免需环境变量二次确认并记 run-log；测试内 commit 检测（exit 40）；进程组 kill；已合流重试的分项诊断（SCEN-MRG-25/26/27）；base 须同时是集成 HEAD 与 tip 的祖先（exit 34）；审查员与运行账本派发记录交叉核对（exit 32，复刻 T-02 自审） |
 | C 契约收敛 | **部分实施** | 角色/phase 单点定义（`lib/roles.mjs`）；`Review` 三档语义写入 SKILL；run-state 读改写加锁 + 候选校验入锁；证据闸门的场景 PASS、占位值与 smoke `--sha` 已补（SCEN-EVD-01/02）；§3-P1-11 的 SKILL/LESSONS 内部矛盾已逐条消除（心跳、Lead 阈值、hotfix 定位、OpenSpec 交回、审查轮数、停滞信号均已复核一致；**`send_agent_prompt` 接力与打回预算两条当时未闭合，见 §3.10，已于本轮按用户裁决落地**：接力改 spec 并已归档合并进正式 spec（change `pipeline-wakeup-budget-alignment` → `archive/2026-10-26-pipeline-wakeup-budget-alignment/`），预算补代码（`retryPolicy()` + `escalations` 输出））；派发 brief 四份模板已落地并锁定必填字段（SCEN-DOC-13..16）；非 `T-` 前缀任务 ID 的 dispatch 标识已修（SCEN-REC-20）。**仅剩** `~/.paseo/task-routing.md` 与 shangshu notes 中的活态表述未改（需另行授权） |
-| D 试点 | **未执行** | 无真实业务验收，不得宣布产品验收成功 |
+| D 试点 | **L1 已执行 / L2 未执行** | 2026-10-31 L1 小修 `run-ledger-dispatch-attribution` 闭环（1 任务 / 1 次派发 / attempt 1 / CP-1→CP-2 跨度 1752s / 人工救援 3 次，均为流程缺口而非业务失败；采集值见 §5 D 试点行）。L2 跨模块任务仍未执行，产品验收不得宣布成功 |
 | 0 唤醒冒烟（串行） | **已执行（判断：通过）** | 5 任务串行全流程一次跑通，0 失败、0 人工催促；顺带查出「账本缺失导致因子 3b 静默消失」并已修。采集值与覆盖缺口见 §8 |
 | 0 唤醒冒烟（并行 DAG） | **已执行（判断：通过）** | 5 任务 / cap=2：cap 真实饱和（同一时刻恰 2 写手）、scope 冲突确定性产 `BLOCKED_RESOURCE` 并在上游合流后自动释放、依赖门禁正确。查出「trailer 必须在最后一段」缺陷（5 写手 2 踩中）并已修模板+测试。采集值见 §9 |
 
@@ -292,7 +292,41 @@ acceptance 先跑 structure；smoke 与 audit 都必须 `--sha`；场景按 toke
 | A 观测与对账 | §4.2 + 角色单源 | 新增用例：permit 失败降级、archivedAt、MISSING_SCOPE 占 cap、旧 attempt 权限、`-a10`/`-a2`、rejected 不进 MERGE、局部阻塞不压独立任务 | **已实施**（`MISSING_SCOPE` 占 cap 与「同仓外部写手计 cap」本次补齐，SCEN-REC-17 ×2） |
 | B 合流门禁 | §4.3 + §4.7 | 新增用例：Verify 替换、改名越界、中文路径、改写 staged、测试内 commit、并发 merge、legacy no-op、自审复刻 T-02、重复合流幂等 | **已实施**；「重复合流幂等」按 spec 裁决落为**诊断精度**（仍 exit 非零），见 §4.3 |
 | C 契约收敛 | §4.4 + §4.5 | run-state 并发与 owner 用例；docs.test 检查规则只在一处定义；SKILL 内部矛盾清单（§3-P1-11）逐条消除 | **部分**：run-state 并发与 owner 已覆盖；SKILL 矛盾清单已逐条消除并复核；brief 模板已落地（SCEN-DOC-13..16）；仍缺「规则只在一处定义」的自动化断言（docs.test 目前只锁模板字段与既有条款，没有跨文件重复性检查），以及 `~/.paseo/task-routing.md`/shangshu notes 的活态表述（需授权） |
-| D 试点 | 1 个日常小修（L1）+ 1 个跨模块任务（L2/L3） | 如实记录首次业务验收结果、人工救援次数、READY 等待时长与原因 | **未执行** |
+| D 试点 | 1 个日常小修（L1）+ 1 个跨模块任务（L2/L3） | 如实记录首次业务验收结果、人工救援次数、READY 等待时长与原因 | **L1 已执行（2026-10-31）/ L2 未执行**；L1 采集值见下 |
+
+**D 试点 L1 实测（2026-10-31，change `run-ledger-dispatch-attribution`）**
+
+来源：`node skills/paseo-pipeline/run-state.mjs report run-ledger-dispatch-attribution --json` 与
+`.git/paseo-pipeline/run-ledger-dispatch-attribution/run-state.json`。
+
+| 指标 | 采集值 | 说明 |
+| --- | --- | --- |
+| 派发次数 / 任务数 | 1 / 1 | `dispatches=1`、`tasksDispatched=1` |
+| 同任务最大 attempt | 1 | 一次派发即完成，无重派 |
+| 审查派发 | 0（mechanical 档） | `Review: mechanical` 由编排者自验，不派独立 Auditor |
+| 作废意图 | 0 | 派发一次成功，无 `fail` |
+| CP-1 时间 | 2026-10-31T06:17:59.437Z | `confirm --checkpoint cp1` 当场登记 |
+| CP-2 时间 | 2026-10-31T06:47:11.114Z | 用户确认后当场登记 |
+| CP-1→CP-2 跨度 | 1752s | `cp1ToCp2Ms=1751677` |
+| READY 等待 | 未采集 | 首个任务无前置，账本无可配对样本 |
+| 首次通过率 | 未采集 | mechanical 档不写 `review` 记录，账本无审计结论 |
+| 合流 sha | 9c84f8b | `merge-task.mjs` 写入 |
+| 测试 | 单文件 43 pass / 0 fail（10678ms）；全量 574 pass / 0 fail（129471ms）；合入远端后复跑 594 pass / 0 fail（156831ms） | 三次均 rc=0 |
+
+**人工救援 3 次，全部是流程缺口，不是业务缺陷：**
+
+1. `merge-task.mjs` 报 `git rev-parse --verify task/…^{commit}` 失败——写手把提交直接落在
+   `integration/<name>` 上、没建 `task/<name>/<task>` 分支。主会话补建分支指针并回退集成分支后重跑。
+   **缺口：派发 brief 未显式要求「在任务分支上提交」。**
+2. `merge-task.mjs` 报 `missing tasks ledger`——change 产物只在工作区、未进 main，集成 worktree
+   读不到 `tasks.md`。主会话补提交冻结产物后重跑。**缺口：CP-1 确认后的产物落盘没有写进 SKILL 的交接序列第 2 步。**
+3. `node --test skills/paseo-pipeline/test/`（传目录）报 `Cannot find module`；改用
+   `test/*.test.mjs` glob 后通过。**缺口：收尾全量测试的命令形态在文档里未固定。**
+
+另发现 1 处工具行为与文档不符：`paseo wait 0dc99e7a-… --timeout 540 --json` 在本次会话返回
+`RC=1` + `{"error":{"code":"WAIT_FAILED","message":"Failed to wait for agent: Liveness check timed out (15000ms)"}}`，
+调用区间 2026-10-31T06:21:12Z → 06:25:03Z（231s，远未到 540s 上限），而文档描述为恒 rc=0。
+主会话改用 `get_agent_status` 轮询确认完成。该现象未在本轮归因。
 
 前置：当前未提交改动需由用户确认是否作为基线提交（未经确认不提交、不推送）。建议用一个 OpenSpec change（如 `pipeline-hardening-v2`）承载 A–C，任务数 ≤8，主会话按 L2 编排。
 
