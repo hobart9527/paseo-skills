@@ -60,9 +60,9 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
   | `rejected` / `abandoned` | `retry` | 本轮产出未被接受，消耗打回预算 |
   **不打这个标签，`reconcile` 会把该任务的终态 agent 判为 `UNRESOLVED` 并压住它的推进**（fail-closed，不是缺陷）。生产者是编排者，不是子 agent 自报。
 
-**Legacy CLI 路径（`hotfix.sh`）**：该脚本用 `paseo run --no-wait` 派发，**拿不到父子 Agent 完成通知**（该通路的回调从未被验证过）。因此它的正确用法只有一种：调用方**同步 `paseo wait`** 阻塞等结果，绝不把它当成「派完就走、靠通知回来」的异步路径。`dispatch.mjs` 已在 2026-10-26 删除——它是同一路径的另一个入口，从来没有使用者，保留只会让「legacy 兜底」被当成一条可选主路径。
+**唯一 CLI 派发入口（`task-runner.mjs`）**：CLI 通路上只有这一个派发入口——profile fail-closed 解析、workspace/分支/attempt 推导、五个 `pipeline.*` 标签、意图记账（`claim` → `record` → 失败时 `fail`）与合流门禁全部在它内部。**不存在第二个 CLI 派发入口**：同一路径两个实现，判据必然漂移，而下漂的总是少写校验的那个。
 
-- `hotfix.sh`：**L1 小修正式入口**（单任务、`Review: mechanical`、`Risk-surface: none`）。它自己 `paseo wait`，所以不依赖那条未验证的回调。脚本在派发前机械校验 mechanical/Risk-surface，不合立即拒绝；合流 review 标签用真实 tip/base 生成。意图记账同样强制：派发前 `run-state.mjs claim`、拿到 agent 后 `record`、`paseo run` 失败时 `fail` 作废意图——claim 被拒（重复意图、账本被占用或存在有效编排租约）即中止，**存在有效租约时 hotfix 不带 `--owner` 必然被拒**，这是预期：编排进行中不得走旁路快轨，须等租约到期或由 owner 执行。这几点都是脚本行为，不靠提示词自觉。
+**`hotfix.sh` 是委托它的兼容包装，不是第二条派发路径**：脚本只做两件事——参数/change 名校验与 `mechanical`+`Risk-surface: none` 机械预检，然后 `exec node "$PIPELINE_HOME"/task-runner.mjs <change> <task-id>` 原样透传退出码（含非 mechanical 的 exit 50、合流冲突的 10）。它**自身不含任何 `paseo run` 调用**，也不另写 profile 解析或意图记账。调用方在派发后仍须**同步 `paseo wait`** 阻塞等结果——CLI 通路的完成回调从未被验证过，绝不能当成「派完就走、靠通知回来」的异步路径。claim 被拒（重复意图、账本被占用或存在有效编排租约）即中止，**存在有效租约时 hotfix 不带 `--owner` 必然被拒**，这是预期：编排进行中不得走旁路快轨，须等租约到期或由 owner 执行。
 
 ## 2. 执行主路径
 
@@ -146,11 +146,19 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 7. **交接序列（确认点 1 之后、动任何业务文件之前）**：这是 CP-1 与执行循环之间唯一合法的过渡。**顺序固定，不可跳过、不可合并**：
 
    1. 预载派发工具：`ToolSearch` 取 `mcp__paseo__create_agent` / `create_workspace` / `list_profiles`。它们是 deferred 工具，不预载则每次派发都要多一个回合，而 `Write`/`Edit` 本来就在手——捷径偏置就是这么产生的。
-   2. 建集成 workspace：`integration/<name>`（基点为主干），见 2.1 的 workspace 约定；`create_workspace` / `create_agent` 的字段形状与分支改名见 `templates/dispatch-shapes.md`。
-   3. 按 `[ROUTE]` 分派：
+   2. **提交冻结产物**：把 `openspec/changes/<name>/` 下本轮冻结的全部产物提交（主会话的 OpenSpec 提交，不是业务代码）。`freeze-check` 只能在冻结前跑，那时目录必然未提交，所以「已提交」不归它管，由下一步的门禁核。
+   3. **跑交接门禁**：
+
+      ```bash
+      node "$PIPELINE_HOME"/handoff-check.mjs <name> --base integration/<name>
+      ```
+
+      它逐路径点名 `openspec/changes/<name>/` 下未提交/未跟踪的文件，并核对 `tasks.md` 能否从集成基点读出来；exit 0 才可继续。同一份判据（`lib/handoff.mjs`）由 `task-runner.mjs` 在每次 CLI 派发前复用——门禁只有一份定义，两个入口不会各判一套。
+   4. 建集成 workspace：`integration/<name>`（基点为主干），见 2.1 的 workspace 约定；`create_workspace` / `create_agent` 的字段形状与分支改名见 `templates/dispatch-shapes.md`。
+   5. 按 `[ROUTE]` 分派：
       - `lead`：按 `templates/lead.md` 组装 brief，派 `agent_profile_shangshu`，然后**本回合阻塞在 `paseo wait <lead-id>`**。
       - `pod`：按 §2.2 直接派 `agent_profile_gongbu`。
-   4. 主会话从这一刻起只做三件事：确认点 2、OpenSpec CLI 交回、失联后跑 `reconcile`。
+   6. 主会话从这一刻起只做三件事：确认点 2、OpenSpec CLI 交回、失联后跑 `reconcile`。
 
    **本步严禁 `Write`/`Edit` 任何业务源码，也不读业务源码「先了解一下」**——读后写只差一次工具调用。总控代写由 `merge-task.mjs` 的 exit 31 事后拦截，但那只在合流时生效；原地写完不提交就根本走不到合流，2026-10-27 的 `eas-filing-and-local-ocr` 就是这样越过全部门禁的。
 
@@ -199,7 +207,10 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
    ```bash
    node "$PIPELINE_HOME"/test/check-evidence.mjs --gate acceptance --sha <集成HEAD> --matrix openspec/changes/<name>/acceptance.md <smoke 证据>
    node "$PIPELINE_HOME"/contract-check.mjs openspec/changes/<name>/specs --tasks openspec/changes/<name>/tasks.md --baseline openspec/specs --final --max-phantom <预算>
+   bash "$PIPELINE_HOME"/test/run-all.sh
    ```
+
+   **收尾全量测试命令是 `bash "$PIPELINE_HOME"/test/run-all.sh`**（本仓写作 `bash skills/paseo-pipeline/test/run-all.sh`）：它串跑 `contract-check.test.sh`、全部 `test/*.test.mjs` 与 `e2e-smoke.sh`。逐条手敲测试文件清单会漏——清单只在这里维护一份，新增测试文件必须同时加进该脚本，否则「全量」只是说法。
 
    `--matrix` 从冻结的验收矩阵读必需场景（调用者只能追加，不能减少）；`--final` 让「测试路径一条都没产出」从 SKIPPED 变成 exit 1——收尾报告里写着「跑过 contract-check」却是空跑，是这条开关唯一的理由。
 

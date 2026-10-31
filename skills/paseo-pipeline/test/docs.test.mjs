@@ -508,3 +508,57 @@ test('SCEN-DOC-28: 写范围守卫与脏树检测都被写进 SKILL，且不宣�
   const recover = section('失败处置与恢复');
   assert.match(recover, /UNEXPLAINED/, '脏树分级必须写进恢复流程');
 });
+
+// --- 2026-10-31 单一 CLI 派发入口与交接序列（pipeline-dispatch-convergence） ---
+//
+// 这一段断言的不是「关键词出现」，而是**入口唯一性**与**步骤先后**：同一路径两个实现，
+// 判据必然漂移；集成 workspace 先于交接门禁建好，写手就会拿到一份 git 里还不存在的契约。
+test('SCEN-DISP-04: 不存在第二 CLI 派发入口，hotfix.sh 是 task-runner 的委托包装', () => {
+  // 文档声明「唯一」只是话术；第二入口文件真的不在了才算数。
+  assert.ok(!fs.existsSync(path.join(skillDir, 'dispatch.mjs')),
+    '不得存在第二 CLI 派发入口 dispatch.mjs');
+
+  assert.match(skillText, /唯一 CLI 派发入口/, 'SKILL 必须声明唯一 CLI 派发入口');
+  const roleSection = section('角色与派发');
+  assert.match(roleSection, /唯一 CLI 派发入口[^\n]{0,40}task-runner\.mjs|task-runner\.mjs`[^\n]{0,40}唯一[^\n]{0,10}CLI 派发入口/,
+    'SKILL 必须把 task-runner.mjs 点名为唯一 CLI 派发入口');
+  assert.match(roleSection, /不存在第二个 CLI 派发入口/, 'SKILL 必须明说没有第二入口');
+  assert.match(roleSection, /hotfix\.sh`[^\n]{0,40}委托[^\n]{0,40}兼容包装|委托它的兼容包装|兼容包装/,
+    'SKILL 必须把 hotfix.sh 描述成委托包装');
+
+  // 包装脚本本身必须真的没有自己的派发调用——文档说「委托」，脚本得照做。
+  const hotfix = fs.readFileSync(path.join(skillDir, 'hotfix.sh'), 'utf8');
+  assert.doesNotMatch(hotfix, /paseo\s+run/, 'hotfix.sh 不得含自己的 paseo run 调用');
+  assert.match(hotfix, /exec\s+node[^\n]*task-runner\.mjs/, 'hotfix.sh 必须 exec 委托到唯一入口');
+});
+
+test('SCEN-HND-09: SKILL 的交接序列先提交冻结产物、再跑 handoff-check、最后才建集成 workspace', () => {
+  const handoff = section('冻结前准备');
+  // 顺序是契约：集成 workspace 一建，写手就可能被派出去读一个 git 里还不存在的契约。
+  const commitAt = handoff.indexOf('提交冻结产物');
+  const checkAt = handoff.indexOf('handoff-check.mjs');
+  const workspaceAt = handoff.indexOf('建集成 workspace');
+  assert.ok(commitAt >= 0, '交接序列必须包含「提交冻结产物」');
+  assert.ok(checkAt >= 0, '交接序列必须包含 handoff-check');
+  assert.ok(workspaceAt >= 0, '交接序列必须包含「建集成 workspace」');
+  assert.ok(commitAt < checkAt, '提交冻结产物必须排在 handoff-check 之前；实际顺序相反');
+  assert.ok(checkAt < workspaceAt, 'handoff-check 必须排在建集成 workspace 之前；实际顺序相反');
+  // 门禁必须给得出可照抄的命令，否则读者仍会跳过它。
+  assert.match(handoff, /handoff-check\.mjs\s+<name>/, '交接门禁必须给出可照抄的命令');
+});
+
+test('SCEN-HND-09: 收尾全量测试命令指向 test/run-all.sh，且该脚本覆盖全部测试文件', () => {
+  const closeout = section('验收与交回');
+  assert.match(closeout, /test\/run-all\.sh/, '收尾步骤必须点名 test/run-all.sh');
+  assert.match(closeout, /全量测试[^\n]{0,40}run-all\.sh|run-all\.sh[^\n]{0,40}全量/,
+    'run-all.sh 必须被描述为收尾全量测试命令');
+
+  // 「全量」是可证伪的：脚本列出的清单必须覆盖目录下每个 *.test.mjs，否则它只是说法。
+  const runnerPath = path.join(skillDir, 'test', 'run-all.sh');
+  const runner = fs.readFileSync(runnerPath, 'utf8');
+  const files = fs.readdirSync(path.join(skillDir, 'test')).filter((name) => name.endsWith('.test.mjs'));
+  assert.ok(files.length > 0, '测试目录下必须存在 *.test.mjs');
+  for (const name of files) {
+    assert.ok(runner.includes(`test/${name}`), `run-all.sh 漏掉了 test/${name}`);
+  }
+});
