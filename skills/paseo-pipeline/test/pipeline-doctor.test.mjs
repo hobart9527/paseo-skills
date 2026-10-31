@@ -21,14 +21,26 @@ function healthy() {
   return IDS.map((name) => profile(name, name === 'anchasi' ? 'codex' : 'claude'));
 }
 
+const HOOK = path.join(SKILL_DIR, 'hooks', 'scope-guard-hook.mjs');
+
+/** 把绝对 HOOK 路径换成真实 settings.json 里常见的可移植写法。 */
+function portableHook(style) {
+  const home = os.homedir();
+  if (!HOOK.startsWith(home)) return HOOK;
+  const prefixes = { dollar: '$HOME', brace: '${HOME}', tilde: '~', absolute: home };
+  return `${prefixes[style]}${HOOK.slice(home.length)}`;
+}
+
+function hookSettings(command) {
+  return { hooks: { PreToolUse: [{ matcher: 'Write|Edit', hooks: [{ type: 'command', command }] }] } };
+}
+
 function run(profiles, { settings, env = {} } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor-'));
   const config = path.join(dir, 'config.json');
   const settingsFile = path.join(dir, 'settings.json');
   fs.writeFileSync(config, JSON.stringify({ daemon: { agentProfiles: profiles } }));
-  fs.writeFileSync(settingsFile, JSON.stringify(settings ?? {
-    hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: `node ${path.join(SKILL_DIR, 'hooks', 'scope-guard-hook.mjs')}` }] }] },
-  }));
+  fs.writeFileSync(settingsFile, JSON.stringify(settings ?? hookSettings(`node "${HOOK}"`)));
   const result = spawnSync(process.execPath, [DOCTOR, '--config', config, '--settings', settingsFile], {
     encoding: 'utf8',
     env: { ...process.env, PIPELINE_HOME: SKILL_DIR, ...env },
@@ -62,6 +74,24 @@ test('missing profile is rejected', () => {
 
 test('missing scope-guard hook registration is rejected', () => {
   const { code, out } = run(healthy(), { settings: { hooks: {} } });
+  assert.equal(code, 1);
+  assert.match(line(out, 'scope-guard hook'), /^FAIL/);
+});
+
+// 注册值由 shell 展开：`$HOME/...`、`${HOME}/...`、`~/...` 与绝对路径指向同一个文件。
+// 按字面量比对会逼人把变量换成硬编码用户名，等于把可移植写法当漂移来修。
+for (const style of ['dollar', 'brace', 'tilde', 'absolute']) {
+  test(`scope-guard hook registered as ${style} form is accepted`, () => {
+    const command = `node "${portableHook(style)}"`;
+    const { code, out } = run(healthy(), { settings: hookSettings(command) });
+    assert.match(line(out, 'scope-guard hook'), /^PASS/, `command=${command}`);
+    assert.equal(code, 0, `command=${command}\n${out}`);
+  });
+}
+
+test('scope-guard hook pointing at another directory is rejected', () => {
+  const elsewhere = `node "${path.join(os.homedir(), 'elsewhere', 'scope-guard-hook.mjs')}"`;
+  const { code, out } = run(healthy(), { settings: hookSettings(elsewhere) });
   assert.equal(code, 1);
   assert.match(line(out, 'scope-guard hook'), /^FAIL/);
 });

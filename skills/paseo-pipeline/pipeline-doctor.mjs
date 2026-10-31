@@ -47,7 +47,7 @@ function readJson(file) {
 // 1. PIPELINE_HOME
 const home = process.env.PIPELINE_HOME;
 if (!home) {
-  fail('PIPELINE_HOME', `未设置。在 ~/.zshrc 导出：export PIPELINE_HOME="${SKILL_DIR}"`);
+  fail('PIPELINE_HOME', `未设置。写进 ~/.zshenv（非交互 shell 也读），不要只写 ~/.zshrc：export PIPELINE_HOME="${SKILL_DIR}"`);
 } else if (path.resolve(home) !== SKILL_DIR) {
   fail('PIPELINE_HOME', `指向 ${home}，但本脚本位于 ${SKILL_DIR}`);
 } else {
@@ -86,16 +86,47 @@ if (config.__error) {
 }
 
 // 3. scope-guard hook 已装
+//
+// 注册值可以是 `$HOME/...`、`${HOME}/...`、`~/...` 或绝对路径——它们由 shell 展开后指向同一个
+// 文件，判据要比较**展开后的路径**，不能比较字面量。按字面量比对会把可移植写法误判成漂移，
+// 逼着人去把 `$HOME` 换成硬编码用户名，那是往反方向修。
 const settings = readJson(settingsPath);
+
+/** 展开 hook 命令里的家目录写法，供路径比对；不识别其它变量（不认识就是原样）。 */
+function expandHome(text) {
+  return text
+    .replace(/\$\{HOME\}/g, os.homedir())
+    .replace(/\$HOME(?![A-Za-z0-9_])/g, os.homedir())
+    // `~` 只在词首展开（命令开头、空白后、引号后）；词中的 `~` 是普通字符。
+    .replace(/(^|[\s"'])~(?=\/)/g, (_, before) => `${before}${os.homedir()}`);
+}
+
+/** 从 settings.hooks 里收集所有 command 字符串（结构是 {Event: [{hooks: [{command}]}]}）。 */
+function collectCommands(hooks) {
+  const out = [];
+  for (const entries of Object.values(hooks ?? {})) {
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      for (const hook of entry?.hooks ?? []) {
+        if (typeof hook?.command === 'string') out.push(hook.command);
+      }
+    }
+  }
+  return out;
+}
+
 if (settings.__error) {
   fail('scope-guard hook', `${settingsPath} 无法读取：${settings.__error}`);
 } else {
-  const hooks = JSON.stringify(settings.hooks ?? {});
   const hookScript = path.join(SKILL_DIR, 'hooks', 'scope-guard-hook.mjs');
-  if (!hooks.includes('scope-guard-hook.mjs')) {
-    fail('scope-guard hook', `${settingsPath} 的 hooks 里没有 scope-guard-hook.mjs`);
-  } else if (!hooks.includes(hookScript)) {
-    fail('scope-guard hook', `已注册但路径不是 ${hookScript}`);
+  const commands = collectCommands(settings.hooks);
+  const registered = commands
+    .map(expandHome)
+    .some((command) => command.includes(hookScript));
+  if (!commands.length) {
+    fail('scope-guard hook', `${settingsPath} 的 hooks 里没有任何 command`);
+  } else if (!registered) {
+    fail('scope-guard hook', `已注册的 hook 命令未指向 ${hookScript}`);
   } else {
     pass('scope-guard hook', 'PreToolUse 已注册');
   }
