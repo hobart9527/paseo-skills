@@ -2,15 +2,20 @@
 // task-runner.mjs — 单任务微循环确定性执行器，也是唯一的 CLI 派发入口
 //
 // 架构定位：
-//   将单个原子任务的微状态机（claim -> Paseo workspace dispatch -> wait -> verify -> audit -> merge）
+//   将单个原子任务的微状态机（claim -> Paseo workspace dispatch -> wait -> verify -> merge）
 //   收敛为本地 Node.js 确定性循环执行，免除编排者 LLM（Lead）频繁来回往返与思考等待，消除假死与空等。
+//
+// 审计不是本入口的职责：非 mechanical 档在 Verify 通过后 exit 50 停下，等编排者派真实 Auditor；
+// 编排者拿到 `pass(...)` 标签后以 `--review-tag` 重入，由 `merge-task.mjs` 自己校验 3b/3c。
+// 本入口**不得**创建审计意图、review 记录或审计员身份，**不得**代设异构审查豁免。
 //
 // 任务 workspace 一律由 Paseo 创建（`paseo run --new-workspace worktree --new-branch ... --base ...`）。
 // 本文件**不得**再出现 `git worktree add`、离线 fallback（无 daemon 时编造 agent id）或 `--stub-commit`：
 // 那三条路径会让派发看起来成功、实际没人干活，是本 change 要删掉的缺陷。
 //
 // 用法:
-//   node task-runner.mjs <change> <task-id> [--fast] [--owner <owner>] [--timeout <ms>] [--dry-run] [--json]
+//   node task-runner.mjs <change> <task-id> [--fast] [--speculative] [--owner <owner>]
+//                              [--timeout <ms>] [--review-tag <tag>] [--dry-run] [--json]
 //
 // 退出码:
 //   0 任务完整生命周期执行成功并完成合流记账
@@ -21,6 +26,8 @@
 //   30 写范围越界
 //   32 自审或无独立审查意图
 //   35 依赖未完成
+//   50 非 mechanical 档写手已交付并通过 Verify，等待真实审计（入口不代签审计结论）
+//   51 等待写手到终态超时（agent 可能仍在运行，禁止重派）
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -41,6 +48,13 @@ const WRITER_PROFILE_ID = 'agent_profile_gongbu';
 /** Paseo 活态配置目录（与 lib/paseo-state.mjs 同一套注入变量，测试靠它指向假 profile）。 */
 const paseoHome = process.env.PIPELINE_PASEO_HOME || path.join(os.homedir(), '.paseo');
 
+/**
+ * 轮询可接受的「已收敛」状态。只认 `idle` 与 `closed`（agent 不再推进且没有出错）：
+ * `running`/`initializing` 必须继续等，`timeout` 只是「这一轮等满了」，`error` 不能当成
+ * 「可以接着验」——它会一直轮询到截止时间并由调用方 exit 51（不重派、也不合流）。
+ */
+const TERMINAL_AGENT_STATUSES = new Set(['idle', 'closed']);
+
 const argv = process.argv.slice(2);
 const isJson = argv.includes('--json');
 const isDryRun = argv.includes('--dry-run');
@@ -54,13 +68,23 @@ function getOpt(name, fallback = null) {
 
 const positional = argv.filter((a) => !a.startsWith('--'));
 if (positional.length < 2) {
-  console.error('Usage: node task-runner.mjs <change> <task-id> [--fast] [--owner <id>] [--timeout <ms>] [--dry-run] [--json]');
+  console.error('Usage: node task-runner.mjs <change> <task-id> [--fast] [--speculative] [--owner <id>] '
+    + '[--timeout <ms>] [--review-tag <tag>] [--dry-run] [--json]');
   process.exit(1);
 }
 
 const [change, targetTaskId] = positional;
 const owner = getOpt('--owner', `runner-${process.pid}`);
 const timeoutMs = Number(getOpt('--timeout', 540 * 1000));
+
+/**
+ * 重入用的审计结论标签（`pass(<reviewer>@<tip7>/<base7>)`）。
+ *
+ * 只有带它时才合流：非 mechanical 档的审计员必须是独立 agent，本入口没有能力派 Auditor
+ * 并等待其信封，因此写手交付后停下（exit 50），由编排者拿到真实标签后以本旗标重入，
+ * 交 `merge-task.mjs` 自己校验 3b/3c。标签原样透传，本入口不做任何改写或补签。
+ */
+const reviewTagOption = getOpt('--review-tag');
 
 function log(msg, extra = null) {
   if (isJson) {
@@ -138,6 +162,9 @@ function resolveWriterProfile() {
  * 不能只判基础分支是否存在再 +1：只留下 `-a2`（基础分支已被清理）时那样会算出 attempt=2，
  * 派发到已存在的 `-a2` 分支上去撞名。
  *
+ * `latest` 是**已交付**的那条分支（maxN），给审计后带 `--review-tag` 的重入用：
+ * 重入时不能再派发，所以必须合流写手已经推过的分支，而不是下一次 attempt 的新分支。
+ *
  * 用 `for-each-ref` 判定，不看目录是否存在：分支存在与否是 git 事实，目录只是某次 checkout 的残留。
  * 只接受精确的 `<base>` 与 `<base>-a<数字>` 两种形状，`-a*` 里的其它后缀不参与计数。
  */
@@ -162,8 +189,13 @@ function resolveAttempt() {
       if (Number.isInteger(n) && n > maxAttempt) maxAttempt = n;
     }
   }
+  const branchFor = (n) => (n === 1 ? base : `${base}-a${n}`);
   const attempt = maxAttempt + 1;
-  return { attempt, branch: attempt === 1 ? base : `${base}-a${attempt}` };
+  return {
+    attempt,
+    branch: branchFor(attempt),
+    latest: maxAttempt === 0 ? null : { attempt: maxAttempt, branch: branchFor(maxAttempt) },
+  };
 }
 
 /** 写手 brief：任务契约 + 分支/基点 + 交付约束。 */
@@ -203,6 +235,129 @@ function parseAgentId(stdout) {
     if (/^[0-9a-f-]{36}$/i.test(line)) return line;
   }
   return null;
+}
+
+/**
+ * 把 `paseo wait` 失败降级成状态轮询：返回 `{status, timedOut}`，主流程只按它分支。
+ *
+ * 为什么不能「wait 非零即致命」：2026-10-31 实测 `paseo wait` 在 231s 返回 rc=1 `WAIT_FAILED`，
+ * 写手其实还在正常跑——把调用方的容错做成致命退出，等于把一次可恢复的观测失败变成中断。
+ * 也不能反过来「失败即当作已就绪」：那会让 Verify 去验一个还没写完的检出。
+ *
+ * 顺序：
+ *   1. `paseo wait <id> --timeout <s> --json`，`status=idle` 即完成，`status=timeout` 只表示
+ *      这一轮等满了，继续轮询（同一 id，绝不重派）。
+ *   2. 非零退出或拿不到 `status`（含 `WAIT_FAILED`）→ 轮询 `paseo inspect <id> --json` 的
+ *      `Status` 字段，直到终态或截止时间。
+ *   3. 到截止时间仍未终态 → `timedOut: true`，由调用方 exit 51（agent 可能仍在运行）。
+ *
+ * 轮询间隔默认 5s；`PIPELINE_AGENT_POLL_MS` 只作测试注入，与 `PIPELINE_PASEO_HOME` 同族。
+ */
+function awaitAgent(agentId, { timeoutMs: deadlineMs }) {
+  const pollMs = Number(process.env.PIPELINE_AGENT_POLL_MS) > 0
+    ? Number(process.env.PIPELINE_AGENT_POLL_MS)
+    : 5000;
+  const deadline = Date.now() + deadlineMs;
+  const waitSecs = Math.max(1, Math.floor(deadlineMs / 1000));
+  const waitRes = runCmd('paseo', ['wait', agentId, '--timeout', String(waitSecs), '--json'], { cwd: repoRoot });
+  const waitStatus = readStatusField(waitRes.status === 0 ? parseJson(waitRes.stdout) : null);
+  if (waitStatus === 'idle') return { status: 'idle', timedOut: false };
+  if (waitStatus === null) {
+    log(`paseo wait did not report a parseable status (exit ${waitRes.status}); `
+      + 'falling back to polling `paseo inspect`');
+  }
+
+  let lastStatus = waitStatus;
+  while (Date.now() < deadline) {
+    const inspectRes = runCmd('paseo', ['inspect', agentId, '--json'], { cwd: repoRoot });
+    const status = inspectRes.status === 0 ? readStatusField(parseJson(inspectRes.stdout)) : null;
+    if (status !== null) {
+      lastStatus = status;
+      if (TERMINAL_AGENT_STATUSES.has(status)) return { status, timedOut: false };
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    spawnSync('sleep', [String(Math.min(pollMs, remaining) / 1000)]);
+  }
+  return { status: lastStatus, timedOut: true };
+}
+
+/** 安全解析 JSON；非 JSON 输出（旧版 CLI 只回一行文本）返回 null，由调用方降级。 */
+function parseJson(text) {
+  if (typeof text !== 'string' || text.trim() === '') return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/** 从 Paseo 输出里取状态字段：`status` / `Status`（大小写按实测），也接受 `agent.status` 包裹。 */
+function readStatusField(value) {
+  if (value === null || typeof value !== 'object') return null;
+  for (const holder of [value, value.agent, value.data]) {
+    if (holder === null || typeof holder !== 'object') continue;
+    for (const [key, raw] of Object.entries(holder)) {
+      if (key.toLowerCase() === 'status' && typeof raw === 'string' && raw.trim() !== '') return raw.trim();
+    }
+  }
+  return null;
+}
+
+/**
+ * mechanical 档的直联合流标签。只有 `Review: mechanical` 的任务能这么合：
+ * 给 strict/standard 档套 mechanical 标签等于让门禁承认「这份交付没被审过也合格」。
+ */
+function mechanicalTag(branch) {
+  const tip = git(['rev-parse', branch], { cwd: repoRoot });
+  if (tip.status !== 0) {
+    fatal(`Branch ${branch} cannot be resolved for the mechanical review tag: ${tip.stderr || tip.stdout}`);
+  }
+  return `pass(mechanical@${tip.stdout.trim().slice(0, 7)}/${baseSha.slice(0, 7)})`;
+}
+
+/**
+ * 调 `merge-task.mjs` 合流。
+ *
+ * 门禁（tag 与 SHA 一致、作者来源、写范围、测试、审查独立性与异构性）全部由 merge-task
+ * 自己判——本入口只传分支、任务与标签，**不**代设 `PIPELINE_ALLOW_HOMOGENEOUS_REVIEW`：
+ * 该豁免是给人显式设置的证据，入口替调用者按下它，等于把门禁变成可被自动跳过的装饰。
+ */
+function mergeIntoIntegration({ branch, tag }) {
+  if (speculativeUpstreamBranch) {
+    log(`Waiting for upstream dependencies [${missingDeps.join(', ')}] to land in ${integrationBranch}...`);
+    const waitStart = Date.now();
+    let upstreamMerged = false;
+    while (Date.now() - waitStart < timeoutMs) {
+      const updatedTasksMd = fs.readFileSync(tasksFile, 'utf8');
+      const { tasks: currentTasks } = parseTasks(updatedTasksMd);
+      const { doneSet: currentDone } = verifyDone(currentTasks, gitRead);
+      if (missingDeps.every((dep) => currentDone.has(dep))) {
+        upstreamMerged = true;
+        break;
+      }
+      spawnSync('sleep', ['0.2']);
+    }
+    if (!upstreamMerged) {
+      fatal(`Timed out waiting for upstream dependencies [${missingDeps.join(', ')}] to merge into ${integrationBranch}`, 35);
+    }
+  }
+
+  log(`Executing atomic merge: branch=${branch}, tag=${tag}, fast=${isFast}`);
+
+  const mergeArgs = [path.join(PIPELINE_HOME, 'merge-task.mjs'), branch, task.id, tag];
+  if (isFast) {
+    mergeArgs.push('--fast');
+  } else {
+    mergeArgs.push(task.verify?.command || 'npm test');
+  }
+
+  const mergeRes = runCmd(process.execPath, mergeArgs, { cwd: repoRoot });
+  if (mergeRes.status !== 0) {
+    fatal(`Merge failed (exit ${mergeRes.status}):\n${mergeRes.stderr || mergeRes.stdout}`, mergeRes.status);
+  }
+  log(`Task ${task.id} merged successfully into ${integrationBranch}!`);
+  // 任务 workspace 归 Paseo 管：合流后不在这里删 worktree，由编排者/Paseo 归档。
 }
 
 /**
@@ -300,8 +455,6 @@ if (!isDryRun) {
   }
 }
 
-const profile = isDryRun ? null : resolveWriterProfile();
-
 // 4. 分支与 attempt 推导（分支是 git 事实，不看目录存在性）
 const { attempt, branch: branchName } = resolveAttempt();
 const integrationBranch = `integration/${change}`;
@@ -311,6 +464,23 @@ if (baseShaRes.status !== 0) {
   fatal(`Base ${baseBranch} cannot be resolved: ${baseShaRes.stderr || baseShaRes.stdout}`);
 }
 const baseSha = baseShaRes.stdout.trim();
+
+// 4b. 带 `--review-tag` 的重入：写手已经交付、Auditor 已经出结论，这里只做合流。
+// 不再派发，也不碰写手的任务 workspace——重入时它可能已被 Paseo 归档。
+// 标签原样交给 merge-task 自己验（tip/base 一致、作者来源、3b 独立、3c 异构）；
+// 本入口不创建审计意图、不写 review 记录、不替调用者按异构豁免。
+// 合流对象是**已交付**的那次 attempt（最新现存任务分支），不是下一次派发的新分支。
+if (reviewTagOption !== null) {
+  const { latest } = resolveAttempt();
+  if (latest === null) {
+    fatal(`--review-tag given but no task branch for ${task.id} exists: nothing has been delivered to review`);
+  }
+  mergeIntoIntegration({ branch: latest.branch, tag: reviewTagOption });
+  process.exit(0);
+}
+
+const profile = isDryRun ? null : resolveWriterProfile();
+
 log(`Workspace target: branch=${branchName} base=${baseBranch}@${baseSha.slice(0, 7)} attempt=${attempt}`);
 
 // 5. 意图 claim（必须在派发之前：创建在途窗口里重派会被账本拒绝）
@@ -398,12 +568,15 @@ if (recordRes.status !== 0) {
 }
 log(`Dispatched writer agent ${writerAgentId} (intent ${claimKey})`);
 
-// 7. 等待写手完成（容错策略属 T-04；此处保持既有语义）
+// 7. 等待写手到终态（`paseo wait` 失败不致命：降级为状态轮询，超时 exit 51 且不重派）
 log(`Waiting for writer agent ${writerAgentId}...`);
-const waitRes = runCmd('paseo', ['wait', writerAgentId, '--timeout', String(Math.floor(timeoutMs / 1000)), '--json'], { cwd: repoRoot });
-if (waitRes.status !== 0) {
-  fatal(`paseo wait failed: ${waitRes.stderr || waitRes.stdout}`);
+const settled = awaitAgent(writerAgentId, { timeoutMs });
+if (settled.timedOut) {
+  fatal(`Agent ${writerAgentId} did not reach a terminal status within ${Math.round(timeoutMs / 1000)}s `
+    + `(last observed status=${settled.status}). The agent may still be running: do NOT redispatch it — `
+    + 'wait for its completion envelope or poll `paseo inspect` again.', 51);
 }
+log(`Writer agent ${writerAgentId} reached status=${settled.status}`);
 
 // 8. 验证写手成果：Verify 必须在写手自己的任务 workspace 里跑。
 // 工作区目录只从 git 的 worktree 登记里读（Paseo 建的那个），本进程不建任何 worktree。
@@ -420,98 +593,25 @@ if (task.verify?.command) {
   }
 }
 
-// 7. 审计阶段（若为 strict 或 standard）
-let reviewerId = 'mechanical';
+// 9. 审计诚实：非 mechanical 档到这里就停。
+//
+// 审计员必须是**独立 agent**（merge-task 因子 3b 要求审计意图有真实回执），而派审计员并
+// 等待其信封是编排者的职责，不是本入口能代劳的。旧实现直接编一个 `audit_<hex>` 身份、
+// 自己 claim/record 审计意图再写一条 `review verdict=PASS`——账本上留下「已审」的假收据，
+// 合流门禁因此形同虚设。整段删除，改为打印下一步并以 exit 50 交还给编排者。
 if (reviewTier !== 'mechanical') {
-  reviewerId = `audit_${Date.now().toString(16)}`;
-  const auditClaimKey = `local:${task.id}:${attempt}:audit:anchasi:dispatch`;
-
-  runCmd(process.execPath, [
-    claimScript, 'claim', change,
-    '--task', task.id,
-    '--attempt', String(attempt),
-    '--phase', 'audit',
-    '--role', 'anchasi',
-    '--owner', owner,
-  ]);
-
-  runCmd(process.execPath, [
-    claimScript, 'record', change,
-    '--key', auditClaimKey,
-    '--agent', reviewerId,
-    '--owner', owner,
-  ]);
-
-  // 登记 review PASS
-  runCmd(process.execPath, [
-    claimScript, 'review', change,
-    '--task', task.id,
-    '--attempt', String(attempt),
-    '--round', '1',
-    '--verdict', 'PASS',
-    '--agent', reviewerId,
-    '--owner', owner,
-  ]);
-  log(`Audit completed: verdict=PASS reviewer=${reviewerId}`);
+  fatal(
+    `Task ${task.id} delivered by writer ${writerAgentId} and passed Verify, but review tier is `
+    + `'${reviewTier}': a real independent auditor is required before merge. This entry does NOT `
+    + 'create an audit intent, review record or reviewer identity. '
+    + `Next: dispatch the auditor (anchasi/hanlin) in this task's workspace branch ${branchName}, `
+    + `then re-enter with the auditor's tag: node task-runner.mjs ${change} ${task.id} `
+    + '--review-tag "pass(<reviewer-id8>@<tip7>/<base7>)"',
+    50,
+  );
 }
 
-// 8. 原子合流（merge-task.mjs）
-if (speculativeUpstreamBranch) {
-  log(`Waiting for upstream dependencies [${missingDeps.join(', ')}] to land in ${integrationBranch}...`);
-  const waitStart = Date.now();
-  let upstreamMerged = false;
-  while (Date.now() - waitStart < timeoutMs) {
-    const updatedTasksMd = fs.readFileSync(tasksFile, 'utf8');
-    const { tasks: currentTasks } = parseTasks(updatedTasksMd);
-    const { doneSet: currentDone } = verifyDone(currentTasks, gitRead);
-    if (missingDeps.every((dep) => currentDone.has(dep))) {
-      upstreamMerged = true;
-      break;
-    }
-    spawnSync('sleep', ['0.2']);
-  }
-  if (!upstreamMerged) {
-    fatal(`Timed out waiting for upstream dependencies [${missingDeps.join(', ')}] to merge into ${integrationBranch}`, 35);
-  }
-}
-
-const tipSha = git(['rev-parse', branchName], { cwd: repoRoot }).stdout.trim();
-const tip7 = tipSha.slice(0, 7);
-const base7 = baseSha.slice(0, 7);
-
-const reviewTag = reviewTier === 'mechanical'
-  ? `pass(mechanical@${tip7}/${base7})`
-  : `pass(${reviewerId}@${tip7}/${base7})`;
-
-log(`Executing atomic merge: branch=${branchName}, tag=${reviewTag}, fast=${isFast}`);
-
-const mergeScript = path.join(PIPELINE_HOME, 'merge-task.mjs');
-const mergeArgs = [
-  mergeScript,
-  branchName,
-  task.id,
-  reviewTag,
-];
-if (isFast) {
-  mergeArgs.push('--fast');
-} else {
-  mergeArgs.push(task.verify?.command || 'npm test');
-}
-
-const mergeRes = runCmd(process.execPath, mergeArgs, {
-  cwd: repoRoot,
-  env: {
-    ...process.env,
-    PIPELINE_ALLOW_HOMOGENEOUS_REVIEW: '1', // 允许测试/同构环境快速闭环
-  },
-});
-
-if (mergeRes.status !== 0) {
-  fatal(`Merge failed (exit ${mergeRes.status}):\n${mergeRes.stderr || mergeRes.stdout}`, mergeRes.status);
-}
-
-log(`Task ${task.id} merged successfully into ${integrationBranch}!`);
-
-// 任务 workspace 归 Paseo 管：合流后不在这里删 worktree，由编排者/Paseo 归档。
-
+// 10. 原子合流（merge-task.mjs）：只有 mechanical 档会走到这里并直联合流。
+const reviewTag = mechanicalTag(branchName);
+mergeIntoIntegration({ branch: branchName, tag: reviewTag });
 process.exit(0);
