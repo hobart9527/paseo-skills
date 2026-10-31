@@ -40,6 +40,8 @@ create_agent
 ```
 
 - 不接受 `cwd`：目录由 `workspaceId` 决定。
+- `initialPrompt` 里出现的脚本命令必须写成绝对路径，不要写 `"$PIPELINE_HOME"/<脚本>`：agent 不保证继承该变量
+  （daemon 起的 agent 只读得到 `~/.zshenv` 的导出，`install.sh` 之前/换机器后为空）。
 - `provider` 只写 `claude` 会被拒；必须带 `/<model>`。
 - `modeId` 必须是该 provider 支持的值：claude 为 plan/default/acceptEdits/auto/bypassPermissions，codex 为 auto/auto-review/full-access。`node "$PIPELINE_HOME"/pipeline-doctor.mjs` 会提前核。
 

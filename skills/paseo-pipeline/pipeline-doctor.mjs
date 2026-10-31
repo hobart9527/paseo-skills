@@ -7,7 +7,7 @@
 // 它只读，不改任何配置；每一项独立判定，全部跑完再汇总，退出码非 0 即有阻断。
 //
 // 用法:
-//   node pipeline-doctor.mjs [--config <paseo config.json>] [--settings <claude settings.json>] [--json]
+//   node pipeline-doctor.mjs [--config <paseo config.json>] [--settings <claude settings.json>] [--home <HOME>] [--json]
 // 退出码: 0 全通过 · 1 有 FAIL
 import fs from 'node:fs';
 import os from 'node:os';
@@ -22,8 +22,9 @@ function opt(name, fallback) {
   const i = argv.indexOf(name);
   return i >= 0 && i + 1 < argv.length ? argv[i + 1] : fallback;
 }
-const configPath = opt('--config', path.join(os.homedir(), '.paseo', 'config.json'));
-const settingsPath = opt('--settings', path.join(os.homedir(), '.claude', 'settings.json'));
+const homeDir = opt('--home', os.homedir());
+const configPath = opt('--config', path.join(homeDir, '.paseo', 'config.json'));
+const settingsPath = opt('--settings', path.join(homeDir, '.claude', 'settings.json'));
 
 const REQUIRED_PROFILES = [
   'shangshu', 'chanpin', 'hanlin', 'ceshi', 'gongbu', 'gaogong', 'anchasi', 'jiangzuo',
@@ -44,14 +45,38 @@ function readJson(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (error) { return { __error: error.message }; }
 }
 
-// 1. PIPELINE_HOME
+// 1. PIPELINE_HOME（当前进程）
 const home = process.env.PIPELINE_HOME;
+const installHint = `运行 bash ${path.join(SKILL_DIR, 'install.sh')}`;
 if (!home) {
-  fail('PIPELINE_HOME', `未设置。在 ~/.zshrc 导出：export PIPELINE_HOME="${SKILL_DIR}"`);
+  fail('PIPELINE_HOME', `未设置。${installHint}`);
 } else if (path.resolve(home) !== SKILL_DIR) {
   fail('PIPELINE_HOME', `指向 ${home}，但本脚本位于 ${SKILL_DIR}`);
 } else {
   pass('PIPELINE_HOME', home);
+}
+
+// 1b. 非交互环境可读 PIPELINE_HOME
+// 上面一项只看当前进程，而 Paseo daemon 起的 agent 不继承交互终端的变量：`~/.zshrc` 只对
+// 交互 shell 生效。装好的落点是 `~/.zshenv`，所以必须在干净的 zsh 里真读一次，而不是相信
+// 当前 shell 或文件里「看起来有」的那一行。env -i 清空继承，HOME 指到 --home。
+const shellHome = (() => {
+  try {
+    return execFileSync('zsh', ['-c', 'print -r -- "${PIPELINE_HOME-}"'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: { HOME: homeDir, PATH: process.env.PATH ?? '/usr/bin:/bin' },
+    }).trim();
+  } catch { return null; }
+})();
+if (shellHome === null) {
+  fail('非交互 PIPELINE_HOME', '无法启动 zsh 读取（zsh 是否在 PATH）');
+} else if (shellHome === '') {
+  fail('非交互 PIPELINE_HOME', `非交互 shell 里为空：${installHint}（装进 ~/.zshenv）`);
+} else if (shellHome !== SKILL_DIR) {
+  fail('非交互 PIPELINE_HOME', `~/.zshenv 指向 ${shellHome}，但本脚本位于 ${SKILL_DIR}；${installHint}`);
+} else {
+  pass('非交互 PIPELINE_HOME', `~/.zshenv → ${shellHome}`);
 }
 
 // 2. profile 完整性、provider/mode 合法性
