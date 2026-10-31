@@ -537,6 +537,26 @@ test('SCEN-HND-09: SKILL 的交接序列先提交冻结产物、再跑 handoff-c
   assert.match(handoff, /handoff-check\.mjs\s+<name>/, '交接门禁必须给出可照抄的命令');
 });
 
+test('SCEN-DOC-29: task-runner 用法行的选项集合与脚本 Usage 一致（含 --owner）', () => {
+  // 文档示例漏掉 `--owner` 的代价是实测过的：租约下照抄必然被拒。选项集合以代码 Usage 为准，
+  // 两边用同一条提取规则比对——不手工维护第三份清单。
+  const script = fs.readFileSync(path.join(skillDir, 'task-runner.mjs'), 'utf8');
+  const usageMatch = /用法:?\s*\n((?:\s*\/\/\s*\S[^\n]*\n)+)/.exec(script);
+  assert.ok(usageMatch, 'task-runner.mjs 头部必须有 Usage 行');
+  const usageOptions = new Set([...usageMatch[1].matchAll(/--[a-z-]+/g)].map((m) => m[0]));
+
+  // 只看可照抄的命令行（`node ...` 开头）：正文里描述 hotfix 语法的那句也含这两个占位符。
+  const line = skillText.split('\n')
+    .map((entry) => entry.trim())
+    .find((entry) => entry.startsWith('node ') && /task-runner\.mjs\s+<change>/.test(entry));
+  assert.ok(line, 'SKILL.md 必须给出 task-runner 的用法行');
+  const docOptions = new Set([...line.matchAll(/--[a-z-]+/g)].map((m) => m[0]));
+
+  assert.deepEqual([...docOptions].sort(), [...usageOptions].sort(),
+    `SKILL.md 的 task-runner 用法行必须与脚本 Usage 选项一致：doc=${[...docOptions]} usage=${[...usageOptions]}`);
+  assert.ok(docOptions.has('--owner'), '用法行必须含 --owner');
+});
+
 test('SCEN-HND-09: 收尾全量测试命令指向 test/run-all.sh，且该脚本覆盖全部测试文件', () => {
   const closeout = section('验收与交回');
   assert.match(closeout, /test\/run-all\.sh/, '收尾步骤必须点名 test/run-all.sh');

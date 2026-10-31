@@ -169,7 +169,7 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
   - **投机流水线（Speculative Pipelining）**：`reconcile.mjs --speculative`（或 `PIPELINE_SPECULATIVE=1`）允许在前置任务已产出领先分支并处于 `MERGE` 待合流状态时，下游任务先以该分支为基线提前派发实施（`SPECULATIVE_READY`），消除线性依赖的等待空转；合流门禁仍严格守住依赖已 Done 的硬前置条件。
 - **确定性任务执行器（`task-runner.mjs`）**：将单任务微生命周期（claim → worktree → dispatch → wait → verify → audit → merge）收敛为本地确定性执行器，免除总控 LLM 往返与空等：
   ```bash
-  node "$PIPELINE_HOME"/task-runner.mjs <change> <task-id> [--fast] [--speculative] [--dry-run]
+  node "$PIPELINE_HOME"/task-runner.mjs <change> <task-id> [--fast] [--speculative] [--owner <id>] [--timeout <ms>] [--review-tag <tag>] [--dry-run] [--json]
   ```
 - 资源冲突串行化：`Write scope` 前缀重叠的任务保守串行；互不重叠且工作区隔离的任务在 `cap` 限制内并发派发。cap 是容量上限，不是要达到的目标。
 - 共享资源不只文件：同仓多 change 的同文件、公开领域契约、端口、DB 文件、缓存、队列、外部租户与测试账号都要显式声明顺序或隔离，worktree 不隔离这些副作用。
