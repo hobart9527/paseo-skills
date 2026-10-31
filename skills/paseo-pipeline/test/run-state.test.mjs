@@ -356,7 +356,9 @@ test('SCEN-CON-10 SCEN-CON-22 report derives only what the ledger actually recor
   const report = JSON.parse(subject.run('report', '--json').stdout);
   assert.equal(report.dispatches, 1, '只有带真实 agent 回执的意图算派发');
   assert.equal(report.tasksDispatched, 1);
-  assert.equal(report.auditDispatches, 1);
+  // T-02 的审计意图只 claim 未 record：没有回执就不是已发生的派发（SCEN-CON-27），
+  // 与 dispatches 共用同一判据。旧断言把未回执的审计意图算作一次审查派发。
+  assert.equal(report.auditDispatches, 0);
   assert.equal(report.maxAttempt, 1, 'attempt 2 尚未回执，不能算作已发生的派发');
 
   // 2026-10-31 起账本新增 reviews/merges/readyObs：这两项不再是「恒为未采集」的占位字段。
@@ -369,6 +371,43 @@ test('SCEN-CON-10 SCEN-CON-22 report derives only what the ledger actually recor
   // 所以 READY 等待必须给出样本数与口径，而不是「未采集」。
   assert.equal(report.readyWait.samples, 1, '上一动作结束→本次 claim 这对动作必须被计时');
   assert.match(report.readyWait.basis, /上一动作结束/);
+});
+
+test('SCEN-CON-27 a voided audit intent is not counted as an audit dispatch', (context) => {
+  const subject = fixture(context);
+  subject.run('begin', '--owner', 'lead-a');
+  // 写手真实派发并回执。
+  subject.run('claim', '--task', 'T-01', '--attempt', '1', '--phase', 'impl', '--role', 'gongbu', '--owner', 'lead-a');
+  subject.run('record', '--key', intentKey({ run: null, task: 'T-01', attempt: 1, phase: 'impl', role: 'gongbu', action: 'dispatch' }),
+    '--agent', '01234567-89ab-cdef-0123-456789abcdef', '--owner', 'lead-a');
+  // 审计意图领取后创建失败，被显式作废：这次派发确认没有发生。
+  const auditKey = intentKey({ run: null, task: 'T-01', attempt: 1, phase: 'audit', role: 'anchasi', action: 'dispatch' });
+  subject.run('claim', '--task', 'T-01', '--attempt', '1', '--phase', 'audit', '--role', 'anchasi', '--owner', 'lead-a');
+  const voided = subject.run('fail', '--key', auditKey, '--reason', 'create failed', '--owner', 'lead-a');
+  assert.equal(voided.status, 0, voided.stderr);
+
+  const report = JSON.parse(subject.run('report', '--json').stdout);
+  assert.equal(report.dispatches, 1, '只有带真实回执的意图算派发');
+  assert.equal(report.auditDispatches, 0, '作废的审计意图没有发生过派发，不得计入审查派发');
+  assert.equal(report.voidedIntents, 1, '作废意图单独计数，不并入任何派发数');
+});
+
+test('SCEN-CON-27 audit and arbitrate intents with a real receipt are still audit dispatches', (context) => {
+  const subject = fixture(context);
+  subject.run('begin', '--owner', 'lead-a');
+  // 收紧「未回执不算」不得误伤「哪些 phase 算审查」：有回执的 audit/arbitrate 仍要计数。
+  for (const [phase, role, agent] of [
+    ['audit', 'anchasi', '01234567-89ab-cdef-0123-456789abcdea'],
+    ['arbitrate', 'arbiter', '01234567-89ab-cdef-0123-456789abcdef'],
+  ]) {
+    subject.run('claim', '--task', 'T-01', '--attempt', '1', '--phase', phase, '--role', role, '--owner', 'lead-a');
+    subject.run('record', '--key', intentKey({ run: null, task: 'T-01', attempt: 1, phase, role, action: 'dispatch' }),
+      '--agent', agent, '--owner', 'lead-a');
+  }
+
+  const report = JSON.parse(subject.run('report', '--json').stdout);
+  assert.equal(report.auditDispatches, 2, '有回执的 audit 与 arbitrate 都属于审查派发');
+  assert.equal(report.voidedIntents, 0);
 });
 
 test('SCEN-CON-10 report on a missing ledger reports absence instead of zeros that look measured', (context) => {

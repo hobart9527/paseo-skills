@@ -300,6 +300,8 @@ The run ledger SHALL refuse to void an intent that already carries a real agent 
 
 The ledger SHALL provide a report command whose every number is derived from facts already recorded in the ledger. Metrics that the ledger does not record — audit conclusions, state transition times — SHALL be reported as not collected rather than estimated. The report SHALL distinguish an absent ledger from a ledger with zero activity.
 
+A dispatch count SHALL count only intents that carry a real agent receipt, and every dispatch count in the report SHALL use that same definition. An intent that was never dispatched — one that is still open, or one explicitly voided because its creation failed — SHALL NOT be counted as a dispatch, regardless of its phase or role. Voided intents SHALL be reported by their own count and SHALL NOT be folded into any dispatch count, so that the number of audits actually performed stays distinguishable from the number of audit intents that were attempted.
+
 The ledger SHALL record the orchestrating skill's git identity when a lease is acquired. A later mismatch between the recorded identity and the current one SHALL warn and SHALL NOT block reading or acting on the ledger; a ledger without the field SHALL be reported as not collected.
 
 #### Scenario: SCEN-CON-09 a receipted intent cannot be voided
@@ -313,6 +315,10 @@ The ledger SHALL record the orchestrating skill's git identity when a lease is a
 #### Scenario: SCEN-CON-11 skill version drift warns without blocking
 - **WHEN** a ledger records a skill HEAD different from the current one, or records none at all
 - **THEN** status prints a drift warning in the first case and a not-collected line in the second, and both remain readable.
+
+#### Scenario: SCEN-CON-27 a voided audit intent is not counted as an audit dispatch
+- **WHEN** an audit intent is claimed and then explicitly voided because its agent creation failed, alongside one writer dispatch that carries a real receipt
+- **THEN** the report counts one dispatch and zero audit dispatches, reports the voided intent under the voided count, and the writer dispatch is still counted as dispatched.
 
 ### Requirement: Documentation states the same contract the code enforces
 The skill documentation SHALL present the run-ledger commands in a form that can be executed as written, including the owner argument required while a lease is active, and SHALL state the consequence of omitting it. Every run-ledger subcommand named in the documentation SHALL exist in the script. Role names used for dispatch SHALL come from the live profile source; the historical role `qingqibing` SHALL remain recognisable for reading existing agent labels and SHALL NOT appear as a dispatchable role. Documentation SHALL NOT describe a wake mechanism, an evidence field set, or a review-tag form that the code does not implement.
