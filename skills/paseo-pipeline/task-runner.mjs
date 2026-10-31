@@ -28,6 +28,7 @@
 //   35 依赖未完成
 //   50 非 mechanical 档写手已交付并通过 Verify，等待真实审计（入口不代签审计结论）
 //   51 等待写手到终态超时（agent 可能仍在运行，禁止重派）
+//   52 任务分支 tip 等于 workspace 基点：写手未产出提交，Verify 没有覆盖任何实现
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -592,6 +593,28 @@ if (task.verify?.command) {
   if (verifyRes.status !== 0) {
     fatal(`Verify command failed in worktree:\n${verifyRes.stderr || verifyRes.stdout}`, 20);
   }
+}
+
+// 8b. 交付诚实：任务分支 tip 必须领先 workspace 创建时的基点。
+//
+// 写手一个提交都没产出时，第 8 步的 Verify 跑的不是任何写手的实现——它绿不绿都与本次
+// 交付无关（写手可能改了工作区没提交，此时验的是脏树；也可能什么都没改）。旧实现两种
+// 档位都静默放行：非 mechanical 档向编排者报「已交付并通过 Verify」并派出一轮无意义审计；
+// mechanical 档最终被 merge-task 的 `commits.length === 0`（exit 31）拦住，可那时错误信息
+// 指向「nothing to merge」，而不是「写手没干活」。
+// 所有 Review 档位一致在这里拦住，且只陈述可核验的 git 事实。
+const tipRes = git(['rev-parse', '--verify', `${branchName}^{commit}`], { cwd: repoRoot });
+if (tipRes.status !== 0) {
+  fatal(`Task branch ${branchName} cannot be resolved after the writer settled: `
+    + `${tipRes.stderr || tipRes.stdout}`, 1);
+}
+const taskTip = tipRes.stdout.trim();
+if (taskTip === baseSha) {
+  fatal(`写手未产出提交：task branch ${branchName} tip (${taskTip.slice(0, 7)}) equals the `
+    + `workspace base (${baseSha.slice(0, 7)}). The branch has no writer commits, so the `
+    + `Verify result cannot prove the implementation was delivered. Do NOT dispatch an `
+    + `auditor or merge: redispatch the writer (attempt ${attempt + 1}) or inspect agent `
+    + `${writerAgentId}'s output first.`, 52);
 }
 
 // 9. 审计诚实：非 mechanical 档到这里就停。
