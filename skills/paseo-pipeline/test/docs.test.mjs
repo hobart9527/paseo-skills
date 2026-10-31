@@ -180,12 +180,12 @@ test('SCEN-DOC-02: 权限代批与自产自审被明令禁止', () => {
 
 test('SCEN-DOC-10: SKILL.md 引用的本地脚本都真实存在（防漂移）', () => {
   const referenced = new Set(
-    [...skillText.matchAll(/skills\/paseo-pipeline\/([\w./-]+\.(?:mjs|sh))/g)].map((m) => m[1]),
+    [...skillText.matchAll(/(?:skills\/paseo-pipeline|\$PIPELINE_HOME"?)\/([\w./-]+\.(?:mjs|sh))/g)].map((m) => m[1]),
   );
   assert.ok(referenced.size > 0, 'SKILL.md must reference the pipeline scripts by path');
   for (const relative of referenced) {
     assert.ok(fs.existsSync(path.join(skillDir, relative)),
-      `SKILL.md 引用了不存在的脚本：skills/paseo-pipeline/${relative}`);
+      `SKILL.md 引用了不存在的脚本：$PIPELINE_HOME/${relative}`);
   }
 });
 

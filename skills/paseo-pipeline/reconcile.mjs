@@ -36,12 +36,13 @@ import { execFileSync } from "node:child_process";
 
 const args = process.argv.slice(2);
 const asJson = args.includes("--json");
+const isSpeculative = args.includes("--speculative") || process.env.PIPELINE_SPECULATIVE === "1";
 const capIdx = args.indexOf("--cap");
 const parsedCap = capIdx >= 0 ? Number(args[capIdx + 1]) : 3;
 const cap = Number.isFinite(parsedCap) ? parsedCap : 3;
 const change = args.find((a, i) => !a.startsWith("--") && args[i - 1] !== "--cap");
 if (!change) {
-  console.error("Usage: node reconcile.mjs <change> [--cap 3] [--json]");
+  console.error("Usage: node reconcile.mjs <change> [--cap 3] [--json] [--speculative]");
   process.exit(1);
 }
 // change 名必须过形态校验：旗标形态的位置参数会静默把状态分裂到 paseo-pipeline/<flag>/
@@ -52,7 +53,7 @@ if (changeProblem !== null) fatal(changeProblem);
 const emptyGroups = () => ({
   INVALID: [], DONE: [], ACTIVE: [], UNRESOLVED: [], MERGE: [],
   BLOCKED: [], BLOCKED_RESOURCE: [], READY: [], UNMAPPED: [], RUNNING: [],
-  FOREIGN: [], INTENT_PENDING: [], ORPHAN_INTENT: [], canDispatchNow: [], holdReasons: [],
+  FOREIGN: [], INTENT_PENDING: [], ORPHAN_INTENT: [], SPECULATIVE_READY: [], canDispatchNow: [], holdReasons: [],
 });
 
 function fatal(message) {
@@ -364,6 +365,8 @@ out.runtimeEvidence = state.runtimeEvidence;
 const stateOf = new Map();
 const held = []; // 占用集：ACTIVE(写入者) ∪ UNRESOLVED ∪ MERGE，随后追加已放行 READY
 const candidates = [];
+const pendingDependencyTasks = [];
+const mergeBranchByTaskId = new Map();
 let liveWriterCount = 0;
 
 for (const task of tasks) {
@@ -521,6 +524,7 @@ for (const task of tasks) {
     : ranked(exact))[0] ?? ranked(unknownAttempt)[0] ?? null;
   if (branch) {
     out.MERGE.push({ task: label, id: task.id, branch });
+    mergeBranchByTaskId.set(task.id, branch);
     stateOf.set(task.id, "MERGE");
     held.push({ id: task.id, label, scope: task.scope });
     continue;
@@ -537,11 +541,23 @@ for (const task of tasks) {
     held.push({ id: task.id, label, scope: task.scope });
     continue;
   }
+  pendingDependencyTasks.push({ task, label, policy });
+}
+
+for (const { task, label, policy } of pendingDependencyTasks) {
   const waitFor = task.depends.filter((dep) => !doneSet.has(dep));
+  let isSpeculativeCandidate = false;
+  let speculativeBases = [];
+
   if (waitFor.length) {
-    out.BLOCKED.push({ task: label, waitFor });
-    stateOf.set(task.id, "BLOCKED");
-    continue;
+    if (isSpeculative && waitFor.every((dep) => mergeBranchByTaskId.has(dep))) {
+      isSpeculativeCandidate = true;
+      speculativeBases = waitFor.map((dep) => mergeBranchByTaskId.get(dep));
+    } else {
+      out.BLOCKED.push({ task: label, waitFor });
+      stateOf.set(task.id, "BLOCKED");
+      continue;
+    }
   }
   // 打回预算耗尽：不再回流 READY 无预算重派，转 BLOCKED 交人类裁决。
   // 放在 MERGE 之后：分支已领先说明工作成果存在，合流仍走正常门禁（测试 + 非自审），
@@ -577,6 +593,8 @@ for (const task of tasks) {
     escalate: policy.escalate,
     role: policy.role,
     rejections: policy.rejections,
+    speculative: isSpeculativeCandidate,
+    speculativeBases,
   });
 }
 
@@ -597,13 +615,18 @@ for (const c of candidates) {
     out.BLOCKED_RESOURCE.push({ task: c.label, conflict: holder.label });
     stateOf.set(c.id, "BLOCKED_RESOURCE");
   } else {
-    out.READY.push({
+    const readyItem = {
       task: c.label,
       id: c.id,
       scope: c.scope,
       // 仅在升级重派时出现。字段缺省表示按常规角色派发；出现即要求执行器改派该角色。
       ...(c.escalate ? { escalate: true, role: c.role, rejections: c.rejections } : {}),
-    });
+      ...(c.speculative ? { speculative: true, speculativeBases: c.speculativeBases } : {}),
+    };
+    out.READY.push(readyItem);
+    if (c.speculative) {
+      out.SPECULATIVE_READY.push(readyItem);
+    }
     stateOf.set(c.id, "READY");
     held.push(c);
   }
@@ -845,10 +868,14 @@ if (asJson) {
   for (const e of out.BLOCKED_RESOURCE) console.log(`BLOCKED_RESOURCE ${e.task}  (冲突 ${e.conflict})`);
   for (const e of out.INTENT_PENDING) console.log(`INTENT_PENDING ${e.task}  (${e.reason})`);
   for (const e of out.READY) {
-    // 升级重派必须在文本通道也看得见：执行器读的是 stdout，不是 JSON。
-    console.log(e.escalate
-      ? `READY    ${e.task}  [升级重派 -> ${e.role}，已打回 ${e.rejections} 次]`
-      : `READY    ${e.task}`);
+    // 升级重派与投机流水线必须在文本通道也看得见：执行器读的是 stdout，不是 JSON。
+    let tag = '';
+    if (e.escalate) {
+      tag = `  [升级重派 -> ${e.role}，已打回 ${e.rejections} 次]`;
+    } else if (e.speculative) {
+      tag = `  [投机流水线 <- 基于 ${e.speculativeBases.join(', ')}]`;
+    }
+    console.log(`READY    ${e.task}${tag}`);
   }
   for (const e of out.UNMAPPED) console.log(`UNMAPPED ${String(e.id).slice(0, 8)}  (${e.reason})`);
   for (const e of out.ORPHAN_INTENT) console.log(`ORPHAN_INTENT ${e.key}  (${e.reason})`);

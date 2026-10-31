@@ -157,6 +157,8 @@ create_workspace({
 })
 ```
 
+字段形状总览（含 `create_agent` 的 `provider: "<provider>/<model>"`、`paseo wait` 解析方式）见 `dispatch-shapes.md`。
+
 返回的 `cwd` 是写手工作目录；派写手时传 `workspaceId`（顶层不带 `workspaceId` 会自建无关 workspace）。
 
 **建完必须 `git branch --show-current` 核对。** Paseo 在分支已被占用时会自动改名

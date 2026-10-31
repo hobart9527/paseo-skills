@@ -7,6 +7,7 @@
 
 - 任务：<一句话说明要实现什么>
 - 场景：读 `openspec/changes/<change>/specs/<spec>.md` 里的 `SCEN-*`，**自己读文件**，不要等人转述。
+- 场景引用：每个承载场景的测试，在 `test(...)` 上一行写注释 `// SCEN-XXX-NN`（shell 用 `# SCEN-XXX-NN`）。收尾 `contract-check --final` 只认这种静态引用，缺了会得到 `untested_scens` 恒红，与实现是否正确无关。
 - 不变式：<不许破坏的既有契约；没有就写「无」>
 - **深模块原则（Deep Modules）**：接口尽量小且稳定，复杂性在实现内部消化，杜绝浅层包装（Shallow Modules）；拒绝 Speculative Generality（臆想泛化，未在 spec 要求的参数/抽象一律不加）。
 - **TDD 节奏**：红-绿-重构。断言针对公开接口行为与不变式，不对准私有实现细节。

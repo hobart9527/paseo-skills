@@ -14,12 +14,14 @@ import { findAgentRecord } from './lib/paseo-state.mjs';
 import { assessHeterogeneity } from './lib/heterogeneity.mjs';
 
 const usage = [
-  'Usage: node merge-task.mjs <branch> <task-ids> <review-tag> <test-cmd> [--allow-legacy-author]',
+  'Usage: node merge-task.mjs <branch> <task-ids> <review-tag> <test-cmd> [--allow-legacy-author] [--fast]',
+  '       node merge-task.mjs <branch> <task-ids> <review-tag> --fast [--allow-legacy-author]',
   'review-tag: pass(<reviewer-id8>@<tip7>/<base7>)',
   '--allow-legacy-author requires PIPELINE_ALLOW_LEGACY_AUTHOR=1 and is recorded in run-log.',
   'Note: this validates tag/SHA consistency, author provenance, scope containment, and tests.',
   'Verify with: every requested task MUST declare an executable `Verify with`; it is always run first.',
   '  The positional <test-cmd> is appended (an identical duplicate is skipped), never a substitute.',
+  '  Fast-path: --fast flag or <test-cmd>="fast" runs only frozen Verify with commands for rapid merge.',
 ].join('\n');
 
 function fail(message, code = 1) {
@@ -160,14 +162,19 @@ if (allowLegacyAuthorRequested && process.env.PIPELINE_ALLOW_LEGACY_AUTHOR !== '
     + '并在 run-log 留下记录', 31);
 }
 const allowLegacyAuthor = allowLegacyAuthorRequested;
+const isFastFlag = process.argv.includes('--fast');
 const positionalArgs = process.argv.slice(2).filter((arg) => !arg.startsWith('--'));
 
-if (positionalArgs.length !== 4) {
+let branch, taskIdsArg, reviewTag, testCommand;
+if (isFastFlag && positionalArgs.length === 3) {
+  [branch, taskIdsArg, reviewTag] = positionalArgs;
+  testCommand = '--fast';
+} else if (positionalArgs.length === 4) {
+  [branch, taskIdsArg, reviewTag, testCommand] = positionalArgs;
+} else {
   console.error(usage);
   process.exit(1);
 }
-
-const [branch, taskIdsArg, reviewTag, testCommand] = positionalArgs;
 const source = parseSourceBranch(branch);
 if (!source) fail(`branch must be task/<change>/<task-id>[-aN] or pod/<change>: ${branch}`);
 
@@ -377,10 +384,16 @@ for (const task of requestedTasks) {
   if (!frozenCommands.includes(task.verify.command)) frozenCommands.push(task.verify.command);
 }
 const testPlan = [...frozenCommands];
-if (!testPlan.includes(testCommand)) testPlan.push(testCommand);
-const verifySource = frozenCommands.length === 0
-  ? `caller-only (${testCommand})`
-  : `tasks.md (${frozenCommands.join(' ; ')})${testPlan.length > frozenCommands.length ? ' + caller' : ''}`;
+const FAST_TOKENS = new Set(['--fast', 'fast', 'none', 'auto', 'verify-only']);
+const isFastPath = isFastFlag || (typeof testCommand === 'string' && FAST_TOKENS.has(testCommand.toLowerCase()));
+if (!isFastPath && !testPlan.includes(testCommand)) {
+  testPlan.push(testCommand);
+}
+const verifySource = isFastPath
+  ? `tasks.md fast-path (${frozenCommands.join(' ; ')})`
+  : (frozenCommands.length === 0
+    ? `caller-only (${testCommand})`
+    : `tasks.md (${frozenCommands.join(' ; ')})${testPlan.length > frozenCommands.length ? ' + caller' : ''}`);
 
 // --- 因子 1: 写范围封闭性校验 (Write Scope Containment) ---
 const branchFiles = changedFiles(reviewedBaseSha, tip);

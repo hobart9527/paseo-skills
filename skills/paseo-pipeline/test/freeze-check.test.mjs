@@ -221,6 +221,35 @@ test('SCEN-CON-04 acceptance matrix may not be pre-filled with PASS at freeze ti
   assert.match(result.out, /冻结时只能是 PENDING/);
 });
 
+// 演练回归：`! node x` 以 `!` 开头被 parseVerify 判成自然语言，冻结时没人拦，收尾 acceptance-run exit 2。
+test('SCEN-CON-04 a Required matrix row whose Verify is not an executable command is blocking', () => {
+  const negated = makeChange({
+    'acceptance.md': ACCEPTANCE.replace('node scripts/probe.mjs --fail', "! node scripts/probe.mjs --fail"),
+  });
+  const result = run(negated.dir);
+  assert.equal(result.code, 1);
+  assert.match(result.out, /Verify 不是可执行命令/);
+  assert.match(result.out, /sh -c/);
+
+  const prose = makeChange({
+    'acceptance.md': ACCEPTANCE.replace('node scripts/probe.mjs --fail', '手工打开页面确认'),
+  });
+  assert.equal(run(prose.dir).code, 1);
+});
+
+test('SCEN-CON-04 sh -c wrapping makes a negated Verify pass, and a non-required prose row only records', () => {
+  const wrapped = makeChange({
+    'acceptance.md': ACCEPTANCE.replace('node scripts/probe.mjs --fail', "sh -c '! node scripts/probe.mjs --fail'"),
+  });
+  assert.equal(run(wrapped.dir).code, 0);
+
+  const optional = makeChange({
+    'acceptance.md': ACCEPTANCE
+      .replace('node scripts/probe.mjs --fail | yes', '手工打开页面确认 | no'),
+  });
+  assert.equal(run(optional.dir).code, 0);
+});
+
 test('SCEN-CON-04 missing acceptance matrix is blocking', () => {
   const { dir } = makeChange({ 'acceptance.md': null });
   const result = run(dir);

@@ -1685,3 +1685,43 @@ test('SCEN-REC-21 a voided writer intent does not explain a dirty file', (contex
   const result = output(subject);
   assert.equal(result.dirtyUnexplained.length, 1, JSON.stringify(result.dirty));
 });
+
+test('SCEN-REC-22 speculative pipelining unblocks downstream task when upstream is in MERGE', (context) => {
+  const subject = fixture(context, [
+    { id: 'T-01', scope: 'src/a.mjs' },
+    { id: 'T-02', scope: 'src/b.mjs', depends: 'T-01' },
+  ]);
+  // T-01 has an ahead branch
+  subject.taskBranch('T-01');
+
+  // Default mode: T-01 is MERGE, T-02 is BLOCKED
+  const defaultResult = output(subject);
+  assert.equal(defaultResult.MERGE.length, 1);
+  assert.equal(defaultResult.BLOCKED.length, 1);
+  assert.deepEqual(ids(defaultResult, 'BLOCKED'), ['T-02']);
+
+  // Speculative mode: T-02 becomes READY with speculative=true, based on T-01 branch
+  const specResult = output(subject, ['--speculative']);
+  assert.equal(specResult.MERGE.length, 1);
+  assert.equal(specResult.BLOCKED.length, 0);
+  assert.deepEqual(ids(specResult, 'READY'), ['T-02']);
+  assert.equal(specResult.SPECULATIVE_READY.length, 1);
+  assert.equal(specResult.SPECULATIVE_READY[0].speculative, true);
+  assert.deepEqual(specResult.SPECULATIVE_READY[0].speculativeBases, [`task/${change}/T-01`]);
+  assert.deepEqual(specResult.canDispatchNow, ['T-02 Task T-02']);
+});
+
+test('SCEN-REC-22 speculative pipelining serializes on overlapping scope even if upstream is in MERGE', (context) => {
+  const subject = fixture(context, [
+    { id: 'T-01', scope: 'src/shared.mjs' },
+    { id: 'T-02', scope: 'src/shared.mjs', depends: 'T-01' },
+  ]);
+  subject.taskBranch('T-01');
+
+  const specResult = output(subject, ['--speculative']);
+  assert.equal(specResult.MERGE.length, 1);
+  assert.equal(specResult.BLOCKED.length, 0);
+  assert.equal(specResult.BLOCKED_RESOURCE.length, 1);
+  assert.deepEqual(ids(specResult, 'BLOCKED_RESOURCE'), ['T-02']);
+});
+

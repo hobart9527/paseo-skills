@@ -1277,3 +1277,23 @@ test('SCEN-MRG-30 re-running the same merge never duplicates the ledger entry', 
   const ledger = JSON.parse(readFileSync(path.join(stateDir, change, 'run-state.json'), 'utf8'));
   assert.equal(ledger.merges.length, 1, JSON.stringify(ledger.merges));
 });
+
+test('SCEN-MRG-31 fast-path merge with --fast flag executes only frozen Verify with', (context) => {
+  const repo = fixture(context);
+  const result = invoke(repo, {
+    args: [repo.branch, 'T-1', reviewTag(repo), '--fast'],
+  });
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  const log = readFileSync(path.join(repo.cwd, logPath), 'utf8');
+  assert.match(log, /verify_source="tasks\.md fast-path/);
+});
+
+test('SCEN-MRG-31 fast-path merge with positional "fast" token executes only frozen Verify with', (context) => {
+  const repo = fixture(context);
+  const result = invoke(repo, {
+    args: [repo.branch, 'T-1', reviewTag(repo), 'fast'],
+  });
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  const log = readFileSync(path.join(repo.cwd, logPath), 'utf8');
+  assert.match(log, /verify_source="tasks\.md fast-path/);
+});
