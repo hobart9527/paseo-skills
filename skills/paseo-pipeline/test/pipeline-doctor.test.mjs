@@ -21,6 +21,20 @@ function healthy() {
   return IDS.map((name) => profile(name, name === 'anchasi' ? 'codex' : 'claude'));
 }
 
+const HOOK = path.join(SKILL_DIR, 'hooks', 'scope-guard-hook.mjs');
+
+/** 把绝对 HOOK 路径换成真实 settings.json 里常见的可移植写法。 */
+function portableHook(style) {
+  const home = os.homedir();
+  if (!HOOK.startsWith(home)) return HOOK;
+  const prefixes = { dollar: '$HOME', brace: '${HOME}', tilde: '~', absolute: home };
+  return `${prefixes[style]}${HOOK.slice(home.length)}`;
+}
+
+function hookSettings(command) {
+  return { hooks: { PreToolUse: [{ matcher: 'Write|Edit', hooks: [{ type: 'command', command }] }] } };
+}
+
 function run(profiles, { settings, env = {}, zshenv = true } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor-'));
   const config = path.join(dir, 'config.json');
@@ -28,14 +42,7 @@ function run(profiles, { settings, env = {}, zshenv = true } = {}) {
   fs.writeFileSync(config, JSON.stringify({ daemon: { agentProfiles: profiles } }));
   // 健康基线 = install.sh 实际写出的形状（含 matcher）。不是任意「hooks 里有这个脚本」就算装好：
   // 少了 matcher，Write/Edit 根本不会被守护。
-  fs.writeFileSync(settingsFile, JSON.stringify(settings ?? {
-    hooks: {
-      PreToolUse: [{
-        matcher: 'Write|Edit|MultiEdit|NotebookEdit',
-        hooks: [{ type: 'command', command: `node ${path.join(SKILL_DIR, 'hooks', 'scope-guard-hook.mjs')}` }],
-      }],
-    },
-  }));
+  fs.writeFileSync(settingsFile, JSON.stringify(settings ?? hookSettings(`node ${HOOK}`)));
   // 非交互检查读的是 `zsh -c` 下的 $HOME/.zshenv；用临时 HOME 才能既正反两向断言，
   // 又不去碰真实 home。`--home` 同时把这个 HOME 交给 config/settings 的默认路径。
   if (zshenv) {
@@ -108,11 +115,28 @@ test('missing scope-guard hook registration is rejected', () => {
 // 里找字符串，于是这种情况 PASS——门禁假绿比没装更糟，因为它会让人停手不再检查。
 test('scope-guard registered under a non-matching matcher is rejected', () => {
   const settings = {
-    hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `node ${path.join(SKILL_DIR, 'hooks', 'scope-guard-hook.mjs')}` }] }] },
+    hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `node ${HOOK}` }] }] },
   };
   const { code, out } = run(healthy(), { settings });
   assert.equal(code, 1);
   assert.match(line(out, 'scope-guard hook'), /^FAIL.*matcher/);
+});
+
+// 注册值由 shell 展开：`$HOME/...`、`${HOME}/...`、`~/...` 与绝对路径指向同一个文件。
+// 按字面量比对会逼人把变量换成硬编码用户名，等于把可移植写法当漂移来修。
+for (const style of ['dollar', 'brace', 'tilde', 'absolute']) {
+  test(`scope-guard hook registered as ${style} form is accepted`, () => {
+    const command = `node "${portableHook(style)}"`;
+    const { out } = run(healthy(), { settings: hookSettings(command) });
+    assert.match(line(out, 'scope-guard hook'), /^PASS/, `command=${command}\n${out}`);
+  });
+}
+
+test('scope-guard hook pointing at another directory is rejected', () => {
+  const elsewhere = `node "${path.join(os.homedir(), 'elsewhere', 'scope-guard-hook.mjs')}"`;
+  const { code, out } = run(healthy(), { settings: hookSettings(elsewhere) });
+  assert.equal(code, 1);
+  assert.match(line(out, 'scope-guard hook'), /^FAIL/);
 });
 
 // 用户把 skill 目录软链进 ~/.claude/skills/ 是常态，而 install.sh 写的是解析后的真实目录。
@@ -127,7 +151,7 @@ test('doctor invoked through a symlinked skill directory still passes', (context
   const settingsFile = path.join(dir, 'settings.json');
   fs.writeFileSync(config, JSON.stringify({ daemon: { agentProfiles: healthy() } }));
   fs.writeFileSync(settingsFile, JSON.stringify({
-    hooks: { PreToolUse: [{ matcher: 'Write|Edit|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: `node ${path.join(SKILL_DIR, 'hooks', 'scope-guard-hook.mjs')}` }] }] },
+    hooks: { PreToolUse: [{ matcher: 'Write|Edit|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: `node ${HOOK}` }] }] },
   }));
   const result = spawnSync(process.execPath, [path.join(link, 'pipeline-doctor.mjs'), '--config', config, '--settings', settingsFile, '--home', dir], {
     encoding: 'utf8',

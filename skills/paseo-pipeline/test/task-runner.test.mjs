@@ -61,11 +61,18 @@ function tasksContent(verifyCommand = passCommand, review = 'mechanical') {
   ].join('\n');
 }
 
-/** 合流替身：只记录 argv 与豁免变量，绝不真的合并。（ESM：与真实 merge-task.mjs 同形态） */
+/**
+ * 合流替身：只记录 argv 与放宽门禁的变量，绝不真的合并。（ESM：与真实 merge-task.mjs 同形态）
+ *
+ * 微生命周期入口不得替调用者放宽任何合流门禁。原断言只盯 PIPELINE_ALLOW_HOMOGENEOUS_REVIEW
+ * 一个变量——该变量随因子 3c 一起删了，断言就退化成永远成立的空转：测试还绿着，守的东西没了。
+ * 改为记录所有 `PIPELINE_ALLOW_*`，与变量名解耦；fixture 又预先剔除了继承来的同名变量，
+ * 所以这里出现的任何一条都只可能是入口自己设置的。
+ */
 const mergeStub = `import fs from 'node:fs';
 const record = {
   argv: process.argv.slice(2),
-  homogeneousExemption: process.env.PIPELINE_ALLOW_HOMOGENEOUS_REVIEW ?? null,
+  allowances: Object.keys(process.env).filter((key) => key.startsWith('PIPELINE_ALLOW_')).sort(),
 };
 fs.appendFileSync(process.env.MERGE_CALL_FILE, JSON.stringify(record) + '\\n');
 process.exit(0);
@@ -77,8 +84,12 @@ process.exit(0);
  * 替身 `paseo` 记录每次 argv 并**真的**建一个 worktree（模拟 `--new-workspace worktree`
  * 的效果），这样 Verify 能落在写手的任务 workspace 上；它还会在 `run` 当时把运行账本
  * 快照落盘，用于断言「claim 发生在派发之前」。
+ *
+ * 默认写手**真的交付**：在任务分支上留下一个带 trailer 的提交，让「分支 tip 领先 base」
+ * 是真实 git 事实。`PASEO_FIXTURE_NO_COMMIT=1` 才模拟零提交（写手没干活）——那是 exit 52
+ * 场景，不能让它在既有测试里默不作声地成立。
  */
-function fixture(context, { profile = { provider: 'claude', model: 'fixture-claude' }, verify, review = 'mechanical' } = {}) {
+function fixture(context, { profile = { provider: 'claude', model: 'fixture-claude' }, verify, review = 'mechanical', noCommit = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeline-runner-test-'));
   context.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, 'home', '.paseo');
@@ -120,6 +131,18 @@ if (argv[0] === 'run') {
   const branch = value('--new-branch');
   const base = value('--base');
   execFileSync('git', ['worktree', 'add', '-q', '-b', branch, process.env.PASEO_FIXTURE_WORKTREE, base], { stdio: 'ignore' });
+  // 写手默认真的交付一个提交；PASEO_FIXTURE_NO_COMMIT=1 才模拟「写手没干活」。
+  // 落点必须是 tasksContent() 声明的 Write scope（src/a.txt），否则夹具一旦接真实
+  // merge-task 就会因越界失败，也不再表达「写手在声明范围内交付」。
+  if (process.env.PASEO_FIXTURE_NO_COMMIT !== '1') {
+    const wt = process.env.PASEO_FIXTURE_WORKTREE;
+    const delivered = require('node:path').join(wt, 'src', 'a.txt');
+    fs.mkdirSync(require('node:path').dirname(delivered), { recursive: true });
+    fs.writeFileSync(delivered, 'delivered by fixture writer\\n');
+    execFileSync('git', ['-C', wt, 'add', 'src/a.txt'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', wt, 'commit', '-q', '-m',
+      'feat: fixture writer delivery\\n\\nPipeline-Role: gongbu\\nPipeline-Author: ${AGENT_ID}'], { stdio: 'ignore' });
+  }
   if (process.env.PASEO_SNAPSHOT_FILE) {
     const ledger = process.env.PASEO_LEDGER_FILE;
     fs.writeFileSync(process.env.PASEO_SNAPSHOT_FILE, fs.existsSync(ledger) ? fs.readFileSync(ledger, 'utf8') : '');
@@ -165,8 +188,13 @@ if (argv[0] === 'run') {
     PASEO_FIXTURE_COUNTER_FILE: path.join(root, 'inspect-count'),
     PASEO_FIXTURE_WAIT: 'idle',
     PASEO_FIXTURE_INSPECT: 'idle',
+    PASEO_FIXTURE_NO_COMMIT: noCommit ? '1' : '0',
     MERGE_CALL_FILE: mergeCallFile,
   };
+  // 继承来的门禁放宽变量不属于「入口自己设置的」，先剔掉，替身看到的才算入口行为。
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('PIPELINE_ALLOW_')) delete env[key];
+  }
 
   git(repo, 'init', '-b', 'main');
   git(repo, 'config', 'user.name', 'Pipeline Test');
@@ -412,8 +440,29 @@ test('task-runner exits 50 for a non-mechanical task and fabricates no audit fac
   assert.deepEqual(state.reviews, [], `no review record may be created: ${JSON.stringify(state.reviews)}`);
 });
 
+test('task-runner exits 52 when the writer produced no commit (all review tiers)', (context) => {
+  // 零提交时 Verify 跑的是未经任何修改的代码，假绿不能报成「已交付并通过 Verify」，
+  // 也不能交给 merge-task 由 exit 31 事后兜底——那是「nothing to merge」，不是「写手没干活」。
+  for (const review of ['mechanical', 'standard', 'strict']) {
+    const setup = fixture(context, { review, noCommit: true });
+    const res = invoke(setup, [change, 'T-01', '--owner', 'test-owner']);
+
+    assert.equal(res.status, 52, `tier=${review}\n${res.stdout}\n${res.stderr}`);
+    assert.match(res.stderr, /写手未产出提交/, `tier=${review}: 必须点明写手没干活`);
+    assert.match(res.stderr, /tip[\s\S]{0,80}(base|基点)/i,
+      `tier=${review}: 必须说明分支 tip 等于 base`);
+    assert.doesNotMatch(res.stderr, /passed Verify/, `tier=${review}: 不得暗示 Verify 覆盖了实现`);
+    // 只许陈述 git 事实：写手可能改了工作区却没提交，断言消息不得声称 Verify 跑的是基线代码。
+    assert.doesNotMatch(res.stderr, /基线代码|baseline code|未经任何修改/i,
+      `tier=${review}: 不得断言 Verify 跑的是基线代码（写手可能留下未提交改动）`);
+    assert.doesNotMatch(res.stdout, /passed Verify/, `tier=${review}: 不得暗示 Verify 覆盖了实现`);
+    assert.equal(runs(setup).length, 1, `tier=${review}: 写手仍只派发一次`);
+    assert.equal(mergeCalls(setup).length, 0, `tier=${review}: 零提交不得进入合流`);
+  }
+});
+
 // SCEN-HND-06
-test('task-runner accepts a review tag re-entry and does not set the homogeneous exemption', (context) => {
+test('task-runner accepts a review tag re-entry and sets no gate relaxation', (context) => {
   const setup = fixture(context, { review: 'strict' });
   const branch = `task/${change}/T-01`;
   const { tip7, base7 } = deliverTaskBranch(setup, branch, { author: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' });
@@ -427,8 +476,8 @@ test('task-runner accepts a review tag re-entry and does not set the homogeneous
   assert.equal(merges.length, 1, `exactly one merge call: ${JSON.stringify(merges)}`);
   assert.equal(merges[0].argv[0], branch, 'the merge must target the delivered task branch');
   assert.equal(merges[0].argv[2], tag, 'the review tag must be passed through verbatim');
-  assert.equal(merges[0].homogeneousExemption, null,
-    'the entry must not set PIPELINE_ALLOW_HOMOGENEOUS_REVIEW on the caller\'s behalf');
+  assert.deepEqual(merges[0].allowances, [],
+    'the entry must not set any PIPELINE_ALLOW_* gate relaxation on the caller\'s behalf');
 
   // 重入也不得凭空登记审计事实：那是真实 Auditor 的账。文件缺失本身即「一次都没写账」。
   const state = fs.existsSync(ledgerPath(setup)) ? ledger(setup) : { intents: [], reviews: [] };

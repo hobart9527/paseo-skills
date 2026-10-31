@@ -6,7 +6,7 @@
 //   收敛为本地 Node.js 确定性循环执行，免除编排者 LLM（Lead）频繁来回往返与思考等待，消除假死与空等。
 //
 // 审计不是本入口的职责：非 mechanical 档在 Verify 通过后 exit 50 停下，等编排者派真实 Auditor；
-// 编排者拿到 `pass(...)` 标签后以 `--review-tag` 重入，由 `merge-task.mjs` 自己校验 3b/3c。
+// 编排者拿到 `pass(...)` 标签后以 `--review-tag` 重入，由 `merge-task.mjs` 自己校验 3b（审查独立性与回执）等门禁。
 // 本入口**不得**创建审计意图、review 记录或审计员身份，**不得**代设异构审查豁免。
 //
 // 任务 workspace 一律由 Paseo 创建（`paseo run --new-workspace worktree --new-branch ... --base ...`）。
@@ -28,6 +28,7 @@
 //   35 依赖未完成
 //   50 非 mechanical 档写手已交付并通过 Verify，等待真实审计（入口不代签审计结论）
 //   51 等待写手到终态超时（agent 可能仍在运行，禁止重派）
+//   52 任务分支 tip 等于 workspace 基点：写手未产出提交，Verify 没有覆盖任何实现
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -82,7 +83,7 @@ const timeoutMs = Number(getOpt('--timeout', 540 * 1000));
  *
  * 只有带它时才合流：非 mechanical 档的审计员必须是独立 agent，本入口没有能力派 Auditor
  * 并等待其信封，因此写手交付后停下（exit 50），由编排者拿到真实标签后以本旗标重入，
- * 交 `merge-task.mjs` 自己校验 3b/3c。标签原样透传，本入口不做任何改写或补签。
+ * 交 `merge-task.mjs` 自己校验门禁。标签原样透传，本入口不做任何改写或补签。
  */
 const reviewTagOption = getOpt('--review-tag');
 
@@ -319,9 +320,10 @@ function mechanicalTag(branch) {
 /**
  * 调 `merge-task.mjs` 合流。
  *
- * 门禁（tag 与 SHA 一致、作者来源、写范围、测试、审查独立性与异构性）全部由 merge-task
- * 自己判——本入口只传分支、任务与标签，**不**代设 `PIPELINE_ALLOW_HOMOGENEOUS_REVIEW`：
- * 该豁免是给人显式设置的证据，入口替调用者按下它，等于把门禁变成可被自动跳过的装饰。
+ * 门禁（tag 与 SHA 一致、作者来源、写范围、测试、审查独立性）全部由 merge-task 自己判——
+ * 本入口只传分支、任务与标签，**不**代设任何放宽合流门禁的环境变量：放行只能由人显式设置，
+ * 入口替调用者按下它，等于把门禁变成可被自动跳过的装饰。
+ * （异构不在此列：原因子 3c 已删除，异构由 Profile 的 provider/model 组合保证。）
  */
 function mergeIntoIntegration({ branch, tag }) {
   if (speculativeUpstreamBranch) {
@@ -467,8 +469,8 @@ const baseSha = baseShaRes.stdout.trim();
 
 // 4b. 带 `--review-tag` 的重入：写手已经交付、Auditor 已经出结论，这里只做合流。
 // 不再派发，也不碰写手的任务 workspace——重入时它可能已被 Paseo 归档。
-// 标签原样交给 merge-task 自己验（tip/base 一致、作者来源、3b 独立、3c 异构）；
-// 本入口不创建审计意图、不写 review 记录、不替调用者按异构豁免。
+// 标签原样交给 merge-task 自己验（tip/base 一致、作者来源、3b 独立）；
+// 本入口不创建审计意图、不写 review 记录、不替调用者放宽任何门禁。
 // 合流对象是**已交付**的那次 attempt（最新现存任务分支），不是下一次派发的新分支。
 if (reviewTagOption !== null) {
   const { latest } = resolveAttempt();
@@ -591,6 +593,28 @@ if (task.verify?.command) {
   if (verifyRes.status !== 0) {
     fatal(`Verify command failed in worktree:\n${verifyRes.stderr || verifyRes.stdout}`, 20);
   }
+}
+
+// 8b. 交付诚实：任务分支 tip 必须领先 workspace 创建时的基点。
+//
+// 写手一个提交都没产出时，第 8 步的 Verify 跑的不是任何写手的实现——它绿不绿都与本次
+// 交付无关（写手可能改了工作区没提交，此时验的是脏树；也可能什么都没改）。旧实现两种
+// 档位都静默放行：非 mechanical 档向编排者报「已交付并通过 Verify」并派出一轮无意义审计；
+// mechanical 档最终被 merge-task 的 `commits.length === 0`（exit 31）拦住，可那时错误信息
+// 指向「nothing to merge」，而不是「写手没干活」。
+// 所有 Review 档位一致在这里拦住，且只陈述可核验的 git 事实。
+const tipRes = git(['rev-parse', '--verify', `${branchName}^{commit}`], { cwd: repoRoot });
+if (tipRes.status !== 0) {
+  fatal(`Task branch ${branchName} cannot be resolved after the writer settled: `
+    + `${tipRes.stderr || tipRes.stdout}`, 1);
+}
+const taskTip = tipRes.stdout.trim();
+if (taskTip === baseSha) {
+  fatal(`写手未产出提交：task branch ${branchName} tip (${taskTip.slice(0, 7)}) equals the `
+    + `workspace base (${baseSha.slice(0, 7)}). The branch has no writer commits, so the `
+    + `Verify result cannot prove the implementation was delivered. Do NOT dispatch an `
+    + `auditor or merge: redispatch the writer (attempt ${attempt + 1}) or inspect agent `
+    + `${writerAgentId}'s output first.`, 52);
 }
 
 // 9. 审计诚实：非 mechanical 档到这里就停。

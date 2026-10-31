@@ -55,7 +55,7 @@ function readJson(file) {
 const home = process.env.PIPELINE_HOME;
 const installHint = `运行 bash ${path.join(SKILL_DIR, 'install.sh')}`;
 if (!home) {
-  fail('PIPELINE_HOME', `未设置。${installHint}`);
+  fail('PIPELINE_HOME', `未设置。${installHint}（装进 ~/.zshenv，不要只写 ~/.zshrc：非交互 shell 读不到）`);
 } else if (realOrResolve(home) !== SKILL_DIR) {
   fail('PIPELINE_HOME', `指向 ${home}，但本脚本位于 ${SKILL_DIR}`);
 } else {
@@ -117,26 +117,43 @@ if (config.__error) {
 }
 
 // 3. scope-guard hook 已装
+//
+// 注册值可以是 `$HOME/...`、`${HOME}/...`、`~/...` 或绝对路径——它们由 shell 展开后指向同一个
+// 文件，判据要比较**展开后的路径**，不能比较字面量。按字面量比对会把可移植写法误判成漂移，
+// 逼着人去把 `$HOME` 换成硬编码用户名，那是往反方向修。
 const settings = readJson(settingsPath);
+
+/** 展开 hook 命令里的家目录写法，供路径比对；不识别其它变量（不认识就是原样）。 */
+function expandHome(text) {
+  return text
+    .replace(/\$\{HOME\}/g, os.homedir())
+    .replace(/\$HOME(?![A-Za-z0-9_])/g, os.homedir())
+    // `~` 只在词首展开（命令开头、空白后、引号后）；词中的 `~` 是普通字符。
+    .replace(/(^|[\s"'])~(?=\/)/g, (_, before) => `${before}${os.homedir()}`);
+}
+
+
 if (settings.__error) {
   fail('scope-guard hook', `${settingsPath} 无法读取：${settings.__error}`);
 } else {
   const hookScript = path.join(SKILL_DIR, 'hooks', 'scope-guard-hook.mjs');
   // 按条目判，而不是在整份 JSON 里找字符串：挂在 matcher=Bash 上的同一条 command 会
   // 让字符串包含判定 PASS，而 Write/Edit 实际没人守护（实测过）。
+  const hookName = path.basename(hookScript);
   const entries = (settings.hooks?.PreToolUse ?? []).flatMap((entry) => {
     const matchers = entry?.matcher === undefined ? [] : String(entry.matcher).split('|');
     return (entry?.hooks ?? [])
       .filter((hook) => typeof hook?.command === 'string')
       .map((hook) => ({ matchers, command: hook.command }));
   });
-  const matching = entries.filter((entry) => entry.command.includes('scope-guard-hook.mjs'));
-  const guarded = matching.find((entry) => ['Write', 'Edit'].every((tool) => entry.matchers.includes(tool)));
+  const matching = entries.filter((entry) => entry.command.includes(hookName));
+  const guarded = matching.filter((entry) => ['Write', 'Edit'].every((tool) => entry.matchers.includes(tool)));
+  const correct = guarded.filter((entry) => expandHome(entry.command).includes(hookScript));
   if (matching.length === 0) {
     fail('scope-guard hook', `${settingsPath} 的 hooks.PreToolUse 里没有 scope-guard-hook.mjs`);
-  } else if (!guarded) {
+  } else if (guarded.length === 0) {
     fail('scope-guard hook', `已注册但 matcher 未覆盖 Write 与 Edit（当前 ${matching.map((e) => e.matchers.join('|') || '(无)').join(', ')}）`);
-  } else if (!guarded.command.includes(hookScript)) {
+  } else if (correct.length === 0) {
     fail('scope-guard hook', `已注册但路径不是 ${hookScript}`);
   } else {
     pass('scope-guard hook', 'PreToolUse 已注册，matcher 覆盖 Write/Edit');
