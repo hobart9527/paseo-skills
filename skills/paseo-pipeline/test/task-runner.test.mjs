@@ -125,11 +125,15 @@ if (argv[0] === 'run') {
   const base = value('--base');
   execFileSync('git', ['worktree', 'add', '-q', '-b', branch, process.env.PASEO_FIXTURE_WORKTREE, base], { stdio: 'ignore' });
   // 写手默认真的交付一个提交；PASEO_FIXTURE_NO_COMMIT=1 才模拟「写手没干活」。
+  // 落点必须是 tasksContent() 声明的 Write scope（src/a.txt），否则夹具一旦接真实
+  // merge-task 就会因越界失败，也不再表达「写手在声明范围内交付」。
   if (process.env.PASEO_FIXTURE_NO_COMMIT !== '1') {
-    const delivered = require('node:path').join(process.env.PASEO_FIXTURE_WORKTREE, 'delivery.txt');
+    const wt = process.env.PASEO_FIXTURE_WORKTREE;
+    const delivered = require('node:path').join(wt, 'src', 'a.txt');
+    fs.mkdirSync(require('node:path').dirname(delivered), { recursive: true });
     fs.writeFileSync(delivered, 'delivered by fixture writer\\n');
-    execFileSync('git', ['-C', process.env.PASEO_FIXTURE_WORKTREE, 'add', 'delivery.txt'], { stdio: 'ignore' });
-    execFileSync('git', ['-C', process.env.PASEO_FIXTURE_WORKTREE, 'commit', '-q', '-m',
+    execFileSync('git', ['-C', wt, 'add', 'src/a.txt'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', wt, 'commit', '-q', '-m',
       'feat: fixture writer delivery\\n\\nPipeline-Role: gongbu\\nPipeline-Author: ${AGENT_ID}'], { stdio: 'ignore' });
   }
   if (process.env.PASEO_SNAPSHOT_FILE) {
@@ -437,6 +441,9 @@ test('task-runner exits 52 when the writer produced no commit (all review tiers)
     assert.match(res.stderr, /tip[\s\S]{0,80}(base|基点)/i,
       `tier=${review}: 必须说明分支 tip 等于 base`);
     assert.doesNotMatch(res.stderr, /passed Verify/, `tier=${review}: 不得暗示 Verify 覆盖了实现`);
+    // 只许陈述 git 事实：写手可能改了工作区却没提交，断言消息不得声称 Verify 跑的是基线代码。
+    assert.doesNotMatch(res.stderr, /基线代码|baseline code|未经任何修改/i,
+      `tier=${review}: 不得断言 Verify 跑的是基线代码（写手可能留下未提交改动）`);
     assert.doesNotMatch(res.stdout, /passed Verify/, `tier=${review}: 不得暗示 Verify 覆盖了实现`);
     assert.equal(runs(setup).length, 1, `tier=${review}: 写手仍只派发一次`);
     assert.equal(mergeCalls(setup).length, 0, `tier=${review}: 零提交不得进入合流`);
