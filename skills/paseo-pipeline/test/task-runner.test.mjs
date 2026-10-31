@@ -461,6 +461,24 @@ test('task-runner exits 52 when the writer produced no commit (all review tiers)
   }
 });
 
+test('task-runner exits 52 on a --review-tag re-entry when the task branch never advanced', (context) => {
+  // 重入不派发写手，但 tip 等于基点说明那条分支没有交付内容可合——同样不能进 merge-task。
+  // 合并门禁只会报「没有东西可合」，分不清空交付与「工作已被吸收」。
+  const setup = fixture(context, { review: 'strict' });
+  const branch = `task/${change}/T-01`;
+  git(setup.cwd, 'branch', branch, integrationBranch);
+  const tip7 = git(setup.cwd, 'rev-parse', '--short=7', branch);
+  const base7 = git(setup.cwd, 'rev-parse', '--short=7', integrationBranch);
+  assert.equal(tip7, base7, 'fixture precondition: the branch must sit exactly on the base');
+
+  const res = invoke(setup, [change, 'T-01', '--review-tag', `pass(1234abcd@${tip7}/${base7})`,
+    '--owner', 'test-owner']);
+  assert.equal(res.status, 52, `${res.stdout}\n${res.stderr}`);
+  assert.match(res.stderr, /写手未产出提交/);
+  assert.equal(runs(setup).length, 0, 'a tagged re-entry must not dispatch the writer');
+  assert.equal(mergeCalls(setup).length, 0, 'an unadvanced branch must not reach the merge gate');
+});
+
 // SCEN-HND-06
 test('task-runner accepts a review tag re-entry and sets no gate relaxation', (context) => {
   const setup = fixture(context, { review: 'strict' });
