@@ -27,7 +27,6 @@ import { fileURLToPath } from 'node:url';
 import { parseTasks } from './lib/tasks.mjs';
 import { verifyDone } from './lib/ledger.mjs';
 import { readRunState, updateRunState } from './lib/run-state.mjs';
-import { assessHeterogeneity } from './lib/heterogeneity.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PIPELINE_HOME = process.env.PIPELINE_HOME || SCRIPT_DIR;
@@ -346,13 +345,7 @@ if (isFast) {
   mergeArgs.push(task.verify?.command || 'npm test');
 }
 
-const mergeRes = runCmd(process.execPath, mergeArgs, {
-  cwd: repoRoot,
-  env: {
-    ...process.env,
-    PIPELINE_ALLOW_HOMOGENEOUS_REVIEW: '1', // 允许测试/同构环境快速闭环
-  },
-});
+const mergeRes = runCmd(process.execPath, mergeArgs, { cwd: repoRoot });
 
 if (mergeRes.status !== 0) {
   fatal(`Merge failed (exit ${mergeRes.status}):\n${mergeRes.stderr || mergeRes.stdout}`, mergeRes.status);

@@ -432,9 +432,7 @@ export function findAgentRecord(agentId) {
     if (!fs.existsSync(file)) continue;
     try {
       const record = JSON.parse(fs.readFileSync(file, 'utf8'));
-      // provider/model 供异构审查判据使用：实测分布里 gongbu=claude、gaogong=codex、
-      // anchasi=codex、hanlin=claude——「换了别名」不等于「换了模型家族」，
-      // 只有拿真实记录里的 provider 才能判断审查者与写手是否同源。
+      // provider/model 原样带出，供调用方按需读取；随时可能读不到，调用方必须容忍 null。
       const runtimeInfo = record.runtimeInfo && typeof record.runtimeInfo === 'object' ? record.runtimeInfo : {};
       const config = record.config && typeof record.config === 'object' ? record.config : {};
       return {

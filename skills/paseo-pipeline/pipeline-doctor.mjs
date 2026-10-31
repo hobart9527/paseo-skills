@@ -3,7 +3,6 @@
 //
 // 实测过的返工来源（2026-10-31 沙盒端到端演练）：
 //   - claude provider 没有 `auto-review` 模式，profile 写了它，派发才报错；
-//   - 写手与审计同为 claude provider，merge-task 因异构闸门 exit 38；
 //   - 目标仓库里没有 `skills/paseo-pipeline/`，相对路径命令全部 Cannot find module。
 // 它只读，不改任何配置；每一项独立判定，全部跑完再汇总，退出码非 0 即有阻断。
 //
@@ -29,10 +28,6 @@ const settingsPath = opt('--settings', path.join(os.homedir(), '.claude', 'setti
 const REQUIRED_PROFILES = [
   'shangshu', 'chanpin', 'hanlin', 'ceshi', 'gongbu', 'gaogong', 'anchasi', 'jiangzuo',
 ].map((name) => `agent_profile_${name}`);
-// 写代码/写测试的角色：异构闸门拿它们的 provider 与审计员的 provider 比较。
-const WRITER_PROFILES = ['agent_profile_gongbu', 'agent_profile_gaogong', 'agent_profile_ceshi'];
-const DEFAULT_WRITER = 'agent_profile_gongbu';
-const AUDITOR_PROFILE = 'agent_profile_anchasi';
 // `paseo provider ls` 只给展示名，不给模式 ID，所以这里固定一张表；provider 升级加模式时更新这里。
 const MODES = {
   claude: ['plan', 'default', 'acceptEdits', 'auto', 'bypassPermissions'],
@@ -43,7 +38,6 @@ const OPENSPEC_VERSION = '1.8.0';
 const results = [];
 function record(status, name, detail) { results.push({ status, name, detail }); }
 const pass = (name, detail = '') => record('PASS', name, detail);
-const warn = (name, detail) => record('WARN', name, detail);
 const fail = (name, detail) => record('FAIL', name, detail);
 
 function readJson(file) {
@@ -91,27 +85,7 @@ if (config.__error) {
   }
 }
 
-// 3. 异构：审计员 provider 必须异于每个写手（merge-task 因子 3c 只比 provider，同族 exit 38）
-const auditor = profiles.get(AUDITOR_PROFILE);
-if (auditor) {
-  const clash = WRITER_PROFILES
-    .map((id) => profiles.get(id))
-    .filter((entry) => entry && entry.provider === auditor.provider)
-    .map((entry) => entry.id);
-  const note = `审计员 provider=${auditor.provider}，与 ${clash.join(', ')} 相同：`
-    + '这些角色写的任务合流时会被 merge-task 以 exit 38 拒绝';
-  if (clash.includes(DEFAULT_WRITER)) {
-    // 默认写手冲突：几乎每个任务都会撞闸门，阻断。
-    fail('审计异构', note);
-  } else if (clash.length > 0) {
-    // 升级（gaogong）与严格档测试（ceshi）路径：只在派这些角色时才撞，提示不阻断。
-    warn('审计异构', `${note}；派这些角色前须改用异构审计员`);
-  } else {
-    pass('审计异构', `审计 ${auditor.provider}，写手均不同`);
-  }
-}
-
-// 4. scope-guard hook 已装
+// 3. scope-guard hook 已装
 const settings = readJson(settingsPath);
 if (settings.__error) {
   fail('scope-guard hook', `${settingsPath} 无法读取：${settings.__error}`);
@@ -127,7 +101,7 @@ if (settings.__error) {
   }
 }
 
-// 5. 外部命令
+// 4. 外部命令
 function version(cmd, args) {
   try {
     return execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();

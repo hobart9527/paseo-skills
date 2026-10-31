@@ -225,20 +225,23 @@ check-evidence、人工）都只读 `Result` 列。于是「矩阵全 PASS」可
 
 ### 3. 「独立审查」只验了 agent id，没验模型家族（P1）
 
-**事故形态**：`merge-task.mjs` 因子 3b 只证明 reviewer ≠ 写手（agent id 不同）。但实测角色
-分布里 `gaogong` 与 `anchasi` **都在 codex 家族**（2026-10-25，68 个 pipeline agent：
-gaogong = codex/glm 24 + gpt-6.1-sol 7，anchasi = codex/codex 120）。一条 codex 写的任务被
-另一个 codex agent 审，账本上「独立审查」齐全，实质是同源自证。换 profile 名或 model alias
-都不改变 provider。
+**事故形态**：`merge-task.mjs` 因子 3b 只证明 reviewer ≠ 写手（agent id 不同），账本上
+「独立审查」齐全，但审查者与写手可能是同一个模型跑出来的——那是同源自证。
 
-**修法**：因子 3c 从 Paseo 持久记录取 reviewer 与各写手意图的**真实 provider**，相同即
-**exit 38**。只比 provider 不比 model（同 provider 下的 model alias 在会话间会漂移，
-拿它判「不同模型」会假阳性）。
-- 显式豁免：`PIPELINE_ALLOW_HOMOGENEOUS_REVIEW=1`，run-log 记 `heterogeneity=BYPASSED(homogeneous; …)`。
-- provider 读不到记 `unresolved`，**不阻断**但必须落 run-log（读不到既不能当证据，也不该反过来定罪）。
-- 无账本记 `NOT-CHECKED(no-run-state)`，mechanical 记 `not-applicable`。门禁静默消失与门禁通过必须可区分。
+**修法（2026-10-31 更正，取代原 exit 38 门禁）**：曾用因子 3c 从 Paseo 持久记录比对
+`provider`，相同即 exit 38。**该判据是错的**：记录里的 `provider` 只是 CLI 外壳
+（claude/codex），不是模型家族。用户的异构配置在 model 层——`gongbu`=claude/flash、
+`hanlin`=claude/cc、`gaogong`=codex/glm、`anchasi`=codex/gpt——外壳相同不代表同源。
+实测 `gongbu`(claude/flash) 与仲裁员 `hanlin`(claude/cc) 都记成 `claude`，3c 判成同源自证，
+把仲裁员签发的 OVERRULE 挡在 exit 38 之外。
 
-**分级**：exit 38 属「保护 git 历史/合流正确性」类，按 §12 判据 1 可以阻断。
+因此 3c 已删除，也不再按 model 比对（记录里 `runtimeInfo.model` 常为空，`config.model`
+与 profile 不一致，不可靠），不保留豁免或 advisory 档。**异构由 Profile 配置保证**：
+派发时按 profile 的 provider/model 组合选人，不由合流门禁猜测同源。
+`merge-task.mjs` 因子 3b 的反自审（reviewer 不得是写手、必须命中已回执的 anchasi/hanlin
+审查意图，exit 32）保留不变。
+
+**分级**：3b 的 exit 32 属「保护 git 历史/合流正确性」类，按 §12 判据 1 可以阻断。
 
 ### 4. 写保护只有事后可见（P1，§13 的暂缓措施兑现）
 

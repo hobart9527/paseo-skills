@@ -460,18 +460,8 @@ test('SCEN-CON-18: the packaged schema and its installed copy are byte-identical
 // --- 2026-10-31 八项加固的文档对齐（每项都必须写进 SKILL，否则等于没落地） ---
 //
 // 这些门禁的共同点是「代码里有、文档里没有」就没人会用：acceptance-run 存在但 SKILL
-// 只写 check-evidence，收尾仍然只跑自报矩阵；异构审查 exit 38 不写进退出码表，执行器
-// 拿到 38 只能猜。断言的是**可执行示例与退出码表**，不是关键词出现。
-test('SCEN-DOC-25: 合流退出码表包含异构审查 38，且写明豁免与未采集两种情形', () => {
-  const text = section('安全原子合流门禁');
-  assert.match(text, /38[^\n]{0,40}同 provider|同 provider[^\n]{0,40}38/,
-    '退出码表必须列出 38');
-  assert.match(text, /PIPELINE_ALLOW_HOMOGENEOUS_REVIEW=1/, '显式豁免必须写明');
-  assert.match(text, /heterogeneity=BYPASSED\(homogeneous/, '豁免必须留痕');
-  assert.match(text, /heterogeneity=unresolved/, 'provider 未采集时不阻断但必须留痕');
-  assert.match(text, /heterogeneity=NOT-CHECKED\(no-run-state\)/, '无账本必须可与「通过」区分');
-});
-
+// 只写 check-evidence，收尾仍然只跑自报矩阵。断言的是**可执行示例与退出码表**，
+// 不是关键词出现。
 test('SCEN-DOC-26: 验收矩阵的 Verify 列由 acceptance-run 执行，且示例可照抄', () => {
   const text = skillText;
   assert.match(text, /acceptance-run\.mjs <change>|acceptance-run\.mjs <name>/,

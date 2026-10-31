@@ -16,7 +16,7 @@ function profile(name, provider, modeId = 'auto') {
   return { id: `agent_profile_${name}`, provider, model: 'x', modeId };
 }
 
-/** 健康基线：写手全 claude，审计 codex。 */
+/** 健康基线：写手 claude，审计 codex。 */
 function healthy() {
   return IDS.map((name) => profile(name, name === 'anchasi' ? 'codex' : 'claude'));
 }
@@ -42,7 +42,7 @@ const line = (out, name) => out.split('\n').find((l) => l.includes(name)) ?? '';
 
 test('healthy profile set passes every config-derived check', () => {
   const { out } = run(healthy());
-  for (const name of ['profile 齐全', 'modeId 合法', '审计异构', 'scope-guard hook', 'PIPELINE_HOME']) {
+  for (const name of ['profile 齐全', 'modeId 合法', 'scope-guard hook', 'PIPELINE_HOME']) {
     assert.match(line(out, name), /^PASS/, `${name}\n${out}`);
   }
 });
@@ -52,19 +52,6 @@ test('claude profile with codex-only modeId auto-review is rejected', () => {
   const { code, out } = run(profiles);
   assert.equal(code, 1);
   assert.match(line(out, 'modeId 合法'), /^FAIL.*gongbu.*auto-review/);
-});
-
-test('auditor sharing a provider with a writer is rejected (merge-task exit 38 otherwise)', () => {
-  const profiles = healthy().map((p) => (p.id.endsWith('anchasi') ? { ...p, provider: 'claude' } : p));
-  const { code, out } = run(profiles);
-  assert.equal(code, 1);
-  assert.match(line(out, '审计异构'), /^FAIL.*agent_profile_gongbu.*exit 38/);
-});
-
-test('auditor clashing only with escalation roles (gaogong/ceshi) warns but does not block', () => {
-  const profiles = healthy().map((p) => (/gaogong|ceshi/.test(p.id) ? { ...p, provider: 'codex' } : p));
-  const { out } = run(profiles);
-  assert.match(line(out, '审计异构'), /^WARN.*gaogong.*ceshi|^WARN.*ceshi.*gaogong/);
 });
 
 test('missing profile is rejected', () => {

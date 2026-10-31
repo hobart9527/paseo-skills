@@ -10,8 +10,6 @@ import {
 } from './lib/roles.mjs';
 import { acquireLock } from './lib/lock.mjs';
 import { readRunState, updateRunState } from './lib/run-state.mjs';
-import { findAgentRecord } from './lib/paseo-state.mjs';
-import { assessHeterogeneity } from './lib/heterogeneity.mjs';
 
 const usage = [
   'Usage: node merge-task.mjs <branch> <task-ids> <review-tag> <test-cmd> [--allow-legacy-author] [--fast]',
@@ -535,8 +533,6 @@ if (runLedger.error !== null) {
 const ledgerAttestation = runLedger.present
   ? 'run-state'
   : (reviewer === 'mechanical' ? 'mechanical-review' : 'SKIPPED(no-run-state)');
-/** 异构审查判定结果，写进 run-log（没有运行账本时如实记为 NOT-CHECKED）。 */
-let heterogeneityNote = 'heterogeneity=NOT-CHECKED(no-run-state)';
 if (runLedger.present && reviewer !== 'mechanical') {
   const recorded = runLedger.state.intents.filter((intent) => typeof intent.agentId === 'string' && intent.agentId !== '');
   const scoped = recorded.filter((intent) => taskIds.includes(intent.task));
@@ -552,43 +548,6 @@ if (runLedger.present && reviewer !== 'mechanical') {
     fail(`reviewer '${reviewer}' has no recorded audit or arbitration dispatch for ${taskIds.join(',')}: `
       + 'run-state holds no resolved anchasi or hanlin intent for this reviewer, so independent review is unproven '
       + '(dispatch the auditor or arbiter through run-state claim/record before merging)', 32);
-  }
-
-  // --- 因子 3c: 异构审查（provider 不同源） ---
-  //
-  // 3b 只证明「审查者不是写手本人」（agent id 不同）。实测角色分布里 gaogong 与 anchasi
-  // 都在 codex 上跑：一条 codex 写的任务被另一个 codex agent 审，账本上「独立审查」齐全，
-  // 实质是同源自证。判据取真实 agent 记录里的 provider（懒加载：没有运行账本的热修路径
-  // 不读 ~/.paseo，避免给单任务热修引入无关依赖）。
-  //
-  // 强度分档（与「门禁守护 git 历史 → 阻断；语义启发式 → 只提示」同一原则）：
-  //   homogeneous → exit 38 阻断。同源审查把「独立」这件事从证据降级成声明，不能静默接受。
-  //   unresolved  → 不阻断，但 run-log 留一行。记录读不到既不能当证据，也不该反过来定罪。
-  //   ok          → 只留痕。
-  const reviewerRecord = findAgentRecord(auditIntent.agentId);
-  const writerRecords = scoped
-    .filter((intent) => isWriterRole(intent.role) && typeof intent.agentId === 'string')
-    .map((intent) => {
-      const record = findAgentRecord(intent.agentId);
-      return { task: intent.task, id: intent.agentId, provider: record?.provider ?? null, model: record?.model ?? null };
-    });
-  const heterogeneity = assessHeterogeneity({
-    reviewer: reviewerRecord === null
-      ? { id: auditIntent.agentId, provider: null, model: null }
-      : { id: reviewerRecord.id, provider: reviewerRecord.provider, model: reviewerRecord.model },
-    writers: writerRecords,
-  });
-  if (heterogeneity.status === 'homogeneous') {
-    const override = process.env.PIPELINE_ALLOW_HOMOGENEOUS_REVIEW === '1';
-    if (!override) {
-      fail(`reviewer and writer run on the same provider (${heterogeneity.detail}); `
-        + 'independent review requires a different model family — dispatch the arbiter (hanlin) instead. '
-        + 'To accept a homogeneous review explicitly, set PIPELINE_ALLOW_HOMOGENEOUS_REVIEW=1 '
-        + '(recorded in run-log)', 38);
-    }
-    heterogeneityNote = `heterogeneity=BYPASSED(homogeneous; ${heterogeneity.detail})`;
-  } else {
-    heterogeneityNote = `heterogeneity=${heterogeneity.status}(${heterogeneity.detail})`;
   }
 }
 
@@ -737,7 +696,7 @@ try {
   markTasksDone(tasksFile, requestedTasks, tip7, reviewTag);
   const driftNote = drifted ? ` baseline-drift=${reviewedBase7}..${preMergeHead.slice(0, 7)}` : '';
   const legacyNote = allowLegacyAuthor ? ' author-provenance=BYPASSED(legacy)' : '';
-  const attestNote = ` review-attestation=${ledgerAttestation} ${heterogeneityNote}`;
+  const attestNote = ` review-attestation=${ledgerAttestation}`;
   appendRunLog(
     logFile,
     `- ${new Date().toISOString()} merge tasks=${taskIds.join(',')} branch=${branch} source=${tip} review=${reviewTag} test_cmd=${JSON.stringify(testPlan)} verify_source=${JSON.stringify(verifySource)} test_duration=${testDuration}ms${driftNote}${legacyNote}${attestNote}`
