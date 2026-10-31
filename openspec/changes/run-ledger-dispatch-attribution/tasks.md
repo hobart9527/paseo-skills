@@ -2,7 +2,8 @@
 
 ## 1. 报告计数口径统一
 
-- [ ] 1.1 T-01 审计派发计数只数有真实回执的审计意图
+- [x] 1.1 T-01 审计派发计数只数有真实回执的审计意图
+  - Done: source=899ac35 review=pass(mechanical@899ac35/46ed9f5)
   - Depends on: none
   - Write scope: skills/paseo-pipeline/run-state.mjs, skills/paseo-pipeline/test/run-state.test.mjs
   - Risk-surface: [none]
