@@ -64,7 +64,7 @@ Documentation SHALL state `task-runner.mjs` as the only CLI dispatch entry, SHAL
 
 #### Scenario: SCEN-HND-08 the hotfix wrapper delegates and keeps its contract
 - **WHEN** `hotfix.sh` runs with a mechanical task and with a non-mechanical task
-- **THEN** the mechanical run dispatches through the entry with the same argv and ledger behaviour as before, the non-mechanical run is refused before any dispatch, and the script itself contains no `paseo run` invocation.
+- **THEN** the mechanical run delegates to the entry, which issues the `paseo run` dispatch with the same argv shape and ledger behaviour (claim, record, fail) as before, the non-mechanical run is refused before any dispatch, and the script itself contains no `paseo run` invocation. Passing the brief file and test command through to the writer is outside this scenario.
 
 #### Scenario: SCEN-HND-09 documentation states the single entry and the handoff gate
 - **WHEN** SKILL.md is read
