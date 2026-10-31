@@ -56,7 +56,8 @@
 
 ## 3. 文档
 
-- [ ] 3.1 T-06 SKILL 声明单一入口、交接序列补提交与 handoff-check、收尾指向 `test/run-all.sh`
+- [x] 3.1 T-06 SKILL 声明单一入口、交接序列补提交与 handoff-check、收尾指向 `test/run-all.sh`
+  - Done: source=e966643 review=pass(7bb8b5a0@e966643/36eec4a)
   - Depends on: T-05
   - Write scope: skills/paseo-pipeline/SKILL.md, skills/paseo-pipeline/test/docs.test.mjs, skills/paseo-pipeline/test/run-all.sh
   - Risk-surface: [none]
