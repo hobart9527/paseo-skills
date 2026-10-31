@@ -42,7 +42,7 @@
 
 ### D4 审计诚实：停下而不是伪造
 
-非 mechanical 档的审计员必须是独立 agent，`merge-task` 因子 3b 要求审计意图有真实回执。`task-runner` 无法自己派 Auditor 并等待其信封（那是编排者职责），因此改为 exit 50 并打印下一步；编排者拿到真实 Auditor 的 `pass(...)` 标签后以 `--review-tag` 重入，由 `merge-task` 自己验。同时删除对 `PIPELINE_ALLOW_HOMOGENEOUS_REVIEW` 的硬编码设置：该豁免只能由人显式设置。
+非 mechanical 档的审计员必须是独立 agent，`merge-task` 因子 3b 要求审计意图有真实回执。`task-runner` 无法自己派 Auditor 并等待其信封（那是编排者职责），因此改为 exit 50 并打印下一步；编排者拿到真实 Auditor 的 `pass(...)` 标签后以 `--review-tag` 重入，由 `merge-task` 自己验。同时入口不得自行设置任何放宽合流门禁的环境变量：放行只能由人显式设置。（2026-10-31 订正：原文点名的 `PIPELINE_ALLOW_HOMOGENEOUS_REVIEW` 已随因子 3c 删除，该变量不再存在，约束改为不点名变量。）
 
 ### D5 `paseo wait` 容错不等于归因
 

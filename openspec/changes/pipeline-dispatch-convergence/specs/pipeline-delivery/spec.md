@@ -56,7 +56,7 @@ Documentation SHALL state `task-runner.mjs` as the only CLI dispatch entry, SHAL
 
 #### Scenario: SCEN-HND-06 a non-mechanical task stops for a real audit
 - **WHEN** the dispatch entry completes a task whose Review tier is `standard` or `strict`
-- **THEN** it exits 50, the run ledger contains no audit-phase intent or review record created by the entry, and a later invocation with a review tag runs the merge gate without `PIPELINE_ALLOW_HOMOGENEOUS_REVIEW` being set by the entry.
+- **THEN** it exits 50, the run ledger contains no audit-phase intent or review record created by the entry, and a later invocation with a review tag runs the merge gate without the entry setting any environment variable that relaxes a merge gate.
 
 #### Scenario: SCEN-HND-07 a failed wait degrades to polling and never redispatches
 - **WHEN** `paseo wait` exits non-zero with `WAIT_FAILED` while `paseo inspect` later reports the agent idle
