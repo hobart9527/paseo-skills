@@ -27,7 +27,8 @@
 
 ## 2. 单一派发入口
 
-- [ ] 2.1 T-03 `task-runner` 经 Paseo 任务 workspace 派发：分支、基点、五标签、profile fail-closed、意图记账，移除 `git worktree add` 与离线编造
+- [x] 2.1 T-03 `task-runner` 经 Paseo 任务 workspace 派发：分支、基点、五标签、profile fail-closed、意图记账，移除 `git worktree add` 与离线编造
+  - Done: source=f88d0da review=pass(e9eaa1f6@f88d0da/3abf66a)
   - Depends on: T-01
   - Write scope: skills/paseo-pipeline/task-runner.mjs, skills/paseo-pipeline/test/task-runner.test.mjs
   - Risk-surface: [error-handling]
