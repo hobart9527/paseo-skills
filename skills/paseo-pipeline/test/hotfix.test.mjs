@@ -24,22 +24,27 @@ function fixture(context, profile) {
   }));
   const brief = path.join(repo, "brief.md");
   fs.writeFileSync(brief, "Fix only the assigned fixture task.\n");
-  // 替身默认只回显 agent id。置 PASEO_FIXTURE_COMMIT=1 时额外模拟写手交付：
-  // 在 --new-branch 上落一个带 Pipeline-Role/Pipeline-Author trailers 的提交，
-  // 这样 hotfix 的后半段（真实 tip/base review 标签 → merge-task 合流）能被真正走到。
+  // 替身按 task-runner 的派发序列应答：`run` 真的建出任务 worktree（模拟
+  // `--new-workspace worktree`），`wait` 回 idle，`inspect` 回 idle。
+  // 置 PASEO_FIXTURE_COMMIT=1 时额外模拟写手交付：在 --new-branch 上落一个带
+  // Pipeline-Role/Pipeline-Author trailers 的提交，这样后半段（真实 tip/base review 标签 →
+  // merge-task 合流）能被真正走到。
   fs.writeFileSync(path.join(bin, "paseo"), `#!/usr/bin/env node
 const fs = require("node:fs");
+const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const argv = process.argv.slice(2);
 fs.appendFileSync(process.env.PASEO_CALLS_FILE, JSON.stringify(argv) + "\\n");
+const value = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : undefined; };
 if (argv[0] === "run") {
+  const branch = value("--new-branch");
+  const base = value("--base");
+  const worktree = path.join(path.dirname(process.env.PASEO_CALLS_FILE), "ws");
+  execFileSync("git", ["worktree", "add", "-q", "-b", branch, worktree, base], { stdio: "ignore" });
   if (process.env.PASEO_FIXTURE_COMMIT === "1") {
-    const branch = argv[argv.indexOf("--new-branch") + 1];
-    const base = argv[argv.indexOf("--base") + 1];
-    execFileSync("git", ["switch", "-q", "-c", branch, base], { stdio: "ignore" });
-    fs.appendFileSync("brief.md", "fixture worker change\\n");
-    execFileSync("git", ["commit", "-aqm", "fix: fixture task\\n\\nPipeline-Role: gongbu\\nPipeline-Author: 0123456789abcdef0123456789abcdef"], { stdio: "ignore" });
-    execFileSync("git", ["switch", "-q", base], { stdio: "ignore" });
+    fs.appendFileSync(path.join(worktree, "brief.md"), "fixture worker change\\n");
+    execFileSync("git", ["commit", "-aqm", "fix: fixture task\\n\\nPipeline-Role: gongbu\\nPipeline-Author: 0123456789abcdef0123456789abcdef"],
+      { cwd: worktree, stdio: "ignore" });
   }
   if (process.env.PASEO_FIXTURE_BAD_ID === "1") {
     // 模拟 CLI 输出形态漂移：多了一行提示，末位不是 agentId。dispatch 必须拒绝错绑。
@@ -47,7 +52,11 @@ if (argv[0] === "run") {
   } else {
     console.log("01234567-89ab-cdef-0123-456789abcdef");
   }
-} else if (argv[0] !== "wait") {
+} else if (argv[0] === "wait") {
+  console.log(JSON.stringify({ id: argv[1], status: "idle" }));
+} else if (argv[0] === "inspect") {
+  console.log(JSON.stringify({ Status: "idle" }));
+} else {
   console.error("Unexpected paseo command: " + argv[0]);
   process.exit(1);
 }
@@ -212,6 +221,7 @@ test("SCEN-DISP-04: hotfix stamps all five identity labels and a real tip/base r
   assert.equal(branchTip.stdout.trim(), tip7, "Done source must equal the merged branch tip");
 });
 
+// SCEN-HND-08
 test("SCEN-DISP-08: hotfix claims then records the dispatch intent in the run ledger", (context) => {
   const setup = hotfixFixture(context, { provider: "claude", model: "fixture-claude" });
   setup.env.PASEO_FIXTURE_COMMIT = "1";
@@ -219,7 +229,8 @@ test("SCEN-DISP-08: hotfix claims then records the dispatch intent in the run le
   setup.env.PIPELINE_RUN_STATE_DIR = stateDir;
   const result = run("bash", [hotfixPath, "fixture-change", "T-04", setup.brief, "true"], setup);
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  assert.match(result.stdout, /intent=local:T-04:1:impl:gongbu:dispatch/);
+  // 断言对象迁移：意图由委托的 task-runner 打印（`(intent <key>)`），仍是同一个键。
+  assert.match(result.stdout, /\(intent local:T-04:1:impl:gongbu:dispatch\)/);
   const ledger = JSON.parse(fs.readFileSync(path.join(stateDir, "fixture-change", "run-state.json"), "utf8"));
   const intent = ledger.intents.find((entry) => entry.key === "local:T-04:1:impl:gongbu:dispatch");
   assert.ok(intent, `意图必须入账: ${JSON.stringify(ledger.intents)}`);
@@ -239,7 +250,8 @@ test("SCEN-DISP-08: hotfix aborts before dispatch when the intent is already cla
   assert.equal(claim.status, 0, claim.stderr);
   const result = run("bash", [hotfixPath, "fixture-change", "T-04", setup.brief, "true"], setup);
   assert.notEqual(result.status, 0, "重复意图必须中止 hotfix");
-  assert.match(result.stderr, /意图认领失败/);
+  // 拒绝由委托的 task-runner claim 闸门发出；断言拒绝原因与被拒后零派发，不绑定措辞来源。
+  assert.match(result.stderr, /拒绝重复派发/);
   assert.equal(paseoCalls(setup).filter((argv) => argv[0] === "run").length, 0, "被拒绝时不得派发");
 });
 
@@ -262,6 +274,61 @@ test("SCEN-DISP-04: hotfix counts an existing base branch as attempt 1 and branc
     "pipeline.task=T-04",
   ]);
   assert.deepEqual(optionValues(runs[0], "--new-branch"), ["task/fixture-change/T-04-a2"]);
+});
+
+// SCEN-HND-08
+test("SCEN-HND-08: hotfix is a wrapper with no dispatch call of its own", () => {
+  // 唯一 CLI 派发入口是 task-runner.mjs。脚本自身出现 `paseo run` 就意味着又有了第二条派发路径，
+  // 分支/标签/意图记账会再次各写一套并漂移。注释里提历史可以，可执行调用不行。
+  const script = fs.readFileSync(hotfixPath, "utf8");
+  const code = script.split("\n").filter((line) => !line.trimStart().startsWith("#")).join("\n");
+  assert.doesNotMatch(code, /\bpaseo\b[\s\S]{0,80}?\brun\b/,
+    "hotfix.sh 不得自己调用 paseo run");
+  assert.doesNotMatch(code, /\bCLI=\(|\bpaseo wait\b|\bpaseo inspect\b/,
+    "hotfix.sh 不得自己派发或等待 agent");
+  assert.match(code, /task-runner\.mjs/, "hotfix.sh 必须委托 task-runner.mjs");
+  // 意图记账与 profile 解析只有一个实现，不能在本脚本里再出现。
+  assert.doesNotMatch(code, /run-state\.mjs/, "hotfix.sh 不得自己 claim/record/fail");
+  assert.doesNotMatch(code, /agent_profile_gongbu/, "hotfix.sh 不得自己解析写手 profile");
+});
+
+// SCEN-HND-08
+test("SCEN-HND-08: a non-mechanical task is refused before the entry is delegated to", (context) => {
+  const setup = hotfixFixture(context, { provider: "claude", model: "fixture-claude" });
+  const tasksFile = path.join(setup.repo, "openspec", "changes", "fixture-change", "tasks.md");
+  fs.writeFileSync(tasksFile, fs.readFileSync(tasksFile, "utf8")
+    .replace("Review: mechanical", "Review: standard"), "utf8");
+  run("git", ["commit", "-aqm", "fixture: standard task"], setup);
+  const result = run("bash", [hotfixPath, "fixture-change", "T-04", setup.brief, "true"], setup);
+  assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stderr, /只允许 Review: mechanical/);
+  // 两个「未派发」的独立证据：替身 paseo 一次都没被调用，且委托的入口根本没起来
+  // （否则就是「先派发、再等下游拒绝」——那会让写手真的开工）。
+  assert.deepEqual(paseoCalls(setup), [], "被拒绝时不得发生任何 paseo 调用");
+  assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /\[task-runner\]/,
+    "非 mechanical 必须在委托之前拒绝，不得进入 task-runner");
+});
+
+// SCEN-HND-08
+test("SCEN-HND-08: a mechanical run delegates with the brief/test-cmd validated but not forwarded", (context) => {
+  // 契约真源是 tasks.md：brief 内容与调用者的 test-cmd 都不得再拼进 prompt / 传给 merge。
+  // 这里传一个必定失败的 test-cmd：若它参与了合流，合流就会失败；合流成功证明只跑了
+  // tasks.md 的 Verify with。
+  const setup = hotfixFixture(context, { provider: "claude", model: "fixture-claude" });
+  setup.env.PASEO_FIXTURE_COMMIT = "1";
+  const result = run("bash", [hotfixPath, "fixture-change", "T-04", setup.brief, "false"], setup);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stdout, /\[task-runner\] T-04: Dispatched writer agent/,
+    "mechanical 任务必须经入口派发");
+  const runs = paseoCalls(setup).filter((argv) => argv[0] === "run");
+  assert.equal(runs.length, 1);
+  assert.doesNotMatch(runs[0][1], /Fix only the assigned fixture task/,
+    "brief 内容不再拼进写手 prompt（契约真源是 tasks.md）");
+  assert.doesNotMatch(runs[0][1], /\bfalse\b/, "调用者的 test-cmd 不得进入写手 prompt");
+  const tasks = fs.readFileSync(
+    path.join(setup.repo, "openspec", "changes", "fixture-change", "tasks.md"), "utf8");
+  assert.match(tasks, /Done: source=[0-9a-f]{7} review=pass\(mechanical@[0-9a-f]{7}\/[0-9a-f]{7}\)/,
+    "合流成功且 Done 行由入口写入");
 });
 
 test("hotfix refuses a task that is not Review: mechanical", (context) => {
