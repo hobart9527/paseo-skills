@@ -274,6 +274,28 @@ test('task-runner increments the attempt suffix when the task branch already exi
   assert.equal(intent.attempt, 2, 'the intent attempt must be 2 on redispatch');
 });
 
+// SCEN-HND-05
+test('task-runner derives the next attempt from existing -aN branches alone', (context) => {
+  // 只有 `-a2`、没有基础分支：最大 attempt 是 2，重派必须落到 `-a3`，
+  // 而不是回到已存在的 `-a2` 上去撞名。
+  const setup = fixture(context, { verify: failCommand });
+  git(setup.cwd, 'branch', `task/${change}/T-01-a2`, integrationBranch);
+  const res = invoke(setup, [change, 'T-01']);
+  assert.equal(res.status, 20, `${res.stdout}\n${res.stderr}`);
+
+  const dispatched = runs(setup);
+  assert.equal(dispatched.length, 1, `exactly one paseo run: ${res.stdout}\n${res.stderr}`);
+  assert.deepEqual(optionValues(dispatched[0], '--new-branch'), [`task/${change}/T-01-a3`]);
+  assert.ok(
+    optionValues(dispatched[0], '--label').includes('pipeline.attempt=3'),
+    `attempt label must be 3: ${optionValues(dispatched[0], '--label').join(',')}`,
+  );
+
+  const snapshot = JSON.parse(fs.readFileSync(setup.snapshotFile, 'utf8'));
+  const intent = snapshot.intents.find((entry) => entry.task === 'T-01');
+  assert.equal(intent.attempt, 3, 'the intent attempt must be 3 on redispatch');
+});
+
 test('task-runner exits 20 when verify command fails in the writer workspace', (context) => {
   const setup = fixture(context, { verify: failCommand });
   const res = invoke(setup, [change, 'T-01']);

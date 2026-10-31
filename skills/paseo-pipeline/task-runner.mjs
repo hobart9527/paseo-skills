@@ -131,20 +131,38 @@ function resolveWriterProfile() {
 }
 
 /**
- * 任务分支与 attempt：`task/<c>/<t>` 不存在 → attempt 1；已存在 → attempt 2、`-a2`。
+ * 任务分支与 attempt：从**现存的** `task/<c>/<t>` 与 `task/<c>/<t>-a<N>` 取最大 N
+ * （基础分支本身算第 1 次），新 attempt = maxN+1，分支为基础名（无任何现存分支时）
+ * 或 `-a<maxN+1>`。
  *
- * 用 `rev-parse --verify refs/heads/...` 判定，不看目录是否存在：分支存在与否是 git 事实，
- * 目录只是某次 checkout 的残留。已存在的 `-aN` 也要计入，否则第三次派发会算出 attempt=2
- * 去撞同名分支（历史缺陷，见 hotfix.sh 注释）。
+ * 不能只判基础分支是否存在再 +1：只留下 `-a2`（基础分支已被清理）时那样会算出 attempt=2，
+ * 派发到已存在的 `-a2` 分支上去撞名。
+ *
+ * 用 `for-each-ref` 判定，不看目录是否存在：分支存在与否是 git 事实，目录只是某次 checkout 的残留。
+ * 只接受精确的 `<base>` 与 `<base>-a<数字>` 两种形状，`-a*` 里的其它后缀不参与计数。
  */
 function resolveAttempt() {
   const base = `task/${change}/${task.id}`;
-  let existing = git(['rev-parse', '--verify', '--quiet', `refs/heads/${base}`], { cwd: repoRoot }).status === 0 ? 1 : 0;
-  const attemptBranches = git(['for-each-ref', '--format=%(refname:short)', `refs/heads/${base}-a*`], { cwd: repoRoot });
-  if (attemptBranches.status === 0) {
-    existing += attemptBranches.stdout.split('\n').filter((line) => line.trim() !== '').length;
+  const prefix = `refs/heads/${base}`;
+  let maxAttempt = 0;
+  const listed = git(['for-each-ref', '--format=%(refname)', `${prefix}*`], { cwd: repoRoot });
+  if (listed.status === 0) {
+    for (const line of listed.stdout.split('\n')) {
+      const ref = line.trim();
+      if (!ref.startsWith(prefix)) continue;
+      const suffix = ref.slice(prefix.length);
+      let n;
+      if (suffix === '') {
+        n = 1; // 基础分支即第 1 次派的产物
+      } else {
+        const match = /^-a(\d+)$/.exec(suffix);
+        if (!match) continue;
+        n = Number(match[1]);
+      }
+      if (Number.isInteger(n) && n > maxAttempt) maxAttempt = n;
+    }
   }
-  const attempt = existing + 1;
+  const attempt = maxAttempt + 1;
   return { attempt, branch: attempt === 1 ? base : `${base}-a${attempt}` };
 }
 
