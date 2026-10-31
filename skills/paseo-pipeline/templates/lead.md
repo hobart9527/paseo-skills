@@ -67,6 +67,10 @@ wait          # 等全部返回；也可以只 poll 文件，谁先有 status �
   **只少派**：本轮只派其中一个，另一个等前者合流再派（cap 是上限，少派永远合法），并把发现写进最终信封 `notes`，留给下一个 change 修 DAG。
 - **轻量上下文指针（Context Pointers）**：
   派发 Brief 必须保持高信噪比：只传递文件绝对路径、`SCEN-*` 锚点和 SHA 指针，严禁在 Brief 中整段拷贝长篇 spec，让子 agent 定点读取单一真源。
+- **脚本命令要展开绝对路径**：
+  Brief 里凡出现脚本命令，必须把 `"$PIPELINE_HOME"` 展开成 skill 目录的绝对路径再写进去。agent 环境不保证继承该变量
+  （Paseo daemon 起的 agent 只有 `~/.zshenv` 里的导出可见，`install.sh` 之前或换机器后可能为空），
+  照抄 `"$PIPELINE_HOME"/<脚本>` 会让写手在第一步就 `Cannot find module`。Lead 自己可以按变量执行，但写给子 agent 的必须是绝对路径。
 - **前沿任务（Task Graph Frontier）全并发推进**：
   识别所有依赖均已合流的就绪任务（Frontier），在 cap 预算许可内一次性并发派发，紧随并发 wait，最大化流水线吞吐。
 

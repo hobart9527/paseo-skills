@@ -20,6 +20,7 @@ node --test \
   skills/paseo-pipeline/test/run-state.test.mjs \
   skills/paseo-pipeline/test/freeze-check.test.mjs \
   skills/paseo-pipeline/test/pipeline-doctor.test.mjs \
+  skills/paseo-pipeline/test/install.test.mjs \
   skills/paseo-pipeline/test/task-runner.test.mjs \
   skills/paseo-pipeline/test/lock.test.mjs \
   skills/paseo-pipeline/test/change-id.test.mjs \
