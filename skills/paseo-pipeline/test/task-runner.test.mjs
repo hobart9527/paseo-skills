@@ -61,11 +61,18 @@ function tasksContent(verifyCommand = passCommand, review = 'mechanical') {
   ].join('\n');
 }
 
-/** 合流替身：只记录 argv 与豁免变量，绝不真的合并。（ESM：与真实 merge-task.mjs 同形态） */
+/**
+ * 合流替身：只记录 argv 与放宽门禁的变量，绝不真的合并。（ESM：与真实 merge-task.mjs 同形态）
+ *
+ * 微生命周期入口不得替调用者放宽任何合流门禁。原断言只盯 PIPELINE_ALLOW_HOMOGENEOUS_REVIEW
+ * 一个变量——该变量随因子 3c 一起删了，断言就退化成永远成立的空转：测试还绿着，守的东西没了。
+ * 改为记录所有 `PIPELINE_ALLOW_*`，与变量名解耦；fixture 又预先剔除了继承来的同名变量，
+ * 所以这里出现的任何一条都只可能是入口自己设置的。
+ */
 const mergeStub = `import fs from 'node:fs';
 const record = {
   argv: process.argv.slice(2),
-  homogeneousExemption: process.env.PIPELINE_ALLOW_HOMOGENEOUS_REVIEW ?? null,
+  allowances: Object.keys(process.env).filter((key) => key.startsWith('PIPELINE_ALLOW_')).sort(),
 };
 fs.appendFileSync(process.env.MERGE_CALL_FILE, JSON.stringify(record) + '\\n');
 process.exit(0);
@@ -167,6 +174,10 @@ if (argv[0] === 'run') {
     PASEO_FIXTURE_INSPECT: 'idle',
     MERGE_CALL_FILE: mergeCallFile,
   };
+  // 继承来的门禁放宽变量不属于「入口自己设置的」，先剔掉，替身看到的才算入口行为。
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('PIPELINE_ALLOW_')) delete env[key];
+  }
 
   git(repo, 'init', '-b', 'main');
   git(repo, 'config', 'user.name', 'Pipeline Test');
@@ -413,7 +424,7 @@ test('task-runner exits 50 for a non-mechanical task and fabricates no audit fac
 });
 
 // SCEN-HND-06
-test('task-runner accepts a review tag re-entry and does not set the homogeneous exemption', (context) => {
+test('task-runner accepts a review tag re-entry and sets no gate relaxation', (context) => {
   const setup = fixture(context, { review: 'strict' });
   const branch = `task/${change}/T-01`;
   const { tip7, base7 } = deliverTaskBranch(setup, branch, { author: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' });
@@ -427,8 +438,8 @@ test('task-runner accepts a review tag re-entry and does not set the homogeneous
   assert.equal(merges.length, 1, `exactly one merge call: ${JSON.stringify(merges)}`);
   assert.equal(merges[0].argv[0], branch, 'the merge must target the delivered task branch');
   assert.equal(merges[0].argv[2], tag, 'the review tag must be passed through verbatim');
-  assert.equal(merges[0].homogeneousExemption, null,
-    'the entry must not set PIPELINE_ALLOW_HOMOGENEOUS_REVIEW on the caller\'s behalf');
+  assert.deepEqual(merges[0].allowances, [],
+    'the entry must not set any PIPELINE_ALLOW_* gate relaxation on the caller\'s behalf');
 
   // 重入也不得凭空登记审计事实：那是真实 Auditor 的账。文件缺失本身即「一次都没写账」。
   const state = fs.existsSync(ledgerPath(setup)) ? ledger(setup) : { intents: [], reviews: [] };

@@ -6,7 +6,7 @@
 //   收敛为本地 Node.js 确定性循环执行，免除编排者 LLM（Lead）频繁来回往返与思考等待，消除假死与空等。
 //
 // 审计不是本入口的职责：非 mechanical 档在 Verify 通过后 exit 50 停下，等编排者派真实 Auditor；
-// 编排者拿到 `pass(...)` 标签后以 `--review-tag` 重入，由 `merge-task.mjs` 自己校验 3b/3c。
+// 编排者拿到 `pass(...)` 标签后以 `--review-tag` 重入，由 `merge-task.mjs` 自己校验 3b（审查独立性与回执）等门禁。
 // 本入口**不得**创建审计意图、review 记录或审计员身份，**不得**代设异构审查豁免。
 //
 // 任务 workspace 一律由 Paseo 创建（`paseo run --new-workspace worktree --new-branch ... --base ...`）。
@@ -82,7 +82,7 @@ const timeoutMs = Number(getOpt('--timeout', 540 * 1000));
  *
  * 只有带它时才合流：非 mechanical 档的审计员必须是独立 agent，本入口没有能力派 Auditor
  * 并等待其信封，因此写手交付后停下（exit 50），由编排者拿到真实标签后以本旗标重入，
- * 交 `merge-task.mjs` 自己校验 3b/3c。标签原样透传，本入口不做任何改写或补签。
+ * 交 `merge-task.mjs` 自己校验门禁。标签原样透传，本入口不做任何改写或补签。
  */
 const reviewTagOption = getOpt('--review-tag');
 
@@ -319,9 +319,10 @@ function mechanicalTag(branch) {
 /**
  * 调 `merge-task.mjs` 合流。
  *
- * 门禁（tag 与 SHA 一致、作者来源、写范围、测试、审查独立性与异构性）全部由 merge-task
- * 自己判——本入口只传分支、任务与标签，**不**代设 `PIPELINE_ALLOW_HOMOGENEOUS_REVIEW`：
- * 该豁免是给人显式设置的证据，入口替调用者按下它，等于把门禁变成可被自动跳过的装饰。
+ * 门禁（tag 与 SHA 一致、作者来源、写范围、测试、审查独立性）全部由 merge-task 自己判——
+ * 本入口只传分支、任务与标签，**不**代设任何放宽合流门禁的环境变量：放行只能由人显式设置，
+ * 入口替调用者按下它，等于把门禁变成可被自动跳过的装饰。
+ * （异构不在此列：原因子 3c 已删除，异构由 Profile 的 provider/model 组合保证。）
  */
 function mergeIntoIntegration({ branch, tag }) {
   if (speculativeUpstreamBranch) {
@@ -467,8 +468,8 @@ const baseSha = baseShaRes.stdout.trim();
 
 // 4b. 带 `--review-tag` 的重入：写手已经交付、Auditor 已经出结论，这里只做合流。
 // 不再派发，也不碰写手的任务 workspace——重入时它可能已被 Paseo 归档。
-// 标签原样交给 merge-task 自己验（tip/base 一致、作者来源、3b 独立、3c 异构）；
-// 本入口不创建审计意图、不写 review 记录、不替调用者按异构豁免。
+// 标签原样交给 merge-task 自己验（tip/base 一致、作者来源、3b 独立）；
+// 本入口不创建审计意图、不写 review 记录、不替调用者放宽任何门禁。
 // 合流对象是**已交付**的那次 attempt（最新现存任务分支），不是下一次派发的新分支。
 if (reviewTagOption !== null) {
   const { latest } = resolveAttempt();
