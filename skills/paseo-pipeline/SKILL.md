@@ -336,16 +336,13 @@ node "$PIPELINE_HOME"/merge-task.mjs <branch> <task-id> <review-tag> [<test-cmd>
     - 账本不存在时沿用 trailer 检查，但**跳过必须留痕**：run-log 记 `review-attestation=SKIPPED(no-run-state)`。有账本记 `run-state`，mechanical 审查记 `mechanical-review`。门禁静默消失与门禁通过必须可区分——2026-10-26 的 5 任务冒烟就是这样全程 `present=false` 跑完，自审交叉核对一次未执行而账本无痕。
 6b. **Pod 成员集合**：`pod/<change>` 分支必须附带冻结的 `openspec/changes/<change>/pod-members.json`，且 `<task-ids>` 必须**恰好等于**该成员集合（多报、少报、缺文件均 exit 31）。分支名不携带任务身份，成员真源只有这一份冻结记录。
 6c. **legacy 豁免需二次确认**：`--allow-legacy-author` 会整体关闭作者血统门禁，必须同时设置 `PIPELINE_ALLOW_LEGACY_AUTHOR=1`，否则 exit 31；放行时 run-log 记 `author-provenance=BYPASSED(legacy)`。控制面角色检查不受豁免影响。
-6d. **因子 3c 异构审查**（有账本时生效，紧跟 3b）：3b 只证明「审查者不是写手本人」（agent id 不同），没证明两者不是同一个模型跑出来的。实测角色分布里 `gaogong` 与 `anchasi` 同在 codex 家族——一条 codex 写的任务被另一个 codex agent 审，账本上「独立审查」齐全，实际是同源自证；换 profile 名或 model alias 都不改 provider。因此从 Paseo 持久记录取 `reviewer` 与各写手意图的**真实 provider** 比对：相同即 exit 38。`lib/heterogeneity.mjs` 只比 `provider`，不比 model（同 provider 下的 model alias 在会话间会漂移，拿来判「不同模型」会假阳性）。
-    - 显式豁免：`PIPELINE_ALLOW_HOMOGENEOUS_REVIEW=1` 时放行并在 run-log 记 `heterogeneity=BYPASSED(homogeneous; …)`——豁免是给人看的，不是给门禁消失用的。
-    - provider 读不到记 `heterogeneity=unresolved(...)`，**不阻断**（拿不到的记录不能既当证据又当免责），但那行必须落进 run-log；mechanical 审查记 `not-applicable`；无账本记 `heterogeneity=NOT-CHECKED(no-run-state)`。
 7. **基线锚定**：`base7` 必须同时是集成 HEAD 的祖先、以及被合入 tip 的祖先（任一不满足即 exit 34）——集成在任务分支拉出后前进一步时，那个新 HEAD 仍是集成历史祖先，但 `base..tip` 已把本任务没写过的提交算进审查范围。与当前集成 HEAD 漂移且改动文件重叠时拒绝合流要求重审，不重叠则记录漂移放行。
 8. **合流固定 tip**：用审查收据绑定的那个 commit（而非可变分支名）合流，避免「审查过的内容」与「实际合入的内容」漂移。
 9. **显式测试命令 + 截止时间 + 整树清理**：执行冻结命令与 `test-cmd`，默认超时 30 分钟（`MERGE_TEST_TIMEOUT_MS` 可调）。超时按**进程组**终止（SIGTERM，2 秒后 SIGKILL），不是只杀外层 shell——否则测试拉起的孙进程会继续写工作区。失败、超时、或**测试改写了工作树**（前后 `git status --porcelain=v1 --untracked-files=all` 指纹不一致）一律拒绝提交测试副作用；先撤掉对已跟踪文件的改写，再 `git merge --abort` 恢复现场，**严禁 `reset --hard` 回滚**。abort 失败、或 `MERGE_HEAD` 消失而 HEAD 已被推进（测试命令自己执行了 `git commit`）时保留现场并打印人工指引（exit 40）。
 10. **原子记账与血统透传**：自动勾 `tasks.md`、追加 `Done: source=<tip7> review=<review-tag>`，原子提交附 `Pipeline-Task`、`Pipeline-Source`、`Pipeline-Author`、`Pipeline-Role`、`Pipeline-Reviewer` trailers。
 11. **回执丢失的处置**：任务已 Done 一律 exit 非零且不产生新提交。错误文案区分两种情形——Done 行绑定的 source 就是本次 tip 时报「已从该 tip 合过，这是回执丢失后的重试，合流其实已成功，不要重派任务」；source 是别的 revision 时报「不同 revision 不能用同一任务合流」。**收到前一种报错时禁止重派写手**，去核对 `git log --first-parent` 即可。
 
-退出码：30 写范围 / 31 作者血统或 Pod 成员不符 / 32 非自审（含审查员与运行账本派发记录不符）/ 34 base 非集成 HEAD 或非 tip 祖先 / 35 依赖未验收 / **36 不允许的 `Verify with`** / **37 并发合流被锁拒绝** / **38 审查者与写手同 provider（同源自证）** / 10 冲突 / 20 测试失败或改树 / 40 abort 失败。
+退出码：30 写范围 / 31 作者血统或 Pod 成员不符 / 32 非自审（含审查员与运行账本派发记录不符）/ 34 base 非集成 HEAD 或非 tip 祖先 / 35 依赖未验收 / **36 不允许的 `Verify with`** / **37 并发合流被锁拒绝** / 10 冲突 / 20 测试失败或改树 / 40 abort 失败。
 
 ## 6. 证据双闸门（`test/check-evidence.mjs`）
 
@@ -396,7 +393,7 @@ node "$PIPELINE_HOME"/acceptance-run.mjs <change> [--only SCEN-1,SCEN-2] [--time
 - 总控**严禁**手工勾选 `tasks.md` 的 `[x]` 或追加 `Done:` 行（`merge-task.mjs` 原子记账）；
 - 总控**严禁**自产自审；必须由独立 Auditor（`anchasi`）或机械验证生成合流 review 标签。
 
-**这些是协作契约与自报元数据，不是工具级身份隔离或可信来源证明。** 真实防线是 `merge-task.mjs` 的机械门禁（写范围、作者血统、非自审、异构 provider、依赖、基线），加上独立的业务验收。不得声称提示词能物理封死总控代写。
+**这些是协作契约与自报元数据，不是工具级身份隔离或可信来源证明。** 真实防线是 `merge-task.mjs` 的机械门禁（写范围、作者血统、非自审、依赖、基线），加上独立的业务验收。不得声称提示词能物理封死总控代写。
 
 **写范围守卫（减速带，不是沙箱）**：有编排租约期间，命中某任务 `Write scope` 的 `Write`/`Edit` 必须能对上一个在途写手意图，否则拒绝。**位置优先于意图**：主 checkout（`git rev-parse --git-dir` 与 `--git-common-dir` 指向同一处）里的任务 scope 写入一律拒绝，即使账本里有该任务的写手意图——意图只证明「这个任务派过写手」，不证明此刻的写入者就是那个写手，而写手一律在自己的 linked worktree 里。判据只有一份（`lib/scope-guard.mjs`），两个入口：
 

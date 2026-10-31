@@ -27,7 +27,8 @@ node --test \
   skills/paseo-pipeline/test/roles.test.mjs \
   skills/paseo-pipeline/test/acceptance-run.test.mjs \
   skills/paseo-pipeline/test/guard-scope.test.mjs \
-  skills/paseo-pipeline/test/handoff-check.test.mjs
+  skills/paseo-pipeline/test/handoff-check.test.mjs \
+  skills/paseo-pipeline/test/tier-gate.test.mjs
 
 echo "=== Running e2e smoke ==="
 bash skills/paseo-pipeline/test/e2e-smoke.sh

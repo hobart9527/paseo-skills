@@ -432,21 +432,12 @@ export function findAgentRecord(agentId) {
     if (!fs.existsSync(file)) continue;
     try {
       const record = JSON.parse(fs.readFileSync(file, 'utf8'));
-      // provider/model 供异构审查判据使用：实测分布里 gongbu=claude、gaogong=codex、
-      // anchasi=codex、hanlin=claude——「换了别名」不等于「换了模型家族」，
-      // 只有拿真实记录里的 provider 才能判断审查者与写手是否同源。
-      const runtimeInfo = record.runtimeInfo && typeof record.runtimeInfo === 'object' ? record.runtimeInfo : {};
-      const config = record.config && typeof record.config === 'object' ? record.config : {};
       return {
         id: record.id ?? wanted,
         createdAt: record.createdAt ?? null,
         archivedAt: record.archivedAt ?? null,
         title: record.title ?? null,
         labels: record.labels ?? {},
-        provider: typeof record.provider === 'string' ? record.provider
-          : (typeof runtimeInfo.provider === 'string' ? runtimeInfo.provider : null),
-        model: typeof runtimeInfo.model === 'string' ? runtimeInfo.model
-          : (typeof config.model === 'string' ? config.model : null),
         file,
       };
     } catch {

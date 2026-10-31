@@ -10,7 +10,7 @@
 | `hotfix.sh` | 机械：`--new-branch task/<c>/<t>[-aN] --base <当前分支>` | 机械：要求 `tasks.md` 在 checkout 里、工作区干净 | 仅 mechanical | 17 条测试，规格有场景 |
 | `task-runner.mjs`（`c3151d2` 合入，未走 OpenSpec） | `git worktree add`（违反 SKILL §3） | 读主 checkout，不核对是否已提交 | 非 mechanical 档**伪造** `audit_<hex>` 审计员并自登记 PASS | 7 条测试，无规格场景 |
 
-`task-runner.mjs` 还固定设置 `PIPELINE_ALLOW_HOMOGENEOUS_REVIEW=1` 绕过异构审查门禁，`paseo wait` 非零即 `fatal`（本次实测 `paseo wait` 在 231s 返回 rc=1 `WAIT_FAILED`，该路径会直接中断），离线分支会编造 agent id。
+`task-runner.mjs` 还固定设置 `PIPELINE_ALLOW_HOMOGENEOUS_REVIEW=1` 绕过异构审查门禁（2026-10-31 注：该门禁与变量已随因子 3c 删除，此行只记录提案时的现状），`paseo wait` 非零即 `fatal`（本次实测 `paseo wait` 在 231s 返回 rc=1 `WAIT_FAILED`，该路径会直接中断），离线分支会编造 agent id。
 
 缺口 3（`node --test <目录>`）是操作失误：`test/run-all.sh` 已存在，只是 SKILL 收尾没有指向它。
 
