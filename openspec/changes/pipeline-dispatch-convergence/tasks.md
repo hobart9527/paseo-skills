@@ -16,7 +16,8 @@
   - Verify with: `node --test skills/paseo-pipeline/test/handoff-check.test.mjs`
   - Scenarios: SCEN-HND-01, SCEN-HND-02
 
-- [ ] 1.2 T-02 `run-state record` 拒绝把写手意图登记到集成分支
+- [x] 1.2 T-02 `run-state record` 拒绝把写手意图登记到集成分支
+  - Done: source=6c31fb5 review=pass(2eb9abdf@6c31fb5/51d53dc)
   - Depends on: none
   - Write scope: skills/paseo-pipeline/run-state.mjs, skills/paseo-pipeline/test/run-state.test.mjs
   - Risk-surface: [error-handling]

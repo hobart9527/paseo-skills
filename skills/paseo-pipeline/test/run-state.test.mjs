@@ -137,21 +137,45 @@ const ALL_LABELS = {
   'pipeline.phase': 'impl', 'pipeline.role': 'gongbu',
 };
 
-function recordWithAgentLabels(context, labels) {
+/**
+ * 在临时目录里建一个真实 git 仓库并 checked out 到指定分支。
+ *
+ * 「agent 的工作目录在哪个分支上」只有真跑一次 git 才验得准（worktree、detached HEAD
+ * 都靠 `rev-parse --abbrev-ref HEAD` 区分），用假字符串冒充分支会把实现里的解析方式锁死。
+ */
+function repoOnBranch(root, branch) {
+  const dir = path.join(root, `repo-${branch.replace(/[^A-Za-z0-9]+/g, '-')}`);
+  mkdirSync(dir, { recursive: true });
+  const git = (...args) => {
+    const result = spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8', timeout: 15_000 });
+    assert.equal(result.status, 0, `git ${args.join(' ')}: ${result.stderr}`);
+    return result.stdout.trim();
+  };
+  git('init', '-q', '-b', branch);
+  git('-c', 'user.email=fixture@example.com', '-c', 'user.name=fixture',
+    'commit', '--allow-empty', '-q', '-m', 'init');
+  return dir;
+}
+
+function recordWithAgentLabels(context, labels, options = {}) {
+  const { task = 'T-01', phase = 'impl', role = 'gongbu', gitBranch = null } = options;
   const subject = fixture(context);
   const paseoHome = path.join(subject.root, 'paseo-home');
   if (labels !== undefined) {
     const dir = path.join(paseoHome, 'agents', 'slug');
     mkdirSync(dir, { recursive: true });
-    writeFileSync(path.join(dir, `${AGENT_ID}.json`), JSON.stringify({ id: AGENT_ID, labels }));
+    // gitBranch 为 null 时记录里没有 cwd：分支检查必须按「读不到」放行并说明。
+    const cwd = gitBranch === null ? undefined : repoOnBranch(subject.root, gitBranch);
+    writeFileSync(path.join(dir, `${AGENT_ID}.json`),
+      JSON.stringify({ id: AGENT_ID, labels, ...(cwd === undefined ? {} : { cwd }) }));
   }
   const withHome = { ...subject.env, PIPELINE_PASEO_HOME: paseoHome };
   const run = (...args) => spawnSync(process.execPath, [script, args[0], change, ...args.slice(1)], {
     env: withHome, encoding: 'utf8', timeout: 15_000,
   });
-  assert.equal(run('claim', '--task', 'T-01', '--attempt', '1', '--phase', 'impl', '--role', 'gongbu').status, 0);
-  const key = intentKey({ run: null, task: 'T-01', attempt: 1, phase: 'impl', role: 'gongbu', action: 'dispatch' });
-  return { subject, result: run('record', '--key', key, '--agent', AGENT_ID) };
+  assert.equal(run('claim', '--task', task, '--attempt', '1', '--phase', phase, '--role', role).status, 0);
+  const key = intentKey({ run: null, task, attempt: 1, phase, role, action: 'dispatch' });
+  return { subject, key, result: run('record', '--key', key, '--agent', AGENT_ID) };
 }
 
 test('record warns (but still records) when the dispatched agent lacks pipeline labels', (context) => {
@@ -169,6 +193,56 @@ test('record stays silent when every pipeline label is present or the agent reco
   const unreadable = recordWithAgentLabels(context, undefined);
   assert.equal(unreadable.result.status, 0);
   assert.doesNotMatch(unreadable.result.stderr, /缺派发标签/, '读不到记录不等于缺标签');
+});
+
+// 缺口 1：写手被派进集成分支工作区。record 是手动 MCP 路径上唯一能看到「这个 agent 到底
+// 在哪个分支上干活」的时刻，因此闸门放在回执处：拒绝登记，并点名分支。
+// SCEN-HND-03
+test('SCEN-HND-03 record refuses a writer intent whose agent works on the integration branch', (context) => {
+  const refused = recordWithAgentLabels(context, ALL_LABELS, { gitBranch: `integration/${change}` });
+  assert.equal(refused.result.status, 2, `${refused.result.stdout}${refused.result.stderr}`);
+  assert.match(refused.result.stderr, new RegExp(`integration/${change}`),
+    '拒绝理由必须点名分支，否则调用方只知道「被拒」不知道去哪改');
+  assert.equal(findByKey(refused.subject.read(), refused.key).resolvedAt, null,
+    '被拒的回执不得落进账本：它会被 report 当成一次真实派发');
+
+  const accepted = recordWithAgentLabels(context, ALL_LABELS, { gitBranch: `task/${change}/T-01` });
+  assert.equal(accepted.result.status, 0, accepted.result.stderr);
+  assert.ok(findByKey(accepted.subject.read(), accepted.key).resolvedAt);
+  assert.doesNotMatch(accepted.result.stderr, /分支检查未执行/, '读到了分支就不该说检查没做');
+});
+
+test('the integration-branch refusal covers test phase and writer roles only', (context) => {
+  const branch = `integration/${change}`;
+  const testPhase = recordWithAgentLabels(context, ALL_LABELS, { gitBranch: branch, phase: 'test' });
+  assert.equal(testPhase.result.status, 2, 'SCEN-HND-03 的 impl/test 两个阶段都要拦');
+
+  const gaogong = recordWithAgentLabels(context, ALL_LABELS, { gitBranch: branch, role: 'gaogong' });
+  assert.equal(gaogong.result.status, 2, 'gaogong 同为写手角色，不能绕过');
+
+  // 审计员/仲裁员本来就在别处工作：拦它们会让正常审计回执全部失败。
+  const anchasi = recordWithAgentLabels(context, ALL_LABELS, { gitBranch: branch, role: 'anchasi', phase: 'audit' });
+  assert.equal(anchasi.result.status, 0, anchasi.result.stderr);
+  const gongbuAudit = recordWithAgentLabels(context, ALL_LABELS, { gitBranch: branch, role: 'gongbu', phase: 'audit' });
+  assert.equal(gongbuAudit.result.status, 0, '写手角色在审计阶段也不拦（这条判据只管 impl/test）');
+});
+
+test('an unreadable working directory still records and says the check was skipped', (context) => {
+  // 读不到 ≠ 违规：记录拿不到时既不能当证据，也不能当免责，只能把「没检查」说出来。
+  const noCwd = recordWithAgentLabels(context, ALL_LABELS);
+  assert.equal(noCwd.result.status, 0, noCwd.result.stderr);
+  assert.match(noCwd.result.stderr, /分支检查未执行/);
+  assert.match(noCwd.result.stderr, /回执照常登记/);
+  assert.ok(findByKey(noCwd.subject.read(), noCwd.key).resolvedAt);
+
+  // 记录里写了 cwd，但那个路径不存在 / 不是 git 仓库：同样按「读不到」放行并说明。
+  const missingDir = recordWithAgentLabels(context, ALL_LABELS, { gitBranch: `integration/${change}` });
+  const recordFile = path.join(missingDir.subject.root, 'paseo-home', 'agents', 'slug', `${AGENT_ID}.json`);
+  const record = JSON.parse(readFileSync(recordFile, 'utf8'));
+  writeFileSync(recordFile, JSON.stringify({ ...record, cwd: path.join(missingDir.subject.root, 'gone') }));
+  const retried = missingDir.subject.run('record', '--key', missingDir.key, '--agent', AGENT_ID);
+  assert.equal(retried.status, 0, retried.stderr);
+  assert.match(retried.stderr, /分支检查未执行/);
 });
 
 test('unknown key on record is a usage error, not a silent success', (context) => {

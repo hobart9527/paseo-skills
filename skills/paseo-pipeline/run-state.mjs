@@ -31,7 +31,7 @@ import {
   readRunState, updateRunState, intentKey, findByKey, openIntents, leaseStatus,
   isFailed, intentAgeMs, DEFAULT_LEASE_TTL_MS,
 } from './lib/run-state.mjs';
-import { normalizePhase } from './lib/roles.mjs';
+import { normalizePhase, isWriterRole } from './lib/roles.mjs';
 import { findAgentRecord } from './lib/paseo-state.mjs';
 import { changeIdProblem } from './lib/change-id.mjs';
 import {
@@ -75,6 +75,50 @@ function fail(code, message) {
 }
 
 const REQUIRED_LABELS = ['pipeline.change', 'pipeline.task', 'pipeline.attempt', 'pipeline.phase', 'pipeline.role'];
+
+/** 集成分支命名：写手的 task 工作区从它拉出，但绝不直接在它上面改文件。 */
+const INTEGRATION_BRANCH = /^integration\//;
+
+/**
+ * 写手落点检查：impl/test 阶段的写手意图，若承接它的 agent 工作目录 checked out 在
+ * `integration/*` 上，登记回执就是给「写手被派进集成 workspace」盖章——2026-10-29 的
+ * 试点里正是这样发生，集成 worktree 被当成任务工作区，所有写手共用一份未提交改动。
+ *
+ * 判据只在「写手角色 + impl/test 阶段」这一个组合上生效：审计员/仲裁员本来就在别处
+ * 工作，拦它们会让正常回执全部失败。
+ *
+ * 三个返回值：
+ *   null                         —— 该登记，检查也做完了（或本组合不需要检查）；
+ *   { branch }                   —— 落在集成分支上，拒绝登记并点名分支；
+ *   { unreadable: 原因 }         —— 读不到工作目录/分支：**放行**，但必须说明检查没执行。
+ *
+ * 为什么读不到要放行：记录拿不到时它既不能当证据也不能当免责，拒绝回执只会让已经
+ * 建成的 agent 在账本上失联。这与标签校验同口径——拿不到的事实不参与判定，只留痕。
+ */
+function writerPlacement({ agentId, role, phase }) {
+  const normalized = normalizePhase(phase);
+  if (normalized !== 'impl' && normalized !== 'test') return null;
+  if (!isWriterRole(role)) return null;
+  const created = findAgentRecord(agentId);
+  if (created === null) return { unreadable: `读不到 agent 记录（${agentId}）` };
+  let cwd;
+  try {
+    cwd = JSON.parse(fs.readFileSync(created.file, 'utf8')).cwd;
+  } catch (error) {
+    return { unreadable: `agent 记录不可解析（${error.message}）` };
+  }
+  if (typeof cwd !== 'string' || cwd === '') return { unreadable: 'agent 记录没有工作目录 cwd' };
+  let branch;
+  try {
+    branch = execFileSync('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000,
+    }).trim();
+  } catch {
+    return { unreadable: `工作目录不是可读的 git 工作区（${cwd}）` };
+  }
+  if (branch === '') return { unreadable: `工作目录没有当前分支（${cwd}）` };
+  return INTEGRATION_BRANCH.test(branch) ? { branch } : null;
+}
 
 const argv = process.argv.slice(2);
 const json = argv.includes('--json');
@@ -438,6 +482,11 @@ switch (command) {
       if (!intent) return { missing: true };
       // 已作废的意图不得靠 record 复活：作废与回执是互斥的两个终态，先 claim 再回执。
       if (isFailed(intent)) return { failed: true, failedAt: intent.failedAt };
+      // 写手落点检查（SCEN-HND-03）：在盖章之前判定，拒绝时 skipWrite，账本里不留这条回执。
+      // 角色与阶段取**意图键里的** role/phase：键是归因的唯一身份，record 传一个不同的
+      // --role 不能把一条写手意图改判成非写手（否则这条闸门用一个参数就能绕过）。
+      const placement = writerPlacement({ agentId, role: intent.role, phase: intent.phase });
+      if (placement?.branch) return { wrongBranch: placement.branch, skipWrite: true };
       intent.resolvedAt = nowIso;
       intent.agentId = agentId;
       intent.workspaceId = workspaceId;
@@ -445,11 +494,24 @@ switch (command) {
         // 只留字段快照，不留原文：原文可能很长，账本是状态不是日志。
         intent.envelope = Object.fromEntries(envelope.fields);
       }
-      return { intent };
+      // 「检查没做」这一事实写进账本并在 stderr 说明：事后复盘的记录里，
+      // 一条没有 placementUnchecked 的回执与「当时确实查过」长得不一样。
+      if (placement?.unreadable) intent.placementUnchecked = placement.unreadable;
+      return { intent, placementUnchecked: placement?.unreadable ?? null };
     });
     if (result.missing) fail(1, `未知意图键：${key}（先 claim 再 record）`);
     if (result.failed) {
       fail(2, `意图已于 ${result.failedAt} 显式作废，不得用 record 复活：${key}（需重派请重新 claim）`);
+    }
+    // 写手落在集成分支上：拒绝回执（exit 2）并点名分支。这是缺口 1 在手动 MCP 路径上的
+    // 机械拦截点——不拦的话，集成分支会被当成任务工作区，多个写手共用一份未提交改动。
+    if (result.wrongBranch) {
+      fail(2, `拒绝回执：写手 agent ${agentId} 的工作目录 checked out 在 ${result.wrongBranch} 上，`
+        + `写手只应在 task/<change>/<task> 分支上工作（意图 ${key}）。`
+        + '集成 workspace 只用于合流，不能作为任务工作区；请为新 task 分支重建 workspace 后重新 claim/record。');
+    }
+    if (result.placementUnchecked) {
+      console.error(`[run-state] 分支检查未执行：${result.placementUnchecked}；回执照常登记。`);
     }
     // 派发标签自检：五个 pipeline.* 标签是 reconcile 归属、cap 计数的唯一依据，也是
     // ~/.claude/hooks/write-guard.py 识别「Paseo 派生 agent」的依据——漏打标签的写手既会被判
