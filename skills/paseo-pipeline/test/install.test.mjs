@@ -262,12 +262,124 @@ test('同 command 但 matcher 不同的旧条目：追加正确条目、保留�
   assert.equal(before.code, 1, 'matcher 不覆盖 Write/Edit 时不得报已就绪');
 
   const { out } = install(dir);
-  assert.match(out, /matcher=Bash 的同名 hook，未删除/);
+  assert.match(out, /matcher=Bash 的 hook，未删除/);
   const settings = settingsOf(dir);
   assert.deepEqual(matchers(settings, 'PreToolUse'), ['Bash', 'Write|Edit|MultiEdit|NotebookEdit']);
   assert.equal(commands(settings, 'PreToolUse')[0], `node ${JSON.stringify(SCOPEGUARD)}`, '旧条目保留');
 
   assert.equal(install(dir, '--check').code, 0, '装好正确的 matcher 后 --check 必须 exit 0');
+});
+
+// --- 标记识别只有一套规则 ---
+//
+// 历史缺陷：检测用整行锚定、替换用子串 indexOf，开标记行尾巴多写一句话时两者结论相反，
+// 用户那行被从第 24 个字符处切掉、拼到块后面，而 --check 报绿（实测）。
+test('开标记行带尾随文字：追加新块，原行一字不动，exit 0，check 稳定', (context) => {
+  const original = 'export A=1\n# >>> paseo-pipeline >>> (手动改过)\nexport B=2\n';
+  const dir = home(context, { zshenv: original });
+  const { code, out } = install(dir);
+  assert.ok(code === 0 || code === 1, out);
+  const after = zshenvOf(dir);
+  assert.ok(after.startsWith(original), `原内容必须逐字节保留：\n${after}`);
+  // 不是切掉那行，而是另起一个完整块。
+  assert.equal(after.match(/# >>> paseo-pipeline >>>\n/g).length, 1);
+  assert.match(after, /# >>> paseo-pipeline >>>\nexport PIPELINE_HOME=[^\n]+\n# <<< paseo-pipeline <<<\n$/);
+  assert.equal(after.match(/^# >>> paseo-pipeline >>> \(手动改过\)$/gm).length, 1, '用户那行原样留着');
+  // 修复前这里是被从第 24 个字符处切开、拼成「pipeline >>> (手动改过)」的残句。
+  assert.doesNotMatch(after, /^pipeline >>> /m, '不得出现被切断的残句');
+  assert.match(out, /第 2 行.*未按标记处理/);
+
+  assert.equal(install(dir, '--check').code, 0, '追加后必须稳定为已就绪');
+  install(dir);
+  assert.equal(zshenvOf(dir), after, '第二次运行零差异');
+});
+
+test('行中的标记字样（引号里的字符串）不算标记，也不提示', (context) => {
+  const original = 'export X="# >>> paseo-pipeline >>>"\n';
+  const dir = home(context, { zshenv: original });
+  const { out } = install(dir);
+  assert.ok(zshenvOf(dir).startsWith(original), '行中出现的字样不得被当成块起点切掉');
+  assert.doesNotMatch(out, /未按标记处理/);
+});
+
+// --- hook 等价按语义判，不按字符串判 ---
+//
+// 真实 HOME 的写法是 `node <abs>`（无引号），install.sh 写的是 `node "<abs>"`。整串比较会把
+// 同一个 hook 判成「没装」，于是每次运行再追加一条：hook 跑两遍、UserPromptSubmit 的提醒注入
+// 两次，而 --check 还报绿（实测）。
+const EQUIVALENT_FORMS = {
+  '无引号（真实 HOME 的形状）': (p) => `node ${p}`,
+  '多余空白与 ./ 段': (p) => `node   ${path.join(path.dirname(p), '.', path.basename(p))}`,
+  '单引号': (p) => `node '${p}'`,
+};
+
+for (const [name, form] of Object.entries(EQUIVALENT_FORMS)) {
+  test(`等价写法（${name}）不追加重复条目，check 一次就 exit 0`, (context) => {
+    const settings = {
+      hooks: {
+        PreToolUse: [{ matcher: 'Write|Edit|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: form(SCOPEGUARD) }] }],
+        UserPromptSubmit: [{ hooks: [{ type: 'command', command: form(TIER) }] }],
+      },
+    };
+    // 先把 zshenv 装好（本用例只关心 hook 判定），再把 settings.json 换成等价写法。
+    const dir = home(context);
+    install(dir);
+    fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), `${JSON.stringify(settings, null, 2)}\n`);
+    const checkBefore = install(dir, '--check');
+    assert.equal(checkBefore.code, 0, `已等价就不该报缺条目：\n${checkBefore.out}`);
+
+    install(dir);
+    const after = settingsOf(dir);
+    assert.equal(after.hooks.PreToolUse.length, 1, 'same event must have exactly one entry');
+    assert.equal(after.hooks.UserPromptSubmit.length, 1);
+    assert.equal(after.hooks.PreToolUse[0].hooks.length, 1);
+    // 提示措辞不得说成「旧路径」——路径相同。
+    assert.doesNotMatch(checkBefore.out, /旧路径/);
+    assert.match(checkBefore.out, /等价条目/);
+  });
+}
+
+// 真不同的 hook 不能被归一化判成同一个：解释器不同、脚本不同、多的参数都算不同。
+test('不同的 hook（解释器/脚本/额外参数）不被判成等价', (context) => {
+  const variants = [
+    `nodejs ${SCOPEGUARD}`,           // 不同解释器名 → 仍按 node 家族处理，等价
+    `node ${SCOPEGUARD} --verbose`,   // 多了参数 → 不是同一个
+    `bash ${SCOPEGUARD}`,             // 不是 node 启动 → 不是同一个
+  ];
+  const [nodejs, withArg, bash] = variants;
+  const dirA = home(context, { settings: `${JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Write|Edit|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: nodejs }] }] } }, null, 2)}\n` });
+  install(dirA);
+  assert.equal(settingsOf(dirA).hooks.PreToolUse.length, 1, 'nodejs 与本脚本仍是同一家族，不再追加');
+
+  for (const command of [withArg, bash]) {
+    const dir = home(context, { settings: `${JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Write|Edit|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command }] }] } }, null, 2)}\n` });
+    install(dir);
+    assert.equal(settingsOf(dir).hooks.PreToolUse.length, 2, `${command} 必须被视为未安装并追加`);
+  }
+});
+
+test('「指向旧路径」提示只在解析路径不同时出现', (context) => {
+  const oldScript = path.join(os.tmpdir(), 'old-checkout', 'hooks', 'scope-guard-hook.mjs');
+  const settings = { hooks: { PreToolUse: [{ matcher: 'Write|Edit|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: `node ${oldScript}` }] }] } };
+  const dir = home(context, { settings: `${JSON.stringify(settings, null, 2)}\n` });
+  const { out } = install(dir);
+  assert.match(out, /指向旧路径/);
+  assert.equal(settingsOf(dir).hooks.PreToolUse.length, 2, '旧路径条目不删，追加正确的');
+});
+
+// --- 换行风格跟随文件 ---
+test('CRLF 文件：块外字节不变、无孤立 \\r 行、新块用 CRLF', (context) => {
+  const original = 'export A=1\r\n# >>> paseo-pipeline >>>\r\nexport PIPELINE_HOME="/old"\r\n# <<< paseo-pipeline <<<\r\nexport B=2\r\n';
+  const dir = home(context, { zshenv: original });
+  install(dir);
+  const after = zshenvOf(dir);
+  assert.ok(after.startsWith('export A=1\r\n'), '块前内容逐字节保留');
+  assert.ok(after.endsWith('export B=2\r\n'), '块后内容逐字节保留');
+  assert.equal(after.match(/\r\n/g).length, after.match(/\n/g).length, '每一行都是 CRLF');
+  assert.doesNotMatch(after, /\r(?!\n)/, '不得出现孤立 \\r');
+  assert.match(after, /# >>> paseo-pipeline >>>\r\nexport PIPELINE_HOME="[^"]+"\r\n# <<< paseo-pipeline <<<\r\n/);
+  assert.ok(!after.includes('/old'), '旧块的路径被替换掉');
+  assert.equal(install(dir, '--check').code, 0);
 });
 
 test('matcher 完全相同时不重复追加', (context) => {
