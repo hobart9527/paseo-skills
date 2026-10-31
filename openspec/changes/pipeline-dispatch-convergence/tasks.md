@@ -36,7 +36,8 @@
   - Verify with: `node --test skills/paseo-pipeline/test/task-runner.test.mjs`
   - Scenarios: SCEN-HND-04, SCEN-HND-05
 
-- [ ] 2.2 T-04 `task-runner` 审计诚实与等待容错：非 mechanical 档 exit 50、`--review-tag` 重入、去掉同构豁免、wait 失败降级轮询与 exit 51
+- [x] 2.2 T-04 `task-runner` 审计诚实与等待容错：非 mechanical 档 exit 50、`--review-tag` 重入、去掉同构豁免、wait 失败降级轮询与 exit 51
+  - Done: source=c0ed92a review=pass(4b51ea5b@c0ed92a/5fea39e)
   - Depends on: T-03
   - Write scope: skills/paseo-pipeline/task-runner.mjs, skills/paseo-pipeline/test/task-runner.test.mjs
   - Risk-surface: [error-handling]

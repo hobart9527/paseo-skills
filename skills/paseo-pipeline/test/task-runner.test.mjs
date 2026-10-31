@@ -43,23 +43,33 @@ function write(cwd, filename, content) {
   fs.writeFileSync(target, content);
 }
 
-function tasksContent(verifyCommand = passCommand) {
+function tasksContent(verifyCommand = passCommand, review = 'mechanical') {
   return [
     '# Tasks',
     '',
     '- [ ] 1.1 T-01 Task 1',
     '  - Depends on: none',
     '  - Write scope: src/a.txt',
-    '  - Review: mechanical',
+    `  - Review: ${review}`,
     `  - Verify with: ${verifyCommand}`,
     '',
     '- [ ] 1.2 T-02 Task 2',
     '  - Depends on: T-01',
     '  - Write scope: src/b.txt',
-    '  - Review: mechanical',
+    `  - Review: ${review}`,
     `  - Verify with: ${verifyCommand}`,
   ].join('\n');
 }
+
+/** 合流替身：只记录 argv 与豁免变量，绝不真的合并。（ESM：与真实 merge-task.mjs 同形态） */
+const mergeStub = `import fs from 'node:fs';
+const record = {
+  argv: process.argv.slice(2),
+  homogeneousExemption: process.env.PIPELINE_ALLOW_HOMOGENEOUS_REVIEW ?? null,
+};
+fs.appendFileSync(process.env.MERGE_CALL_FILE, JSON.stringify(record) + '\\n');
+process.exit(0);
+`;
 
 /**
  * 仓库 + Paseo 替身。
@@ -68,7 +78,7 @@ function tasksContent(verifyCommand = passCommand) {
  * 的效果），这样 Verify 能落在写手的任务 workspace 上；它还会在 `run` 当时把运行账本
  * 快照落盘，用于断言「claim 发生在派发之前」。
  */
-function fixture(context, { profile = { provider: 'claude', model: 'fixture-claude' }, verify } = {}) {
+function fixture(context, { profile = { provider: 'claude', model: 'fixture-claude' }, verify, review = 'mechanical' } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeline-runner-test-'));
   context.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, 'home', '.paseo');
@@ -78,7 +88,14 @@ function fixture(context, { profile = { provider: 'claude', model: 'fixture-clau
   const snapshotFile = path.join(root, 'ledger-at-run.json');
   const worktreeDir = path.join(root, 'ws');
   const stateDir = path.join(root, 'ledger');
-  for (const directory of [home, bin, repo]) fs.mkdirSync(directory, { recursive: true });
+  const mergeDir = path.join(root, 'merge-bin');
+  const mergeCallFile = path.join(root, 'merge-calls.jsonl');
+  for (const directory of [home, bin, repo, mergeDir]) fs.mkdirSync(directory, { recursive: true });
+  // PIPELINE_HOME 指向替身目录：只把 merge-task.mjs 换掉，run-state.mjs 与 lib 仍是真的。
+  const realScripts = path.dirname(runnerScript);
+  fs.writeFileSync(path.join(mergeDir, 'merge-task.mjs'), mergeStub, { mode: 0o755 });
+  fs.symlinkSync(path.join(realScripts, 'run-state.mjs'), path.join(mergeDir, 'run-state.mjs'));
+  fs.symlinkSync(path.join(realScripts, 'lib'), path.join(mergeDir, 'lib'));
   fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({
     daemon: { agentProfiles: profile === null ? [] : [{ id: 'agent_profile_gongbu', ...profile }] },
   }));
@@ -88,6 +105,13 @@ const { execFileSync } = require('node:child_process');
 const argv = process.argv.slice(2);
 fs.appendFileSync(process.env.PASEO_CALLS_FILE, JSON.stringify(argv) + '\\n');
 const value = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : undefined; };
+// 轮询次数由文件计数驱动：每次 inspect 前进一格，用来模拟「先失败、后 idle」与「永不到达」。
+const bump = () => {
+  const file = process.env.PASEO_FIXTURE_COUNTER_FILE;
+  const n = (fs.existsSync(file) ? Number(fs.readFileSync(file, 'utf8')) : 0) + 1;
+  fs.writeFileSync(file, String(n));
+  return n;
+};
 if (argv[0] === 'run') {
   if (process.env.PASEO_FIXTURE_FAIL_RUN === '1') {
     console.error('fixture: dispatch failed');
@@ -101,7 +125,25 @@ if (argv[0] === 'run') {
     fs.writeFileSync(process.env.PASEO_SNAPSHOT_FILE, fs.existsSync(ledger) ? fs.readFileSync(ledger, 'utf8') : '');
   }
   console.log('${AGENT_ID}');
-} else if (argv[0] !== 'wait') {
+} else if (argv[0] === 'wait') {
+  // wait 模式：idle | failed（WAIT_FAILED + 非零退出）| timeout（首轮等满）
+  const mode = process.env.PASEO_FIXTURE_WAIT || 'idle';
+  if (mode === 'failed') {
+    console.error('WAIT_FAILED');
+    process.exit(1);
+  }
+  console.log(JSON.stringify({ id: argv[1], status: mode === 'timeout' ? 'timeout' : 'idle' }));
+} else if (argv[0] === 'inspect') {
+  // inspect 模式：idle | never（永远 running）| late（第 2 次起 idle）| failed（非零退出）
+  const mode = process.env.PASEO_FIXTURE_INSPECT || 'idle';
+  const n = bump();
+  if (mode === 'failed') {
+    console.error('inspect failed');
+    process.exit(1);
+  }
+  const status = mode === 'never' ? 'running' : (mode === 'late' && n < 2 ? 'running' : 'idle');
+  console.log(JSON.stringify({ Id: argv[1], Name: 'fixture', Status: status }));
+} else {
   console.error('Unexpected paseo command: ' + argv[0]);
   process.exit(1);
 }
@@ -111,13 +153,19 @@ if (argv[0] === 'run') {
     ...gitEnv,
     HOME: path.join(root, 'home'),
     PATH: [bin, path.dirname(process.execPath), process.env.PATH].join(path.delimiter),
-    PIPELINE_HOME: path.dirname(runnerScript),
+    // PIPELINE_HOME 指向替身目录：合流调用落在 merge-task.mjs 替身上，绝不动真实仓库。
+    PIPELINE_HOME: mergeDir,
     PIPELINE_PASEO_HOME: home,
     PIPELINE_RUN_STATE_DIR: stateDir,
+    PIPELINE_AGENT_POLL_MS: '20',
     PASEO_CALLS_FILE: callsFile,
     PASEO_SNAPSHOT_FILE: snapshotFile,
     PASEO_LEDGER_FILE: path.join(stateDir, change, 'run-state.json'),
     PASEO_FIXTURE_WORKTREE: worktreeDir,
+    PASEO_FIXTURE_COUNTER_FILE: path.join(root, 'inspect-count'),
+    PASEO_FIXTURE_WAIT: 'idle',
+    PASEO_FIXTURE_INSPECT: 'idle',
+    MERGE_CALL_FILE: mergeCallFile,
   };
 
   git(repo, 'init', '-b', 'main');
@@ -128,11 +176,11 @@ if (argv[0] === 'run') {
   git(repo, 'add', 'README.md');
   git(repo, 'commit', '-m', 'chore: initial commit');
   git(repo, 'checkout', '-b', integrationBranch);
-  write(repo, tasksPath, tasksContent(verify));
+  write(repo, tasksPath, tasksContent(verify, review));
   git(repo, 'add', tasksPath);
   git(repo, 'commit', '-m', 'docs: add tasks.md');
 
-  return { cwd: repo, env, callsFile, snapshotFile, worktreeDir, stateDir, home };
+  return { cwd: repo, env, callsFile, snapshotFile, worktreeDir, stateDir, home, mergeCallFile };
 }
 
 function invoke(setup, args) {
@@ -157,10 +205,19 @@ function optionValues(argv, option) {
   return argv.flatMap((value, index) => (value === option ? [argv[index + 1]] : []));
 }
 
+function ledgerPath(setup) {
+  return path.join(setup.stateDir, change, 'run-state.json');
+}
+
 function ledger(setup) {
-  const file = path.join(setup.stateDir, change, 'run-state.json');
+  const file = ledgerPath(setup);
   assert.ok(fs.existsSync(file), `run ledger must exist: ${file}`);
   return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
+function mergeCalls(setup) {
+  if (!fs.existsSync(setup.mergeCallFile)) return [];
+  return fs.readFileSync(setup.mergeCallFile, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
 }
 
 test('task-runner rejects missing arguments', (context) => {
@@ -322,4 +379,87 @@ test('task-runner speculative mode rejects missing upstream branch but succeeds 
   assert.equal(resSpecReady.status, 0, `${resSpecReady.stdout}${resSpecReady.stderr}`);
   assert.match(resSpecReady.stdout, /Speculative mode: unmerged dependencies/);
   assert.match(resSpecReady.stdout, /Dry-run completed successfully/);
+});
+
+/**
+ * 在夹具仓库的任务分支上放一个真实交付提交：重入合流只读 git 事实（tip/base 由 tag 绑定），
+ * 所以这里必须留下一个带写手 trailer 的 commit，而不是伪造一个 tag。
+ */
+function deliverTaskBranch(setup, branch, { author = AGENT_ID } = {}) {
+  git(setup.cwd, 'checkout', '-b', branch, integrationBranch);
+  write(setup.cwd, 'src/a.txt', 'delivered\n');
+  git(setup.cwd, 'add', 'src/a.txt');
+  git(setup.cwd, 'commit', '-m', `feat: ${branch}\n\nPipeline-Role: gongbu\nPipeline-Author: ${author}`);
+  const tip7 = git(setup.cwd, 'rev-parse', '--short=7', branch);
+  const base7 = git(setup.cwd, 'rev-parse', '--short=7', integrationBranch);
+  git(setup.cwd, 'checkout', integrationBranch);
+  return { tip7, base7 };
+}
+
+// SCEN-HND-06
+test('task-runner exits 50 for a non-mechanical task and fabricates no audit facts', (context) => {
+  const setup = fixture(context, { review: 'standard' });
+  const res = invoke(setup, [change, 'T-01', '--owner', 'test-owner']);
+  assert.equal(res.status, 50, `${res.stdout}\n${res.stderr}`);
+  assert.match(res.stderr, /--review-tag/, 'the stop must name the re-entry flag');
+  assert.equal(runs(setup).length, 1, 'the writer is dispatched exactly once');
+  assert.equal(mergeCalls(setup).length, 0, 'a non-mechanical task must not merge on its own');
+
+  // 账本里不得出现本入口自造的审计意图或审计结论。
+  const state = ledger(setup);
+  const auditIntents = state.intents.filter((entry) => entry.phase === 'audit');
+  assert.deepEqual(auditIntents, [], `no audit intent may be created: ${JSON.stringify(auditIntents)}`);
+  assert.deepEqual(state.reviews, [], `no review record may be created: ${JSON.stringify(state.reviews)}`);
+});
+
+// SCEN-HND-06
+test('task-runner accepts a review tag re-entry and does not set the homogeneous exemption', (context) => {
+  const setup = fixture(context, { review: 'strict' });
+  const branch = `task/${change}/T-01`;
+  const { tip7, base7 } = deliverTaskBranch(setup, branch, { author: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' });
+  const tag = `pass(1234abcd@${tip7}/${base7})`;
+
+  const res = invoke(setup, [change, 'T-01', '--review-tag', tag, '--owner', 'test-owner']);
+  assert.equal(res.status, 0, `${res.stdout}\n${res.stderr}`);
+  assert.equal(runs(setup).length, 0, 'a tagged re-entry must not dispatch again');
+
+  const merges = mergeCalls(setup);
+  assert.equal(merges.length, 1, `exactly one merge call: ${JSON.stringify(merges)}`);
+  assert.equal(merges[0].argv[0], branch, 'the merge must target the delivered task branch');
+  assert.equal(merges[0].argv[2], tag, 'the review tag must be passed through verbatim');
+  assert.equal(merges[0].homogeneousExemption, null,
+    'the entry must not set PIPELINE_ALLOW_HOMOGENEOUS_REVIEW on the caller\'s behalf');
+
+  // 重入也不得凭空登记审计事实：那是真实 Auditor 的账。文件缺失本身即「一次都没写账」。
+  const state = fs.existsSync(ledgerPath(setup)) ? ledger(setup) : { intents: [], reviews: [] };
+  assert.deepEqual(state.reviews, [], 'a tagged re-entry must not write review records');
+  assert.deepEqual(state.intents.filter((entry) => entry.phase === 'audit'), [], 'no audit intent');
+});
+
+// SCEN-HND-07
+test('task-runner degrades a failed paseo wait to inspect polling and proceeds when idle', (context) => {
+  const setup = fixture(context);
+  setup.env.PASEO_FIXTURE_WAIT = 'failed';
+  setup.env.PASEO_FIXTURE_INSPECT = 'late';
+  const res = invoke(setup, [change, 'T-01', '--owner', 'test-owner']);
+
+  const calls = paseoCalls(setup).map((argv) => argv[0]);
+  assert.ok(calls.includes('inspect'), `a failed wait must fall back to inspect: ${calls.join(',')}`);
+  assert.equal(runs(setup).length, 1, 'the failed wait must not trigger a redispatch');
+  // late 模式下第 2 次 inspect 报 idle：流程应继续到合流（mechanical 直连）。
+  assert.equal(res.status, 0, `${res.stdout}\n${res.stderr}`);
+  assert.equal(mergeCalls(setup).length, 1, 'the run must proceed as if the wait had returned idle');
+});
+
+// SCEN-HND-07
+test('task-runner exits 51 when the agent never becomes idle and never redispatches', (context) => {
+  const setup = fixture(context);
+  setup.env.PASEO_FIXTURE_WAIT = 'failed';
+  setup.env.PASEO_FIXTURE_INSPECT = 'never';
+  const res = invoke(setup, [change, 'T-01', '--timeout', '600', '--owner', 'test-owner']);
+
+  assert.equal(res.status, 51, `${res.stdout}\n${res.stderr}`);
+  assert.match(res.stderr, /do NOT redispatch/);
+  assert.equal(runs(setup).length, 1, 'the deadline must not cause a second paseo run');
+  assert.equal(mergeCalls(setup).length, 0, 'a timed-out wait must not merge');
 });
