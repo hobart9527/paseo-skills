@@ -691,6 +691,42 @@ function intent({ task = 'T-1', role, agentId, attempt = 1, phase = 'impl' }) {
 }
 
 /**
+ * 在临时 Paseo home 里写真实形状的 agent 记录（供 `PIPELINE_PASEO_HOME` 覆盖）。
+ *
+ * 记录本身不参与当前合流判定；它的作用是让「同 provider 仍可合流」这条用例真的有
+ * 区分力——已删除的同源门禁正是读这份记录取 provider 判定，没有记录就什么都测不到。
+ */
+function paseoHome(context, agents) {
+  const home = mkdtempSync(path.join(tmpdir(), 'pipeline-merge-paseo-'));
+  context.after(() => rmSync(home, { recursive: true, force: true }));
+  for (const { id, provider, model = 'fixture-model' } of agents) {
+    const dir = path.join(home, 'agents', `slug-${id.slice(0, 8)}`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({
+      id,
+      createdAt: '2026-10-26T00:00:00.000Z',
+      lastStatus: { status: 'idle' },
+      labels: { 'pipeline.change': change },
+      provider,
+      runtimeInfo: { provider, model },
+    }));
+  }
+  return home;
+}
+
+/**
+ * 一个「写手 + 审计员」都已回执的最小账本，返回供 `PIPELINE_RUN_STATE_DIR` 覆盖的根目录。
+ * 反自审门禁要看到成对的写手/审查意图，各用例只是角色不同，不必各写一份。
+ */
+function writerAndAuditorState(context, { writer = 'aaaaaaaa-1111-2222-3333-444444444444',
+  auditor = 'bbbbbbbb-1111-2222-3333-444444444444' } = {}) {
+  return writeRunState(context, [
+    intent({ role: 'gongbu', agentId: writer }),
+    intent({ role: 'anchasi', phase: 'audit', agentId: auditor }),
+  ]);
+}
+
+/**
  * 一个**存在但没有账本文件**的状态根目录。
  *
  * 直接不设 `PIPELINE_RUN_STATE_DIR` 也行（默认目录里若已有别的 change 账本，读的仍是被测
@@ -1124,20 +1160,23 @@ test('SCEN-CON-01 a graph-level error blocks every merge regardless of the reque
 // provider（claude/codex）只是 CLI 外壳，不是模型家族：gongbu(claude/flash) 与
 // hanlin(claude/cc) 都记成 claude，按它判同源会把仲裁员签发的 OVERRULE 挡在门外。
 // 异构由 Profile 配置保证；反自审仍由因子 3b 负责（reviewer 不得是写手、
-// 必须命中已回执的审查意图）。这里只保证「外壳相同」不再阻断合流。
+// 必须命中已回执的审查意图）。这里给两侧都写上**同 provider 的真实记录**，
+// 证明「外壳相同」不再阻断合流——没有记录时本来就不阻断，那种写法没有区分力。
 test('SCEN-MRG-29 a writer and reviewer on the same provider still merge', (context) => {
   const repo = fixture(context);
-  const stateDir = writeRunState(context, [
-    intent({ role: 'gongbu', agentId: 'aaaaaaaa-1111-2222-3333-444444444444' }),
-    intent({ role: 'anchasi', phase: 'audit', agentId: 'bbbbbbbb-1111-2222-3333-444444444444' }),
+  const stateDir = writerAndAuditorState(context);
+  const home = paseoHome(context, [
+    { id: 'aaaaaaaa-1111-2222-3333-444444444444', provider: 'claude', model: 'flash' },
+    { id: 'bbbbbbbb-1111-2222-3333-444444444444', provider: 'claude', model: 'cc' },
   ]);
   const result = invoke(repo, {
-    env: { PIPELINE_RUN_STATE_DIR: stateDir },
+    env: { PIPELINE_RUN_STATE_DIR: stateDir, PIPELINE_PASEO_HOME: home },
     tag: reviewTag(repo, { reviewer: 'bbbbbbbb' }),
   });
   assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
   const log = git(repo.cwd, 'show', `${git(repo.cwd, 'rev-parse', 'HEAD')}:${logPath}`);
-  assert.match(log, /review-attestation=run-state/);
+  // 行尾紧跟换行 = attestation 之后没有任何附加判定字段（同源门禁已不再留痕）。
+  assert.match(log, /review-attestation=run-state$/m);
 });
 
 // --- 合流事实入账（run-state merges[]） ---
@@ -1147,10 +1186,7 @@ test('SCEN-MRG-29 a writer and reviewer on the same provider still merge', (cont
 // 那个字段恒为 0——一个写着 metric 却永远读不到数据的字段，比没有这个字段更糟。
 test('SCEN-MRG-30 a successful merge records itself in the run-state ledger', (context) => {
   const repo = fixture(context);
-  const stateDir = writeRunState(context, [
-    intent({ role: 'gongbu', agentId: 'aaaaaaaa-1111-2222-3333-444444444444' }),
-    intent({ role: 'anchasi', phase: 'audit', agentId: 'bbbbbbbb-1111-2222-3333-444444444444' }),
-  ]);
+  const stateDir = writerAndAuditorState(context);
   const result = invoke(repo, {
     env: { PIPELINE_RUN_STATE_DIR: stateDir },
     tag: reviewTag(repo, { reviewer: 'bbbbbbbb' }),
@@ -1167,10 +1203,7 @@ test('SCEN-MRG-30 a successful merge records itself in the run-state ledger', (c
 
 test('SCEN-MRG-30 re-running the same merge never duplicates the ledger entry', (context) => {
   const repo = fixture(context);
-  const stateDir = writeRunState(context, [
-    intent({ role: 'gongbu', agentId: 'aaaaaaaa-1111-2222-3333-444444444444' }),
-    intent({ role: 'anchasi', phase: 'audit', agentId: 'bbbbbbbb-1111-2222-3333-444444444444' }),
-  ]);
+  const stateDir = writerAndAuditorState(context);
   const env = { PIPELINE_RUN_STATE_DIR: stateDir };
   const tag = reviewTag(repo, { reviewer: 'bbbbbbbb' });
   assert.equal(invoke(repo, { env, tag }).status, 0);

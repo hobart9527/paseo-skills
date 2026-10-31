@@ -432,19 +432,12 @@ export function findAgentRecord(agentId) {
     if (!fs.existsSync(file)) continue;
     try {
       const record = JSON.parse(fs.readFileSync(file, 'utf8'));
-      // provider/model 原样带出，供调用方按需读取；随时可能读不到，调用方必须容忍 null。
-      const runtimeInfo = record.runtimeInfo && typeof record.runtimeInfo === 'object' ? record.runtimeInfo : {};
-      const config = record.config && typeof record.config === 'object' ? record.config : {};
       return {
         id: record.id ?? wanted,
         createdAt: record.createdAt ?? null,
         archivedAt: record.archivedAt ?? null,
         title: record.title ?? null,
         labels: record.labels ?? {},
-        provider: typeof record.provider === 'string' ? record.provider
-          : (typeof runtimeInfo.provider === 'string' ? runtimeInfo.provider : null),
-        model: typeof runtimeInfo.model === 'string' ? runtimeInfo.model
-          : (typeof config.model === 'string' ? config.model : null),
         file,
       };
     } catch {

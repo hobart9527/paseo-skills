@@ -8,7 +8,7 @@
 //
 // 用法:
 //   node pipeline-doctor.mjs [--config <paseo config.json>] [--settings <claude settings.json>] [--json]
-// 退出码: 0 全通过（可有 WARN） · 1 有 FAIL
+// 退出码: 0 全通过 · 1 有 FAIL
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
