@@ -8,7 +8,7 @@ user-invocable: true
 
 OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspec` CLI 为准），Paseo profiles 管角色，本 skill 负责串联与并发调度。change 名是对账键，不是准入凭证。实测反例与历史踩坑见同目录 `LESSONS.md`（证据与历史，不是规程；冲突时以本文件为准）。
 
-**脚本路径约定**：本文所有命令写作 `"$PIPELINE_HOME"/<脚本>`。`PIPELINE_HOME` 指向本 skill 目录（安装后的 `~/Codex/paseo-skills/skills/paseo-pipeline`）；目标仓库里没有 `skills/paseo-pipeline/`，照抄相对路径只会在目标仓库报 `Cannot find module`。**首次使用运行 `bash <skill 目录>/install.sh`**：它从自身位置推导绝对路径，在 `~/.zshenv` 写一个幂等的导出块，并把两个 hook 合并进 `~/.claude/settings.json`（可重复运行，`--dry-run` 只看不写，`--check` 只判状态）。变量必须落在 `~/.zshenv` 而不是 `~/.zshrc`：Paseo daemon 起的 agent 不继承交互终端的变量，`~/.zshrc` 只对交互 shell 生效。开工前跑 `node "$PIPELINE_HOME"/pipeline-doctor.mjs`，它会核对这个变量（含非交互 shell 里实际读到的值）与其余前置条件。
+**脚本路径约定**：本文所有命令写作 `"$PIPELINE_HOME"/<脚本>`。`PIPELINE_HOME` 指向本 skill 目录（安装后的 `~/Codex/paseo-skills/skills/paseo-pipeline`）；目标仓库里没有 `skills/paseo-pipeline/`，照抄相对路径只会在目标仓库报 `Cannot find module`。**首次使用运行 `bash <skill 目录>/install.sh`**：它从自身位置推导绝对路径，在 `~/.zshenv` 写一个幂等的导出块，并把两个 hook 合并进 `~/.claude/settings.json`（可重复运行，`--dry-run` 只看不写，`--check` 只判状态）。退出码：`0` 成功 · `1` 其余失败 · `2` 用法错误 · `3` `settings.json` 无法解析 · `4` `~/.zshenv` 的标记块损坏（缺结尾、重复块等，拒绝写入，需手工整理）。变量必须落在 `~/.zshenv` 而不是 `~/.zshrc`：Paseo daemon 起的 agent 不继承交互终端的变量，`~/.zshrc` 只对交互 shell 生效。开工前跑 `node "$PIPELINE_HOME"/pipeline-doctor.mjs`，它会核对这个变量（含非交互 shell 里实际读到的值）与其余前置条件。
 
 **OpenSpec CLI 主会话独占**：所有 `openspec` CLI 命令（`init`、`new`、`validate`、`archive`）由主会话独占执行。派出的子 Agent 与 Lead 只能只读读取 `openspec/changes/<name>/` 下的产物文件，禁止执行 `openspec` 命令，防止多进程破坏状态。Lead 遇到需要生命周期命令的时刻，按下文「OpenSpec 交回点」发起唯一待办请求，不得自行代跑。
 

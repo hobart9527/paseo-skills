@@ -9,13 +9,16 @@
 # 只改两个文件，且都可重入：
 #   - ~/.zshenv：只维护一个带标记的块（块外内容原样保留），块内导出 PIPELINE_HOME。
 #     zshenv 对非交互 shell 也生效，这正是 daemon 起的 agent 需要的。
+#     标记块必须成对且唯一：只有开头（会吞掉后面所有内容）、只有结尾、结尾在开头前、
+#     出现多个块，一律视为损坏并拒绝写入（exit 4），绝不猜着合并。
 #   - ~/.claude/settings.json：只增不删地合并两个 hook，不碰 env 等其他键。该文件含凭据，
 #     脚本从不打印它的内容（JSON 解析错误信息可能带原文片段，所以也只报事实）。
+#   两个文件都先备份再原子替换（同目录临时文件 + rename）；指向软链时写真实目标、保留链接。
 #
 # 用法: bash install.sh [--dry-run | --check]
 #   --dry-run  不写任何文件，只打印将发生的变化（zshenv 块与将新增的 hook），不跑自检
 #   --check    不写，只判断是否已是目标状态：已满足 exit 0，否则 exit 1，不跑自检
-# 退出码: 0 成功 · 2 用法错误 · 3 settings.json 无法解析 · 1 其余失败
+# 退出码: 0 成功 · 2 用法错误 · 3 settings.json 无法解析 · 4 zshenv 标记块损坏 · 1 其余失败
 set -euo pipefail
 
 # 先记下调用者 shell 里原有的值（可能为空、可能指向老路径），结尾提示用；下面立刻要覆盖它。
@@ -41,7 +44,7 @@ usage() {
   默认直接写入（内容无变化时不写、不备份）。
   --dry-run  不写任何文件，只打印将发生的变化
   --check    只判断是否已是目标状态：已满足 exit 0，否则 exit 1
-退出码: 0 成功 · 2 用法错误 · 3 settings.json 无法解析 · 1 其余失败
+退出码: 0 成功 · 2 用法错误 · 3 settings.json 无法解析 · 4 zshenv 标记块损坏 · 1 其余失败
 EOF
 }
 
@@ -78,7 +81,7 @@ fi
 
 # 块与 JSON 的合并逻辑放进 node：settings.json 必须用真正的 JSON 解析器处理，
 # 且任何情况下都只输出「加了什么」，不回显文件内容。
-node --input-type=module - "$MODE" "$ZSHENV" "$SETTINGS" "$PIPELINE_HOME" "$(date +%Y%m%d-%H%M%S)" <<'NODE'
+node --input-type=module - "$MODE" "$ZSHENV" "$SETTINGS" "$PIPELINE_HOME" "$(date +%Y%m%d-%H%M%S)-$$" <<'NODE'
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -90,42 +93,80 @@ const START = '# >>> paseo-pipeline >>>';
 const END = '# <<< paseo-pipeline <<<';
 const block = [START, `export PIPELINE_HOME=${JSON.stringify(skillDir)}`, END, ''].join('\n');
 
+// 与两个 hook 的 `--install-help` 输出必须保持等价（matcher 与 command 的形状）：
+// 改这里的元数据时同步改 hooks/scope-guard-hook.mjs、hooks/tier-reminder-hook.mjs。
 const HOOKS = [
   { event: 'PreToolUse', matcher: 'Write|Edit|MultiEdit|NotebookEdit', script: 'scope-guard-hook.mjs' },
   { event: 'UserPromptSubmit', script: 'tier-reminder-hook.mjs' },
 ];
 
+function resolveTarget(file) {
+  // 软链写真实目标：覆盖链接本身会把链接换成普通文件，用户后续更新 skill 就失效了。
+  try { return fs.realpathSync(file); } catch { /* 不存在或悬空软链，往下走 */ }
+  try {
+    if (fs.lstatSync(file).isSymbolicLink()) {
+      // 悬空软链也照样写它指向的位置；只解析父目录，链接本身保持不动。
+      const linkTarget = path.resolve(path.dirname(file), fs.readlinkSync(file));
+      try { return path.join(fs.realpathSync(path.dirname(linkTarget)), path.basename(linkTarget)); } catch { return linkTarget; }
+    }
+  } catch { /* 文件不存在 */ }
+  return file;
+}
+
 function read(file) {
-  try { return fs.readFileSync(file, 'utf8'); } catch (error) {
-    if (error.code === 'ENOENT') return null;
+  const target = resolveTarget(file);
+  try {
+    return { text: fs.readFileSync(target, 'utf8'), target };
+  } catch (error) {
+    if (error.code === 'ENOENT') return { text: null, target };
     throw error;
   }
+}
+
+// 标记块必须成对且唯一。这里返回错误字符串而不是就地修复：缺结尾时向后扫到文件末尾会把
+// 用户后续导出全吞掉（实测过），出现两块时猜哪块对也会写坏另一份配置。宁可拒绝。
+function markerProblem(text) {
+  const starts = [...text.matchAll(new RegExp(`^${START}$`, 'gm'))].map((m) => m.index);
+  const ends = [...text.matchAll(new RegExp(`^${END}$`, 'gm'))].map((m) => m.index);
+  if (starts.length === 0 && ends.length === 0) return null;
+  if (starts.length > 1 || ends.length > 1) {
+    return `有 ${starts.length} 个开头标记、${ends.length} 个结尾标记（只允许一个块）`;
+  }
+  if (starts.length === 0) return '只有结尾标记，没有开头标记';
+  if (ends.length === 0) return '只有开头标记，没有结尾标记';
+  if (ends[0] < starts[0]) return '结尾标记出现在开头标记之前';
+  return null;
 }
 
 // 只替换带标记的块；块外内容（含末尾是否有换行）原样保留。重复运行得到同样的字节。
 function withBlock(existing) {
   if (existing === null) return block;
   const start = existing.indexOf(START);
-  if (start < 0 || (start > 0 && existing[start - 1] !== '\n')) {
+  if (start < 0) {
     if (existing === '') return block;
     const separator = existing.endsWith('\n\n') ? '' : existing.endsWith('\n') ? '\n' : '\n\n';
     return `${existing}${separator}${block}`;
   }
-  const endAt = existing.indexOf(END, start);
-  let end = endAt < 0 ? existing.length : endAt + END.length;
-  if (existing[end] === '\n') end += 1;
-  return `${existing.slice(0, start)}${block}${existing.slice(end)}`;
+  const end = existing.indexOf(END, start) + END.length;
+  const rest = existing[end] === '\n' ? end + 1 : end;
+  return `${existing.slice(0, start)}${block}${existing.slice(rest)}`;
 }
 
 const currentZshenv = read(zshenvPath);
-const nextZshenv = withBlock(currentZshenv);
-const zshenvChanged = currentZshenv !== nextZshenv;
+const problem = currentZshenv.text === null ? null : markerProblem(currentZshenv.text);
+if (problem) {
+  console.error(`[install] ${zshenvPath} 里 paseo-pipeline 标记块损坏：${problem}。`);
+  console.error('[install] 拒绝写入（exit 4）：请手工把它整理成一个完整的块（或全部删掉）后重跑。');
+  process.exit(4);
+}
+const nextZshenv = withBlock(currentZshenv.text);
+const zshenvChanged = currentZshenv.text !== nextZshenv;
 
 const currentSettings = read(settingsPath);
 let settings = {};
-if (currentSettings !== null) {
+if (currentSettings.text !== null) {
   try {
-    settings = JSON.parse(currentSettings);
+    settings = JSON.parse(currentSettings.text);
   } catch {
     // 不打印 error.message：新版 V8 的解析错误会带原文片段，而这里可能含 env 里的凭据。
     console.error(`[install] ${settingsPath} 不是合法 JSON，拒绝写入（exit 3）`);
@@ -155,20 +196,22 @@ for (const spec of HOOKS) {
   }
   const group = list ?? [];
   if (list === undefined) settings.hooks[spec.event] = group;
-  const existing = [];
+  // 等价判定比 command 与 matcher 两项：同一 command 挂在 matcher=Bash 上是「装了但没守护
+  // Write/Edit」，只比 command 会静默放过（实测 check exit 0 而写入无人拦）。
+  let installed = false;
   for (const entry of group) {
     if (!entry || typeof entry !== 'object' || !Array.isArray(entry.hooks)) continue;
     for (const hook of entry.hooks) {
-      if (hook && typeof hook.command === 'string') existing.push(hook.command);
+      if (!hook || typeof hook.command !== 'string') continue;
+      if (hook.command === command && (entry.matcher ?? null) === (spec.matcher ?? null)) installed = true;
+      else if (hook.command === command) {
+        hints.push(`${spec.event} 已有同 command 但 matcher=${entry.matcher ?? '(无)'} 的同名 hook，未删除，请手工确认：${command}`);
+      } else if (hook.command.includes(spec.script)) {
+        hints.push(`${spec.event} 已注册指向旧路径的 ${spec.script}，未删除，请手工确认：${hook.command}`);
+      }
     }
   }
-  // 等价性按 command 判：同一脚本换个路径注册过，就不再追加，只提示（不自动删）。
-  if (existing.includes(command)) continue;
-  for (const stale of existing) {
-    if (stale.includes(spec.script)) {
-      hints.push(`${spec.event} 已注册指向旧路径的 ${spec.script}，未删除，请手工确认：${stale}`);
-    }
-  }
+  if (installed) continue;
   group.push(spec.matcher
     ? { matcher: spec.matcher, hooks: [{ type: 'command', command }] }
     : { hooks: [{ type: 'command', command }] });
@@ -208,18 +251,33 @@ if (dry) {
   process.exit(0);
 }
 
-function writeWithBackup(file, content, changed) {
-  if (!changed) return;
-  if (fs.existsSync(file)) {
+// 原子替换：先写同目录临时文件、设好 mode 再 rename。直接 writeFileSync 覆盖时进程被杀会留下
+// 截断的 settings.json——里面是凭据，截断等于把用户的登录配置弄坏。mode 由调用方按
+// 「已有文件保持原样 / 新建 settings.json 用 0600（它随后就装 token）/ 新建 .zshenv 用 0644」决定。
+function writeAtomic(target, content, mode) {
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const temp = path.join(path.dirname(target), `.${path.basename(target)}.tmp-${stamp}`);
+  fs.writeFileSync(temp, content);
+  fs.chmodSync(temp, mode);
+  fs.renameSync(temp, target);
+}
+
+function writeWithBackup(file, content, target) {
+  const exists = fs.existsSync(target);
+  if (exists) {
     const backup = `${file}.bak-${stamp}`;
-    fs.copyFileSync(file, backup);
+    fs.copyFileSync(target, backup);
+    // 备份跟原文件同权限：settings.json 的备份若放宽到 0644，等于把凭据多复制一份可读。
+    fs.chmodSync(backup, fs.statSync(target).mode & 0o777);
     console.log(`[install] 备份 ${backup}`);
   }
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, content);
+  // 新建 settings.json 用 0600（它随后就会装 token）；新建 .zshenv 不含凭据，0644 即可。
+  const mode = exists ? fs.statSync(target).mode & 0o777 : (file === settingsPath ? 0o600 : 0o644);
+  writeAtomic(target, content, mode);
 }
-writeWithBackup(zshenvPath, nextZshenv, zshenvChanged);
-writeWithBackup(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, settingsChanged);
+
+if (zshenvChanged) writeWithBackup(zshenvPath, nextZshenv, currentZshenv.target);
+if (settingsChanged) writeWithBackup(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, currentSettings.target);
 NODE
 
 # --dry-run / --check 不写文件，也不做安装后的自检（--check 的退出码只表达目标状态）。

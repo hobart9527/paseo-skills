@@ -15,7 +15,13 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const SKILL_DIR = path.dirname(fileURLToPath(import.meta.url));
+// 一律比较真实路径：用户常把 skill 目录软链到 ~/.claude/skills/，而 install.sh 写入的是
+// 解析后的真实目录；拿未解析的 SKILL_DIR 去比会把正常安装判成「指向别处」（实测）。
+// 不存在的路径退回 path.resolve：比较的是「指向哪里」，不是「存在与否」。
+function realOrResolve(target) {
+  try { return fs.realpathSync(target); } catch { return path.resolve(target); }
+}
+const SKILL_DIR = realOrResolve(path.dirname(fileURLToPath(import.meta.url)));
 const argv = process.argv.slice(2);
 const json = argv.includes('--json');
 function opt(name, fallback) {
@@ -50,7 +56,7 @@ const home = process.env.PIPELINE_HOME;
 const installHint = `运行 bash ${path.join(SKILL_DIR, 'install.sh')}`;
 if (!home) {
   fail('PIPELINE_HOME', `未设置。${installHint}`);
-} else if (path.resolve(home) !== SKILL_DIR) {
+} else if (realOrResolve(home) !== SKILL_DIR) {
   fail('PIPELINE_HOME', `指向 ${home}，但本脚本位于 ${SKILL_DIR}`);
 } else {
   pass('PIPELINE_HOME', home);
@@ -73,7 +79,7 @@ if (shellHome === null) {
   fail('非交互 PIPELINE_HOME', '无法启动 zsh 读取（zsh 是否在 PATH）');
 } else if (shellHome === '') {
   fail('非交互 PIPELINE_HOME', `非交互 shell 里为空：${installHint}（装进 ~/.zshenv）`);
-} else if (shellHome !== SKILL_DIR) {
+} else if (realOrResolve(shellHome) !== SKILL_DIR) {
   fail('非交互 PIPELINE_HOME', `~/.zshenv 指向 ${shellHome}，但本脚本位于 ${SKILL_DIR}；${installHint}`);
 } else {
   pass('非交互 PIPELINE_HOME', `~/.zshenv → ${shellHome}`);
@@ -115,14 +121,25 @@ const settings = readJson(settingsPath);
 if (settings.__error) {
   fail('scope-guard hook', `${settingsPath} 无法读取：${settings.__error}`);
 } else {
-  const hooks = JSON.stringify(settings.hooks ?? {});
   const hookScript = path.join(SKILL_DIR, 'hooks', 'scope-guard-hook.mjs');
-  if (!hooks.includes('scope-guard-hook.mjs')) {
-    fail('scope-guard hook', `${settingsPath} 的 hooks 里没有 scope-guard-hook.mjs`);
-  } else if (!hooks.includes(hookScript)) {
+  // 按条目判，而不是在整份 JSON 里找字符串：挂在 matcher=Bash 上的同一条 command 会
+  // 让字符串包含判定 PASS，而 Write/Edit 实际没人守护（实测过）。
+  const entries = (settings.hooks?.PreToolUse ?? []).flatMap((entry) => {
+    const matchers = entry?.matcher === undefined ? [] : String(entry.matcher).split('|');
+    return (entry?.hooks ?? [])
+      .filter((hook) => typeof hook?.command === 'string')
+      .map((hook) => ({ matchers, command: hook.command }));
+  });
+  const matching = entries.filter((entry) => entry.command.includes('scope-guard-hook.mjs'));
+  const guarded = matching.find((entry) => ['Write', 'Edit'].every((tool) => entry.matchers.includes(tool)));
+  if (matching.length === 0) {
+    fail('scope-guard hook', `${settingsPath} 的 hooks.PreToolUse 里没有 scope-guard-hook.mjs`);
+  } else if (!guarded) {
+    fail('scope-guard hook', `已注册但 matcher 未覆盖 Write 与 Edit（当前 ${matching.map((e) => e.matchers.join('|') || '(无)').join(', ')}）`);
+  } else if (!guarded.command.includes(hookScript)) {
     fail('scope-guard hook', `已注册但路径不是 ${hookScript}`);
   } else {
-    pass('scope-guard hook', 'PreToolUse 已注册');
+    pass('scope-guard hook', 'PreToolUse 已注册，matcher 覆盖 Write/Edit');
   }
 }
 
