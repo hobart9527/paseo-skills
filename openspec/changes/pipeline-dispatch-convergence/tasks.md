@@ -45,7 +45,8 @@
   - Verify with: `node --test skills/paseo-pipeline/test/task-runner.test.mjs`
   - Scenarios: SCEN-HND-06, SCEN-HND-07
 
-- [ ] 2.3 T-05 `hotfix.sh` 降为 `task-runner` 的兼容包装，原 hotfix 测试全量通过
+- [x] 2.3 T-05 `hotfix.sh` 降为 `task-runner` 的兼容包装，原 hotfix 测试全量通过
+  - Done: source=56c926e review=pass(0c730777@56c926e/d0291a3)
   - Depends on: T-04
   - Write scope: skills/paseo-pipeline/hotfix.sh, skills/paseo-pipeline/test/hotfix.test.mjs
   - Risk-surface: [error-handling]
