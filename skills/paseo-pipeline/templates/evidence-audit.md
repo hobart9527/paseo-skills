@@ -2,7 +2,7 @@
 
 <!--
   Auditor 的审查收据。字段集合由 test/check-evidence.mjs 决定。
-  结构闸门：`node skills/paseo-pipeline/test/check-evidence.mjs --kind audit <本文件>`
+  结构闸门：`node "$PIPELINE_HOME"/test/check-evidence.mjs --kind audit <本文件>`
   验收闸门：加 `--gate acceptance --sha <集成 HEAD>`
 
   verdict 只接受约定的通过结论（PASS / PASS_WITH_NITS）。FAIL、BLOCKED、

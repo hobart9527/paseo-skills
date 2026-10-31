@@ -6,14 +6,16 @@
 
   冻结时（人类确认点 1）整表冻结：Result 一律 PENDING，Evidence 一律 pending。
   收尾时（人类确认点 2 之前）逐行回填，并由
-  `node skills/paseo-pipeline/test/check-evidence.mjs --gate acceptance --matrix <本文件>`
+  `node "$PIPELINE_HOME"/test/check-evidence.mjs --gate acceptance --matrix <本文件>`
   机械核对。Required=yes 的行 Result 不是 PASS、或 Evidence 未绑定验收 SHA，收尾即拒绝。
 
   行规则：
   - Scenario：必须是本 change spec delta 里声明过的 SCEN-* 编号（freeze-check 核对）。
   - Entry：真实入口 —— HTTP 路由、UI 路径、CLI 命令，或让能力可达的装配点。不是内部函数。
   - Tasks：承载这一行的任务 ID，逗号分隔。
-  - Verify：真正跑一遍 Entry 的命令或手工步骤。
+  - Verify：真正跑一遍 Entry 的**单条可执行命令**。收尾由 acceptance-run 逐条真跑，freeze-check 冻结时已用同一判据拦截：
+    自然语言、手工步骤、以 `!` 开头的取反写法都会被拒。预期失败（如退出码 1）写成 `sh -c '! node x.mjs'`；
+    多步骤写进一个脚本再调用。只有 Required=no 的行允许写手工步骤（它只留档，不进入执行）。
   - Required：yes 阻断交付；no 只留档不阻断。
   - Result：PENDING / PASS / FAIL / BLOCKED / UNVERIFIED。冻结时只能写 PENDING。
   - Evidence：证据文件路径 + 验收 SHA，收尾时回填。

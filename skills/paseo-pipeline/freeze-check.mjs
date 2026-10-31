@@ -23,7 +23,7 @@
 //   2  用法错误
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseTasks, normalizeScope } from './lib/tasks.mjs';
+import { parseTasks, parseVerify, normalizeScope } from './lib/tasks.mjs';
 import {
   parseMatrix, scenarioIds, isRequired, resultOf, ACCEPTANCE_COLUMNS,
 } from './lib/acceptance-matrix.mjs';
@@ -215,6 +215,14 @@ if (acceptanceMarkdown === null) {
       }
       if (!row.Entry || row.Entry === '') block(`${label} 缺少 Entry（真实入口/装配点）`);
       if (!row.Verify || row.Verify === '') block(`${label} 缺少 Verify（怎么验）`);
+      // 与 acceptance-run 共用 parseVerify：冻结时能过、收尾真跑时判成自然语言，就是把缺陷
+      // 从冻结拖到收尾才暴露（演练里 `! node x` 以 `!` 开头被判自然语言，收尾 exit 2）。
+      // 只拦 Required=yes 的行：no 行只留档，不进入 acceptance-run 的执行集。
+      if (row.Verify && isRequired(row) && parseVerify(row.Verify).command === null) {
+        block(`${label} 的 Verify 不是可执行命令：「${row.Verify}」。`
+          + '收尾由 acceptance-run 逐条真跑，自然语言或以 `!` 开头的取反写法都会被拒；'
+          + '取反请包一层 `sh -c \'! cmd\'`，多步骤写进一个脚本再调用');
+      }
       const required = (row.Required ?? '').toLowerCase();
       if (!['yes', 'no'].includes(required)) {
         block(`${label} 的 Required 必须是 yes/no，实际是「${row.Required ?? ''}」`);

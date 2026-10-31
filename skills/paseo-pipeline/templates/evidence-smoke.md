@@ -2,7 +2,7 @@
 
 <!--
   原生编排冒烟的证据模板。字段集合由 test/check-evidence.mjs 决定，不是这里定的：
-  写完先跑 `node skills/paseo-pipeline/test/check-evidence.mjs <本文件>`（structure 闸门，
+  写完先跑 `node "$PIPELINE_HOME"/test/check-evidence.mjs <本文件>`（structure 闸门，
   只证明字段齐全），收尾再跑 `--gate acceptance --sha <集成 HEAD> --matrix <acceptance.md>`。
 
   两条闸门的分工是刻意的：

@@ -3,7 +3,7 @@
 <!--
   格式由 lib/tasks.mjs 定义，不是风格选择：不合格式的任务行会被判 MALFORMED_LINE，
   整份 tasks.md 对编排器（reconcile / merge-task）不可见。
-  冻结前跑 `node skills/paseo-pipeline/freeze-check.mjs openspec/changes/<name>`，零错误才冻结。
+  冻结前跑 `node "$PIPELINE_HOME"/freeze-check.mjs openspec/changes/<name>`，零错误才冻结。
 
   每任务三部分：任务行 → 元数据子字段 → 完成时的 Done 行。
   下面的 1.1 是一份可通过 freeze-check 的最小样例，照它的形状写，删掉即可。

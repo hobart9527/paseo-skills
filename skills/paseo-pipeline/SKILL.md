@@ -8,6 +8,8 @@ user-invocable: true
 
 OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspec` CLI 为准），Paseo profiles 管角色，本 skill 负责串联与并发调度。change 名是对账键，不是准入凭证。实测反例与历史踩坑见同目录 `LESSONS.md`（证据与历史，不是规程；冲突时以本文件为准）。
 
+**脚本路径约定**：本文所有命令写作 `"$PIPELINE_HOME"/<脚本>`。`PIPELINE_HOME` 指向本 skill 目录（安装后的 `~/Codex/paseo-skills/skills/paseo-pipeline`），在 `~/.zshrc` 里导出一次；目标仓库里没有 `skills/paseo-pipeline/`，照抄相对路径只会在目标仓库报 `Cannot find module`。开工前跑 `node "$PIPELINE_HOME"/pipeline-doctor.mjs`，它会核对这个变量与其余前置条件。
+
 **OpenSpec CLI 主会话独占**：所有 `openspec` CLI 命令（`init`、`new`、`validate`、`archive`）由主会话独占执行。派出的子 Agent 与 Lead 只能只读读取 `openspec/changes/<name>/` 下的产物文件，禁止执行 `openspec` 命令，防止多进程破坏状态。Lead 遇到需要生命周期命令的时刻，按下文「OpenSpec 交回点」发起唯一待办请求，不得自行代跑。
 
 **用户输入参数：** $ARGUMENTS
@@ -73,7 +75,7 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 
    ```bash
    mkdir -p openspec/schemas/paseo-pipeline
-   cp -R skills/paseo-pipeline/openspec-schema/. openspec/schemas/paseo-pipeline/
+   cp -R "$PIPELINE_HOME"/openspec-schema/. openspec/schemas/paseo-pipeline/
    openspec schemas    # 确认列出 paseo-pipeline (project)
    ```
 
@@ -83,7 +85,7 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 3. 入参匹配已有 change：由**主会话**跑 `openspec status --change <name> --json` 取断点，再把结论交给 Lead。Lead 自己只读 `openspec/changes/<name>/` 下的产物文件，不执行 `openspec` 命令（见开篇「OpenSpec CLI 主会话独占」）；它需要生命周期信息时走「OpenSpec 交回点」发请求，不得自行代跑。
 4. **任何断链、接手或不确定时刻**，先跑一次只读对账拿真实态：
    ```bash
-   node skills/paseo-pipeline/reconcile.mjs <change>
+   node "$PIPELINE_HOME"/reconcile.mjs <change>
    ```
    它只读 `tasks.md` + git first-parent 账本 + Paseo 运行态 + 运行账本，输出任务分类、hold 原因与有序 `NEXT`/`ALSO` 动作。**以 `NEXT` 为准推进，不要凭记忆或聊天内容推断。**
    - `NEXT <kind>: <reason>` 是当前主行动；`ALSO <kind>: <reason>` 是同一轮里可并行的其余动作（例如「先仲裁 T-01 的孤儿意图，同时把已就绪的 T-02 派出去」）。**`ALSO` 不是提示，是同一决策里的可执行动作，不要再跑一次对账去拿它。**
@@ -114,7 +116,7 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 4. **冻结前机械预检**（一条命令，不是靠人核对）：
 
    ```bash
-   node skills/paseo-pipeline/freeze-check.mjs openspec/changes/<name> --baseline openspec/specs
+   node "$PIPELINE_HOME"/freeze-check.mjs openspec/changes/<name> --baseline openspec/specs
    ```
 
    零阻断项才可进入确认点 1。它复用编排器同一个解析器（`lib/tasks.mjs`），因此**不存在「冻结时通过、执行时解析不出来」**：任务行/ID/依赖图/scope 合法性、场景编号双向闭环、验收矩阵的列与引用、Pod 成员全部在这一步核。输出直接贴进冻结报告（计数由命令生成）。`scope 与老测试迁移的冲突在此解决`——那是语义判断，仍由 Auditor 逐条核。跨 change 写范围重叠只出 `HINT`：两个 change 改同一文件是真实情况，先后顺序是人类在确认点 1 的决定，脚本不替人拦。
@@ -144,7 +146,7 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 7. **交接序列（确认点 1 之后、动任何业务文件之前）**：这是 CP-1 与执行循环之间唯一合法的过渡。**顺序固定，不可跳过、不可合并**：
 
    1. 预载派发工具：`ToolSearch` 取 `mcp__paseo__create_agent` / `create_workspace` / `list_profiles`。它们是 deferred 工具，不预载则每次派发都要多一个回合，而 `Write`/`Edit` 本来就在手——捷径偏置就是这么产生的。
-   2. 建集成 workspace：`integration/<name>`（基点为主干），见 2.1 的 workspace 约定。
+   2. 建集成 workspace：`integration/<name>`（基点为主干），见 2.1 的 workspace 约定；`create_workspace` / `create_agent` 的字段形状与分支改名见 `templates/dispatch-shapes.md`。
    3. 按 `[ROUTE]` 分派：
       - `lead`：按 `templates/lead.md` 组装 brief，派 `agent_profile_shangshu`，然后**本回合阻塞在 `paseo wait <lead-id>`**。
       - `pod`：按 §2.2 直接派 `agent_profile_gongbu`。
@@ -156,6 +158,11 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 
 **DAG 就绪与资源并发**
 - 依赖释放：仅当前置任务处于 `DONE`（first-parent 合流 + trailer 验证）时才释放下游。**需要依赖合流的下游必须等 Done，不得提前放行。**
+  - **投机流水线（Speculative Pipelining）**：`reconcile.mjs --speculative`（或 `PIPELINE_SPECULATIVE=1`）允许在前置任务已产出领先分支并处于 `MERGE` 待合流状态时，下游任务先以该分支为基线提前派发实施（`SPECULATIVE_READY`），消除线性依赖的等待空转；合流门禁仍严格守住依赖已 Done 的硬前置条件。
+- **确定性任务执行器（`task-runner.mjs`）**：将单任务微生命周期（claim → worktree → dispatch → wait → verify → audit → merge）收敛为本地确定性执行器，免除总控 LLM 往返与空等：
+  ```bash
+  node "$PIPELINE_HOME"/task-runner.mjs <change> <task-id> [--fast] [--speculative] [--dry-run]
+  ```
 - 资源冲突串行化：`Write scope` 前缀重叠的任务保守串行；互不重叠且工作区隔离的任务在 `cap` 限制内并发派发。cap 是容量上限，不是要达到的目标。
 - 共享资源不只文件：同仓多 change 的同文件、公开领域契约、端口、DB 文件、缓存、队列、外部租户与测试账号都要显式声明顺序或隔离，worktree 不隔离这些副作用。
 - **运行态保护（fail-closed）**：以下任一成立时 `canDispatchNow` 清空，不派发任何新任务——`runtime` 非 `ok`、存在 `UNMAPPED` 运行中 agent、有未回执派发意图、cap 已满。
@@ -190,8 +197,8 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 3. **证据双闸门**（第 6 节）：`--gate structure` 留档，`--gate acceptance` 才判定通过。验收闸门只接受约定通过结论、无未验证项、且绑定本次验收 revision。收尾固定跑这两条，缺任何一条都不算验收完成：
 
    ```bash
-   node skills/paseo-pipeline/test/check-evidence.mjs --gate acceptance --sha <集成HEAD> --matrix openspec/changes/<name>/acceptance.md <smoke 证据>
-   node skills/paseo-pipeline/contract-check.mjs openspec/changes/<name>/specs --tasks openspec/changes/<name>/tasks.md --baseline openspec/specs --final --max-phantom <预算>
+   node "$PIPELINE_HOME"/test/check-evidence.mjs --gate acceptance --sha <集成HEAD> --matrix openspec/changes/<name>/acceptance.md <smoke 证据>
+   node "$PIPELINE_HOME"/contract-check.mjs openspec/changes/<name>/specs --tasks openspec/changes/<name>/tasks.md --baseline openspec/specs --final --max-phantom <预算>
    ```
 
    `--matrix` 从冻结的验收矩阵读必需场景（调用者只能追加，不能减少）；`--final` 让「测试路径一条都没产出」从 SKIPPED 变成 exit 1——收尾报告里写着「跑过 contract-check」却是空跑，是这条开关唯一的理由。
@@ -211,7 +218,7 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 **矩阵的 `Verify` 列必须先被执行**：`check-evidence --matrix` 只读 `Required`/`Result` 两列，`Result` 是自报值。回填 `PASS` 之前先跑执行器（退出码 0/1/2/3/4 见第 6 节）：
 
 ```bash
-node skills/paseo-pipeline/acceptance-run.mjs <name> [--only SCEN-1,SCEN-2] [--write]
+node "$PIPELINE_HOME"/acceptance-run.mjs <name> [--only SCEN-1,SCEN-2] [--write]
 ```
 
 ## 3. Workspace 与分支生命周期（全交 Paseo）
@@ -232,23 +239,23 @@ node skills/paseo-pipeline/acceptance-run.mjs <name> [--only SCEN-1,SCEN-2] [--w
 
 ```bash
 # 开工：领取/续期编排租约（同 run 唯一 owner + 代际 generation）
-node skills/paseo-pipeline/run-state.mjs begin  <change> --owner <owner-id>
+node "$PIPELINE_HOME"/run-state.mjs begin  <change> --owner <owner-id>
 # 派发前：认领意图（幂等键 [run,task,attempt,phase,role,action]）
-node skills/paseo-pipeline/run-state.mjs claim  <change> --task T-01 --attempt 1 --phase impl --role gongbu --owner <owner-id>
+node "$PIPELINE_HOME"/run-state.mjs claim  <change> --task T-01 --attempt 1 --phase impl --role gongbu --owner <owner-id>
 # 派发后：登记真实 agent/workspace；--envelope 顺带交给机器校验阶段信封
-node skills/paseo-pipeline/run-state.mjs record <change> --key <key> --agent <agent-id> --owner <owner-id> [--workspace <id>] [--envelope <file>] [--role <role>]
+node "$PIPELINE_HOME"/run-state.mjs record <change> --key <key> --agent <agent-id> --owner <owner-id> [--workspace <id>] [--envelope <file>] [--role <role>]
 # 创建确认失败：显式作废意图，才允许重派
-node skills/paseo-pipeline/run-state.mjs fail   <change> --key <key> --reason <text> --owner <owner-id>
+node "$PIPELINE_HOME"/run-state.mjs fail   <change> --key <key> --reason <text> --owner <owner-id>
 # 审计结论：登记到账本才能算首次通过率（由 Lead 在收到审计信封后写入）
-node skills/paseo-pipeline/run-state.mjs review <change> --task T-01 --round 1 --verdict PASS --agent <auditor-agent-id> --owner <owner-id>
+node "$PIPELINE_HOME"/run-state.mjs review <change> --task T-01 --round 1 --verdict PASS --agent <auditor-agent-id> --owner <owner-id>
 # 合流事实：由 merge-task.mjs 提交成功后自动写入，不手敲
-node skills/paseo-pipeline/run-state.mjs merge  <change> --task T-01 --sha <merge-sha> [--attempt 1] [--review-tag <tag>]
+node "$PIPELINE_HOME"/run-state.mjs merge  <change> --task T-01 --sha <merge-sha> [--attempt 1] [--review-tag <tag>]
 # 人类确认点：确认发生的那一刻登记（cp1=spec 冻结，cp2=合入主干），不要事后补记
-node skills/paseo-pipeline/run-state.mjs confirm <change> --checkpoint cp1|cp2 [--note <text>] [--owner <owner-id>]
+node "$PIPELINE_HOME"/run-state.mjs confirm <change> --checkpoint cp1|cp2 [--note <text>] [--owner <owner-id>]
 # 查看：租约、未回执意图
-node skills/paseo-pipeline/run-state.mjs status <change> [--json]
+node "$PIPELINE_HOME"/run-state.mjs status <change> [--json]
 # 度量：派发次数、首次通过率、READY 等待、确认点跨度（只写账本能算出的数，采不到的项打印「未采集」）
-node skills/paseo-pipeline/run-state.mjs report <change> [--json]
+node "$PIPELINE_HOME"/run-state.mjs report <change> [--json]
 ```
 
 - **有租约时 `--owner` 必填**：`claim`/`record`/`fail` 三个动作在租约生效期间一律要求 `--owner` 且等于当前 owner，否则 exit 2。照抄不带 `--owner` 的写法在 `begin` 之后必然被拒——这是租约在生效，不是命令写错了。租约未启用的单机场景才允许省略。
@@ -305,12 +312,12 @@ node skills/paseo-pipeline/run-state.mjs report <change> [--json]
 在集成 workspace 内执行：
 
 ```bash
-node skills/paseo-pipeline/merge-task.mjs <branch> <task-id> <review-tag> <test-cmd> [--allow-legacy-author]
+node "$PIPELINE_HOME"/merge-task.mjs <branch> <task-id> <review-tag> [<test-cmd> | --fast] [--allow-legacy-author]
 ```
 
 1. 校验当前分支为 `integration/<change>` 且工作区干净。
 2. **依赖门禁**：任务依赖必须已在集成 HEAD 上被 first-parent 合流证明为 `DONE`（exit 35）。直接调用本脚本不能绕开调度顺序。
-3. **冻结验证命令**：本任务及本次合流涉及的每个任务，其 `Verify with` 若不可解析为可执行命令，直接 exit 36 拒绝；可解析的**先逐条执行**，位置参数 `<test-cmd>` 只作为追加（与冻结命令完全相同时不重复执行）。失败时打印 `Verify source: tasks.md (...)`，便于区分是哪个契约没过。
+3. **冻结验证命令与快速通道（Fast Path）**：本任务及本次合流涉及的每个任务，其 `Verify with` 若不可解析为可执行命令，直接 exit 36 拒绝；可解析的**先逐条执行**。传入 `--fast`（或位置参数 `fast`/`auto`/`none`）时启用任务级快速合流通道，仅执行冻结的 `Verify with` 命令，不追加全量测试套件，在 `run-log.md` 记 `verify_source="tasks.md fast-path (...)"`；未启用快速通道时位置参数 `<test-cmd>` 追加执行。失败时打印 `Verify source: tasks.md (...)`，便于区分是哪个契约没过。
 4. **因子 1 写范围封闭**：`git diff` 的修改文件必须 100% 落在任务 `Write scope:` 前缀内（exit 30）。
 5. **因子 2 作者血统与控制面隔离**：**逐个 commit** 校验必须带 `Pipeline-Role`（属于 `gongbu`/`gaogong`/`ceshi`/`jiangzuo`）与 `Pipeline-Author`；缺失或属控制面（`shangshu`/`lead`/`anchasi`/`hanlin`）以 exit 31 硬阻断。逐个 commit 判定，防止一个合法提交掩盖另一个无 trailer 的提交。`qingqibing` 仍被 `lib/roles.mjs` 识别为写手角色，但只为读取历史标签——新派发不得再用它。
 6. **因子 3 独立非自审**：`review-tag` 必须为 `pass(<reviewer-id8>@<tip7>/<base7>)`；`reviewer` 与任一 `Pipeline-Author` 相同即 exit 32（完整 UUID 与唯一可解析前缀都比对，歧义 fail closed）。`Review: strict`/`standard` 严禁用 `mechanical`。
@@ -332,9 +339,9 @@ node skills/paseo-pipeline/merge-task.mjs <branch> <task-id> <review-tag> <test-
 ## 6. 证据双闸门（`test/check-evidence.mjs`）
 
 ```bash
-node skills/paseo-pipeline/test/check-evidence.mjs --gate structure  <file>   # 留档：FAIL 也 exit 0
-node skills/paseo-pipeline/test/check-evidence.mjs --gate acceptance --sha <acceptance-sha> <file>
-node skills/paseo-pipeline/test/check-evidence.mjs --gate all --sha <acceptance-sha> <file>
+node "$PIPELINE_HOME"/test/check-evidence.mjs --gate structure  <file>   # 留档：FAIL 也 exit 0
+node "$PIPELINE_HOME"/test/check-evidence.mjs --gate acceptance --sha <acceptance-sha> <file>
+node "$PIPELINE_HOME"/test/check-evidence.mjs --gate all --sha <acceptance-sha> <file>
 ```
 
 - **结构闸门（默认）**：只校验字段齐备、UUID/时间戳合法。**FAIL 报告的合法留档也 exit 0**——失败调查可以完成。字段清单的唯一定义在 `lib/evidence-contract.mjs`，写证据照 `templates/evidence-smoke.md` / `templates/evidence-audit.md` 抄：三处指向同一份定义，改一处不会静默漂移。
@@ -350,7 +357,7 @@ node skills/paseo-pipeline/test/check-evidence.mjs --gate all --sha <acceptance-
   - **矩阵的 `Verify` 列由 `acceptance-run.mjs` 真正执行**：`--matrix` 只是把矩阵当「必需清单」读，矩阵行里的 `Result` 仍是自报值。收尾回填前必须先跑执行器，把 `Required: yes` 行 `Verify` 列的命令逐条执行（与 `tasks.md` 共用同一套「是否可执行命令」判据，见 `lib/acceptance-matrix.mjs` + `lib/tasks.mjs` 的 `parseVerify`）：
 
 ```bash
-node skills/paseo-pipeline/acceptance-run.mjs <change> [--only SCEN-1,SCEN-2] [--timeout <ms>] [--dry-run] [--write] [--json]
+node "$PIPELINE_HOME"/acceptance-run.mjs <change> [--only SCEN-1,SCEN-2] [--timeout <ms>] [--dry-run] [--write] [--json]
 # 0 全通过 / 1 有失败或超时 / 2 用法错误或 Verify 不是可执行命令 / 3 仍有必需行未被本次执行覆盖 / 4 仍有 BLOCKED 行
 ```
 
@@ -384,9 +391,9 @@ node skills/paseo-pipeline/acceptance-run.mjs <change> [--only SCEN-1,SCEN-2] [-
 
 ```bash
 # 诊断 / 事后复核（单 change 或扫描全部活跃租约）
-node skills/paseo-pipeline/guard-scope.mjs [<change>] --path <file> [--json]
+node "$PIPELINE_HOME"/guard-scope.mjs [<change>] --path <file> [--json]
 # PreToolUse hook 的安装片段（需人工加进 ~/.claude/settings.json）
-node skills/paseo-pipeline/hooks/scope-guard-hook.mjs --install-help
+node "$PIPELINE_HOME"/hooks/scope-guard-hook.mjs --install-help
 ```
 
 刻意保守：无有效租约放行（门禁只在一次 run 内成立）、`openspec/` 放行、路径不在任何 scope 内放行（越界提交由 `merge-task` exit 30 兜底）、读不到 `tasks.md` 放行（fail-open）。**Bash 的 `sed -i`、`>` 重定向、`git apply` 拦不住**，也**拦不住 Codex 写手**——它们不跑 Claude 的 PreToolUse hook，所以写手的 linked worktree 判定只对 Claude 侧生效。这是减速带，不能拿它宣称物理隔离。关闭方式：`PIPELINE_GUARD_SCOPE=off`（排障用）。
