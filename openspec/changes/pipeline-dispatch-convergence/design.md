@@ -26,7 +26,7 @@
 
 比较过三种：
 
-- **A. 留 `hotfix.sh`，删 `task-runner.mjs`**：`hotfix.sh` 已硬化、有 11 条测试和规格场景。代价：丢掉 `--speculative`、`--fast`、DAG 多任务调用，且 bash 内联 node 难测难扩。
+- **A. 留 `hotfix.sh`，删 `task-runner.mjs`**：`hotfix.sh` 已硬化、有 17 条测试和规格场景。代价：丢掉 `--speculative`、`--fast`、DAG 多任务调用，且 bash 内联 node 难测难扩。
 - **B. 留 `task-runner.mjs`，`hotfix.sh` 降为包装（选定）**：可测的 Node 实现；吸收 `hotfix` 的全部已验证行为；`hotfix.test.mjs` 原样变成回归契约，证明吸收没有丢行为。代价：要改 `task-runner` 的 3 个关键路径并迁移其测试。
 - **C. 两个都留，各补丁**：继续存在两份分支/标签/profile 逻辑，下一次漂移是确定的。否决。
 
