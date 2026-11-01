@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   intentKey, leaseStatus, openIntents, findByKey, intentAgeMs, DEFAULT_LEASE_TTL_MS,
-  readRunState, writeRunState,
+  readRunState, writeRunState, updateRunState,
 } from '../lib/run-state.mjs';
 
 const script = fileURLToPath(new URL('../run-state.mjs', import.meta.url));
@@ -940,6 +940,93 @@ test('SCEN-LED-03 corruption is distinguishable from an idle lease so the scope 
       '空 state 没有租约是设计使然；正因如此，corrupt 标志是唯一的防线');
     assert.notEqual(ledger.error, null, '错误文本随损坏一起返回，供守卫原样打印');
   });
+});
+
+// --- 直写入入口的临界区：损坏检查与写入必须在同一把锁内 ---
+//
+// 2026-11-01 审计 B1 实测：`writeRunState` 只做 tmp + rename，损坏检查与写入都在锁外。
+// 它因此有两处静默失败：
+//   a. 在 `updateRunState` 的回调里直写一份账本，回调返回后外层再写回自己的快照，
+//      直写的那条 intent 无声消失——写方没拿到任何错误，读方再也看不见它；
+//   b. 锁外读到「没损坏」到真正 rename 之间，另一个进程可以把文件写坏，随后本次写入
+//      照样覆盖上去，损坏现场就没了。
+// 收敛：直写入口自己取同一把 `run-state.lock`；`updateRunState` 内部改用不重复加锁的
+// 私有写入。代价是「锁内直写」从静默成功变成显式 ELOCKED——宁可报错，不可丢数据。
+
+function seedLedger(subject, intents = []) {
+  mkdirSync(path.dirname(subject.file), { recursive: true });
+  writeFileSync(subject.file, JSON.stringify({ version: 1, run: null, lease: null, intents }, null, 2));
+}
+
+function ledgerLockFile(subject) {
+  return path.join(path.dirname(subject.file), 'run-state.lock');
+}
+
+// 一条在临界区外「成功」、随后被外层快照覆盖的 intent，就是 B1 事故本身。
+const LOST_INTENT = { key: 'local:T-01:1:impl:gongbu:dispatch', createdAt: '2026-11-01T00:00:00.000Z' };
+
+// SCEN-LED-01
+test('SCEN-LED-01 a direct write takes the ledger lock, so it cannot race a concurrent read-modify-write', (context) => {
+  const subject = fixture(context);
+  seedLedger(subject);
+  const before = readFileSync(subject.file, 'utf8');
+  // 另一个进程正持有账本锁（模拟一次进行中的 updateRunState）。
+  writeFileSync(ledgerLockFile(subject), JSON.stringify({
+    pid: 99999, host: 'other-host', acquiredAt: new Date().toISOString(),
+  }));
+
+  withLedgerDir(subject, () => {
+    assert.throws(
+      () => writeRunState(change, { version: 1, run: null, lease: null, intents: [LOST_INTENT] }),
+      (error) => error.code === 'ELOCKED',
+      '直写必须与 updateRunState 抢同一把锁；锁外写入会覆盖并发持锁者的快照',
+    );
+  });
+  assert.equal(readFileSync(subject.file, 'utf8'), before, '锁被占用时直写不得落盘');
+});
+
+// SCEN-LED-01
+test('SCEN-LED-01 a direct write inside updateRunState fails loudly instead of being silently overwritten', (context) => {
+  const subject = fixture(context);
+  seedLedger(subject);
+
+  withLedgerDir(subject, () => {
+    let directWrite = null;
+    updateRunState(change, (state) => {
+      state.intents.push({ key: 'local:T-02:1:impl:gongbu:dispatch', createdAt: '2026-11-01T00:00:00.000Z' });
+      // B1 的复现：回调内直写。修复前这里静默成功，返回后外层写回自己的快照，
+      // 直写的那条 intent 只剩在磁盘上一次已消失的中间态里。
+      try {
+        writeRunState(change, { version: 1, run: null, lease: null, intents: [LOST_INTENT] });
+        directWrite = 'succeeded';
+      } catch (error) {
+        directWrite = error;
+      }
+      return null;
+    });
+
+    assert.equal(directWrite?.code, 'ELOCKED', '锁内直写必须显式失败，而不是无声丢数据');
+    const intents = JSON.parse(readFileSync(subject.file, 'utf8')).intents.map((entry) => entry.key);
+    assert.deepEqual(intents, ['local:T-02:1:impl:gongbu:dispatch'],
+      '账本里只有 updateRunState 的快照；直写那条要么显式失败，要么完整可见，不能静默消失');
+    assert.equal(existsSync(ledgerLockFile(subject)), false, 'updateRunState 结束必须释放锁');
+  });
+});
+
+// SCEN-LED-01
+test('SCEN-LED-01 a direct write on a corrupt ledger refuses and leaves no lock behind', (context) => {
+  const subject = fixture(context);
+  corrupt(subject);
+  const before = readFileSync(subject.file, 'utf8');
+
+  withLedgerDir(subject, () => {
+    assert.throws(
+      () => writeRunState(change, { version: 1, run: null, lease: null, intents: [] }),
+      (error) => error.code === 'ECORRUPT',
+    );
+  });
+  assert.equal(readFileSync(subject.file, 'utf8'), before, '拒绝路径同样不得改写现场');
+  assert.equal(existsSync(ledgerLockFile(subject)), false, '损坏检查在锁内完成，拒绝后必须释放锁');
 });
 
 // SCEN-LED-02

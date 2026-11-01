@@ -29,6 +29,11 @@
 // 必须可区分，否则只读消费者会把「账本读不了」当成「没有 run」。写入一律拒绝覆盖损坏文件
 // （ECORRUPT，保留现场）：旧实现在解析失败时把空 state 原子写回，一次 claim 就能把
 // 「3 条派发意图 + 1 条审查结论」的账本改成「1 条意图 + 0 条结论」，而且没有任何报错。
+//
+// 所有写入路径都必须持同一把 `run-state.lock`，把「损坏检查 + 落盘」放进一个临界区：
+// 原子 rename 不等于互斥，锁外直写要么覆盖并发持锁者的快照（本次写入无声消失），要么
+// 检查完到落盘之间把对方刚写坏的现场盖掉。锁内再调直写入口会自撞成 ELOCKED——那是信号，
+// 不是缺陷：那条直写本来就会被外层快照覆盖。
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -184,15 +189,63 @@ export function corruptLedgerGuidance(file) {
     + '  - 不要直接重跑 begin 指望拿到新账本：从损坏文件开始，begin 同样会被拒绝。';
 }
 
-export function writeRunState(change, state, cwd = process.cwd()) {
-  const file = runStatePath(change, cwd);
-  // 直接写入口也要守住损坏现场：绕过 updateRunState 的调用方同样不该用空壳覆盖账本。
-  const existing = readRunState(change, cwd);
-  if (existing.corrupt) throw corruptLedgerError(existing);
+/** 落盘本身：tmp + rename 保证「要么旧文件、要么完整新文件」，不做任何判定。 */
+function stampRunState(file, state) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
   fs.renameSync(tmp, file);
+}
+
+function lockError(lock, change) {
+  const error = new Error(`运行账本正被另一个进程改写（${lock.holder}）；串行重试，不要并发 claim`);
+  error.code = 'ELOCKED';
+  error.lock = lock;
+  error.change = change;
+  return error;
+}
+
+/** 取账本锁；拿不到就是硬失败，绝不「先写了再说」。 */
+function lockLedger(file, change) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const lock = acquireLock(path.dirname(file), 'run-state', { purpose: change });
+  if (!lock.ok) throw lockError(lock, change);
+  return lock;
+}
+
+/**
+ * 直接写入账本（整份替换）。
+ *
+ * 必须与 `updateRunState` 抢同一把锁：只靠 tmp + rename 保证「写入原子」，不保证互斥。
+ * 锁外直写有两种静默失败，2026-11-01 审计各复现过一次：
+ *   a. 与一次进行中的读改写并发：本次读到的「没损坏」与 rename 之间，持锁者可能刚读取
+ *      同一份快照，随后写回旧内容，本次写入无声消失；
+ *   b. 损坏判定在锁外做：判定完到真正 rename 之间对方把文件写坏，本次照样覆盖上去，
+ *      损坏现场没了。
+ * 因此锁内完成「损坏检查 + 写入」这一整个临界区。代价是锁内直写变成显式 ELOCKED：
+ * 宁可报错，不可丢数据。需要「在已有快照上改」请用 `updateRunState` 的回调。
+ *
+ * @throws {Error & {code: 'ECORRUPT'}} 账本已损坏（现场保留，见 corruptLedgerGuidance）
+ * @throws {Error & {code: 'ELOCKED'}} 另一个进程持有账本锁
+ */
+export function writeRunState(change, state, cwd = process.cwd()) {
+  const file = runStatePath(change, cwd);
+  const lock = lockLedger(file, change);
+  try {
+    writeRunStateLocked(change, state, cwd);
+  } finally {
+    lock.release();
+  }
+}
+
+/**
+ * 已在锁内的写入：给 `updateRunState` 用。
+ * 外部不得调用——调用方没持锁时它既不互斥也不检查损坏。这就是它不导出的原因。
+ */
+function writeRunStateLocked(change, state, cwd) {
+  const existing = readRunState(change, cwd);
+  if (existing.corrupt) throw corruptLedgerError(existing);
+  stampRunState(existing.file, state);
 }
 
 function corruptLedgerError(ledger) {
@@ -218,21 +271,16 @@ function corruptLedgerError(ledger) {
  */
 export function updateRunState(change, fn, cwd = process.cwd()) {
   const file = runStatePath(change, cwd);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const lock = acquireLock(path.dirname(file), 'run-state', { purpose: change });
-  if (!lock.ok) {
-    const error = new Error(`运行账本正被另一个进程改写（${lock.holder}）；串行重试，不要并发 claim`);
-    error.code = 'ELOCKED';
-    error.lock = lock;
-    throw error;
-  }
+  const lock = lockLedger(file, change);
   try {
     const ledger = readRunState(change, cwd);
     // 在锁内判定：锁外判完到拿锁之间，另一个进程可能刚把账本写坏。
     if (ledger.corrupt) throw corruptLedgerError(ledger);
     const state = ledger.state;
     const result = fn(state);
-    if (!(result && result.skipWrite === true)) writeRunState(change, state, cwd);
+    // 锁已持有，走不重复加锁的入口。回调内若直接调用公开的 `writeRunState`，
+    // 会在同一把锁上自撞成 ELOCKED——这是有意的：那条直写本来就会被这里的写回覆盖。
+    if (!(result && result.skipWrite === true)) writeRunStateLocked(change, state, cwd);
     return { result, state };
   } finally {
     lock.release();
