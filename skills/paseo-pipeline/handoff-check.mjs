@@ -57,8 +57,14 @@ if (json) {
     const label = problem.path ? `${problem.code} ${problem.path}` : problem.code;
     console.error(`  BLOCK [${label}] ${problem.message}`);
   }
+  // notes 是「这次少判了什么」，人读输出同样要看得见：只放进 --json 时，终端上读到的
+  // 是一句无条件的「交接就绪」，读者会把延后当成分支判据已通过（2026-10-31 审计 B1）。
+  for (const note of result.notes) {
+    console.log(`  NOTE [${note.code}] ${note.message}`);
+  }
   console.log(result.ok
     ? '  RESULT 交接就绪：change 产物已全部提交，tasks.md 在基点上可读'
+      + (result.deferred ? '（分支判据延后，见上方 NOTE；建完集成分支后必须重跑）' : '')
     : `  RESULT 不得开工：${result.problems.length} 个阻断项`);
 }
 

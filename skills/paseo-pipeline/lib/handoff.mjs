@@ -118,16 +118,16 @@ export function checkHandoff({ root = process.cwd(), change, base = 'HEAD' } = {
   // 解析不到时后续 cat-file 只报「对象不存在」，会把「基点写错了」误报成「tasks.md 没提交」。
   // 例外只有一种：基点写的就是还没创建的集成分支名。那是合法顺序里的「建分支之前」，
   // 此时按当前 commit 核对产物（等价于基点 = HEAD），并把延后记进 notes。
-  let effectiveBase = base;
+  //
+  // 这个例外必须**先于** `rev-parse` 判定：`rev-parse integration/<name>^{commit}` 在分支不存在时
+  // 仍可能解析到同名 tag，于是基点悄悄变成 tag 指向的那份历史——当前 commit 缺 tasks.md 也会
+  // 因为 tag 有而放行（2026-10-31 审计 B2）。判据是「基点是集成分支名且该分支不存在」，与
+  // 名字能否解析无关。
+  const baseIsMissingIntegrationBranch = base === expectedBranch && !branchExists;
+  let effectiveBase = baseIsMissingIntegrationBranch ? 'HEAD' : base;
   let baseCheckable = false;
-  const baseSha = git(root, ['rev-parse', '--verify', '--quiet', `${base}^{commit}`]);
-  const baseOk = baseSha.status === 0 && /^[0-9a-f]{40}$/.test(baseSha.stdout.trim());
-  if (baseOk) {
-    baseCheckable = true;
-  } else if (!branchExists && base === expectedBranch) {
-    effectiveBase = 'HEAD';
-    baseCheckable = git(root, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']).status === 0;
-  }
+  const baseSha = git(root, ['rev-parse', '--verify', '--quiet', `${effectiveBase}^{commit}`]);
+  baseCheckable = baseSha.status === 0 && /^[0-9a-f]{40}$/.test(baseSha.stdout.trim());
   if (!baseCheckable) {
     problems.push({
       code: HANDOFF_CODES.BASE_UNREADABLE,

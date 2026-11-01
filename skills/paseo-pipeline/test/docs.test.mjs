@@ -549,9 +549,15 @@ test('SCEN-HND-10: SKILL 写明分支判据分语境，且延后不等于通过'
   const handoff = section('冻结前准备');
   assert.match(handoff, /分支判据分语境/, 'SKILL 必须点明分支判据按语境分岔');
   assert.match(handoff, /BRANCH_DEFERRED/, '延后必须有一个可检索的标记名，而不是含糊的「已放行」');
+  // 延后说明必须出现在默认（人读）输出里，而不是只靠 --json；否则终端上读到的
+  // RESULT 是一句无条件的「交接就绪」（2026-10-31 审计 B1）。
+  assert.match(handoff, /NOTE \[BRANCH_DEFERRED\]/, '默认输出里的 NOTE 行必须写出来');
+  assert.match(handoff, /延后事实不能只藏在 JSON 里|只藏在 JSON/, '必须说明默认输出也带延后说明');
   assert.match(handoff, /WRONG_BRANCH/, '严格语境下的拒绝码必须写出来');
   assert.match(handoff, /延后不是通过|不是通过/, '必须明确延后不等于该判据已通过');
   assert.match(handoff, /重跑/, '建完集成分支后必须重跑门禁');
+  // B2：同名 tag 不得替换成基点。
+  assert.match(handoff, /同名 tag[\s\S]{0,120}不因[\s\S]{0,40}tag|不因同名 tag/, '同名 tag 的处置必须写明');
 });
 
 test('SCEN-DOC-29: task-runner 用法行的选项集合与脚本 Usage 一致（含 --owner）', () => {

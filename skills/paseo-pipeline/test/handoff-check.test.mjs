@@ -196,6 +196,64 @@ test('unknown usage exits 2 so a broken invocation is not read as a passed gate'
   assert.equal(result.status, 2, `${result.stdout}${result.stderr}`);
 });
 
+/**
+ * 集成分支不存在、但**同名 tag** 存在，且 tag 指向的 commit 上有 change 产物、
+ * 当前 HEAD 上**没有**。这是 B2 的区分性复现：`rev-parse integration/<name>^{commit}`
+ * 会解析到这个 tag，缺陷实现拿 tag 当基点，于是「当前 commit 没有 tasks.md」被放行。
+ */
+function fixtureShadowingTag(context) {
+  const cwd = mkdtempSync(path.join(tmpdir(), 'pipeline-handoff-tag-'));
+  context.after(() => rmSync(cwd, { recursive: true, force: true }));
+  git(cwd, 'init', '-q', '-b', 'main');
+  git(cwd, 'config', 'commit.gpgsign', 'false');
+  git(cwd, 'config', 'core.hooksPath', '/dev/null');
+  write(cwd, 'src/base.txt', 'base\n');
+  git(cwd, 'add', '.');
+  git(cwd, 'commit', '-qm', 'fixture baseline');
+  write(cwd, `${changeDir}/tasks.md`, `# Tasks\n\n- [ ] 1.1 T-01 deliver\n`);
+  git(cwd, 'add', '.');
+  git(cwd, 'commit', '-qm', 'change artifacts');
+  // tag 停在「有 tasks.md」的 commit，且**不建同名分支**。
+  git(cwd, 'tag', integrationBranch);
+  // 当前 HEAD 丢掉 tasks.md，只留一份已提交的 spec。
+  git(cwd, 'rm', '-q', `${changeDir}/tasks.md`);
+  write(cwd, `${changeDir}/spec.md`, 'spec\n');
+  git(cwd, 'add', '.');
+  git(cwd, 'commit', '-qm', 'only a spec');
+  return { cwd };
+}
+
+// SCEN-HND-10
+test('the deferral note is visible in the default (human) output, not only under --json', (context) => {
+  // 分支判据延后是一条「门禁这次少判了什么」的事实。只有 `--json` 能看到它，等于人在终端上
+  // 读到的 RESULT 是一句无条件的「交接就绪」——审计据此判 SPEC_VIOLATION。
+  const { cwd } = fixturePreBranch(context);
+  const result = run(cwd, ['--base', integrationBranch]);
+  assert.equal(result.code, 0, `pre-branch handoff must pass:\n${result.out}`);
+  assert.match(result.out, /BRANCH_DEFERRED/, `默认输出必须带可检索的延后标记:\n${result.out}`);
+  assert.ok(result.out.includes(integrationBranch), `延后说明必须点名期望分支:\n${result.out}`);
+  assert.match(result.out, /重跑/, `默认输出必须说明建完分支后重跑:\n${result.out}`);
+});
+
+// SCEN-HND-10
+test('a tag shadowing the missing integration branch does not become the base', (context) => {
+  // B2：分支不存在、基点写 `integration/<name>`、同名 tag 存在。若 `rev-parse` 解析到 tag，
+  // 门禁就去核对 tag 指向的 commit——那里有 tasks.md，于是当前 commit 没有 tasks.md 也放行。
+  const { cwd } = fixtureShadowingTag(context);
+
+  const viaModule = checkHandoff({ root: cwd, change, base: integrationBranch });
+  assert.equal(viaModule.effectiveBase, 'HEAD',
+    `分支不存在时必须以 HEAD 为基点，不得解析到同名 tag：${JSON.stringify(viaModule)}`);
+  assert.equal(viaModule.ok, false,
+    `当前 commit 没有 tasks.md，不得拿同名 tag 的历史放行：${JSON.stringify(viaModule)}`);
+  assert.ok(viaModule.problems.some((problem) => problem.code === 'TASKS_NOT_AT_BASE'),
+    `必须报 TASKS_NOT_AT_BASE：${JSON.stringify(viaModule.problems)}`);
+
+  const result = run(cwd, ['--base', integrationBranch]);
+  assert.equal(result.code, 1, `缺 tasks.md 时必须阻断，不得拿 tag 的历史放行:\n${result.out}`);
+  assert.match(result.out, /TASKS_NOT_AT_BASE/, `必须报 TASKS_NOT_AT_BASE:\n${result.out}`);
+});
+
 // SCEN-HND-02
 test('checkHandoff returns the shared structured result for reuse by task-runner', (context) => {
   const { cwd } = fixture(context);

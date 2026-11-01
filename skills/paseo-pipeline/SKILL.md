@@ -155,7 +155,7 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
       ```
 
       它逐路径点名 `openspec/changes/<name>/` 下未提交/未跟踪的文件，并核对 `tasks.md` 能否从集成基点读出来；exit 0 才可继续。同一份判据（`lib/handoff.mjs`）由 `task-runner.mjs` 在每次 CLI 派发前复用——门禁只有一份定义，两个入口不会各判一套。
-      **分支判据分语境**：集成分支已存在时，当前分支必须是 `integration/<name>`，否则 `WRONG_BRANCH` exit 1。集成分支尚不存在时（例如在主 checkout 上做提前预检），分支判据延后，按当前 commit 核对产物并放行，`--json` 输出带 `deferred: true` 与 `notes[].code = BRANCH_DEFERRED`——**延后不是通过**：`ok: true` 只说明产物已提交，分支那条判据没判，建完集成 workspace 后必须按本步在它上面重跑。
+      **分支判据分语境**：集成分支已存在时，当前分支必须是 `integration/<name>`，否则 `WRONG_BRANCH` exit 1。集成分支尚不存在时（例如在主 checkout 上做提前预检），分支判据延后，按当前 commit 核对产物并放行：默认输出打印 `NOTE [BRANCH_DEFERRED] …` 且 RESULT 行注明延后，`--json` 输出带 `deferred: true` 与 `notes[].code = BRANCH_DEFERRED`——两种输出都必须看得见，延后事实不能只藏在 JSON 里。**延后不是通过**：`ok: true` 只说明产物已提交，分支那条判据没判，建完集成 workspace 后必须按本步在它上面重跑。基点写 `integration/<name>` 时，分支不存在就一律按当前 commit（HEAD）核对 `tasks.md`，**不因同名 tag 能解析就改用 tag 的历史**。
    5. 按 `[ROUTE]` 分派：
       - `lead`：按 `templates/lead.md` 组装 brief，派 `agent_profile_shangshu`，然后**本回合阻塞在 `paseo wait <lead-id>`**。
       - `pod`：按 §2.2 直接派 `agent_profile_gongbu`。
