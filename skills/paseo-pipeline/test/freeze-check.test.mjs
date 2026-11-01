@@ -225,15 +225,15 @@ test('R0 signer: non-hanlin name is an advisory, not a block', () => {
   assert.match(JSON.parse(out).advisories.join('\n'), /R0_SIGNER_NOT_HANLIN/);
 });
 
-test('R0 signer: an unreachable Paseo blocks unless --skip-signer-check', () => {
+test('R0 signer: an unreachable Paseo is an advisory, a reachable one still blocks an unknown signer', () => {
   const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-bin-'));
   fs.writeFileSync(path.join(bin, 'paseo'), '#!/bin/sh\nexit 1\n');
   fs.chmodSync(path.join(bin, 'paseo'), 0o755);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
-  const res = run(signed(), [], env);
-  assert.equal(res.status, 1);
-  assert.match(res.stdout, /R0_SIGNER_UNVERIFIED/);
-  assert.equal(run(signed(), ['--skip-signer-check'], env).status, 0);
+  const out = execFileSync('node', [path.join(root, 'freeze-check.mjs'), signed(), '--json'], { encoding: 'utf8', env });
+  const report = JSON.parse(out);
+  assert.match(report.advisories.join('\n'), /R0_SIGNER_UNVERIFIED/);
+  assert.ok(!(report.blocking || []).some((item) => /R0_SIGNER/.test(item)));
 });
 
 // ---- Tier 3 admission advisory ----

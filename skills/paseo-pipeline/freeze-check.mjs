@@ -191,7 +191,9 @@ if (!structural) {
     if (!skipSignerCheck) {
       const signer = r0Match[1].trim();
       const { agents, error } = listAgents();
-      if (error) blocking.push(`R0_SIGNER_UNVERIFIED: ${error}; fix Paseo or pass --skip-signer-check`);
+      // Unreachable Paseo is advisory, not a block: it says nothing about the signer, and
+      // merge-task fails closed (exit 32) on the same lookup before anything is merged.
+      if (error) advisories.push(`R0_SIGNER_UNVERIFIED: ${error}; signer ${signer} was not checked against Paseo`);
       else {
         const hits = findAgents(signer, agents);
         const resolved = hits.length === 1 ? hits[0] : hits.length === 0 ? inspectAgent(signer) : null;
