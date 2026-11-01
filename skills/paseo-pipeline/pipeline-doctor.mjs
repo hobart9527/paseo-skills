@@ -138,6 +138,54 @@ function expandHome(text) {
     .replace(/(^|[\s"'])~(?=\/)/g, (_, before) => `${before}${os.homedir()}`);
 }
 
+/**
+ * 按 shell 词法切 token（与 install.sh 同一套规则，缺了它两边判定会分家）：
+ * 支持单/双引号、反斜杠转义、空白折叠；引号只影响分词，不进 token。
+ */
+function shellTokens(command) {
+  const tokens = [];
+  let current = '';
+  let quote = null;
+  let started = false;
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i];
+    if (quote === "'") {
+      if (ch === "'") quote = null; else current += ch;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '"') quote = null;
+      else if (ch === '\\' && i + 1 < command.length && '"\\$`'.includes(command[i + 1])) { current += command[i + 1]; i += 1; }
+      else current += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') { quote = ch; started = true; continue; }
+    if (ch === '\\' && i + 1 < command.length) { current += command[i + 1]; i += 1; started = true; continue; }
+    if (/\s/.test(ch)) {
+      if (started) { tokens.push(current); current = ''; started = false; }
+      continue;
+    }
+    current += ch;
+    started = true;
+  }
+  if (started) tokens.push(current);
+  return tokens;
+}
+
+/**
+ * 命令是否真的在「用 node 跑目标脚本」：返回 'match' / 'mismatch'（跑了别的文件）/ 'not-node'。
+ *
+ * 为什么不能按子串判：`echo "<script>"`、`# node "<script>"` 里都有那个路径，但一个脚本都不会跑；
+ * `node "<script>.bak"` 更是差之毫厘。字符串包含判定把这三种都放行，于是 hook 实际没装却报绿。
+ * 尾随参数不影响判定（hook 支持 `--install-help`）；比较永远是 realpath 后的路径，软链与
+ * `$HOME`/`~/` 写法不会被误判成漂移。
+ */
+function hookCommandVerdict(command, script) {
+  const tokens = shellTokens(command);
+  if (tokens.length < 2 || !/(^|\/)node(js)?$/.test(tokens[0])) return 'not-node';
+  return realOrResolve(expandHome(tokens[1])) === realOrResolve(script) ? 'match' : 'mismatch';
+}
+
 /** 某个事件下所有登记项，归一成 {matchers, command}；matchers 为 null 表示 entry 没写 matcher。 */
 function hookEntries(event) {
   const groups = settings.hooks?.[event];
@@ -155,23 +203,31 @@ function hookEntries(event) {
  * 判一个 hook 是否按 install.sh 的形状注册在指定事件上。
  *
  * `requiredMatchers` 非空时，还要求**同一个 entry** 的 matcher 覆盖全部工具：同一条 command
- * 挂到 matcher=Bash 上时，整份 JSON 的字符串包含判定会 PASS，而 Write/Edit 实际没人守护（实测过）。
+ * 挂到 matcher=Bash 上时，Write/Edit 实际没人守护（实测过）。
  */
 function checkHook(name, { event, script, requiredMatchers = [] }) {
   const hookName = path.basename(script);
   const entries = hookEntries(event);
-  const matching = entries.filter((entry) => entry.command.includes(hookName));
+  // 「提到了这个脚本」与「真的在跑它」分开：前者只用来区分「没装」与「装了但写错」，
+  // 后者才是 PASS 的判据。.bak 兄弟文件也算提到（于是报「路径不对」而不是「没装」）。
+  const mentioned = entries.filter((entry) => shellTokens(entry.command)
+    .some((token) => path.basename(token.replace(/^["']|["']$/g, '')).startsWith(hookName)));
   const guarded = requiredMatchers.length === 0
-    ? matching
-    : matching.filter((entry) => requiredMatchers.every((tool) => entry.matchers?.includes(tool)));
-  const correct = guarded.filter((entry) => expandHome(entry.command).includes(script));
+    ? mentioned
+    : mentioned.filter((entry) => requiredMatchers.every((tool) => entry.matchers?.includes(tool)));
+  const verdicts = guarded.map((entry) => ({ entry, verdict: hookCommandVerdict(entry.command, script) }));
+  const correct = verdicts.filter((item) => item.verdict === 'match');
   const where = `${settingsPath} 的 hooks.${event}`;
-  if (matching.length === 0) {
+  if (mentioned.length === 0) {
     fail(name, `${where} 里没有 ${hookName}（${installHint}）`);
   } else if (guarded.length === 0) {
-    fail(name, `已注册但 matcher 未覆盖 ${requiredMatchers.join(' 与 ')}（当前 ${matching.map((e) => e.matchers?.join('|') || '(无)').join(', ')}）`);
+    fail(name, `已注册但 matcher 未覆盖 ${requiredMatchers.join(' 与 ')}（当前 ${mentioned.map((e) => e.matchers?.join('|') || '(无)').join(', ')}）`);
   } else if (correct.length === 0) {
-    fail(name, `已注册但路径不是 ${script}`);
+    // 把「为什么不算」说清：不是 node <路径> 形态，或跑的是同目录的另一个文件。
+    const detail = verdicts.map(({ entry, verdict }) => (verdict === 'not-node'
+      ? `命令不是 \`node <路径>\` 形态：${entry.command}`
+      : `路径不是 ${script}：${entry.command}`)).join('；');
+    fail(name, `已注册但不会执行本脚本（${detail}）；${installHint}`);
   } else {
     pass(name, `${event} 已注册${requiredMatchers.length > 0 ? `，matcher 覆盖 ${requiredMatchers.join('/')}` : ''}`);
   }
@@ -200,15 +256,19 @@ if (settings.__error) {
 // 只把当前到底拦不拦、拦在第几个文件说出来，让 `PIPELINE_TIER_GATE=off` 这类排障残留可见。
 const tierGateOff = process.env.PIPELINE_TIER_GATE === 'off';
 const rawTierLimit = process.env.PIPELINE_TIER_GATE_LIMIT;
+// 与 lib/tier-gate.mjs 完全同一条解析（parseInt，基 10）：前导十进制整数生效，尾巴被忽略
+// （`7abc`→7、`1.5`→1、`" 4 "`→4）；没有前导整数（`abc`）或结果 <1（`0`）才回落到默认值。
+// 判据必须与真实拦截阈值同源，否则 doctor 报的上限和实际拦的位置分家。
 const parsedTierLimit = Number.parseInt(rawTierLimit ?? '', 10);
 const tierLimitValid = Number.isInteger(parsedTierLimit) && parsedTierLimit >= 1;
 const effectiveTierLimit = tierLimitValid ? parsedTierLimit : TIER_DEFAULT_LIMIT;
-if (rawTierLimit !== undefined && rawTierLimit !== '' && !tierLimitValid) {
-  fail('tier-gate', `PIPELINE_TIER_GATE_LIMIT=${rawTierLimit} 不是 ≥1 的整数，被忽略，实际仍按默认上限 ${TIER_DEFAULT_LIMIT}`);
-} else if (tierGateOff) {
+if (tierGateOff) {
   pass('tier-gate', `PIPELINE_TIER_GATE=off — 已整体关闭（排障态）：主 checkout 的 main 上不再按 Tier 1 上限拦截；不需要时取消该变量`);
+} else if (!tierLimitValid && rawTierLimit !== undefined && rawTierLimit !== '') {
+  // 被忽略的那些值：说清「按哪个上限在拦」，并指出变量当前没起到调上限的作用。
+  fail('tier-gate', `PIPELINE_TIER_GATE_LIMIT=${JSON.stringify(rawTierLimit)} 没有前导十进制整数或小于 1，实际按默认上限 ${TIER_DEFAULT_LIMIT} 拦截（第 ${TIER_DEFAULT_LIMIT + 1} 个文件即拒绝）；写成前导 ≥1 的十进制整数（如 7 或 7abc）才能改上限`);
 } else {
-  const source = tierLimitValid ? `，由 PIPELINE_TIER_GATE_LIMIT=${rawTierLimit} 覆盖` : `（默认上限）`;
+  const source = tierLimitValid ? `，由 PIPELINE_TIER_GATE_LIMIT=${rawTierLimit} 覆盖` : '（默认上限）';
   pass('tier-gate', `生效：主 checkout 的 main/master 上写第 ${effectiveTierLimit + 1} 个不同业务文件即拒绝${source}`);
 }
 

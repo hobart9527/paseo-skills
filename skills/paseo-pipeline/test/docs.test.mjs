@@ -558,6 +558,13 @@ test('SCEN-DOC-04: tier-gate 的判据、开关、上限与覆盖缺口写进 §
   assert.match(text, /PIPELINE_TIER_GATE=off/, '关闭方式必须写明');
   assert.match(text, new RegExp(`PIPELINE_TIER_GATE_LIMIT[^\\n]{0,40}默认 ${DEFAULT_LIMIT}`),
     `上限覆盖与默认值必须写明，且默认值必须等于 lib/tier-gate.mjs 的 DEFAULT_LIMIT（${DEFAULT_LIMIT}）`);
+  // 解析口径必须与 `Number.parseInt(raw, 10)` 一致：写「非法值被忽略」会让人以为 `7abc` 不生效，
+  // 而实际是 7——文档与拦截分家时，排障的人会按错的方向查。
+  assert.match(text, /Number\.parseInt\(raw,\s*10\)/, '必须点名真实解析方式');
+  assert.match(text, /前导十进制整数生效/, '必须说明前导整数生效、尾巴被忽略');
+  assert.match(text, /7abc`?→7/, '必须给出 `7abc`→7 这个可证伪的例子');
+  assert.match(text, /没有前导整数[\s\S]{0,40}回落/, '必须说明「没有前导整数才回落」');
+  assert.doesNotMatch(text, /非法值被忽略/, '不得再写与 parseInt 语义相反的「非法值被忽略」');
   assert.match(text, /sed -i|重定向/, '覆盖缺口（shell 写入）必须写明');
   assert.match(text, /减速带/, '不得把它说成沙箱');
   assert.match(text, /pipeline-doctor\.mjs[\s\S]{0,200}scope-guard-hook\.mjs[\s\S]{0,200}tier-reminder-hook\.mjs/,

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const SKILL_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -49,6 +49,14 @@ function installedHooks() {
   };
 }
 
+/** 健康基线，但把某一条 hook 的 command 换成待测写法（每次返回新对象，不互相污染）。 */
+function withCommand({ scopeGuard, tier }) {
+  const settings = installedHooks();
+  if (scopeGuard !== undefined) settings.hooks.PreToolUse[0].hooks[0].command = scopeGuard;
+  if (tier !== undefined) settings.hooks.UserPromptSubmit[0].hooks[0].command = tier;
+  return settings;
+}
+
 /** 从 settings 里删掉指向某个 hook 脚本的条目（模拟「只装了一条」）。 */
 function withoutHook(settings, script) {
   const name = path.basename(script);
@@ -62,6 +70,10 @@ function withoutHook(settings, script) {
   return next;
 }
 
+// tier-gate 的开关与上限来自环境变量：先清掉调用者 shell 里可能有的残留，用例里再显式给，
+// 否则 doctor 报的「生效/关闭」取决于跑测试的人机器上碰巧设了什么。
+const TIER_ENV = ['PIPELINE_TIER_GATE', 'PIPELINE_TIER_GATE_LIMIT', 'PIPELINE_TIER_GATE_STATE'];
+
 function run(profiles, { settings, env = {}, zshenv = true } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor-'));
   const config = path.join(dir, 'config.json');
@@ -73,10 +85,8 @@ function run(profiles, { settings, env = {}, zshenv = true } = {}) {
   if (zshenv) {
     fs.writeFileSync(path.join(dir, '.zshenv'), `export PIPELINE_HOME=${JSON.stringify(SKILL_DIR)}\n`);
   }
-  // tier-gate 的开关与上限来自环境变量：先清掉调用者 shell 里可能有的残留，用例里再显式给，
-  // 否则 doctor 报的「生效/关闭」取决于跑测试的人机器上碰巧设了什么。
   const base = { ...process.env, PIPELINE_HOME: SKILL_DIR };
-  for (const key of ['PIPELINE_TIER_GATE', 'PIPELINE_TIER_GATE_LIMIT', 'PIPELINE_TIER_GATE_STATE']) delete base[key];
+  for (const key of TIER_ENV) delete base[key];
   const result = spawnSync(process.execPath, [DOCTOR, '--config', config, '--settings', settingsFile, '--home', dir], {
     encoding: 'utf8',
     env: { ...base, ...env },
@@ -135,19 +145,71 @@ test('tier-gate off is reported as a deliberate opt-out, not a silent pass', () 
   assert.match(row, /关闭/);
 });
 
-test('tier-gate limit override is reflected in the reported threshold', () => {
-  const { out } = run(healthy(), { env: { PIPELINE_TIER_GATE_LIMIT: '7' } });
-  const row = line(out, 'tier-gate');
-  assert.match(row, /^PASS/);
-  assert.match(row, /第 8 个/);
-  assert.match(row, /PIPELINE_TIER_GATE_LIMIT=7/);
+// 上限不是静默忽略，也不是「只认纯整数」：真实解析是 `Number.parseInt(raw, 10)`，所以前导
+// 十进制整数生效、尾巴被忽略，没有前导整数或 <1 才回落默认值。doctor 与拦截必须同一条口径，
+// 所以这里不是断言「报了什么文案」，而是把 doctor 报出的阈值与访问器真实判定的阈值逐一对齐。
+test('tier-gate limit parsing matches the gate for every documented input', async () => {
+  const { DEFAULT_LIMIT } = await import('../lib/tier-gate.mjs');
+  const cases = [
+    // [输入, 期望生效上限, 说明]
+    ['7abc', 7, '前导整数生效，尾巴忽略'],
+    ['1.5', 1, '小数被截断成前导整数'],
+    ['abc', DEFAULT_LIMIT, '没有前导整数 → 回落默认值'],
+    ['0', DEFAULT_LIMIT, '小于 1 → 回落默认值'],
+    [' 4 ', 4, '两侧空白由 parseInt 吃掉'],
+  ];
+  for (const [raw, expected, why] of cases) {
+    const { out } = run(healthy(), { env: { PIPELINE_TIER_GATE_LIMIT: raw } });
+    const row = line(out, 'tier-gate');
+    assert.match(row, new RegExp(`第 ${expected + 1} 个`), `LIMIT=${JSON.stringify(raw)}（${why}）应生效为 ${expected}\n${row}`);
+  }
+  // 有意义的值正常报 PASS；落回默认值的两种要 FAIL，让「设了但没生效」可见。
+  assert.match(line(run(healthy(), { env: { PIPELINE_TIER_GATE_LIMIT: '7abc' } }).out, 'tier-gate'), /^PASS/);
+  assert.match(line(run(healthy(), { env: { PIPELINE_TIER_GATE_LIMIT: '1.5' } }).out, 'tier-gate'), /^PASS/);
+  assert.match(line(run(healthy(), { env: { PIPELINE_TIER_GATE_LIMIT: ' 4 ' } }).out, 'tier-gate'), /^PASS/);
+  for (const raw of ['abc', '0']) {
+    const { code, out } = run(healthy(), { env: { PIPELINE_TIER_GATE_LIMIT: raw } });
+    assert.equal(code, 1, out);
+    assert.match(line(out, 'tier-gate'), /^FAIL/, `LIMIT=${JSON.stringify(raw)} 应报 FAIL\n${out}`);
+  }
 });
 
-// 上限不是静默忽略：写错值时 report 出来的阈值与真实拦截阈值必须一致，不一致就是假绿。
-test('an invalid tier-gate limit fails instead of being silently ignored', () => {
-  const { code, out } = run(healthy(), { env: { PIPELINE_TIER_GATE_LIMIT: '0' } });
-  assert.equal(code, 1);
-  assert.match(line(out, 'tier-gate'), /^FAIL.*PIPELINE_TIER_GATE_LIMIT=0.*默认上限/);
+// 同一组输入也要对得上真实拦截：访问器在同一个上限下只放行 limit 个文件。
+test('the limit doctor reports is the limit the gate actually enforces', async () => {
+  const { assessTierGate } = await import('../lib/tier-gate.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tier-gate-enforce-'));
+  const repo = path.join(dir, 'repo');
+  fs.mkdirSync(repo);
+  const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  git('init', '-q', '-b', 'main');
+  git('config', 'user.email', 't@t');
+  git('config', 'user.name', 't');
+  fs.writeFileSync(path.join(repo, 'seed'), 'seed');
+  git('add', '.');
+  git('commit', '-q', '-m', 'seed');
+
+  const prev = { limit: process.env.PIPELINE_TIER_GATE_LIMIT, state: process.env.PIPELINE_TIER_GATE_STATE, off: process.env.PIPELINE_TIER_GATE };
+  try {
+    process.env.PIPELINE_TIER_GATE_STATE = path.join(dir, 'state');
+    delete process.env.PIPELINE_TIER_GATE;
+    for (const [raw, expected] of [['7abc', 7], ['1.5', 1], ['abc', 3], ['0', 3], [' 4 ', 4]]) {
+      fs.rmSync(process.env.PIPELINE_TIER_GATE_STATE, { recursive: true, force: true });
+      process.env.PIPELINE_TIER_GATE_LIMIT = raw;
+      // doctor 报出来的阈值。
+      const reported = Number(new RegExp(`第 (\\d+) 个`).exec(line(run(healthy(), { env: { PIPELINE_TIER_GATE_LIMIT: raw } }).out, 'tier-gate'))[1]) - 1;
+      assert.equal(reported, expected, `LIMIT=${JSON.stringify(raw)} 的报告中阈值`);
+      // 真实拦截阈值：第 expected 个放行，第 expected+1 个拒绝。
+      for (let i = 0; i < expected; i += 1) {
+        assert.equal(assessTierGate({ target: path.join(repo, `f${i}`), sessionId: `s-${raw}` }).verdict, 'allow', `${raw} 第 ${i + 1} 个应放行`);
+      }
+      assert.equal(assessTierGate({ target: path.join(repo, `f${expected}`), sessionId: `s-${raw}` }).verdict, 'deny', `${raw} 第 ${expected + 1} 个应拒绝`);
+    }
+  } finally {
+    for (const [key, value] of [['PIPELINE_TIER_GATE_LIMIT', prev.limit], ['PIPELINE_TIER_GATE_STATE', prev.state], ['PIPELINE_TIER_GATE', prev.off]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // 这一项判的是「daemon 起的 agent 能不能读到」：只看当前进程的 PIPELINE_HOME 不够，
@@ -206,15 +268,52 @@ test('scope-guard registered under a non-matching matcher is rejected', () => {
   assert.match(line(out, 'scope-guard hook'), /^FAIL.*matcher/);
 });
 
-// 注册值由 shell 展开：`$HOME/...`、`${HOME}/...`、`~/...` 与绝对路径指向同一个文件。
-// 按字面量比对会逼人把变量换成硬编码用户名，等于把可移植写法当漂移来修。
-for (const style of ['dollar', 'brace', 'tilde', 'absolute']) {
-  test(`scope-guard hook registered as ${style} form is accepted`, () => {
-    const command = `node "${portableHook(style)}"`;
-    const { out } = run(healthy(), { settings: hookSettings(command) });
-    assert.match(line(out, 'scope-guard hook'), /^PASS/, `command=${command}\n${out}`);
-  });
+// 命令是 shell 语句，不是一段文本：判据必须按 token 解析到「哪个解释器跑哪个脚本」。
+// 旧实现按子串判，`echo "<script>"`、`# node "<script>"` 这类根本没跑脚本的写法照样 PASS，
+// 而 `node "<script>.bak"` 这种「差不多」的写法也会被同一条子串规则放过——门禁假绿比没装更糟。
+for (const [label, script, key] of [
+  ['scope-guard', HOOK, 'scopeGuard'],
+  ['tier-reminder', TIER_HOOK, 'tier'],
+]) {
+  // 正例：install.sh 写出的形状、用户手装的等价写法（引号/无引号/四种家目录写法）、尾随参数。
+  const positive = [
+    ['bare', `node ${script}`],
+    ['quoted', `node ${JSON.stringify(script)}`],
+    ...['dollar', 'brace', 'tilde', 'absolute'].map((style) => [style, `node ${JSON.stringify(portableHook(style, script))}`]),
+    ['trailing args', `node ${JSON.stringify(script)} --install-help`],
+  ];
+  for (const [shape, command] of positive) {
+    test(`${label} hook: ${shape} command is accepted`, () => {
+      const { out } = run(healthy(), { settings: withCommand({ [key]: command }) });
+      assert.match(line(out, `${label} hook`), /^PASS/, `command=${command}\n${out}`);
+    });
+  }
+
+  // 反例：这些 command 一个脚本都不会跑，或者跑的是别的文件——必须是 FAIL。
+  const negative = [
+    ['echo', `echo ${JSON.stringify(script)}`],
+    ['commented out', `# node ${JSON.stringify(script)}`],
+    ['.bak sibling', `node ${JSON.stringify(`${script}.bak`)}`],
+  ];
+  for (const [shape, command] of negative) {
+    test(`${label} hook: ${shape} command is rejected`, () => {
+      const { code, out } = run(healthy(), { settings: withCommand({ [key]: command }) });
+      assert.equal(code, 1, out);
+      assert.match(line(out, `${label} hook`), /^FAIL/, `command=${command}\n${out}`);
+    });
+  }
 }
+
+// 软链仍是正例：注册的是 ~/.claude/skills/<link>/hooks/x.mjs，realpath 后与目标同源。
+test('hook registered through a symlinked path is accepted', (context) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor-hook-link-'));
+  context.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const link = path.join(dir, 'paseo-pipeline');
+  fs.symlinkSync(SKILL_DIR, link, 'dir');
+  const linked = path.join(link, 'hooks', 'scope-guard-hook.mjs');
+  const { out } = run(healthy(), { settings: withCommand({ scopeGuard: `node ${JSON.stringify(linked)}` }) });
+  assert.match(line(out, 'scope-guard hook'), /^PASS/, `linked=${linked}\n${out}`);
+});
 
 test('scope-guard hook pointing at another directory is rejected', () => {
   const elsewhere = `node "${path.join(os.homedir(), 'elsewhere', 'scope-guard-hook.mjs')}"`;

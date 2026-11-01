@@ -417,7 +417,7 @@ node "$PIPELINE_HOME"/hooks/scope-guard-hook.mjs --install-help
 **Tier 1 写入上限（`tier-gate`，默认开）**：scope-guard 只在**有租约期间**生效，租约之外一律放行；所以另有一道只数「本会话写了多少个不同业务文件」的兜底闸，判据在 `lib/tier-gate.mjs`，由同一条 PreToolUse hook 在 scope-guard 之后调用。它拦的是「根本没进流水线就地大改」——分级表在上下文里，决策点上却没人去查。
 - **判据**：目标在主 checkout（`--git-dir` 与 `--git-common-dir` 同处）的 `main`/`master` 上时，按 `session_id` 记账**本会话写过的不同业务文件**（同一文件反复写只计一次）；第 `上限+1` 个拒绝，并提示改走 Tier 2（`/paseo-handoff`）或 Tier 3（`/paseo-pipeline`）。不数 git 脏文件：仓库原有的未提交改动不是本会话造成的，数它们会让新任务一开工就被拦。
 - **放行**：不在主 checkout 的 main/master（linked worktree、功能分支、游离 HEAD——Tier 2/3 的写手天然落在这里）、`openspec/` 下（Tier 3 主会话要写 spec 产物）、仓库之外、缺 `session_id`、读不到 git 或账本损坏（fail-open）。
-- **开关**：`PIPELINE_TIER_GATE=off` 整体关闭（排障用）；`PIPELINE_TIER_GATE_LIMIT=<≥1 的整数>` 改上限，默认 3，非法值被忽略并回落到默认值（`pipeline-doctor.mjs` 会把这个事实报出来）。**被拦时按提示升档，不要换工具绕过**：Bash 里的 `sed -i`、`>` 重定向、`git apply` 拦不住（见上），用它们绕过等于把护栏留在原地而自己走出去。误判（例如纯文档批量修订）请向用户说明并请其放行。
+- **开关**：`PIPELINE_TIER_GATE=off` 整体关闭（排障用）；`PIPELINE_TIER_GATE_LIMIT=<整数>` 改上限，默认 3。解析走 `Number.parseInt(raw, 10)`：**前导十进制整数生效，尾巴被忽略**（`7abc`→7、`1.5`→1、`" 4 "`→4）；没有前导整数（`abc`）或结果 `<1`（`0`）才回落到默认值，且 `pipeline-doctor.mjs` 会把回落这件事报成 FAIL，不静默。**被拦时按提示升档，不要换工具绕过**：Bash 里的 `sed -i`、`>` 重定向、`git apply` 拦不住（见上），用它们绕过等于把护栏留在原地而自己走出去。误判（例如纯文档批量修订）请向用户说明并请其放行。
 - **覆盖缺口**：与 scope-guard 相同——只对结构化写入工具生效，shell 重定向看不见；也拦不住 Codex 写手（不跑 Claude 的 PreToolUse hook）。这是**减速带**，不是沙箱，不能拿它宣称「主会话写不了业务代码」。
 - **可诊断**：`pipeline-doctor.mjs` 分别校验 `scope-guard-hook.mjs`（`PreToolUse`，matcher 需覆盖 `Write`/`Edit`）与 `tier-reminder-hook.mjs`（`UserPromptSubmit`）两条注册，并单列 `tier-gate` 一行报出生效/关闭与当前阈值。分级提醒本身另有 `PIPELINE_TIER_REMINDER=off`。
 
