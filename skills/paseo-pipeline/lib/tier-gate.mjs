@@ -17,6 +17,12 @@
 //   - PIPELINE_TIER_GATE=off 整体关闭；PIPELINE_TIER_GATE_LIMIT 调上限（默认 3）。
 //
 // 覆盖缺口（如实记录）：只对结构化写入工具生效，Bash 里的 `sed -i`、重定向看不到。
+//
+// 2026-11-02：账本从「本会话累计」改为「当前任务段累计」。此前计数永不清零，同一会话里
+// 先做完一件 3 文件的 Tier 1 小事之后，再做任何不相关的小改动都会被拒——闸门量的是
+// 「本次改动规模」，却记成了「会话总写量」。现在遇到探针命中即结算：账本超过
+// DEFAULT_IDLE_MS 没被写过，就视为新任务段，从空账本重新计数。阈值可调
+// （PIPELINE_TIER_GATE_IDLE_MS），取舍见该常量的说明（宁可少拦，与旧行为一致）。
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -24,6 +30,10 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 export const DEFAULT_LIMIT = 3;
+// A gap this long between writes starts a new task segment. 30 minutes is chosen so a
+// normal "read, think, edit" gap inside one task never resets the count, while a
+// finished task followed by a fresh request does.
+export const DEFAULT_IDLE_MS = 30 * 60 * 1000;
 const PROTECTED_BRANCHES = new Set(['main', 'master']);
 
 function git(cwd, args) {
@@ -110,13 +120,18 @@ function limitFromEnv() {
   return Number.isInteger(raw) && raw >= 1 ? raw : DEFAULT_LIMIT;
 }
 
+function idleFromEnv() {
+  const raw = Number.parseInt(process.env.PIPELINE_TIER_GATE_IDLE_MS ?? '', 10);
+  return Number.isInteger(raw) && raw >= 0 ? raw : DEFAULT_IDLE_MS;
+}
+
 function denyReason(count, limit, files) {
   return [
     `本会话已在主 checkout（main）写了 ${count} 个不同文件，达到 Tier 1 上限 ${limit}；再写会超出 Tier 1。`,
     `已写：${files.join('、')}`,
     '先停手，按范围改走对应通道（不要继续原地写）：',
     '- Tier 2（单模块、不涉及持久化/并发/不可逆）：用 /paseo-handoff 交给 worktree 里的 Agent，交接内容写明验收命令与「越级即停」。',
-    '- Tier 3（跨模块共享契约、持久化、并发、不可逆变更）：用 /paseo-pipeline。',
+    '- Tier 3（冻结后的 DAG 有 maxWidth≥2 且任务≥4；跨模块共享契约、持久化、并发、不可逆变更通常是这类迹象）：用 /paseo-pipeline。不要为了够格而拆分 DAG。',
     '已写的改动保留在工作区，不要回滚；把它们列进交接内容的「当前状态」。',
     '如果这是误判（例如纯文档批量修订），请向用户说明并请其放行，不要自行绕过。',
   ].join('\n');
@@ -146,17 +161,25 @@ export function assessTierGate({ target, sessionId }) {
 
   const file = stateFile(sessionId);
   const state = readState(file);
-  const files = Array.isArray(state[ctx.root]) ? state[ctx.root].filter((v) => typeof v === 'string') : [];
-  if (files.includes(rel)) return { verdict: 'allow', note: 'already counted' };
+  const now = Date.now();
+  const entry = state[ctx.root];
+  // Legacy shape (`["src/a", ...]`, no clock) still counts; it just has no timestamp.
+  const legacy = Array.isArray(entry);
+  const files = (legacy ? entry : Array.isArray(entry?.files) ? entry.files : []).filter((v) => typeof v === 'string');
+  const lastWrite = !legacy && typeof entry?.at === 'number' ? entry.at : now;
+  // A finished task followed by a fresh request is a new segment; see the header note.
+  const fresh = !legacy && now - lastWrite >= idleFromEnv();
+  const counted = fresh ? [] : files;
+  if (counted.includes(rel)) return { verdict: 'allow', note: 'already counted' };
 
   const limit = limitFromEnv();
-  if (files.length >= limit) {
-    return { verdict: 'deny', reason: denyReason(files.length, limit, files) };
+  if (counted.length >= limit) {
+    return { verdict: 'deny', reason: denyReason(counted.length, limit, counted) };
   }
 
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ ...state, [ctx.root]: [...files, rel] }));
+    fs.writeFileSync(file, JSON.stringify({ ...state, [ctx.root]: { files: [...counted, rel], at: now } }));
   } catch {
     // 记账失败不能锁死写入：放行，只是这一笔不计数。
   }

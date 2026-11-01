@@ -5,13 +5,13 @@
 import { spawnSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseTasks, parseTaskLine, parseReviewTag, isFileWithinScopes, graphErrors, isTestPath } from './lib/tasks.mjs';
+import { parseTasks, parseTaskLine, parseReviewTag, isFileWithinScopes, graphErrors, isTestPath, verifyLegs } from './lib/tasks.mjs';
+import { missingDependency, dependencyMessage } from './lib/toolchain.mjs';
 
 const WRITER_ROLES = new Set(['gongbu', 'gaogong', 'ceshi', 'jiangzuo']);
 const TEST_ROLES = new Set(['ceshi']);
 const IMPLEMENTATION_ROLES = new Set(['gongbu', 'gaogong', 'jiangzuo']);
 const usage = 'Usage: merge-task.mjs <branch> <task-id> <pass(reviewer@tip/base)> [--timeout ms]';
-
 function fail(message, code = 1) {
   console.error(`[merge-task] Error: ${message}`);
   process.exit(code);
@@ -40,10 +40,43 @@ function paseoAgents() {
   }
 }
 
+// `paseo ls --all` returns at most 100 agents and drops some archived ones, so a
+// model that is missing from the list is not proof the agent never existed.
+function paseoInspect(agentId) {
+  const result = spawnSync('paseo', ['inspect', agentId, '--json'], { encoding: 'utf8', timeout: 10_000 });
+  if (result.error || result.status !== 0) return null;
+  try { return JSON.parse(result.stdout); } catch { return null; }
+}
+
+const providerOf = (agent) => {
+  const value = agent?.provider ?? agent?.Provider;
+  return typeof value === 'string' && value.includes('/') ? value.toLowerCase() : null;
+};
+// `paseo ls` packs "provider/model" into `provider`; `paseo inspect --json` splits them
+// and uses capitalised keys (`Provider`, `Model`).
+const modelOf = (agent) => providerOf(agent)
+  ?? (() => {
+    const provider = agent?.provider ?? agent?.Provider;
+    const model = agent?.model ?? agent?.Model;
+    return provider && model ? `${provider}/${model}`.toLowerCase() : null;
+  })();
+
+// Agent ids arrive as full UUIDs (Pipeline-Author trailers, `$PASEO_AGENT_ID`) or as
+// Paseo's 7-char shortId. Match both shapes; more than one hit means ambiguity, so
+// fail closed instead of guessing.
+function findAgents(agentId, agents) {
+  const wanted = String(agentId || '').toLowerCase();
+  if (!wanted) return [];
+  return agents.filter((agent) => [agent.id, agent.shortId].some((value) => typeof value === 'string' && value.toLowerCase().startsWith(wanted)));
+}
+
 function modelFor(agentId, agents) {
-  const matches = agents.filter((agent) => agent.id === agentId || agent.shortId === agentId);
-  if (matches.length !== 1 || typeof matches[0].provider !== 'string' || !matches[0].provider.includes('/')) return null;
-  return matches[0].provider.toLowerCase();
+  const matches = findAgents(agentId, agents);
+  if (matches.length === 1) return modelOf(matches[0]);
+  // Unique shortId prefix in the live list; otherwise ask Paseo directly, because
+  // `ls` caps at 100 entries and hides some archived agents.
+  if (matches.length === 0) return modelOf(paseoInspect(agentId));
+  return null;
 }
 
 function filesInCommit(commit) {
@@ -56,9 +89,42 @@ function trailers(commit, key) {
   return git(['show', '-s', `--format=%(trailers:key=${key},valueonly)`, commit]).split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
 }
 
-function run(command, timeoutMs) {
+// Red proof is only meaningful when a test ran and failed on its assertions.
+// Distinguish that from "the suite could not even load": a collection/import/
+// syntax error turns the same command red without exercising any behaviour, and
+// `tester.md` already forbids accepting it. The check is deliberately narrow so a
+// genuine assertion failure quoting an ImportError still counts as behavioural.
+const RED_NON_BEHAVIOR = [
+  /SyntaxError/i,
+  /ModuleNotFoundError/i,
+  /(?:^|\W)(?:Cannot find module|ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND)(?:\W|$)/i,
+  /\berror(?:s)? during collection\b/i,
+  /\b(?:ImportError|IndentationError|NameError) while importing\b/i,
+  /\b(?:no tests ran|collected 0 items|Ran 0 tests)\b/i,
+  /\bfailed to (?:load|import|collect|start|parse)\b/i,
+];
+function isBehavioralRed(output) {
+  const text = String(output || '');
+  if (!/\b(?:fail(?:ed|ures?|ing)?|AssertionError|expected|t\.is|✖|not ok)\b/i.test(text)) return false;
+  return !RED_NON_BEHAVIOR.some((pattern) => pattern.test(text));
+}
+
+// A fresh linked worktree has no node_modules/.venv, so the frozen Verify can fail
+// before any test runs. Exit 36 marks that environment fault instead of blaming the task.
+
+function run(command, timeoutMs, { capture = false } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(command, { shell: true, stdio: 'inherit', detached: true });
+    const child = spawn(command, { shell: true, stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit', detached: true });
+    let output = '';
+    if (capture) {
+      for (const stream of [child.stdout, child.stderr]) {
+        stream.on('data', (chunk) => {
+          output += chunk;
+          // Keep the operator's view identical to the non-capture path.
+          if (output.length <= 200_000) process.stdout.write(chunk);
+        });
+      }
+    }
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -66,8 +132,8 @@ function run(command, timeoutMs) {
       kill('SIGTERM');
       setTimeout(() => kill('SIGKILL'), 2000).unref();
     }, timeoutMs);
-    child.on('error', (error) => { clearTimeout(timer); resolve({ error }); });
-    child.on('exit', (status, signal) => { clearTimeout(timer); resolve({ status, signal, timedOut }); });
+    child.on('error', (error) => { clearTimeout(timer); resolve({ error, output }); });
+    child.on('exit', (status, signal) => { clearTimeout(timer); resolve({ status, signal, timedOut, output }); });
   });
 }
 
@@ -154,7 +220,14 @@ const testModels = [...testAuthors].map((id) => modelFor(id, agents));
 const implementationModels = [...implementationAuthors].map((id) => modelFor(id, agents));
 if (needsAgentModels && [...testModels, ...implementationModels].some((model) => !model)) fail('cannot resolve test-author/implementer model from Paseo; refusing merge', 32);
 if (needsAgentModels && testModels.some((model) => implementationModels.includes(model))) fail('test author and implementer must use different models', 32);
-if (tag.reviewer !== 'mechanical' && authors.has(tag.reviewer.toLowerCase())) {
+// Authors are recorded as full UUIDs and the tag may carry a shortId prefix; compare
+// identities as well as spellings. The literal check stays as a fallback for when the
+// live agent list cannot resolve either side.
+const reviewerAgents = tag.reviewer === 'mechanical' ? [] : findAgents(tag.reviewer, agents);
+if (tag.reviewer !== 'mechanical' && (
+  authors.has(tag.reviewer.toLowerCase())
+  || [...authors].some((id) => findAgents(id, agents).some((agent) => reviewerAgents.includes(agent)))
+)) {
   fail('reviewer matches a task author', 32);
 }
 if (tag.reviewer === 'mechanical' && task.review !== 'mechanical') fail('mechanical review requires Review: mechanical');
@@ -182,11 +255,16 @@ if (task.review !== 'mechanical') {
   if (!redTip) fail('test-author commit must precede the first implementation commit', 31);
   const redMerge = gitMaybe(['merge', '--no-ff', '--no-commit', redTip]);
   if (redMerge.status !== 0) { gitMaybe(['merge', '--abort']); fail('merge conflict while checking Red', 10); }
-  const red = await run(task.verify, timeout);
+  const red = await run(task.verify, timeout, { capture: true });
   gitMaybe(['merge', '--abort']);
   if (git(['status', '--porcelain=v1', '--untracked-files=all']) !== '') fail('Red check left files in the integration worktree; clean them and retry', 33);
+  // A real assertion failure wins over the dependency hint: a test may legitimately
+  // quote "Cannot find package" in its own failure message.
+  const redMissing = isBehavioralRed(red.output) ? null : missingDependency(red.output);
+  if (redMissing) fail(`Red check: ${dependencyMessage(redMissing)}`, 36);
   if (red.error || red.timedOut || red.signal || [126, 127].includes(red.status)) fail(`Red check could not run Verify (exit ${red.status ?? 'n/a'}): ${task.verify}`, 33);
   if (red.status === 0) fail(`Red check: frozen Verify already passes on the test-author commit ${redTip.slice(0, 7)}; tests do not prove new behavior`, 33);
+  if (!isBehavioralRed(red.output)) fail(`Red check: Verify failed without a test assertion (collection/import/syntax error) on ${redTip.slice(0, 7)}; name a runnable test path: ${task.verify}`, 33);
 }
 
 const merge = gitMaybe(['merge', '--no-ff', '--no-commit', tip]);
@@ -195,21 +273,32 @@ if (merge.status !== 0) {
   fail('merge conflict', 10);
 }
 const before = git(['status', '--porcelain=v1', '--untracked-files=all']);
-const result = await run(task.verify, timeout);
+const result = await run(task.verify, timeout, { capture: true });
 const after = git(['status', '--porcelain=v1', '--untracked-files=all']);
-if (result.error || result.status !== 0 || result.signal || result.timedOut || after !== before) {
+const verifyChanged = after !== before;
+// Missing dependency first: it produces a non-zero exit that would otherwise be read as
+// a plain Verify failure (exit 20) and send the operator hunting for a test bug.
+if (!verifyChanged && [undefined, 0, 126, 127].includes(result.status)) {
+  const verifyMissing = missingDependency(result.output);
+  if (verifyMissing) {
+    gitMaybe(['merge', '--abort']);
+    fail(`frozen Verify: ${dependencyMessage(verifyMissing)}`, 36);
+  }
+}
+if (result.error || result.status !== 0 || result.signal || result.timedOut || verifyChanged) {
   gitMaybe(['merge', '--abort']);
   fail(`frozen Verify failed or changed worktree: ${task.verify}`, 20);
 }
 
 // Cross-task regression: with the merge applied, every already-Done task's frozen narrow Verify must still pass.
-// Full-suite commands are skipped here; they belong to the sink and final acceptance.
-const FULL_SUITE_LEG = /(^|[\s;&|])(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|(^|[\s;&|])(?:pytest|uv\s+run\s+pytest|go\s+test)(?:\s|$)/i;
-for (const prior of parsed.tasks.filter((item) => item.done && item.id !== taskId && item.verify && !FULL_SUITE_LEG.test(item.verify))) {
-  const regression = await run(prior.verify, timeout);
+// Broad (whole-suite) legs are skipped here; they belong to the sink and final acceptance.
+for (const prior of parsed.tasks.filter((item) => item.done && item.id !== taskId && item.verify)) {
+  const legs = verifyLegs(prior.verify).filter((leg) => !leg.broad);
+  if (!legs.length) continue;
+  const regression = await run(legs.map((leg) => leg.command).join(' && '), timeout);
   if (regression.error || regression.status !== 0 || regression.signal || regression.timedOut) {
     gitMaybe(['merge', '--abort']);
-    fail(`merge would regress already-Done ${prior.id}: ${prior.verify}`, 21);
+    fail(`merge would regress already-Done ${prior.id}: ${legs.map((leg) => leg.command).join(' && ')}`, 21);
   }
 }
 if (git(['status', '--porcelain=v1', '--untracked-files=all']) !== before) {

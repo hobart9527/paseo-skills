@@ -4,13 +4,13 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseTasks, computeWaves, normalizeScope, isFileWithinScopes, isTestPath } from './lib/tasks.mjs';
+import { parseTasks, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
 const positional = args.filter((arg) => !arg.startsWith('--'));
 const changeDir = positional[0];
-if (!changeDir || args.find((arg, index) => arg.startsWith('--baseline') && index === 0)) {
+if (!changeDir) {
   console.error('Usage: freeze-check.mjs <change-dir> [--json]');
   process.exit(2);
 }
@@ -90,30 +90,26 @@ for (let i = 0; i < tasks.length; i += 1) {
   }
 }
 
-// Narrow verification. A command is narrow only when every shell branch/run leg is
-// anchored by at least one test/spec path inside the task Write scope. One sink may
-// run one full-suite command; final acceptance always runs on integration HEAD.
-const TEST_PATH = /(?<![\w./~-])([\w.@/-]*(?:test|spec)[\w.@/-]*\.(?:mjs|cjs|js|ts|tsx|sh|py))(?![\w@-])/ig;
-const FULL_SUITE = /(^|[\s;&|])(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|(^|[\s;&|])(?:pytest|uv\s+run\s+pytest|go\s+test)(?:\s|$)/i;
-const commandParts = (value) => value.split(/(?:^|&&|\|\||;|\|)/).map((part) => part.trim()).filter(Boolean);
+// Narrow verification. A leg is narrow when its paths all sit inside the task
+// Write scope; a leg without paths must not invoke a whole-suite runner. One sink
+// may run one broad leg; final acceptance always runs on integration HEAD.
 for (const task of tasks) {
-  const parts = commandParts(task.verify);
-  const partsWithTest = parts.filter((part) => TEST_PATH.test(part));
-  let regex;
-  while ((regex = TEST_PATH.exec(task.verify)) && !regex[0].includes('/')) TEST_PATH.lastIndex += 1;
-  const paths = [...task.verify.matchAll(TEST_PATH)].map((match) => normalizeScope(match[1])).filter(Boolean);
-  const inScope = paths.some((testPath) => isFileWithinScopes(testPath, task.scope));
-  const fullParts = parts.filter((part) => FULL_SUITE.test(part)).length;
-  if (fullParts && !sinkIds.has(task.id)) {
+  const legs = verifyLegs(task.verify);
+  const broadLegs = legs.filter((leg) => leg.broad).length;
+  // A leg must also prove something: a known test runner, or a test/spec path. `true`,
+  // `echo ok` and `node src/a.mjs` pass a path-only check but verify nothing.
+  const proves = (leg) => FULL_SUITE_LEG.test(leg.command) || leg.paths.some((p) => /(?:test|spec)/i.test(p));
+  const unscoped = legs.filter((leg) => !leg.broad && (!proves(leg) || leg.paths.some((path) => !isFileWithinScopes(path, task.scope))));
+  if (broadLegs && !sinkIds.has(task.id)) {
     blocking.push(`VERIFY_FULL_SUITE_NON_SINK ${task.id}: full-suite command is reserved for the sole sink`);
   }
-  if (!sinkIds.has(task.id) && (!inScope || partsWithTest.length < parts.length)) {
-    blocking.push(`VERIFY_NOT_NARROW ${task.id}: every Verify leg must name a test/spec path inside Write scope`);
+  if (!sinkIds.has(task.id) && (legs.length === 0 || unscoped.length > 0 || broadLegs > 0)) {
+    blocking.push(`VERIFY_NOT_NARROW ${task.id}: every Verify leg must name a test/spec path inside Write scope${unscoped.length ? ` (outside: ${unscoped.map((leg) => leg.command).join(', ')})` : ''}`);
   }
-  if (sinkIds.has(task.id) && fullParts > 1) {
+  if (sinkIds.has(task.id) && broadLegs > 1) {
     blocking.push(`VERIFY_TOO_BROAD ${task.id}: sole sink may run at most one full-suite leg`);
   }
-  if (sinkIds.has(task.id) && fullParts === 1 && parts.length > 1 && !inScope) {
+  if (sinkIds.has(task.id) && broadLegs === 1 && unscoped.length > 0) {
     blocking.push(`VERIFY_TOO_BROAD ${task.id}: combine full-suite and narrow checks on separate tasks/acceptance`);
   }
 }
@@ -139,7 +135,7 @@ if (!designMarkdown || !/^#{2,3}\s*Impact/im.test(designMarkdown)) {
   }
 }
 
-const fullSuiteSinks = tasks.filter((task) => commandParts(task.verify).some((part) => FULL_SUITE.test(part)));
+const fullSuiteSinks = tasks.filter((task) => verifyLegs(task.verify).some((leg) => leg.broad));
 if (fullSuiteSinks.length > 1) blocking.push(`TOO_MANY_FULL_SUITE_SINKS: ${fullSuiteSinks.map((task) => task.id).join(', ')}`);
 
 const acceptanceMarkdown = read(path.join(changeDir, 'acceptance.md'));

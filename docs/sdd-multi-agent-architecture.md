@@ -3,6 +3,8 @@
 > **版本**：v1.0.0  
 > **适用场景**：复杂研发流程、中大型软件迭代、代码重构、规范驱动工程交付  
 > **核心目标**：解耦特定客户端依赖，建立基于规范驱动（SDD, Specification-Driven Development）的高效、自治、防越权、端到端闭环的多 Agent 协同体系。
+>
+> **时效声明（2026-11-02）**：本文是设计思路，不是现行规程。现行权威只有 `skills/paseo-pipeline/SKILL.md`。下文提到的 `run-state.json` 意图账本、`contract-check`、任务状态机 `CLAIMED`、独立调度 Runner 均已从实现中移除；现状是「git 管状态、Paseo 管调度、`merge-task.mjs` 唯一 Done 写入」。阅读时只取角色协作与门禁分层的思想，不要照搬机制名。
 
 ---
 

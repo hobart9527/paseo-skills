@@ -8,6 +8,26 @@ test('skill documents converged core and hard limits', () => {
   for (const needle of ['Vertical slices', 'Narrow Verify', 'Frontier scheduling', 'Wave 0', 'finish notifications', 'merge-task.mjs', 'freeze-check.mjs', 'tester', 'integrated', 'CP-2']) assert.ok(text.includes(needle), needle);
   assert.ok(text.length < 12000);
 });
+test('skill documents the real handoff sequence and profile-notes override', () => {
+  const text = read('SKILL.md');
+  for (const needle of ['Handoff after CP-1', 'integration/<change>', 'task/<change>/<T-id>', '确认冻结并交给 shangshu 执行', 'Profile notes describe a role', 'Bootstrap dependencies']) {
+    assert.ok(text.includes(needle), needle);
+  }
+  // The old rule ("only Review: strict gets Red tests") would let merge-task exit 31
+  // on a standard task; the SKILL must state the real condition.
+  assert.match(text, /every non-mechanical task needs a Red test commit/);
+});
+
+test('docs state the worktree dependency bootstrap contract', () => {
+  const skill = read('SKILL.md');
+  assert.match(skill, /exit 36|36 unchecked-out dependencies/);
+  assert.match(skill, /does not inherit `node_modules`/);
+  // Both roles that run Verify must be told the missing-package signal is not Red.
+  assert.match(read('templates/tester.md'), /not Red/);
+  assert.match(read('templates/writer.md'), /environment fault, not a test result/);
+  assert.match(read('templates/lead.md'), /checkout, not a clone/);
+});
+
 test('no removed mechanism remains in operational docs', () => {
   const text = read('SKILL.md');
   for (const stale of ['run-state.mjs', 'reconcile.mjs', 'task-runner.mjs', 'intents', 'speculative']) assert.ok(!text.includes(stale), stale);
@@ -20,6 +40,12 @@ test('briefs preserve author/tester/writer/reviewer role boundaries', () => {
   assert.match(read('templates/writer.md'), /Treat test-author commits as immutable/);
   assert.match(read('templates/tester.md'), /behavior tests only/);
   assert.match(read('templates/reviewer.md'), /reviewed SHA|reviewed_sha|tip/);
+  // exit 31 is the most common merge failure; both authoring briefs must make the
+  // writer prove the trailers survived, since a blank line after the block voids them.
+  for (const file of ['writer.md', 'tester.md']) {
+    assert.match(read(`templates/${file}`), /trailers:key=Pipeline-Author,valueonly/, file);
+    assert.match(read(`templates/${file}`), /Co-Authored-By/, file);
+  }
 });
 
 test('lead brief keeps required sections and templates avoid removed scripts', () => {

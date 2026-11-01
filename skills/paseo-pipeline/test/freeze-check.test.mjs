@@ -50,6 +50,35 @@ test('rejects full-suite non-sink verify', () => {
   assert.equal(result.status, 1);
   assert.match(result.stdout, /VERIFY_NOT_NARROW T-02/);
 });
+test('accepts scoped non-node runners and rejects unscoped ones', () => {
+  const files = { 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' };
+  const scoped = contract
+    .replace('Write scope: src/alpha,test/alpha.test.mjs', 'Write scope: pkg/alpha')
+    .replace('node --test test/alpha.test.mjs', 'go test ./pkg/alpha')
+    .replace('Write scope: src/beta,test/beta.test.mjs', 'Write scope: app/beta')
+    .replace('node --test test/beta.test.mjs', 'PYTHONPATH=runtime python3 -m pytest app/beta/test_b.py');
+  assert.equal(run(change({ ...files, 'tasks.md': scoped })).status, 0);
+  const unscoped = scoped.replace('go test ./pkg/alpha', 'go test ./...');
+  const result = run(change({ ...files, 'tasks.md': unscoped }));
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /VERIFY_FULL_SUITE_NON_SINK T-02/);
+});
+test('rejects non-sink verify legs that prove nothing', () => {
+  for (const verify of ['true', 'echo ok', 'node src/alpha/a.mjs', 'node --test test/alpha.test.mjs && true']) {
+    const bad = contract.replace('node --test test/alpha.test.mjs', verify);
+    const dir = change({ 'tasks.md': bad, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': 'x', 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+    const result = run(dir);
+    assert.equal(result.status, 1, verify);
+    assert.match(result.stdout, /VERIFY_NOT_NARROW T-02/, verify);
+  }
+});
+test('rejects verify paths that fall outside the task Write scope', () => {
+  const bad = contract.replace('node --test test/alpha.test.mjs', 'node --test test/beta.test.mjs');
+  const dir = change({ 'tasks.md': bad, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': 'x', 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  const result = run(dir);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /VERIFY_NOT_NARROW T-02/);
+});
 test('rejects wave scope conflict', () => {
   const bad = contract.replace('src/beta,test/beta.test.mjs', 'src/alpha,test/beta.test.mjs');
   const dir = change({ 'tasks.md': bad, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': 'x', 'specs/a/spec.md': '### Scenario: SCEN-1\n' });

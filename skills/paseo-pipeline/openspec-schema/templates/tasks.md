@@ -29,6 +29,8 @@
   - Verify with：非汇点必须点名本任务 Write scope 内的测试/spec 路径；
     全量套件只允许一个汇点任务运行。需要环境变量就写全调用：
     PYTHONPATH=runtime python3 -m pytest tests/x_test.py
+    带路径即为窄跑（`pytest tests/x_test.py`、`pnpm test src/a.test.ts`、`go test ./pkg/a`）；
+    不带路径的 `pytest`、`npm test`、`go test ./...` 判为全量，只能出现在唯一汇点。
   - Scenarios：本任务承载的 spec 场景编号（SCEN-*）。编号必须在本 change 的 spec 里声明过，
     且每个声明的编号至少被一个任务认领 —— 由 freeze-check 双向核对。
   - Done 行：任务完成后在元数据下加一行 `- Done: source=<7 位 hex> review=<tag>`。

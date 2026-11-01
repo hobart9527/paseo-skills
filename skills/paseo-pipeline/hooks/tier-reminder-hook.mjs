@@ -28,7 +28,9 @@ import { fileURLToPath } from 'node:url';
 const ACTION = /(执行|实施|实现|落地|开始做|动手|修复|修一下|修改|优化|重构|改一下|\b(apply|implement|execute|fix|refactor|go ahead|do it)\b)/i;
 
 // 纯提问（评估/分析/为什么）且没有明确动作词时不提醒，避免每条评估问题都被打断。
-const EVALUATION = /(?:复盘|评估|分析|审阅|review|讨论|解释|是否存在|有什么问题|怎么看)/i;
+// 2026-11-02：补上「走查 / 排查 / 诊断 / 为什么 / 是否」——「执行效率」里的「执行」
+// 曾让一次纯走查请求误触提醒。
+const EVALUATION = /(?:复盘|评估|分析|审阅|review|走查|排查|诊断|讨论|解释|是否存在|有什么问题|怎么看|为什么)/i;
 
 export const REMINDER = [
   '[分级提醒] 本轮可能进入实施。动手改任何文件之前，第一句话先输出分级声明：计划改哪些文件、属于哪一级、依据。',

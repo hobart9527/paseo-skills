@@ -5,6 +5,8 @@
 每条记录标注日期、适用版本与限制。**早期条目里的因果结论若已被后续实测推翻，就地更正并标注，不保留并列的旧说法。** 未采集到的事实写「未采集」，不估算。
 
 > 历史记录：文中的 `run-state.mjs`、`reconcile.mjs`、`task-runner.mjs`、租约/账本等机制已在收敛中移除，现行做法见 `SKILL.md`。不要照搬。
+>
+> 引用前先看条目状态：**§5（contract-check）与 §8 的工具清单整节失效**（`contract-check.mjs`、`reconcile.mjs`、`hotfix.sh`、`dispatch.mjs` 均已删除，§12 记录了下架）；**§2/§3/§7 的 Task Pod、`pod/<name>`、`[ROUTE] ≥6` 已被单一 Lead 与 `freeze-check` 的 pipeline/handoff 两档取代**；**§9.5 的 exit 38 模型门禁已删**（§14.3 说明了为何 provider 不是同源判据）。§10-§14 仍是现行门禁的直接依据。
 
 ---
 

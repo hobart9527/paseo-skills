@@ -27,28 +27,49 @@ Read profile notes with `list_profiles`; use live agent provider/model for indep
 - `gongbu` / `jiangzuo`: default / UI implementation.
 - `anchasi`: task and integrated reviews. Codex offers no read-only mode: reviewers run in a separate workspace, briefed read-only; tip binding voids any review whose branch moved.
 - `shangshu`: sole Lead; schedules, reconciles, merges, reports.
+- Profile notes describe a role's scope; the frozen task's `Review:` field decides this change's process. `ceshi`'s note mentions only `Review: strict` — that is stale: every non-mechanical task needs a Red test commit, because `merge-task` exits 31 without one.
+- Cost: one behavior task is three agents in series (ceshi → implementer → reviewer). Budget that before choosing Tier 3; freeze `Review: mechanical` only for tasks with no behavior to prove.
+- `auto-review` profiles (`ceshi`, `gaogong`, `anchasi`) can stop on a permission prompt and never finish. When a child goes idle without a finish result, check pending permission requests before concluding it is stalled; do not widen a read-only reviewer to `bypassPermissions` to avoid the prompt.
 
 ## Entry and CP-1
 1. Main session runs `openspec new change <name> --schema paseo-pipeline`. The schema resolves from the global OpenSpec schema link installed by `install.sh`; do not keep stale project-local copies that shadow it.
 2. `chanpin` returns evidence-based Proposal/Spec/Digest. Main session writes drafts. `gaogong` drafts Design/Tasks/Acceptance with vertical slices, call-site/fixture impact, baseline known reds, and narrow Verify.
 3. Run `node "$PIPELINE_HOME"/freeze-check.mjs openspec/changes/<name>` (also enforces `design.md` Impact Inventory, SCEN per task, no test-only tasks); inspect route, waves, width, critical path.
 4. `hanlin` performs one read-only R0 on complete package after mechanical freeze-check. Authors may revise once.
-5. Present final contract, R0 findings/responses, DAG/scopes/Verify/acceptance. Freeze only after human confirms CP-1.
+5. Present final contract, R0 findings/responses, DAG/scopes/Verify/acceptance. Freeze only after human confirms CP-1. The CP-1 prompt must name the executor ("确认冻结并交给 shangshu 执行"), never just "确认冻结并启动实施".
+
+## Handoff after CP-1
+
+CP-1 approval is not the start of implementation; it is the start of handoff. `merge-task.mjs` only runs on `integration/<change>` with a clean worktree and `tasks.md` already present there, so this sequence is mandatory and belongs to the main session:
+
+1. Commit the frozen contract (`openspec/changes/<change>/`) on the default branch. This commit is the `base` every task branch reviews against.
+2. Create the integration branch from that commit and a clean integration worktree:
+   `git switch -c integration/<change>` in the main checkout, or `create_workspace(isolation, branchName: "integration/<change>")`. Record its absolute path; the Lead runs there.
+3. Create one task branch per ready frontier task from the integration tip: `task/<change>/<T-id>`. Rework attempts use `<T-id>-aN`, never a reused branch.
+4. Bootstrap dependencies in each new workspace **before** any Verify runs. A worktree is a checkout, not a clone: `node_modules/`, `.venv/` and every other ignored path stay behind in the main checkout, so the first `Verify with` otherwise dies on `Cannot find package` — reported as exit 36. Install per lockfile (`npm ci`, `pnpm install --frozen-lockfile`, `python3 -m venv .venv`) or configure a Paseo workspace script so new worktrees self-bootstrap; do this once per workspace, not per task.
+5. Draft the Lead brief from `templates/lead.md`, filling `<change>`, integration worktree path, integration branch, `base` SHA, and the frozen contract paths.
+6. Create exactly one Lead (`shangshu`, see `list_profiles`). Main session then stops: no business-code edits, no further dispatch.
+7. If the frozen DAG's `[ROUTE]` is `handoff` (no real concurrency), do not create a Lead — run Tier 2 `/paseo-handoff` instead and say so at CP-1.
+
+After context compaction or a resumed session, the first action is to re-read `tasks.md` Done lines, `git log --first-parent integration/<change>`, and `paseo ls --label pipeline.change=<change> --json` before any dispatch. Summaries are not state.
 
 ## Runtime
 - Create one Lead with `templates/lead.md`. Lead reconciles integration HEAD, Done lines, task branches, and Paseo agent state before dispatch.
 - Ready frontier = dependencies Done + disjoint scopes. Writer cap 4; auditor cap 2; merge serially.
 - Behavior task sequence: `ceshi` Red commit → verify Red on base → implementer in same task workspace/branch → narrow Verify green → independent task audit → `merge-task.mjs`. Mechanical exemption only when frozen task says `Review: mechanical`.
 - Test author and implementer must be different agents and models. Reviewer model must differ from implementer and should differ from tester where available (`merge-task` warns on overlap; Lead picks another profile). If unavailable, block and report; do not claim heterogeneity.
-- Every dispatch uses Paseo native workspaces, labels, finish notifications, plus a `paseo wait <id> --timeout` backstop so a lost notification cannot stall the Lead. A notification is not success: inspect status/result and branch tip. Lost notifications trigger reconciliation, not duplicate dispatch. Rework uses original agent/workspace when safe.
+- Agent identity: every trailer and review tag uses the agent's full UUID (`$PASEO_AGENT_ID` inside the agent). Paseo's 7-char `shortId` is accepted in a review tag and resolves by prefix; a bare 7-char author in a trailer is not — use the UUID.
+- Every dispatch uses Paseo native workspaces, labels, finish notifications, plus a wait backstop so a lost notification cannot stall the Lead. The backstop is a background wait or a periodic `paseo ls` poll, never a foreground blocking `paseo wait` for the whole agent lifetime: Claude Code caps foreground commands at 600s, and blocking leaves other children's notifications unread. A returned or timed-out wait means "inspect now"; it is not success. Lost notifications trigger reconciliation, not duplicate dispatch. Rework uses original agent/workspace when safe.
 - Contract amendments after CP-1: main session updates tasks, human confirms delta, commit, then Lead reloads contract.
 
 ## Merge gate
 ```
 node "$PIPELINE_HOME"/merge-task.mjs \
-  task/<change>/<T> <T> 'pass(<reviewer>@<tip>/<base>)'
+  task/<change>/<T> <T> 'pass(<reviewer-uuid>@<tip>/<base>)'
 ```
-`merge-task` checks branch/task identity, dependency Done, frozen Write scope, commit trailers, test-author protection, agent/model independence, review binding, base drift, Verify, and clean worktree; then no-ff merges and records Done. After its own Verify it re-runs every already-Done task's narrow Verify on the merged tree (full-suite commands skipped). It also proves Red: the test-author commits alone must make the frozen Verify fail (exit 33 if it passes or cannot run). Exit codes: 2 usage; 10 conflict; 20 verify; 21 cross-task regression; 30 scope; 31 provenance; 32 review; 33 Red proof; 34 base/drift; 35 dependency. It is the sole Done writer.
+`merge-task` checks branch/task identity, dependency Done, frozen Write scope, commit trailers, test-author protection, agent/model independence, review binding, base drift, Verify, and clean worktree; then no-ff merges and records Done. After its own Verify it re-runs every already-Done task's narrow Verify on the merged tree (whole-suite legs skipped). It also proves Red: the test-author commits alone must make the frozen Verify fail on an assertion, not on a load/import/collection error (exit 33 if it passes, cannot run, or fails non-behaviourally). Exit codes: 2 usage; 10 conflict; 20 verify; 21 cross-task regression; 30 scope; 31 provenance; 32 review; 33 Red proof; 34 base/drift; 35 dependency; 36 unchecked-out dependencies. It is the sole Done writer.
+
+Exit 36 means the worktree cannot resolve a package or runner (`Cannot find package 'tsx'`, `command not found`). It is an environment fault, not a task failure: a linked worktree does not inherit `node_modules`/`.venv`. Install once in that worktree (`npm ci`/`pnpm install`/`venv`, per lockfile) and retry — never edit tests or Verify to work around it.
 
 ## Recovery
 ```
@@ -56,6 +77,7 @@ git log --first-parent integration/<change>
 grep -n 'Done:' openspec/changes/<change>/tasks.md
 paseo ls --label pipeline.change=<change> --json
 ```
+
 Use live Paseo state plus branch tips and Done lines. Do not re-dispatch solely on a delayed notification. Only one active Lead; replacing it requires human confirmation and archiving old Lead first.
 
 ## Finish
@@ -69,4 +91,5 @@ Use live Paseo state plus branch tips and Done lines. Do not re-dispatch solely 
 - Lead/main session never edits business code; `chanpin` drafts contract as text only.
 - No self-review; use actual provider/model values, not profile-name assumptions.
 - No manual Done/check boxes; no full-suite Verify on non-sink tasks.
+- Never treat a missing dependency as a Red result or fix it by editing tests/Verify; install in the workspace and rerun.
 - No tenant/database/port/account sharing without declared isolation.

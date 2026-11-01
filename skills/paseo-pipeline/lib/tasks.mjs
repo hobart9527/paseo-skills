@@ -6,7 +6,11 @@ const FIELD_LINE = /^\s+[-*]\s+([^:]+):\s*(.*)$/;
 const CHECKBOX_LINE = /^\s*[-*]\s*\[([ xX])\]\s*(.*)$/;
 const TASK_ID = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
 const DONE_LINE = /^source=([0-9a-f]{7,40})\s+review=(\S+)$/;
-const REVIEW_TAG = /^pass\((mechanical|[0-9a-f]{8}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})@([0-9a-f]{7,40})\/([0-9a-f]{7,40})\)$/;
+// Reviewer may be a full UUID or any hex prefix of it. Paseo's own `shortId` is 7
+// characters, so accepting only 8 (or 36 without prefixes) made every real shortId
+// unusable.
+const REVIEWER_ID = String.raw`mechanical|[0-9a-f]{7,40}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`;
+const REVIEW_TAG = new RegExp(String.raw`^pass\((${REVIEWER_ID})@([0-9a-f]{7,40})\/([0-9a-f]{7,40})\)$`);
 
 
 export function isTaskId(value) {
@@ -153,14 +157,55 @@ export function taskErrorsFor(errors, taskId) {
   return errors.filter((error) => error.task === taskId && !['UNKNOWN_DEP', 'SELF_DEP', 'CYCLE'].includes(error.code));
 }
 
+// Test assets include the common conventions that are not named `*.test.*`:
+// pytest's `test_*.py` / `*_test.py`, Go's `*_test.go`, e2e specs, fixtures,
+// `testdata/` (Go) and `__snapshots__/`. Missing these made `ceshi` commits of
+// legitimate test assets fail the provenance gate (exit 30).
 export function isTestPath(file) {
-  return /(^|\/)(test|tests|__tests__|spec)(\/|$)/i.test(file) || /(?:\.|_)(test|spec)\.[^.]+$/i.test(file);
+  const value = String(file || '');
+  return /(^|\/)(test|tests|__tests__|spec|e2e|fixtures?|testdata|__snapshots__)(\/|$)/i.test(value)
+    || /(?:^|\/)test_[^/]*\.py$/i.test(value)
+    || /(?:\.|_)(test|spec|e2e)\.[^.]+$/i.test(value);
 }
 
 export function isFileWithinScopes(filePath, scopes) {
   const normalized = normalizeScope(filePath);
   if (!normalized) return false;
   return scopes.some((scope) => normalized === scope || normalized.startsWith(`${scope}/`));
+}
+
+// ---- Verify parsing (single owner for freeze-check and merge-task) ----
+//
+// A leg is "broad" when it can run the whole suite: a known test runner with no
+// path named. Paths win over runner names, so `npm test -- src/a.test.ts`,
+// `pnpm test src/b/b.test.ts` and `go test ./pkg/a` are scoped runs. `go test
+// ./...`, bare `pytest` and bare `npm test` are broad.
+export const FULL_SUITE_LEG = /(?:^|[\s;&|])(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|(?:^|[\s;&|])(?:node\s+--test|pytest|py\.test|vitest|jest|mocha|ava|phpunit|tox|nox|cargo\s+test|go\s+test|make\s+(?:test|check)|dotnet\s+test)(?=\s|$)/i;
+
+export function commandParts(value) {
+  return String(value || '').split(/&&|\|\||;|\|/).map((part) => part.trim()).filter(Boolean);
+}
+
+/** Path-ish tokens in one leg, normalized to repo-relative form. */
+export function legPaths(part) {
+  return String(part || '').split(/\s+/)
+    .map((token) => token.replace(/^['"]|['"]$/g, ''))
+    .filter((token) => token && !token.startsWith('-') && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(token))
+    .map((token) => token.replace(/^\.\//, '').replace(/(?:\/\.\.\.|\/)$/, ''))
+    // A bare runner subcommand (`npm test`, `pnpm run test`) is not a path: require
+    // either a path separator or a file extension so `test`/`spec` words are skipped.
+    .filter((token) => token && token !== '.' && token !== '...' && (token.includes('/') || /\.[A-Za-z0-9]+$/.test(token)));
+}
+
+/**
+ * Parse `Verify with` into legs. `broad` marks a leg that may run the whole suite;
+ * `paths` are the scoped anchors it names (repo-relative).
+ */
+export function verifyLegs(value) {
+  return commandParts(value).map((command) => {
+    const paths = [...new Set(legPaths(command))];
+    return { command, paths, broad: paths.length === 0 && FULL_SUITE_LEG.test(command) };
+  });
 }
 
 export function computeWaves(tasks) {

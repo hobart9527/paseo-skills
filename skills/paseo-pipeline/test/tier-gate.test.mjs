@@ -125,6 +125,36 @@ test('PIPELINE_TIER_GATE=off 与自定义上限', () => withState(() => {
   assert.equal(write(root, 'c').verdict, 'allow');
 }));
 
+test('新任务段从零计数：空闲超过阈值后不再沿用上一段的写量', () => withState((dir) => {
+  const root = makeRepo();
+  for (const n of ['a', 'b', 'c']) write(root, n);
+  assert.equal(write(root, 'd').verdict, 'deny');
+  // Rewind the ledger clock to simulate a finished task followed by a new request.
+  for (const f of fs.readdirSync(dir)) {
+    const state = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+    for (const key of Object.keys(state)) state[key].at = Date.now() - 31 * 60 * 1000;
+    fs.writeFileSync(path.join(dir, f), JSON.stringify(state));
+  }
+  assert.equal(write(root, 'd').verdict, 'allow');
+}));
+
+test('空闲阈值可调，且段内不会被自己的间隔重置', () => withState((dir) => {
+  const root = makeRepo();
+  process.env.PIPELINE_TIER_GATE_IDLE_MS = '0';
+  assert.equal(write(root, 'a').verdict, 'allow');
+  // idle=0 means every gap counts as a new segment, which is the old pre-fix behaviour opt-in.
+  assert.equal(write(root, 'b').verdict, 'allow');
+  delete process.env.PIPELINE_TIER_GATE_IDLE_MS;
+  const files = fs.readdirSync(dir).map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')));
+  assert.ok(files.length > 0);
+}));
+
+test('legacy array ledger still counts', () => withState((dir) => {
+  const root = makeRepo();
+  fs.writeFileSync(path.join(dir, 's1.json'), JSON.stringify({ [fs.realpathSync(root)]: ['src/a', 'src/b', 'src/c'] }));
+  assert.equal(write(root, 'd').verdict, 'deny');
+}));
+
 test('新建文件（目标尚不存在）也能判定', () => withState(() => {
   const root = makeRepo();
   for (const n of ['deep/new/a', 'deep/new/b', 'deep/new/c']) assert.equal(write(root, n).verdict, 'allow', n);
@@ -172,6 +202,7 @@ test('提醒触发：用户当天两句真实的"执行"指令都会命中', () 
 
 test('提醒不触发：纯评估长问句、斜杠命令、空串', () => {
   assert.equal(shouldRemind('评估一下整个的Pipeline的整个Skill，整个的DAG和Wave的整个并发策略到底是否其实真正被彻底的执行了的？'), false);
+  assert.equal(shouldRemind('对 skill 目前的整体实现进行走查，看看存在什么设计缺陷或者不足导致执行效率摩擦断裂阻塞严重等问题等'), false);
   assert.equal(shouldRemind('/paseo-pipeline 做字典优化'), false);
   assert.equal(shouldRemind(''), false);
   assert.equal(shouldRemind(undefined), false);

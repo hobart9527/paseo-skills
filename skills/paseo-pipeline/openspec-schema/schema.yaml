@@ -11,7 +11,7 @@
 #   3. 新增 acceptance 产物（冻结的业务验收矩阵，人类 CP-2 验收消费）。
 #
 # 升级 OpenSpec 后重跑一次冒烟探测：复制到临时仓库 → new change --schema → instructions
-# 出现元数据 → validate --strict → archive。探测命令见 SKILL.md §2.0。
+# 出现元数据 → validate --strict → archive。探测命令见 SKILL.md「Entry and CP-1」。
 
 name: spec-driven
 version: 1

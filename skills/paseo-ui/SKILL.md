@@ -9,6 +9,8 @@ argument-hint: "[polish · bolder · typography · color · layout · motion · 
 
 前端与 UI/UX 工业级交付流水线。核心原则：**直接修改真实工程源码，不造静态玩具；每个能力槽严格挂载唯一最佳的外部成熟 Skill 切片；以极端数据破坏注入为编码门禁，真实多视口截图与 DOM 探针为收口凭据。**
 
+> **加载成本（实测 2026-11-02）**：本文件 42KB（约 11k tokens），每次调用技能都整份进上下文。`.claude/skills/paseo-ui` 是指向仓库 `skills/paseo-ui` 的软链，因此仍是一个单文件入口。**已知取舍**：`能力槽与 Vendor 独立切片全景表`（约 4KB）只是派发期索引，`Full 档六阶段` 只在 Full 档才需要；两者是最合适的后续拆分点——拆到 `references/` 后按阶段加载，可省下约 6KB 常驻上下文。当前接受这一成本，因为拆分会新增多个引用点、且需要在真实调用中验证读不到时的降级行为，尚无实测依据支持先拆。重估触发条件：本文件超过 50KB，或出现「Skill 未按预期加载」的实际事故。
+
 ---
 
 ## 规则裁决链（优先级写死）
@@ -257,7 +259,7 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
 
 - **触发场景**：全新功能页面（0→1）、大面积业务流程重构（≥3 个交互界面）、公共组件库改造。
 - **与 paseo-pipeline 的边界**：需求同时含后端/接口改动，或拆出 ≥3 个有依赖的非 UI 任务时，整体走 `paseo-pipeline`（OpenSpec change）。此时本档六阶段作为该 change 中 UI 任务的内部流程：Stage 1 的产出并入 pipeline 确认点 1（`PRODUCT.md`、`DESIGN.md` 随 spec 冻结），Stage 6 合入 `integration/<change>` 分支，主干合入归 pipeline 确认点 2；此时不调用 `openspec` CLI。纯 UI 需求则独立运行本档。
-- **编排者**：Stage 1 由主会话直接编排（方向确认需人类在场）；Stage 2–5 预计派发 ≥6 次时，按全局约定（以 `freeze-check` 的 `[ROUTE]` 为准）交总控 Lead 无人值守执行，主会话只守 Stage 1 与 Stage 6 两个确认点。下文 Stage 2–5 中的「编排者」即当前阶段的负责人（Lead 档为总控 Lead，主会话编排时为主会话）——起停预览、跑 `capture.mjs` 与 `accesslint`、准备 Stage 4 两路 brief、归并缺陷单，均为编排者职责，不派给静音评审角色。无人值守的**写入**角色（Lead、设计营造师）用 `bypassPermissions` 派发，不打断等许可；**只读**审查角色（Auditor）保持 `auto-review`，不放宽成 `bypassPermissions`。
+- **编排者**：Stage 1 由主会话直接编排（方向确认需人类在场）；Stage 2–5 若冻结任务图判 `[ROUTE] pipeline`（`freeze-check` 的 `maxWidth >= 2` 且任务 >= 4），交总控 Lead 无人值守执行，主会话只守 Stage 1 与 Stage 6 两个确认点；判 `handoff` 则按 Tier 2 交 worktree Agent。下文 Stage 2–5 中的「编排者」即当前阶段的负责人（Lead 档为总控 Lead，主会话编排时为主会话）——起停预览、跑 `capture.mjs` 与 `accesslint`、准备 Stage 4 两路 brief、归并缺陷单，均为编排者职责，不派给静音评审角色。无人值守的**写入**角色（Lead、设计营造师）用 `bypassPermissions` 派发，不打断等许可；**只读**审查角色（Auditor）保持 `auto-review`，不放宽成 `bypassPermissions`。
 
 ---
 

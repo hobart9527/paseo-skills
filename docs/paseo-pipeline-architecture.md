@@ -49,7 +49,7 @@ flowchart TB
 | UI implementer | jiangzuo | claude/kimi | auto | UI tasks | task scope |
 | Reviewer | anchasi | codex/gpt | auto-review | TASK / FINAL review; fix-diff recheck | read-only by brief |
 
-Independence enforced by `merge-task.mjs` (provider string only): tester != implementer agent and provider; reviewer provider != implementer provider. Not enforced: reviewer != tester (`ceshi` and `anchasi` are both codex/gpt here), so use hanlin or another profile when that matters. `anchasi` is not OS-read-only; read-only is brief-level.
+Independence is checked at model level by `merge-task.mjs`: it resolves each agent's `provider/model` from `paseo ls --all --json` (falling back to `paseo inspect` for a unique prefix) and blocks when the test author and implementer share a model, or when the reviewer shares a model with the implementer. The CLI provider alone is **not** a proxy for the model family — several profiles share `claude` as their shell but run different models. Not enforced: reviewer != tester (`ceshi` and `anchasi` are both codex/gpt here), so use hanlin or another profile when that matters; `merge-task` only warns on that overlap. `anchasi` is not OS-read-only; read-only is brief-level.
 
 ## Single-task sequence
 ```mermaid
