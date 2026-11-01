@@ -11,7 +11,7 @@
 
 - [ ] 1.1 T-01 交接序列与门禁判据统一：handoff-check 在集成分支存在后执行，分支判据分语境
   - Depends on: none
-  - Write scope: skills/paseo-pipeline/lib/handoff.mjs, skills/paseo-pipeline/SKILL.md, skills/paseo-pipeline/test/handoff-check.test.mjs, skills/paseo-pipeline/test/docs.test.mjs
+  - Write scope: skills/paseo-pipeline/lib/handoff.mjs, skills/paseo-pipeline/handoff-check.mjs, skills/paseo-pipeline/SKILL.md, skills/paseo-pipeline/test/handoff-check.test.mjs, skills/paseo-pipeline/test/docs.test.mjs
   - Risk-surface: [error-handling]
   - Review: standard
   - Verify with: `node --test skills/paseo-pipeline/test/handoff-check.test.mjs skills/paseo-pipeline/test/docs.test.mjs`
@@ -103,8 +103,16 @@
 
 ## 4. 收尾
 
-- [ ] 4.1 T-12 全量验证与验收回填
-  - Depends on: T-01, T-02, T-03, T-04, T-05, T-06, T-07, T-08, T-09, T-10, T-11
+- [ ] 4.1 T-13 corrupt 信号消费端接线：scope-guard 拒绝降级，reconcile 输出 corruption 行
+  - Depends on: T-02
+  - Write scope: skills/paseo-pipeline/lib/scope-guard.mjs, skills/paseo-pipeline/reconcile.mjs, skills/paseo-pipeline/test/guard-scope.test.mjs, skills/paseo-pipeline/test/reconcile.test.mjs
+  - Risk-surface: [error-handling]
+  - Review: standard
+  - Verify with: `node --test skills/paseo-pipeline/test/guard-scope.test.mjs skills/paseo-pipeline/test/reconcile.test.mjs`
+  - Scenarios: SCEN-LED-02, SCEN-LED-03
+
+- [ ] 4.2 T-12 全量验证与验收回填
+  - Depends on: T-01, T-02, T-03, T-04, T-05, T-06, T-07, T-08, T-09, T-10, T-11, T-13
   - Write scope: skills/paseo-pipeline/test/run-all.sh, openspec/changes/pipeline-self-audit-remediation/acceptance.md
   - Risk-surface: [none]
   - Review: mechanical
