@@ -61,6 +61,26 @@ function fixture(context) {
   return { cwd, beforeTasks };
 }
 
+/**
+ * 集成分支**尚不存在**的临时仓库：change 产物已提交在 main 上，当前仍是 main。
+ * 这是 SKILL §2.1-7 的合法顺序——提交冻结产物 → 跑交接门禁 → 建集成 workspace——
+ * 在第三步之前的样子。门禁必须在这里放行并把分支判据标成延后，而不是报 WRONG_BRANCH。
+ */
+function fixturePreBranch(context) {
+  const cwd = mkdtempSync(path.join(tmpdir(), 'pipeline-handoff-pre-'));
+  context.after(() => rmSync(cwd, { recursive: true, force: true }));
+  git(cwd, 'init', '-q', '-b', 'main');
+  git(cwd, 'config', 'commit.gpgsign', 'false');
+  git(cwd, 'config', 'core.hooksPath', '/dev/null');
+  write(cwd, 'src/base.txt', 'base\n');
+  git(cwd, 'add', '.');
+  git(cwd, 'commit', '-qm', 'fixture baseline');
+  write(cwd, `${changeDir}/tasks.md`, `# Tasks\n\n- [ ] 1.1 T-01 deliver\n`);
+  git(cwd, 'add', '.');
+  git(cwd, 'commit', '-qm', 'change artifacts');
+  return { cwd };
+}
+
 function run(cwd, args = []) {
   const result = spawnSync(process.execPath, [script, change, ...args], {
     cwd, env: gitEnv, encoding: 'utf8', timeout: 20_000,
@@ -102,6 +122,8 @@ test('a committed change on the integration branch passes', (context) => {
   const result = run(cwd);
   assert.equal(result.code, 0, result.out);
   assert.match(result.out, /RESULT/);
+  // 集成分支已存在且就在它上面：分支判据真判过，不得报「延后」。
+  assert.doesNotMatch(result.out, /BRANCH_DEFERRED|延后|deferred/, `分支存在时不得声称判据延后:\n${result.out}`);
 });
 
 // SCEN-HND-02
@@ -112,6 +134,51 @@ test('any other branch fails with a branch-naming message', (context) => {
   assert.equal(result.code, 1, `expected a non-zero exit:\n${result.out}`);
   assert.ok(result.out.includes(integrationBranch), `output must name ${integrationBranch}:\n${result.out}`);
   assert.ok(result.out.includes(`task/${change}/T-01`), `output must name the current branch:\n${result.out}`);
+  assert.match(result.out, /WRONG_BRANCH/, `分支已存在时必须是严格的 WRONG_BRANCH:\n${result.out}`);
+});
+
+// SCEN-HND-10
+test('a pre-branch run passes with an explicit deferral note, then fails once the branch exists', (context) => {
+  // 合法顺序是「提交冻结产物 → 建集成 workspace → 跑交接门禁」；但门禁也可能在集成分支存在
+  // 之前被跑（提前预检、或照旧顺序执行）。那时不能报 WRONG_BRANCH——那会让合法顺序必然死锁
+  // （2026-10-31 审计 P0）。放行可以，但必须把「分支判据没判」这件事说出来。
+  const { cwd } = fixturePreBranch(context);
+
+  const before = spawnSync(process.execPath, [script, change, '--base', integrationBranch, '--json'], {
+    cwd, env: gitEnv, encoding: 'utf8', timeout: 20_000,
+  });
+  assert.ifError(before.error);
+  const beforeOut = `${before.stdout}${before.stderr}`;
+  assert.equal(before.status, 0, `pre-branch handoff must pass:\n${beforeOut}`);
+  const payload = JSON.parse(before.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.deferred, true, '结构化输出必须带 deferred 标记');
+  assert.equal(payload.effectiveBase, 'HEAD', '延后时按当前 commit 核对产物');
+  assert.ok(payload.notes.some((note) => note.code === 'BRANCH_DEFERRED' && note.message.includes(integrationBranch)),
+    `延后说明必须点名期望分支:\n${beforeOut}`);
+
+  const viaModule = checkHandoff({ root: cwd, change, base: integrationBranch });
+  assert.equal(viaModule.ok, true);
+  assert.equal(viaModule.deferred, true);
+  assert.equal(viaModule.effectiveBase, 'HEAD');
+  assert.deepEqual(viaModule.problems, []);
+
+  // 分支一旦存在，同一命令在别的分支上必须严格拒绝并点名期望分支。
+  git(cwd, 'branch', integrationBranch);
+  const after = run(cwd, ['--base', integrationBranch]);
+  assert.equal(after.code, 1, `once ${integrationBranch} exists the gate must be strict:\n${after.out}`);
+  assert.match(after.out, /WRONG_BRANCH/);
+  assert.ok(after.out.includes(integrationBranch), `output must name ${integrationBranch}:\n${after.out}`);
+});
+
+// SCEN-HND-10
+test('the pre-branch deferral does not excuse uncommitted artifacts or a missing tasks.md', (context) => {
+  // 延后只针对分支判据，其它判据照旧 fail closed——否则「还没建分支」会变成万能豁免。
+  const { cwd } = fixturePreBranch(context);
+  write(cwd, `${changeDir}/specs/new/spec.md`, 'untracked\n');
+  const result = run(cwd, ['--base', integrationBranch]);
+  assert.equal(result.code, 1, `untracked artifacts must still block:\n${result.out}`);
+  assert.ok(result.out.includes(`${changeDir}/specs/new/spec.md`), `output must name the file:\n${result.out}`);
 });
 
 // SCEN-HND-02
@@ -135,5 +202,7 @@ test('checkHandoff returns the shared structured result for reuse by task-runner
   const ok = checkHandoff({ root: cwd, change });
   assert.equal(ok.ok, true);
   assert.equal(ok.branch, integrationBranch);
+  assert.equal(ok.deferred, false);
   assert.deepEqual(ok.problems, []);
+  assert.deepEqual(ok.notes, []);
 });

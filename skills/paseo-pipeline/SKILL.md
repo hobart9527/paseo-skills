@@ -146,15 +146,16 @@ OpenSpec 管 SDD 生命周期（产物格式、阶段顺序、校验以 `openspe
 7. **交接序列（确认点 1 之后、动任何业务文件之前）**：这是 CP-1 与执行循环之间唯一合法的过渡。**顺序固定，不可跳过、不可合并**：
 
    1. 预载派发工具：`ToolSearch` 取 `mcp__paseo__create_agent` / `create_workspace` / `list_profiles`。它们是 deferred 工具，不预载则每次派发都要多一个回合，而 `Write`/`Edit` 本来就在手——捷径偏置就是这么产生的。
-   2. **提交冻结产物**：把 `openspec/changes/<name>/` 下本轮冻结的全部产物提交（主会话的 OpenSpec 提交，不是业务代码）。`freeze-check` 只能在冻结前跑，那时目录必然未提交，所以「已提交」不归它管，由下一步的门禁核。
-   3. **跑交接门禁**：
+   2. **提交冻结产物**：把 `openspec/changes/<name>/` 下本轮冻结的全部产物提交（主会话的 OpenSpec 提交，不是业务代码）。`freeze-check` 只能在冻结前跑，那时目录必然未提交，所以「已提交」不归它管，由第 4 步的门禁核。
+   3. 建集成 workspace：`integration/<name>`（基点为主干），见 2.1 的 workspace 约定；`create_workspace` / `create_agent` 的字段形状与分支改名见 `templates/dispatch-shapes.md`。**先建分支、再跑门禁**：门禁按 cwd 判定当前分支，只有在集成分支上跑才判得了那条判据。
+   4. **在集成 workspace 的检出目录里跑交接门禁**（cwd 必须是 `integration/<name>` 的 worktree，否则分支判据判的是主 checkout）：
 
       ```bash
       node "$PIPELINE_HOME"/handoff-check.mjs <name> --base integration/<name>
       ```
 
       它逐路径点名 `openspec/changes/<name>/` 下未提交/未跟踪的文件，并核对 `tasks.md` 能否从集成基点读出来；exit 0 才可继续。同一份判据（`lib/handoff.mjs`）由 `task-runner.mjs` 在每次 CLI 派发前复用——门禁只有一份定义，两个入口不会各判一套。
-   4. 建集成 workspace：`integration/<name>`（基点为主干），见 2.1 的 workspace 约定；`create_workspace` / `create_agent` 的字段形状与分支改名见 `templates/dispatch-shapes.md`。
+      **分支判据分语境**：集成分支已存在时，当前分支必须是 `integration/<name>`，否则 `WRONG_BRANCH` exit 1。集成分支尚不存在时（例如在主 checkout 上做提前预检），分支判据延后，按当前 commit 核对产物并放行，`--json` 输出带 `deferred: true` 与 `notes[].code = BRANCH_DEFERRED`——**延后不是通过**：`ok: true` 只说明产物已提交，分支那条判据没判，建完集成 workspace 后必须按本步在它上面重跑。
    5. 按 `[ROUTE]` 分派：
       - `lead`：按 `templates/lead.md` 组装 brief，派 `agent_profile_shangshu`，然后**本回合阻塞在 `paseo wait <lead-id>`**。
       - `pod`：按 §2.2 直接派 `agent_profile_gongbu`。
