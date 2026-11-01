@@ -29,7 +29,8 @@ import {
   DISPOSITION_EFFECT, consumesRetryBudget, retryPolicy, deriveRejections,
 } from "./lib/roles.mjs";
 import {
-  readRunState, openIntents, leaseStatus, intentAgeMs, isFailed, DEFAULT_INTENT_GRACE_MS,
+  readRunState, openIntents, leaseStatus, intentAgeMs, isFailed, corruptLedgerGuidance,
+  DEFAULT_INTENT_GRACE_MS,
 } from "./lib/run-state.mjs";
 import { changeIdProblem } from "./lib/change-id.mjs";
 import { execFileSync } from "node:child_process";
@@ -54,7 +55,7 @@ const emptyGroups = () => ({
   INVALID: [], DONE: [], ACTIVE: [], UNRESOLVED: [], MERGE: [],
   BLOCKED: [], BLOCKED_RESOURCE: [], READY: [], UNMAPPED: [], RUNNING: [],
   FOREIGN: [], INTENT_PENDING: [], ORPHAN_INTENT: [], SPECULATIVE_READY: [], canDispatchNow: [],
-  holdReasons: [], taskHoldReasons: [],
+  holdReasons: [], taskHoldReasons: [], corruption: null,
 });
 
 function fatal(message) {
@@ -168,6 +169,17 @@ const { members, suspicious } = selectChange(state, change);
 // 派发」。缺这一层时，创建请求在途的窗口会被再派一次，造成双写同一文件。
 const runLedger = readRunState(change);
 const lease = leaseStatus(runLedger.state);
+// 账本损坏：readRunState 给出的是**空 state 的占位**，不是「这个 run 没有租约/没有意图」。
+// 只读消费者必须把两者分开：损坏时租约、在途写手意图、回执全都读不出来，若照常对账就会
+// 把「读不出」报成「没有 run」，进而给出可派发的结论（SCEN-LED-02）。这里只留一个显式
+// 的 corruption 对象，由输出与 nextAction 统一 fail closed。
+const corruption = runLedger.corrupt
+  ? {
+    file: runLedger.file,
+    error: runLedger.error,
+    guidance: corruptLedgerGuidance(runLedger.file),
+  }
+  : null;
 const orphanIntents = [];
 const pendingIntents = [];
 /**
@@ -655,7 +667,16 @@ out.ORPHAN_INTENT.push(...orphanIntents);
 out.openIntentCount = pendingIntents.length + orphanIntents.length;
 // 编排租约：只报告，不改变任务分类。租约过期意味着上一任编排者可能仍存活，
 // 执行器必须先 begin 领取新代际才能提交动作；这是执行侧门禁，不是对账侧的判定依据。
-out.lease = lease;
+// 账本损坏时 lease 必须留空：`leaseStatus(空 state)` 恒为 null，报成「未启用」就是把
+// 「读不出」说成「没有 run」。
+out.lease = corruption === null ? lease : null;
+out.corruption = corruption;
+if (corruption !== null) {
+  out.holdReasons.push(
+    `运行账本损坏，租约与在途意图均不可读：${corruption.error}`
+    + `（${corruption.file}）。先修复或移开留档，再重跑对账；不得按「无在途意图」推进`
+  );
+}
 
 // --- 脏树检测：集成工作区被就地写了什么（LESSONS §13 的越权代写就发生在这里） ---
 //
@@ -747,6 +768,13 @@ out.nextAction = nextAction(out, { tasks, cap });
  * 仍取第一项，`canDispatchNow` 与 `actions` 中的 dispatch 始终一致。
  */
 function nextAction(out, { tasks, cap }) {
+  if (out.corruption !== null) {
+    // 与 runtime 非 ok 同一档：账本读不出来时，租约、在途意图、回执都不存在可用的结论，
+    // 任何「可以派发/可以合流」都是从不存在的证据里推出来的。
+    const reason = `运行账本损坏（${out.corruption.file}）：租约与在途意图不可读，`
+      + '禁止任何派发与合流；先修复账本或移开留档后重跑';
+    return { kind: "hold", reason, actions: [{ kind: "hold", reason }] };
+  }
   if (out.runtime !== "ok") {
     const reason = `运行态 ${out.runtime}：状态观测不可信，禁止任何派发与合流`;
     return { kind: "hold", reason, actions: [{ kind: "hold", reason }] };
@@ -893,9 +921,19 @@ if (asJson) {
   for (const e of out.ORPHAN_INTENT) console.log(`ORPHAN_INTENT ${e.key}  (${e.reason})`);
   for (const e of out.FOREIGN) console.log(`FOREIGN  ${String(e.id).slice(0, 8)} ${e.status}  ${e.name}`);
   for (const r of out.RUNNING) console.log(`RUNNING  ${String(r.id).slice(0, 8)} ${r.name}`);
-  console.log(out.lease
-    ? `LEASE    owner=${out.lease.owner} gen=${out.lease.generation} ${out.lease.valid ? "有效" : "已过期"} 到期=${out.lease.expiresAt}`
-    : "LEASE    (未启用)");
+  console.log(out.corruption !== null
+    // 损坏时 lease 必为 null。照旧打印「未启用」会把「读不出」说成「没有 run」——
+    // 那正是 SCEN-LED-02 禁止的读法，所以这里换一句只描述事实的话。
+    ? "LEASE    (账本损坏，无法读取)"
+    : out.lease
+      ? `LEASE    owner=${out.lease.owner} gen=${out.lease.generation} ${out.lease.valid ? "有效" : "已过期"} 到期=${out.lease.expiresAt}`
+      : "LEASE    (未启用)");
+  // 损坏账本必须用**独立一行**点名文件与错误：只在 holdReasons 里出现会被当成普通的
+  // 「先核对来源」，看不出一整个 run 的租约与意图已经不可读了。
+  if (out.corruption !== null) {
+    console.log(`CORRUPT  ${out.corruption.file}  (${out.corruption.error})`);
+    for (const line of out.corruption.guidance.split('\n')) console.log(`  ${line}`);
+  }
   for (const r of out.holdReasons) console.log(`HOLD     ${r}`);
   // 逐任务挂起：只点名那个任务，不读作全局阻断。执行器按这一行判断「谁不能派」，
   // 按 canDispatchNow 判断「谁可以派」——两者互不覆盖。
