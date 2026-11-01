@@ -56,7 +56,8 @@
   - Verify with: `node --test skills/paseo-pipeline/test/task-runner.test.mjs`
   - Scenarios: SCEN-HND-11
 
-- [ ] 2.2 T-06 无 Verify 任务硬失败：task-runner 删 npm test 兜底，对齐 exit 36 语义
+- [x] 2.2 T-06 无 Verify 任务硬失败：task-runner 删 npm test 兜底，对齐 exit 36 语义
+  - Done: source=b13897a review=pass(0fd15164@b13897a/2b6756d)
   - Depends on: none
   - Write scope: skills/paseo-pipeline/task-runner.mjs, skills/paseo-pipeline/test/task-runner.test.mjs
   - Risk-surface: [error-handling]
