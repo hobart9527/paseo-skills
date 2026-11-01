@@ -38,7 +38,7 @@ Read profile notes with `list_profiles`; use live agent provider/model for indep
 1. Run `openspec new change <name> --schema paseo-pipeline`. The schema resolves from the global OpenSpec schema link installed by `install.sh`; do not keep stale project-local copies that shadow it.
 2. **Dispatch `chanpin`** (`templates/author.md` Mode SPEC). It writes `proposal.md`, `specs/<capability>/spec.md`, `digest.md` into `openspec/changes/<name>/` and commits to the draft branch; main session does not re-type.
 3. **Dispatch `gaogong`** (`templates/author.md` Mode TASKS) after `chanpin` commits. It reads the committed spec, writes `design.md`, `tasks.md`, `acceptance.md`, and commits.
-4. Run `node "$PIPELINE_HOME"/freeze-check.mjs openspec/changes/<name> --structural` (Impact Inventory, SCEN per task, no test-only tasks; skips the R0 check, which cannot exist yet). Read its `ADVISE` lines: `ADVISORY_LOW_SPEEDUP` means compare with Tier 2 before CP-1. If it blocks, dispatch the relevant author to fix and re-run. Do not proceed past a block.
+4. Run `node "$PIPELINE_HOME"/freeze-check.mjs openspec/changes/<name> --structural` (Impact Inventory, SCEN per task, no test-only tasks; skips the R0 check, which cannot exist yet). Read its `ADVISE` lines: `ADVISORY_LOW_SPEEDUP` means compare with Tier 2 before CP-1. If it blocks, dispatch the relevant author to fix and re-run. Do not proceed past a block. `[ROUTE] handoff` here: skip R0; run Tier 2 `/paseo-handoff` on the committed spec and tasks.
 5. **Dispatch `hanlin`** (`templates/reviewer.md` Mode R0) in a read-only workspace once the structural check passes and the contract is committed. `hanlin` writes nothing: it returns findings, or `R0: pass(<its-agent-uuid>@<reviewed-HEAD-sha>)`. On pass, main session writes that line first in `openspec/changes/<name>/review.md` (uuid = the agent it dispatched, sha = the commit it reviewed; `freeze-check` verifies the uuid is a live Paseo agent, offline use `--skip-signer-check`). On blockers, dispatch the author to revise once, re-run freeze-check, re-dispatch `hanlin`. A second R0 is final.
 6. Re-run `freeze-check` without `--structural`. It rejects a missing sign-off, and `STALE_R0_SIGNOFF` when the sha is unknown or any contract file changed after it. This is the mechanical gate.
 7. Present final contract, R0 findings/responses, DAG/scopes/Verify/acceptance. Freeze only after human confirms CP-1. The CP-1 prompt must name the executor ("确认冻结并交给 shangshu 执行"), never just "确认冻结并启动实施".
@@ -54,7 +54,7 @@ CP-1 approval is not the start of implementation; it is the start of handoff. `m
 4. Bootstrap dependencies in each new workspace — **including the integration worktree itself** — **before** any Verify runs. `merge-task` runs all Verify commands in the integration worktree, not in the task workspace. A worktree is a checkout, not a clone: `node_modules/`, `.venv/` and every other ignored path stay behind in the main checkout, so the first `Verify with` otherwise dies on `Cannot find package` — reported as exit 36. Install per lockfile (`npm ci`, `pnpm install --frozen-lockfile`, `python3 -m venv .venv`) or configure a Paseo workspace script so new worktrees self-bootstrap; do this once per workspace, not per task.
 5. Draft the Lead brief from `templates/lead.md`, filling `<change>`, integration worktree path, integration branch, `base` SHA, and the frozen contract paths.
 6. Create exactly one Lead (`shangshu`, see `list_profiles`). Main session then stops: no business-code edits, no further dispatch.
-7. If the frozen DAG's `[ROUTE]` is `handoff` (no real concurrency), do not create a Lead — run Tier 2 `/paseo-handoff` instead and say so at CP-1.
+7. If the frozen DAG's `[ROUTE]` is `handoff`, create no Lead; run Tier 2 `/paseo-handoff` and say so at CP-1.
 
 After context compaction or a resumed session, the first action is to re-read `tasks.md` Done lines, `git log --first-parent integration/<change>`, and `paseo ls --label pipeline.change=<change> --json` before any dispatch. Summaries are not state.
 
@@ -66,7 +66,7 @@ After context compaction or a resumed session, the first action is to re-read `t
 - Agent identity: every trailer and review tag uses the agent's full UUID (`$PASEO_AGENT_ID` inside the agent). Paseo's 7-char `shortId` is accepted in a review tag and resolves by prefix; a bare 7-char author in a trailer is not — use the UUID.
 - Every dispatch uses Paseo native workspaces, labels, finish notifications, plus a background `paseo wait` backstop (see `lead.md`), never foreground over 600s. A returned or timed-out wait means "inspect now", not success. Lost notifications trigger reconciliation, not duplicate dispatch. Rework uses original agent/workspace when safe.
 - Circuit breakers (`lead.md`): at most 3 attempts per task and a cost report at each merge; on breach the Lead stops dispatching that task and escalates to the human.
-- Contract amendments after CP-1: main session updates tasks, human confirms delta, commit, then Lead reloads contract.
+- Contract amendments after CP-1: main session updates tasks, human confirms delta, commit, Lead reloads.
 
 ## Merge gate
 ```
@@ -84,7 +84,7 @@ grep -n 'Done:' openspec/changes/<change>/tasks.md
 paseo ls --label pipeline.change=<change> --json
 ```
 
-Use live Paseo state plus branch tips and Done lines. Do not re-dispatch solely on a delayed notification. Only one active Lead; replacing it requires human confirmation and archiving old Lead first.
+Use live Paseo state, branch tips and Done lines. Never re-dispatch on a delayed notification alone. One active Lead; replacing it needs human confirmation and archiving the old one first.
 
 ## Finish
 1. Require all tasks Done, no blocked/failed tasks, clean integration worktree.

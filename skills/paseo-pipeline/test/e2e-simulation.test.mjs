@@ -493,6 +493,10 @@ export function calculate(op, a, b) {
   assert.match(finalRunLog, /merge task=T-02/);
   assert.match(finalRunLog, /merge task=T-03/);
   assert.match(finalRunLog, /merge task=T-04/);
+  // Every merge records phase timings; red/verify only exist for behavior tasks, total always.
+  const timings = [...finalRunLog.matchAll(/timing_ms=(\{[^}]*\})/g)].map((m) => JSON.parse(m[1]));
+  assert.equal(timings.length, 4);
+  for (const t of timings) assert.ok(t.total >= 0 && t.regression >= 0 && Number.isInteger(t.replayed), JSON.stringify(t));
 
   // 7.3 Full suite passes completely on integration HEAD
   const finalTestRun = spawnSync('npm', ['test'], { cwd, env: localEnv, encoding: 'utf8' });

@@ -125,6 +125,10 @@ function run(command, timeoutMs, { capture = false } = {}) {
   });
 }
 
+// Wall-clock per merge phase, recorded in run-log.md. The merge is a serial critical
+// section, so these numbers decide whether it is worth optimising before anyone guesses.
+const timing = {};
+const startedAt = Date.now();
 const args = process.argv.slice(2).filter((arg) => !arg.startsWith('--timeout'));
 const timeoutArg = process.argv.find((arg) => arg.startsWith('--timeout'));
 const timeout = Number(timeoutArg?.split('=')[1] ?? 30 * 60 * 1000);
@@ -243,7 +247,9 @@ if (task.review !== 'mechanical') {
   if (!redTip) fail('test-author commit must precede the first implementation commit', 31);
   const redMerge = gitMaybe(['merge', '--no-ff', '--no-commit', redTip]);
   if (redMerge.status !== 0) { gitMaybe(['merge', '--abort']); fail('merge conflict while checking Red', 10); }
+  const redStart = Date.now();
   const red = await run(task.verify, timeout, { capture: true });
+  timing.red = Date.now() - redStart;
   gitMaybe(['merge', '--abort']);
   if (git(['status', '--porcelain=v1', '--untracked-files=all']) !== '') fail('Red check left files in the integration worktree; clean them and retry', 33);
   // A real assertion failure wins over the dependency hint: a test may legitimately
@@ -261,7 +267,9 @@ if (merge.status !== 0) {
   fail('merge conflict', 10);
 }
 const before = git(['status', '--porcelain=v1', '--untracked-files=all']);
+const verifyStart = Date.now();
 const result = await run(task.verify, timeout, { capture: true });
+timing.verify = Date.now() - verifyStart;
 const after = git(['status', '--porcelain=v1', '--untracked-files=all']);
 const verifyChanged = after !== before;
 // Missing dependency first: it produces a non-zero exit that would otherwise be read as
@@ -288,6 +296,8 @@ if (result.error || result.status !== 0 || result.signal || result.timedOut || v
 const scopesOverlap = (scopesA, scopesB) => scopesA.some((a) => scopesB.some((b) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)));
 const taskAncestors = new Set();
 { const walk = (id) => { for (const dep of (parsed.tasks.find((t) => t.id === id)?.depends ?? [])) { taskAncestors.add(dep); walk(dep); } }; walk(taskId); }
+const regressionStart = Date.now();
+let replayed = 0;
 for (const prior of parsed.tasks.filter((item) => item.done && item.id !== taskId && item.verify)) {
   // Skip if prior is fully independent: no shared dependency chain AND no scope overlap.
   const priorAncestors = new Set();
@@ -297,6 +307,7 @@ for (const prior of parsed.tasks.filter((item) => item.done && item.id !== taskI
   if (!sharesDep && !scopesOverlap(task.scope, prior.scope)) continue;
   const legs = verifyLegs(prior.verify).filter((leg) => !leg.broad);
   if (!legs.length) continue;
+  replayed += 1;
   const regression = await run(legs.map((leg) => leg.command).join(' && '), timeout);
   if (regression.error || regression.status !== 0 || regression.signal || regression.timedOut) {
     gitMaybe(['merge', '--abort']);
@@ -307,6 +318,9 @@ if (git(['status', '--porcelain=v1', '--untracked-files=all']) !== before) {
   gitMaybe(['merge', '--abort']);
   fail('regression check changed worktree', 21);
 }
+timing.regression = Date.now() - regressionStart;
+timing.replayed = replayed;
+timing.total = Date.now() - startedAt;
 
 const lines = fs.readFileSync(tasksFile, 'utf8').split('\n');
 const index = task.line - 1;
@@ -316,7 +330,7 @@ lines[index] = lines[index].replace(/^(\s*[-*]\s*\[) /, '$1x');
 lines.splice(index + 1, 0, `  - Done: source=${tip.slice(0, 7)} review=${reviewTag}`);
 fs.writeFileSync(tasksFile, lines.join('\n'));
 fs.mkdirSync(path.dirname(runLog), { recursive: true });
-fs.appendFileSync(runLog, `- ${new Date().toISOString()} merge task=${taskId} source=${tip} review=${reviewTag} verify=${JSON.stringify(task.verify)}\n`);
+fs.appendFileSync(runLog, `- ${new Date().toISOString()} merge task=${taskId} source=${tip} review=${reviewTag} verify=${JSON.stringify(task.verify)} timing_ms=${JSON.stringify(timing)}\n`);
 git(['add', tasksFile, runLog]);
 git(['commit', '-m', `merge(${taskId}): ${branch}`, '-m', [
   `Pipeline-Task: ${taskId}`,

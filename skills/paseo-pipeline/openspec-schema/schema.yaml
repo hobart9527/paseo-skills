@@ -9,13 +9,17 @@
 #      这个差距实测导致「validate --strict 通过、parseTasks 解析出 0 个任务」。
 #   2. specs 的 instruction 追加 SCEN- 编号要求（freeze-check 按编号对账）。
 #   3. 新增 acceptance 产物（冻结的业务验收矩阵，人类 CP-2 验收消费）。
+#   4. 新增 digest（chanpin 的代码库全景）与 review（hanlin 的 R0 签署）产物，
+#      让 `openspec status` 看到 author.md / freeze-check 实际要求的全部文件。
+#   5. design 额外 requires specs：流程是 gaogong 读已提交的 spec 再写设计。
 #
-# 升级 OpenSpec 后重跑一次冒烟探测：复制到临时仓库 → new change --schema → instructions
-# 出现元数据 → validate --strict → archive。探测命令见 SKILL.md「Entry and CP-1」。
+# 升级 OpenSpec 后重跑一次冒烟探测：临时仓库里 `openspec new change x --schema paseo-pipeline`
+# → `openspec instructions tasks --change x` 应出现 T-xx 元数据 → `openspec schema validate
+# paseo-pipeline`。test/docs.test.mjs 会断言这份文件的产物清单与依赖。
 
-name: spec-driven
+name: paseo-pipeline
 version: 1
-description: Default OpenSpec workflow - proposal → specs → design → tasks
+description: Paseo pipeline contract workflow - proposal → specs/digest → design → tasks/acceptance → review (R0)
 artifacts:
   - id: proposal
     generates: proposal.md
@@ -149,6 +153,19 @@ artifacts:
     requires:
       - proposal
 
+  - id: digest
+    generates: digest.md
+    description: Codebase digest the design and task authors rely on
+    template: digest.md
+    instruction: |
+      Written by `chanpin` (templates/author.md Mode SPEC) alongside the spec.
+      Record, with `path:line` evidence: relevant modules, exported symbols, call sites,
+      existing tests and fixtures, and baseline known failures. The design's Impact Inventory
+      and every task's Write scope are checked against this, so claims without evidence
+      are not usable. No recommendations here; those belong in design.md.
+    requires:
+      - proposal
+
   - id: design
     generates: design.md
     description: Technical design document with implementation details
@@ -184,6 +201,7 @@ artifacts:
       Good design docs explain the "why" behind technical decisions.
     requires:
       - proposal
+      - specs
 
   - id: tasks
     generates: tasks.md
@@ -285,6 +303,21 @@ artifacts:
       `BLOCKED` in Result with the reason - a mock passing is not business acceptance.
     requires:
       - specs
+
+  - id: review
+    generates: review.md
+    description: R0 contract review sign-off
+    template: review.md
+    instruction: |
+      Written by the main session, never by the reviewer: `hanlin` is read-only and returns
+      the sign-off as text. The first line must be exactly
+      `R0: pass(<hanlin-agent-uuid>@<reviewed-commit-sha>)`, followed by the findings and
+      the author's responses. `freeze-check` rejects a missing sign-off, an unknown signer,
+      and any contract file changed after the reviewed commit (STALE_R0_SIGNOFF).
+      Do not write the pass line before the review ran.
+    requires:
+      - tasks
+      - acceptance
 
 apply:
   requires: [tasks]

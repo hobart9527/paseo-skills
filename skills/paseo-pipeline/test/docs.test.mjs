@@ -68,3 +68,19 @@ test('briefs carry wait backstop, reviewer containment and impact inventory rule
   assert.match(read('SKILL.md'), /paseo wait/);
   assert.match(read('openspec-schema/templates/design.md'), /Impact Inventory/);
 });
+
+test('schema declares every artifact the pipeline reads, in flow order', () => {
+  const schema = read('openspec-schema/schema.yaml');
+  assert.match(schema, /^name: paseo-pipeline$/m);
+  const ids = [...schema.matchAll(/^  - id: (\w+)$/gm)].map((m) => m[1]);
+  assert.deepEqual([...ids].sort(), ['acceptance', 'design', 'digest', 'proposal', 'review', 'specs', 'tasks']);
+  // design is written by gaogong after the committed spec (SKILL.md Entry step 3).
+  const design = schema.slice(schema.indexOf('  - id: design'), schema.indexOf('  - id: tasks'));
+  assert.match(design, /requires:\n\s+- proposal\n\s+- specs/);
+  for (const id of ids) assert.ok(fs.existsSync(path.join(dir, 'openspec-schema', 'templates', `${id === 'specs' ? 'spec' : id}.md`)), `template for ${id}`);
+  assert.doesNotMatch(schema, /SKILL\.md「Entry and CP-1」/);
+});
+
+test('route=handoff at the structural check skips R0', () => {
+  assert.match(read('SKILL.md'), /`\[ROUTE\] handoff` here: skip R0/);
+});
