@@ -83,7 +83,8 @@
   - Verify with: `node --test skills/paseo-pipeline/test/pipeline-doctor.test.mjs skills/paseo-pipeline/test/docs.test.mjs`
   - Scenarios: SCEN-DOC-04
 
-- [ ] 2.5 T-09 wait 终态与重入口径：error 入终态集，exit 51 文案给续等指引
+- [x] 2.5 T-09 wait 终态与重入口径：error 入终态集，exit 51 文案给续等指引
+  - Done: source=916cc91 review=pass(1863238f@916cc91/2ccb2f2)
   - Depends on: none
   - Write scope: skills/paseo-pipeline/task-runner.mjs, skills/paseo-pipeline/test/task-runner.test.mjs
   - Risk-surface: [error-handling]
