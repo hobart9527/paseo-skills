@@ -38,6 +38,11 @@ function readHolder(file) {
 /**
  * 锁持有者的存活判定。
  *
+ * `kill(pid, 0)` 只能证明「本机存在这个 pid」。pid 复用（旧持有者已死、pid 被无关进程
+ * 拿走）与真存活在 pid 探活下**不可区分**，EPERM（进程存在但无权发信号）同理——两者
+ * 都按 alive 处理。把不可区分当成 dead 会回收掉活锁，代价是两条读改写同时跑，比多留
+ * 一把需要人工清的锁严重得多。
+ *
  * @returns {'alive'|'dead'|'unknown'} unknown = 别的机器（本机探不到）或记录不可读。
  */
 export function holderLiveness(holder) {
@@ -137,7 +142,8 @@ export function acquireLock(dir, name, {
       // statSync 时，中间可能被并发进程回收并重建锁——「持有者已死」（旧代际）与
       // 「mtime 未变」（新代际）会拼成一条 stale 判定，删除守卫比对新锁照样通过，
       // 刚建立的活锁被删，两个进程同时进入临界区。先 stat 则守卫锚定在更早的那一代：
-      // 期间被换过，readHolder 读到的可能是新代际，而守卫仍按旧 mtime 比对，必然放弃删除。
+      // 期间被换过，readHolder 读到的可能是新代际，而守卫仍按旧 mtime 比对，除非新代际的
+      // mtime 恰好落在同一时间戳刻度（本设计的残余窗口），否则放弃删除。
       let observedMtime;
       try {
         observedMtime = fs.statSync(file).mtimeMs;
@@ -174,7 +180,8 @@ export function acquireLock(dir, name, {
 }
 
 /**
- * 手动清除残留锁（崩溃现场、pid 被复用、跨主机无法探活）。
+ * 手动清除残留锁（崩溃现场、跨主机无法探活）。pid 复用不在此列：它探得到且判 alive，
+ * 只能人工移除锁文件（先比对进程启动时间与锁 mtime），不要结束被复用的进程。
  *
  * 这是「陈旧判定」之外唯一的人工入口：自动回收要求**超龄**，而刚崩掉的锁还没到时限，
  * 卡住的人等不起 `DEFAULT_STALE_MS`。判定只认持有者存活——持有进程还活着就拒绝，因为
@@ -183,7 +190,9 @@ export function acquireLock(dir, name, {
  * 2026-11-01 前的实现把 force 放在存活判定之前，`--break-lock --force` 于是能清掉活锁并
  * 打印「已清除残留锁」——把制造并发写当成了成功。
  *
- * @param {boolean} force 仅用于「确认持有者已死但探不到」（pid 复用、EPERM、跨主机）。
+ * @param {boolean} force 仅用于「确认持有者已死但本机探不到」：跨主机、记录无 pid、
+ *          记录不可读。pid 复用与 EPERM 探得到且判 alive，force 对其无效——那些情形要
+ *          人工移除锁文件（先 ps 比对启动时间与锁 mtime）。
  * @returns {{removed: boolean, file: string, holder: string, reason: 'absent'|'removed'
  *          |'alive'|'unknown'|'changed'|'error', error?: string}}
  */

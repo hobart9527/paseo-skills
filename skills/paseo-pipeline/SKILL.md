@@ -268,7 +268,7 @@ node "$PIPELINE_HOME"/run-state.mjs confirm <change> --checkpoint cp1|cp2 [--not
 node "$PIPELINE_HOME"/run-state.mjs status <change> [--json]
 # 度量：派发次数、首次通过率、READY 等待、确认点跨度（只写账本能算出的数，采不到的项打印「未采集」）
 node "$PIPELINE_HOME"/run-state.mjs report <change> [--json]
-# 锁恢复：只清「持有进程已死」的残留锁（崩溃后 claim 一律 exit 2 时的唯一入口）
+# 锁恢复：只清「持有进程已死」的残留锁（崩溃后 claim 一律 exit 2 时唯一的 CLI 入口）
 node "$PIPELINE_HOME"/run-state.mjs --break-lock <change> [--force]
 ```
 
@@ -284,9 +284,16 @@ node "$PIPELINE_HOME"/run-state.mjs --break-lock <change> [--force]
 - **确认点时间只在确认当下登记**：`confirm --checkpoint cp1|cp2` 由收到人类确认的那一方在同一回合写入。同一 checkpoint 重复登记是幂等的——保留首次时间、只累加 `repeated` 与 `lastAt`，因为「再次确认」通常意味着冻结被推翻，覆盖时间会让等待跨度永远看起来很短。`report` 的 `confirmations` 只回显账本里的时间；两项不齐就打印「未采集」，不推算「本该多早」。
 - **READY 等待的口径写死在数据里**：`claim` 在新意图建立时，若同任务存在更早、已了结（`resolvedAt`/`failedAt`）的意图，就记一条 `readyObs`（`waitMs` + `basis: 'prev-end→claim'`），同一对相邻动作不重复计时。`report` 打印中位数/最大值并回显口径——依赖解除的时刻账本不一定知道（依赖可能在别处合流），所以这是「排队时长」，不是 end-to-end 的 READY 时间。
 - **change 名必须是位置参数形态**：命令后的第一个位置参数（change）若以 `--` 开头或含非法字符，一律 exit 1 并给出正确写法。历史上把 `--change foo` 照抄进 `status` 会静默新建一份游离账本（实测 `approval-hub` 里已留下 `--change/`、`--key/` 两份 `run-state.json`，前者还持有租约）。
-- **残留锁的唯一恢复入口是 `--break-lock`**：账本写入持 `paseo-pipeline/<change>/run-state.lock`，进程崩溃会留下残锁，之后每条 `claim`/`record`/`fail` 都 exit 2 且不改写任何内容。`acquireLock` 的陈旧判定**并入持有者存活**：本机持有进程已死即立即回收（不必干等 2 小时）；持有进程确认存活则年龄再大也算新鲜（抢走长测试的活锁等于让两条读改写同时跑）；跨主机或旧锁无 pid 时探不到存活，退回按 mtime 超龄（默认 2h）回收。
+- **残留锁唯一的 CLI 恢复入口是 `--break-lock`**：账本写入持 `paseo-pipeline/<change>/run-state.lock`，进程崩溃会留下残锁，之后每条 `claim`/`record`/`fail` 都 exit 2 且不改写任何内容。`acquireLock` 的陈旧判定**并入持有者存活**：本机持有进程已死即立即回收（不必干等 2 小时）；持有进程确认存活则年龄再大也算新鲜（抢走长测试的活锁等于让两条读改写同时跑）；跨主机、记录无 pid 或记录不可读时探不到存活，退回按 mtime 超龄（默认 2h）回收。
   - `--break-lock <change>` 清「持有者已死」的锁，持有进程仍存活即 exit 2 拒绝；**不删账本、不重跑 `begin`**——那两样换不回被挡住的写入，还会丢掉派发记录。
-  - `--force` 是人工豁免，**只放宽「探不到存活」这一种情形**（跨主机锁、pid 被无关进程复用）；持有进程能确认存活时**无条件拒绝**（exit 2），`--force` 不能清活锁。先用 `status` 确认没有在跑的派发，再清锁，然后原样重试被拒的动作。
+  - `--force` 是人工豁免，**只放宽「本机探不到存活」这一种情形**：跨主机锁、记录里没有 pid、记录不可读（`lock.mjs` 的 `holderLiveness` 判 `unknown` 的三种）。持有进程能确认存活时**无条件拒绝**（exit 2），`--force` 不能清活锁。
+  - **pid 复用与 EPERM 不在 `--force` 的豁免面内**：`holderLiveness` 只做 `kill(pid, 0)` 探活，pid 被无关进程复用、或进程存在但无权发信号（EPERM）在它眼里都是 `alive`——探得到、判存活，`--force` 无效。这类锁的正确出路是人工移除锁文件，见下条。
+  - **人工移除锁文件（绕过存活守卫，仅在确认已复用时）**，逐步核对再动手：
+    1. *前提*：`node "$PIPELINE_HOME"/run-state.mjs status <change>` 核对没有在跑的派发（无未回执意图、无活跃租约的活体）。
+    2. *前提*：`ps -p <pid> -o pid,lstart,command` 确认该进程的启动时间**晚于锁文件 mtime**——这才证明 pid 已被复用（锁是旧持有者留下的，现在这个进程与派发无关）。
+    3. *动作*：`rm <git-common-dir>/paseo-pipeline/<change>/run-state.lock`。`<git-common-dir>` 由 `git rev-parse --git-common-dir` 得到；这一步**绕过存活守卫**，第 1、2 步的前提不成立时不得执行。
+    4. *验证*：原样重试被拒的动作（如 `claim ...`），成功即恢复；仍被拒就在 `status` 与 `ps` 之间重新核对，不要重复 `rm`。
+  - **不要结束那个被复用的 pid**：它已与派发无关，`kill` 它等于伤及无关进程，且不会解决锁的问题。
 - **孤儿意图（`ORPHAN_INTENT`）**：意图超过 10 分钟仍无对应 agent（创建失败或回执丢失）。`reconcile` 把它列为最高优先级 `NEXT arbitrate`，**自动化不得自行重派**，须核对后显式 `fail` 或 `record`。
 - **无 heartbeat 子命令**：注册入口已删（2026-10-26）。常规运行不建周期性 heartbeat，且 `hardening-governance-contracts` 账本里 `heartbeats` 为 0——没有使用者的写入路径不留。旧账本里的 `heartbeats` 数组仍是只读兼容字段，`status` 照常打印。
 - 存放位置：git common dir 下 `paseo-pipeline/<change>/run-state.json`（不放 `openspec/`，否则弄脏工作树阻塞合流）。`PIPELINE_RUN_STATE_DIR` 可覆盖。

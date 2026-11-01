@@ -5,7 +5,7 @@
 // 合流的读-改-写序列失去互斥，正是这把锁要防的事故本身。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -372,4 +372,42 @@ test('SCEN-LED-04 the CLI refuses --break-lock --force for a live holder instead
   assert.match(result.stderr, /存活/, '拒绝文案必须说明持有者仍存活');
   assert.match(result.stderr, /--force/, '拒绝文案必须说明强制豁免不适用于可确认存活的持有者');
   assert.ok(fs.existsSync(subject.lockFile), '活锁必须原样保留');
+});
+
+// --- 文档契约：人工恢复路径必须与代码的豁免面一致 ---
+//
+// 代码只做 `kill(pid, 0)`：pid 复用与 EPERM 都判 alive，`--force` 无效。文档若把这两种
+// 情形指向 `--force`，人会照着跑、被拒、再猜，最后删账本——那正是「锁恢复」要避免的。
+// 这里读源文本钉住口径；docs.test.mjs 属 T-11，改动只落在本文件。
+
+const skillText = fs.readFileSync(fileURLToPath(new URL('../SKILL.md', import.meta.url)), 'utf8');
+const runStateText = fs.readFileSync(runStateScript, 'utf8');
+
+test('SKILL documents the manual lock-file removal for pid reuse / EPERM, and does not route either to --force', () => {
+  // pid 复用与 EPERM 必须与「--force 无效」同段声明。
+  assert.match(skillText, /pid 复用[\s\S]{0,200}EPERM[\s\S]{0,300}--force`?\s*无效/,
+    'SKILL 必须写明 pid 复用/EPERM 探得到且判 alive，--force 无效');
+  // 四步人工恢复：status 核对 → ps 比对 → rm 锁文件 → 原样重试。
+  assert.match(skillText, /人工移除锁文件/, 'SKILL 必须给出人工移除锁文件的入口');
+  assert.match(skillText, /status <change>`? 核对没有在跑的派发/, '第 1 步必须核对 status');
+  assert.match(skillText, /ps -p <pid> -o pid,lstart,command/, '第 2 步必须给出 ps 比对命令');
+  assert.match(skillText, /启动时间\*\*晚于锁文件 mtime/, '第 2 步必须写明判定前提');
+  assert.match(skillText, /rm <git-common-dir>\/paseo-pipeline\/<change>\/run-state\.lock/, '第 3 步必须给出可照抄的 rm');
+  assert.match(skillText, /绕过存活守卫/, '人工移除必须显式声明绕过存活守卫');
+  assert.match(skillText, /原样重试被拒的动作/, '第 4 步必须原样重试');
+  assert.match(skillText, /不要结束/, '必须写明不要结束被复用的无关进程');
+  // 反过来：SKILL 里凡是提到「pid 复用」或「EPERM」的段落，都不得把它们列进 --force 的豁免面。
+  for (const match of skillText.matchAll(/pid 复用|EPERM/g)) {
+    const window = skillText.slice(Math.max(0, match.index - 200), match.index + 300);
+    assert.doesNotMatch(window, /--force`?\s*是?人工豁免[^。]*pid 被无关进程复用/,
+      'SKILL 不得再把 pid 复用列进 --force 的豁免情形');
+  }
+});
+
+test('the ELOCKED refusal does not point pid reuse at --force', () => {
+  // ELOCKED 文案是每次被锁挡住时的第一手出路；把 pid 复用写成「加 --force」会直接误导。
+  const elocked = runStateText.slice(runStateText.indexOf('运行账本被占用'), runStateText.indexOf('运行账本被占用') + 600);
+  assert.ok(elocked.length > 0, '测试前提：ELOCKED 文案必须存在');
+  assert.doesNotMatch(elocked, /pid 被?复用[\s\S]{0,40}--force/, 'ELOCKED 文案不得把 pid 复用指向 --force');
+  assert.match(elocked, /记录无 pid|不可读/, 'ELOCKED 文案的 --force 豁免面必须写成探不到的三种');
 });
