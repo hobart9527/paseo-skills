@@ -20,6 +20,12 @@ import path from 'node:path';
 /** 持有者无法探活时，锁文件超过该年龄即视为崩溃残留（合流含长测试，默认给足 2 小时）。 */
 export const DEFAULT_STALE_MS = 2 * 60 * 60 * 1000;
 
+/**
+ * 抢锁尝试上限。正常路径一次 open 就够；额外两次留给「锁在观察途中被释放」（stat 得
+ * ENOENT）与「回收陈旧锁后重新竞争」。回收本身另由 reclaimAttempted 限一次。
+ */
+const MAX_ACQUIRE_ATTEMPTS = 3;
+
 function readHolder(file) {
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -48,6 +54,10 @@ export function holderLiveness(holder) {
 }
 
 function describeHolder(file, now = Date.now(), holder = undefined) {
+  // 这里的 age 是「持有者自报的持有时长」（acquiredAt），给人读；陈旧判定用的是文件
+  // mtime（见 acquireLock）。两者口径不同是故意的：mtime 表示锁文件这一代的建立时刻，
+  // 锁被回收重建后 mtime 会变，而残留的 acquiredAt 仍写着上一代；拿 acquiredAt 做
+  // 删除守卫会漏掉「同代重建」。诊断文案用自报时间，删除判定用 mtime。
   const raw = holder === undefined ? readHolder(file) : holder;
   if (!raw) return '持有者信息不可读';
   let age = '';
@@ -61,7 +71,8 @@ function describeHolder(file, now = Date.now(), holder = undefined) {
 /**
  * 仅当锁文件 mtime 与初次观测一致时才删除（陈旧锁清理的换锁防护）。
  *
- * @returns {boolean} true=已删除（或文件本就不在，删除目标已达成）；false=锁已被换/不可读，放弃。
+ * @returns {boolean} true=已删除；false=文件已不在、已被换或被换主/不可读，放弃（调用方
+ *          不得把 false 当成「已删除」放行——它紧接着会 open(wx) 抢锁）。
  */
 export function removeIfMtimeUnchanged(file, expectedMtimeMs) {
   let current;
@@ -101,7 +112,9 @@ export function acquireLock(dir, name, {
     purpose,
   }, null, 2)}\n`;
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  // 回收只做一次：删掉之后重新 open 仍失败，说明有人在竞争，按 held 返回而不是再删。
+  let reclaimAttempted = false;
+  for (let attempt = 0; attempt < MAX_ACQUIRE_ATTEMPTS; attempt += 1) {
     try {
       const fd = fs.openSync(file, 'wx');
       fs.writeSync(fd, payload);
@@ -120,29 +133,38 @@ export function acquireLock(dir, name, {
       if (error.code !== 'EEXIST') {
         return { ok: false, reason: 'error', holder: '', file, error: error.message };
       }
+      // **必须先取 mtime，再读持有者**：两者是同一代际的旁证。反过来先 readHolder 后
+      // statSync 时，中间可能被并发进程回收并重建锁——「持有者已死」（旧代际）与
+      // 「mtime 未变」（新代际）会拼成一条 stale 判定，删除守卫比对新锁照样通过，
+      // 刚建立的活锁被删，两个进程同时进入临界区。先 stat 则守卫锚定在更早的那一代：
+      // 期间被换过，readHolder 读到的可能是新代际，而守卫仍按旧 mtime 比对，必然放弃删除。
+      let observedMtime;
+      try {
+        observedMtime = fs.statSync(file).mtimeMs;
+      } catch (statError) {
+        // 锁在 open 与 stat 之间被释放：这一代已经没了，回到 open 重新竞争。
+        if (statError.code === 'ENOENT') continue;
+        // 其余（EACCES 等）读不到就无从判定，更不能盲删。
+        return { ok: false, reason: 'error', holder: '', file, error: statError.message };
+      }
       const holder = readHolder(file);
       const liveness = holderLiveness(holder);
       const holderText = describeHolder(file, now, holder);
-      let age = null;
-      let observedMtime = null;
-      try {
-        observedMtime = fs.statSync(file).mtimeMs;
-        age = now - observedMtime;
-      } catch { age = null; }
-      const tooOld = age !== null && age > staleMs;
+      const tooOld = now - observedMtime > staleMs;
       // 持有者已死是硬证据：立刻可回收，不必干等 DEFAULT_STALE_MS（崩溃残留正是「锁死了
       // 2 小时」的来源）。持有者确认存活则一律按新鲜处理，年龄再大也不抢——那可能是一次
       // 仍在跑的长测试。探不到存活（跨主机、无 pid、记录不可读）时才退回纯年龄判定。
       const stale = liveness === 'dead' || (liveness === 'unknown' && tooOld);
-      if (!stale || attempt === 1) {
+      // 回收只试一次：删掉之后若仍抢不到（别人先建了），说明有人正在竞争，按 held 返回。
+      if (!stale || reclaimAttempted) {
         const note = liveness === 'alive' && tooOld
           ? '（已超时，但持有进程仍存活）'
           : (stale ? '（持有者已死，但清理失败）' : '');
         return { ok: false, reason: 'held', holder: `${holderText}${note}`, file, liveness };
       }
-      // 陈旧残留：删除前必须重读 mtime 比对。判定 stale 到 rm 之间有窗口——并发进程可能
-      // 已释放旧锁并重建新锁（同路径、新 mtime）；不比对就 rm 会删掉别人刚持有的锁，
-      // 两个进程都以为自己拿到了排他权。mtime 变了即放弃删除，按 held 返回。
+      reclaimAttempted = true;
+      // 删除前重读 mtime 比对：判定 stale 到 rm 之间可能已换了一代（同路径、新 mtime）。
+      // 不比对就 rm 会删掉别人刚持有的锁。mtime 变了即放弃删除，按 held 返回。
       if (!removeIfMtimeUnchanged(file, observedMtime)) {
         return { ok: false, reason: 'held', holder: describeHolder(file), file, liveness };
       }
@@ -158,6 +180,9 @@ export function acquireLock(dir, name, {
  * 卡住的人等不起 `DEFAULT_STALE_MS`。判定只认持有者存活——持有进程还活着就拒绝，因为
  * 清掉活锁等于直接制造它要防的事故。
  *
+ * 2026-11-01 前的实现把 force 放在存活判定之前，`--break-lock --force` 于是能清掉活锁并
+ * 打印「已清除残留锁」——把制造并发写当成了成功。
+ *
  * @param {boolean} force 仅用于「确认持有者已死但探不到」（pid 复用、EPERM、跨主机）。
  * @returns {{removed: boolean, file: string, holder: string, reason: 'absent'|'removed'
  *          |'alive'|'unknown'|'changed'|'error', error?: string}}
@@ -167,13 +192,17 @@ export function breakLock(dir, name, { force = false, now = Date.now() } = {}) {
   let observedMtime;
   try {
     observedMtime = fs.statSync(file).mtimeMs;
-  } catch {
-    return { removed: false, file, holder: '', reason: 'absent' };
+  } catch (error) {
+    if (error.code === 'ENOENT') return { removed: false, file, holder: '', reason: 'absent' };
+    // 读不到锁文件不等于没有锁：把 EACCES 之类当成 absent 会打印「无需清除」并 exit 0，
+    // 使用者据此以为已处理，实际锁还在，之后的动作继续被拒。
+    return { removed: false, file, holder: '', reason: 'error', error: error.message };
   }
   const holder = readHolder(file);
   const liveness = holderLiveness(holder);
   const holderText = describeHolder(file, now, holder);
-  if (!force && liveness === 'alive') return { removed: false, file, holder: holderText, reason: 'alive' };
+  // 顺序即豁免范围：alive 先返回，force 只落在 unknown 上。
+  if (liveness === 'alive') return { removed: false, file, holder: holderText, reason: 'alive' };
   if (!force && liveness === 'unknown') return { removed: false, file, holder: holderText, reason: 'unknown' };
 
   // 与自动回收同一条竞态防护：读到的 mtime 已变 = 锁在判定与删除之间换过主人。

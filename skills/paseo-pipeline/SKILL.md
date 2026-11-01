@@ -286,7 +286,7 @@ node "$PIPELINE_HOME"/run-state.mjs --break-lock <change> [--force]
 - **change 名必须是位置参数形态**：命令后的第一个位置参数（change）若以 `--` 开头或含非法字符，一律 exit 1 并给出正确写法。历史上把 `--change foo` 照抄进 `status` 会静默新建一份游离账本（实测 `approval-hub` 里已留下 `--change/`、`--key/` 两份 `run-state.json`，前者还持有租约）。
 - **残留锁的唯一恢复入口是 `--break-lock`**：账本写入持 `paseo-pipeline/<change>/run-state.lock`，进程崩溃会留下残锁，之后每条 `claim`/`record`/`fail` 都 exit 2 且不改写任何内容。`acquireLock` 的陈旧判定**并入持有者存活**：本机持有进程已死即立即回收（不必干等 2 小时）；持有进程确认存活则年龄再大也算新鲜（抢走长测试的活锁等于让两条读改写同时跑）；跨主机或旧锁无 pid 时探不到存活，退回按 mtime 超龄（默认 2h）回收。
   - `--break-lock <change>` 清「持有者已死」的锁，持有进程仍存活即 exit 2 拒绝；**不删账本、不重跑 `begin`**——那两样换不回被挡住的写入，还会丢掉派发记录。
-  - `--force` 是人工豁免，只用于确认持有者已死却探不到的情形（跨主机锁、pid 被无关进程复用）。先用 `status` 确认没有在跑的派发，再清锁，然后原样重试被拒的动作。
+  - `--force` 是人工豁免，**只放宽「探不到存活」这一种情形**（跨主机锁、pid 被无关进程复用）；持有进程能确认存活时**无条件拒绝**（exit 2），`--force` 不能清活锁。先用 `status` 确认没有在跑的派发，再清锁，然后原样重试被拒的动作。
 - **孤儿意图（`ORPHAN_INTENT`）**：意图超过 10 分钟仍无对应 agent（创建失败或回执丢失）。`reconcile` 把它列为最高优先级 `NEXT arbitrate`，**自动化不得自行重派**，须核对后显式 `fail` 或 `record`。
 - **无 heartbeat 子命令**：注册入口已删（2026-10-26）。常规运行不建周期性 heartbeat，且 `hardening-governance-contracts` 账本里 `heartbeats` 为 0——没有使用者的写入路径不留。旧账本里的 `heartbeats` 数组仍是只读兼容字段，`status` 照常打印。
 - 存放位置：git common dir 下 `paseo-pipeline/<change>/run-state.json`（不放 `openspec/`，否则弄脏工作树阻塞合流）。`PIPELINE_RUN_STATE_DIR` 可覆盖。

@@ -17,7 +17,8 @@
 // 之后每个动作都 exit 2（ELOCKED）。自动回收只处理「持有进程已死」或「探不到存活且超龄」的锁；
 // 跨主机的残锁与 pid 被复用的情形只能由人确认，用 `--break-lock` 手动清除。它只清持有者
 // 已死的锁，持有进程还活着就拒绝（清活锁等于制造它要防的并发改写）。
-// `--force` 仅用于「确认已死但探不到」：跨主机锁，或 pid 已被无关进程复用。
+// `--force` 只放宽「探不到存活」这一种情形：跨主机锁，或 pid 已被无关进程复用；
+// 能确认存活的持有者无条件拒绝，`--force` 不能清活锁。
 //
 // 无 heartbeat 子命令：SKILL 已声明常规运行不建周期性 heartbeat，2026-10-26 的
 // `hardening-governance-contracts` 账本里 heartbeats 为 0，注册入口没有使用者。
@@ -735,11 +736,17 @@ switch (command) {
     if (result.reason === 'removed' || result.reason === 'absent') break;
     if (result.reason === 'alive') {
       fail(2, `锁仍由存活进程持有（${result.holder}），拒绝清除：清掉活锁会让两条读改写同时进行。`
+        + '`--force` 只豁免「确认已死却探不到」的持有者，不适用于可确认存活的情形。'
         + '先确认那个进程是不是卡死的派发；确已卡死请先结束它，再跑 --break-lock');
     }
     if (result.reason === 'unknown') {
       fail(2, `无法确认持有者是否存活（${result.holder}）：跨主机的锁在本机探不到 pid，`
         + '旧记录里可能没有 pid。确认持有者已死后加 `--force` 清除');
+    }
+    if (result.reason === 'error') {
+      // 读不到锁文件不是「没有锁」：报 absent 会让调用方以为已处理，实际动作继续被拒。
+      fail(2, `无法读取锁文件 ${shown}（${result.error}），未做任何清除：`
+        + '检查该路径的权限/是否被其他方式占用，修好后重跑 --break-lock');
     }
     fail(2, `锁在判定与清除之间被换主（${result.holder}），未清除：重跑 --break-lock 重新判定`);
   }

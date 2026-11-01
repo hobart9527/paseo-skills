@@ -5,7 +5,7 @@
 // 合流的读-改-写序列失去互斥，正是这把锁要防的事故本身。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -160,6 +160,45 @@ test('an unreadable or pid-less lock file falls back to age, never to an uncondi
   stale.release();
 });
 
+// --- 代际竞态：观察与删除必须取自同一代际 ---
+//
+// 旧实现先 readHolder 再 statSync：两次读取之间锁可能被并发进程回收并重建。
+// 于是「持有者已死」（旧代际）与「mtime 未变」（新代际）拼在一起，删除守卫通过，
+// 刚建立的活锁被删——两个进程同时进入临界区。这里把重建注入到观察窗口内，
+// 使交错确定发生，而不是靠时序碰运气。
+
+test('acquireLock must not delete a lock rebuilt between its own two observations', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'merge.lock');
+  fs.writeFileSync(file, JSON.stringify({
+    pid: requireDeadPid(t), host: os.hostname(), acquiredAt: new Date().toISOString(),
+  }));
+
+  // 重建出来的锁是本进程持有的活锁：它一旦被删，两个进程就同时持锁。
+  const livePayload = JSON.stringify({
+    pid: process.pid, host: os.hostname(), acquiredAt: new Date().toISOString(),
+  });
+  const originalRead = fs.readFileSync;
+  let rebuilt = false;
+  fs.readFileSync = function patchedRead(target, ...rest) {
+    const result = originalRead.call(this, target, ...rest);
+    if (!rebuilt && String(target) === file) {
+      rebuilt = true;
+      // 并发进程在「读持有者」与「读 mtime」之间回收旧锁并重建新锁。
+      fs.rmSync(file, { force: true });
+      fs.writeFileSync(file, livePayload);
+    }
+    return result;
+  };
+  t.after(() => { fs.readFileSync = originalRead; });
+
+  const result = acquireLock(dir, 'merge', { staleMs: 24 * 60 * 60 * 1000 });
+  assert.equal(rebuilt, true, '测试前提：重建必须发生在 acquireLock 的观察窗口内');
+  assert.equal(result.ok, false, '观察窗口内被重建的锁不得被判定为陈旧残留');
+  assert.ok(fs.existsSync(file), '刚重建的活锁不得被删除');
+  assert.equal(fs.readFileSync(file, 'utf8'), livePayload, '保留下来的必须是新代际的锁');
+});
+
 // --- 手动释放入口（SCEN-LED-04：文档化的人工清锁） ---
 
 test('SCEN-LED-04 breakLock removes the lock when the holder is dead, regardless of age', (t) => {
@@ -188,6 +227,21 @@ test('SCEN-LED-04 breakLock refuses to clear a lock whose holder is alive', (t) 
   assert.ok(fs.existsSync(file), '清活锁会制造它要防的并发改写');
 });
 
+test('breakLock ignores --force when the holder is provably alive', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'run-state.lock');
+  fs.writeFileSync(file, JSON.stringify({
+    pid: process.pid, host: os.hostname(), acquiredAt: new Date().toISOString(),
+  }));
+
+  // `--force` 的豁免范围只有「探不到」：能确认存活的持有者一律拒绝。
+  // 放行 force 等于给「清活锁」留一条默认路径，正是这把锁要防的事故。
+  const result = breakLock(dir, 'run-state', { force: true });
+  assert.equal(result.reason, 'alive', '--force 不得把可确认存活的持有者当成探不到');
+  assert.equal(result.removed, false);
+  assert.ok(fs.existsSync(file), '活锁无论如何都不得被清除');
+});
+
 test('breakLock does not guess when the holder cannot be probed, unless forced', (t) => {
   const dir = tempDir(t);
   const file = path.join(dir, 'run-state.lock');
@@ -202,6 +256,32 @@ test('breakLock does not guess when the holder cannot be probed, unless forced',
   const forced = breakLock(dir, 'run-state', { force: true });
   assert.equal(forced.reason, 'removed');
   assert.ok(!fs.existsSync(file), '--force 是人确认之后的显式豁免');
+});
+
+test('breakLock reports an unreadable lock as an error, not as absent', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'run-state.lock');
+  fs.writeFileSync(file, JSON.stringify({
+    pid: process.pid, host: os.hostname(), acquiredAt: new Date().toISOString(),
+  }));
+
+  // stat 报 EACCES 时锁仍然在：按 absent 返回会让 CLI 打印「无需清除」并 exit 0，
+  // 使用者以为已处理，之后的写入继续被拒。
+  const originalStat = fs.statSync;
+  fs.statSync = function patchedStat(target, ...rest) {
+    if (String(target) === file) {
+      const error = new Error(`EACCES: permission denied, stat '${file}'`);
+      error.code = 'EACCES';
+      throw error;
+    }
+    return originalStat.call(this, target, ...rest);
+  };
+  t.after(() => { fs.statSync = originalStat; });
+
+  const result = breakLock(dir, 'run-state');
+  assert.equal(result.reason, 'error', '读不到锁文件必须报 error');
+  assert.match(result.error, /EACCES/);
+  assert.ok(fs.existsSync(file), '读不到就不得删');
 });
 
 test('breakLock reports an absent lock instead of failing', (t) => {
@@ -277,4 +357,19 @@ test('SCEN-LED-04 the CLI break-lock exits non-zero for a live holder and leaves
   assert.equal(result.status, 2);
   assert.match(result.stderr, /存活/);
   assert.ok(fs.existsSync(subject.lockFile), '活锁不得被 CLI 悄悄清掉');
+});
+
+test('SCEN-LED-04 the CLI refuses --break-lock --force for a live holder instead of reporting a cleanup', (t) => {
+  const subject = cliFixture(t);
+  fs.writeFileSync(subject.lockFile, JSON.stringify({
+    pid: process.pid, host: os.hostname(), acquiredAt: new Date().toISOString(),
+  }));
+
+  // 旧行为：--force 连活锁一起清，还打印「已清除残留锁」——CLI 把制造并发写当成了成功。
+  const result = subject.run('--break-lock', '--force');
+  assert.equal(result.status, 2, '--force 不得清掉可确认存活的锁');
+  assert.doesNotMatch(result.stdout, /已清除/, '拒绝时不得报告已清除');
+  assert.match(result.stderr, /存活/, '拒绝文案必须说明持有者仍存活');
+  assert.match(result.stderr, /--force/, '拒绝文案必须说明强制豁免不适用于可确认存活的持有者');
+  assert.ok(fs.existsSync(subject.lockFile), '活锁必须原样保留');
 });
