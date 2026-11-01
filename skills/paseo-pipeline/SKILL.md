@@ -277,7 +277,7 @@ node "$PIPELINE_HOME"/run-state.mjs report <change> [--json]
 - **动作意图幂等**：同一幂等键已有未回执意图时，`claim` 以 exit 2 拒绝重复派发。**先记意图，再派发，再记回执。** 创建成功但回执丢失时，按唯一标签对账，未排除重复前不盲重派。
 - **`fail` 只作废「还没回执」的意图**：已有真实 `agent` 回执的意图不得 `fail`（exit 2）。作废的语义是「这次派发确认没有发生」，而回执证明它发生过并指向一个具体 agent——agent 中途失联是 `reconcile` 的 rework，用**新的 attempt 键**重派，不要抹掉这次派发的痕迹。
 - **单 owner 租约**：同 run 只有一个有效 owner。租约过期后旧 owner 的全部 `claim`/`record`/`fail` 一律 exit 2，必须显式 `begin` 领取新代际——防止旧 Lead 复活后继续提交动作。**租约仍有效且属于他人时不得抢占**，等其 renew 或超时。
-- **信封进机器校验（`record --envelope`）**：`record` 可带 `--envelope <file>`，把子 Agent 的信封交给 `lib/envelope.mjs` 校验：7 个统一字段（`task`/`attempt`/`phase`/`result`/`reviewed_sha`/`blockers`/`next_action`）齐全、枚举合法、`result` 与 `next_action` 不自相矛盾、无重复字段、行数不超限（写手 20 行，`anchasi`/`hanlin` 审计信封 25 行；行数上限由 `--role` 决定，不给就按写手算）。不合格即**拒绝回执**（exit 2）——回执是「这次派发产出了什么」的唯一入口，放行一封结构不合格的信封等于把下游判断推回自由心证。字段快照写进意图的 `envelope`，不留原文（账本是状态，不是日志）。
+- **信封进机器校验（`record --envelope`）**：`record` 可带 `--envelope <file>`，把子 Agent 的信封交给 `lib/envelope.mjs` 校验：8 个统一字段（`kind`/`task`/`attempt`/`phase`/`result`/`reviewed_sha`/`blockers`/`next_action`，清单以该模块导出的 `ENVELOPE_REQUIRED_FIELDS` 为唯一真源，此处只是抄录）齐全、枚举合法、`kind` 与 `next_action` 不自相矛盾、无重复字段、行数不超限（写手 20 行，`anchasi`/`hanlin` 审计信封 25 行；行数上限由 `--role` 决定，不给就按写手算）。不合格即**拒绝回执**（exit 2）——回执是「这次派发产出了什么」的唯一入口，放行一封结构不合格的信封等于把下游判断推回自由心证。字段快照写进意图的 `envelope`，不留原文（账本是状态，不是日志）。
 - **`review` 与 `merge` 是度量的事实来源，不是可选装饰**：`review` 登记审计结论（`task`/`attempt`/`round`/`verdict`/`agent`/`sha`），同一 `(task, attempt, round)` 幂等覆盖；`merge` 由 `merge-task.mjs` 写入合流事实（任务列表 + 合流 sha + review-tag）。`report` 的首次通过率只数 `reviews[]` 里每个任务**首轮**（round 最小）的 verdict：分母是「有审计结论的任务数」，不是派发数；没有 review 记录就是「未采集」，不是「100%」。
 - **确认点时间只在确认当下登记**：`confirm --checkpoint cp1|cp2` 由收到人类确认的那一方在同一回合写入。同一 checkpoint 重复登记是幂等的——保留首次时间、只累加 `repeated` 与 `lastAt`，因为「再次确认」通常意味着冻结被推翻，覆盖时间会让等待跨度永远看起来很短。`report` 的 `confirmations` 只回显账本里的时间；两项不齐就打印「未采集」，不推算「本该多早」。
 - **READY 等待的口径写死在数据里**：`claim` 在新意图建立时，若同任务存在更早、已了结（`resolvedAt`/`failedAt`）的意图，就记一条 `readyObs`（`waitMs` + `basis: 'prev-end→claim'`），同一对相邻动作不重复计时。`report` 打印中位数/最大值并回显口径——依赖解除的时刻账本不一定知道（依赖可能在别处合流），所以这是「排队时长」，不是 end-to-end 的 READY 时间。
@@ -307,7 +307,10 @@ node "$PIPELINE_HOME"/run-state.mjs report <change> [--json]
 
 ### 信封规范（≤20 行）
 
-统一字段：`task`、`attempt`、`phase`、`result`、`reviewed_sha`、`blockers`、`next_action`。
+统一字段共 8 个，顺序即模板顺序，清单以 `lib/envelope.mjs` 导出的 `ENVELOPE_REQUIRED_FIELDS` 为唯一真源：
+
+`kind`、`task`、`attempt`、`phase`、`result`、`reviewed_sha`、`blockers`、`next_action`。
+
 - `kind`: `turn-idle`（等下游时当前回合结束，非阶段完成）、`phase-complete`（当前阶段顺利完成）、`blocked`（阻断打回或失败）。
 - 短摘要与完整证据分开；字段适用性明确。执行器须验证信封与真实产物一致。
 
