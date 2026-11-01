@@ -43,7 +43,12 @@ function write(cwd, filename, content) {
   fs.writeFileSync(target, content);
 }
 
+/**
+ * `verify === null` 表示任务**不写** `Verify with` 字段（不是写空值）：SCEN-HND-12 要复现的
+ * 是「冻结契约里根本没有验证命令」，那与「写了一句自然语言」是两种不同的缺失形态。
+ */
 function tasksContent(verifyCommand = passCommand, review = 'mechanical') {
+  const verifyLine = verifyCommand === null ? [] : [`  - Verify with: ${verifyCommand}`];
   return [
     '# Tasks',
     '',
@@ -51,13 +56,13 @@ function tasksContent(verifyCommand = passCommand, review = 'mechanical') {
     '  - Depends on: none',
     '  - Write scope: src/a.txt',
     `  - Review: ${review}`,
-    `  - Verify with: ${verifyCommand}`,
+    ...verifyLine,
     '',
     '- [ ] 1.2 T-02 Task 2',
     '  - Depends on: T-01',
     '  - Write scope: src/b.txt',
     `  - Review: ${review}`,
-    `  - Verify with: ${verifyCommand}`,
+    ...verifyLine,
   ].join('\n');
 }
 
@@ -391,6 +396,66 @@ test('task-runner exits 20 when verify command fails in the writer workspace', (
   const res = invoke(setup, [change, 'T-01']);
   assert.equal(res.status, 20, `${res.stdout}\n${res.stderr}`);
   assert.match(res.stderr, /Verify command failed/);
+});
+
+// SCEN-HND-12
+test('task-runner exits 36 when the task declares no Verify with and dispatches nothing', (context) => {
+  // 旧实现在合流参数里写 `task.verify?.command || 'npm test'`：契约没有验证命令时，
+  // 入口自己补一条默认测试命令，非 Node 仓库的交付就被一条无关命令「验过」。
+  // 这里断言的是「拒绝而不是猜」：退出码与 merge-task 同一语义、点名任务、零派发、零合流，
+  // 且拒在 claim 之前（账本文件根本不该出现）。
+  const setup = fixture(context, { verify: null, review: 'mechanical' });
+  const res = invoke(setup, [change, 'T-01', '--owner', 'test-owner']);
+
+  assert.equal(res.status, 36, `${res.stdout}\n${res.stderr}`);
+  assert.match(res.stderr, /T-01/, 'the failure must name the task');
+  assert.match(res.stderr, /Verify with/, 'the failure must name the missing contract');
+  assert.doesNotMatch(res.stderr, /npm test/,
+    'the entry must not mention a substituted default test command at all');
+  assert.equal(runs(setup).length, 0, 'an unverifiable task must not be dispatched');
+  assert.equal(mergeCalls(setup).length, 0, 'an unverifiable task must not reach the merge gate');
+  assert.equal(fs.existsSync(ledgerPath(setup)), false,
+    'the refusal must happen before the intent is claimed');
+});
+
+// SCEN-HND-12
+test('task-runner exits 36 in dry-run too, so the missing contract surfaces before dispatch', (context) => {
+  // dry-run 的职责是提前暴露契约问题。缺失 Verify 不是「跑到测试才知道」的运行期失败，
+  // 把它藏到 dry-run 之后再报等于让编排者按一次假绿的计划往下走。
+  const setup = fixture(context, { verify: null });
+  const res = invoke(setup, [change, 'T-01', '--dry-run']);
+  assert.equal(res.status, 36, `${res.stdout}\n${res.stderr}`);
+  assert.doesNotMatch(res.stdout, /Dry-run completed successfully/);
+});
+
+// SCEN-HND-12
+test('task-runner exits 36 when Verify with is prose rather than an executable command', (context) => {
+  // 与「字段缺失」是两种不同的缺失形态，判据都来自 lib/tasks.mjs 的同一份解析器：
+  // command === null 表示那一行不是命令。拿描述当命令去跑，等于没有验证。
+  const setup = fixture(context, { verify: 'run the full test suite', review: 'mechanical' });
+  const res = invoke(setup, [change, 'T-01', '--owner', 'test-owner']);
+
+  assert.equal(res.status, 36, `${res.stdout}\n${res.stderr}`);
+  assert.match(res.stderr, /T-01/);
+  assert.match(res.stderr, /natural-language description is not a test command/);
+  assert.equal(runs(setup).length, 0, 'an unverifiable task must not be dispatched');
+  assert.equal(mergeCalls(setup).length, 0, 'an unverifiable task must not reach the merge gate');
+});
+
+// SCEN-HND-12
+test('task-runner exits 36 on a --review-tag re-entry with no executable Verify, never guessing one', (context) => {
+  // 重入路径同样走合流（spec 的 WHEN 指向「reaches the merge step」）。旧实现里这条路径
+  // 传给 merge-task 的仍是 `|| 'npm test'`，于是审计通过的交付会被一条默认命令替代冻结契约。
+  const setup = fixture(context, { review: 'strict', verify: null });
+  const branch = `task/${change}/T-01`;
+  const { tip7, base7 } = deliverTaskBranch(setup, branch);
+
+  const res = invoke(setup, [change, 'T-01', '--review-tag', `pass(1234abcd@${tip7}/${base7})`,
+    '--owner', 'test-owner']);
+  assert.equal(res.status, 36, `${res.stdout}\n${res.stderr}`);
+  assert.equal(runs(setup).length, 0, 'a tagged re-entry must not dispatch the writer');
+  assert.equal(mergeCalls(setup).length, 0,
+    'no merge subprocess may run when the frozen contract carries no executable command');
 });
 
 test('task-runner speculative mode rejects missing upstream branch but succeeds when branch exists', (context) => {

@@ -26,6 +26,7 @@
 //   30 写范围越界
 //   32 自审或无独立审查意图
 //   35 依赖未完成
+//   36 任务没有可执行的 `Verify with`（与 merge-task 同一语义，拒绝以默认测试命令兜底）
 //   50 非 mechanical 档写手已交付并通过 Verify，等待真实审计（入口不代签审计结论）
 //   51 等待写手到终态超时（agent 可能仍在运行，禁止重派）
 //   52 任务分支 tip 等于 workspace 基点：写手未产出提交，Verify 没有覆盖任何实现
@@ -322,6 +323,34 @@ function mechanicalTag(branch) {
 }
 
 /**
+ * Verify 契约必须可执行：`Verify with` 字段缺失，或那一行是自然语言描述，一律 exit 36。
+ *
+ * 为什么不能在合流参数里兜底一条默认测试命令：旧实现写的是
+ * `task.verify?.command || 'npm test'`，于是非 Node 仓库会跑一条与本任务毫不相干的命令——
+ * 它绿不绿都不构成这份交付的证据，而 merge-task 的测试计划里因此写着「跑过一条测试」。
+ * 空契约就这样被静默验收通过。exit 36 与 merge-task 对不可执行 `Verify with` 的退出码
+ * 同一语义，调用方只需认一个码。
+ *
+ * 判据只看 `lib/tasks.mjs` 这一份解析器的结果，不在本入口复刻命令词表：
+ * `verify === null` 是字段缺失，`verify.command === null` 是描述不是命令。两者都拒绝。
+ * 必须在派发**之前**判：写手照契约开工却永远无法被验，等于白派一次；重入合流前判，
+ * 则保证合流子进程拿到的永远是可执行契约，而不是一条被替换过的默认命令。
+ */
+function requireExecutableVerify() {
+  if (task.verify === null) {
+    fatal(`Task ${task.id} declares no \`Verify with\` in ${tasksFile}: the frozen contract carries `
+      + 'no verification command, so there is nothing this entry could run to prove the delivery. '
+      + 'The dispatch entry does not substitute a default test command (merge-task exit 36 semantics). '
+      + `Add an executable \`Verify with\` to ${task.id} and re-run.`, 36);
+  }
+  if (task.verify.command === null) {
+    fatal(`Task ${task.id} declares a non-executable \`Verify with\`: ${JSON.stringify(task.verify.raw)}\n`
+      + 'a natural-language description is not a test command; rewrite it as an executable command '
+      + '(merge-task exit 36 semantics). The dispatch entry does not substitute a default test command.', 36);
+  }
+}
+
+/**
  * 交付诚实：任务分支 tip 必须领先 workspace 创建时的基点 `baseSha`。
  *
  * 写手一个提交都没产出时，Verify 跑的不是任何写手的实现——它绿不绿都与本次交付无关
@@ -439,7 +468,11 @@ function mergeIntoIntegration({ branch, tag, onPreMerge = null }) {
   if (isFast) {
     mergeArgs.push('--fast');
   } else {
-    mergeArgs.push(task.verify?.command || 'npm test');
+    // 只传冻结契约里那条命令。旧实现在这里是 `|| 'npm test'`：任务没写 Verify with 时，
+    // 这条默认命令会在集成 workspace 里跑一遍与本任务无关的测试，然后被当作交付证据——
+    // 非 Node 仓库上 `npm test` 甚至直接失败，把一次合法合流卡在一条没人写过的契约上。
+    // 缺失/不可执行的契约在入口处已经 exit 36（见 requireExecutableVerify），走不到这里。
+    mergeArgs.push(task.verify.command);
   }
 
   const mergeRes = runCmd(process.execPath, mergeArgs, { cwd: repoRoot });
@@ -524,8 +557,14 @@ if (missingDeps.length > 0) {
   }
 }
 
+// 2b. Verify 契约必须可执行（fail closed，exit 36）。
+// 判在派发与合流**之前**、也判在 dry-run 之前：这不是「等跑到测试才知道」的运行期失败，
+// 而是任务契约本身不可验收——dry-run 的职责正是提前暴露它。
+// 已经 DONE 的任务在上面 exit 0 了，不会因为历史任务缺字段而误伤。
+requireExecutableVerify();
+
 const reviewTier = task.review || (task.risk && task.risk.some((r) => r !== 'none') ? 'strict' : 'standard');
-log(`Ready to execute: tier=${reviewTier}, scope=${task.scope.join(',')}, verify=${task.verify?.command || 'none'}`);
+log(`Ready to execute: tier=${reviewTier}, scope=${task.scope.join(',')}, verify=${task.verify.command}`);
 
 if (isDryRun) {
   log('Dry-run completed successfully.');
