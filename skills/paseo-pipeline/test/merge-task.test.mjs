@@ -39,12 +39,13 @@ function write(cwd, filename, content) {
   writeFileSync(target, content);
 }
 
-function taskMarkdown({ id, review = 'strict', done = false, depends = 'none', scope = 'src/task.txt, src/shared.txt' }, index, colonForm = false) {
+function taskMarkdown({ id, review = 'strict', done = false, depends = 'none', scope = 'src/task.txt, src/shared.txt', risk = null }, index, colonForm = false) {
   return [
     `- [${done ? 'x' : ' '}] 1.${index + 1} ${id}${colonForm ? ':' : ''} Deliver ${id}`,
     ...(done ? ['  - Done: source=1234567 review=pass(12345678@1234567/7654321)'] : []),
     `  - Depends on: ${depends}`,
     `  - Write scope: ${scope}`,
+    ...(risk === null ? [] : [`  - Risk-surface: ${risk}`]),
     ...(review === null ? [] : [`  - Review: ${review}`]),
     `  - Verify with: ${passCommand}`,
   ].join('\n');
@@ -393,6 +394,67 @@ for (const review of ['strict', null]) {
     assertRejected(repo, invoke(repo, { tag: reviewTag(repo, { reviewer: 'mechanical' }) }));
   });
 }
+
+// --- SCEN-MRG-11 缺省档位 fail closed ---
+//
+// SKILL §2.1-2 与 spec 的合流门禁都承诺：`Review` 缺省且无风险面可推导时，合流必须拒绝，
+// 不得替调用者选 `standard`/`mechanical`。旧实现的 parser 返回 `requiredReview=null`
+// 却没有任何合流方消费它，于是这条承诺在代码里根本不存在——文档写「fail closed」，
+// 实际每一次缺省档位合流都静默放行。这组用例只钉住「合流口真的读了它」。
+
+test('SCEN-MRG-11 a task with no Review and Risk-surface none is refused as an undecided tier', (context) => {
+  const repo = fixture(context, { tasks: [{ id: 'T-1', review: null, risk: 'none' }] });
+  const result = invoke(repo);
+  assert.notEqual(result.status, 0, `${result.stdout}${result.stderr}`);
+  // 报错必须点名「档位未定」并列出合法档位，否则读的人会以为是别处的配置问题。
+  assert.match(result.stderr, /undecided review tier: T-1/);
+  assert.match(result.stderr, /strict, standard, mechanical/);
+  // 拒绝理由必须是档位本身：写范围（30）与作者血统（31）的报错会把人引向错误修法。
+  assert.doesNotMatch(result.stderr, /outside declared Write scope/);
+  assert.doesNotMatch(result.stderr, /Pipeline-Role|Pipeline-Author/);
+  assertUnchanged(repo);
+});
+
+test('SCEN-MRG-11 no default tier is applied: neither mechanical nor standard merge labels are accepted', (context) => {
+  // 两种「默认」都要试：`mechanical` 是最宽的（跳过独立审计），`standard` 是最常见的猜测。
+  // 只要有一条能合流，就说明合流口仍在替调用者选档位。
+  const repo = fixture(context, { tasks: [{ id: 'T-1', review: null, risk: 'none' }] });
+  for (const reviewer of ['mechanical', '12345678']) {
+    const result = invoke(repo, { tag: reviewTag(repo, { reviewer }) });
+    assert.notEqual(result.status, 0, `${reviewer}: ${result.stdout}${result.stderr}`);
+    assert.match(result.stderr, /undecided review tier: T-1/);
+  }
+  assertUnchanged(repo);
+});
+
+test('SCEN-MRG-11 a risk surface alone still derives strict and merges', (context) => {
+  // 未定 ≠ 缺省：非 `none` 风险面能推导出 `strict`，这是已定档位，必须照常合流。
+  // 少了这条，把门禁写成「`Review` 字段缺失即拒」也会全绿——那会误伤推导路径。
+  const repo = fixture(context, { tasks: [{ id: 'T-1', review: null, risk: 'error-handling' }] });
+  assertMerged(repo, invoke(repo));
+});
+
+test('SCEN-MRG-11 an undecided tier on a pod member blocks the whole pod merge', (context) => {
+  // Pod 是单次整体合流：任一成员档位未定，整批都不能放行——否则只报已定档位的成员
+  // 就能把未定档位的成员捎带进去。
+  const ids = ['T-1', 'T-2'];
+  const repo = fixture(context, {
+    branch: `pod/${change}`,
+    tasks: [{ id: 'T-1' }, { id: 'T-2', review: null, risk: 'none' }],
+    baselineFiles: { [`openspec/changes/${change}/pod-members.json`]: JSON.stringify({ tasks: ids }, null, 2) },
+  });
+  const result = invoke(repo, { ids: ids.join(',') });
+  assert.notEqual(result.status, 0, `${result.stdout}${result.stderr}`);
+  assert.match(result.stderr, /undecided review tier: T-2/);
+  assertUnchanged(repo);
+});
+
+test('SCEN-MRG-11 an undecided tier on an unrelated task does not block this merge', (context) => {
+  // 与 SCEN-CON-01 同一口径：单个任务的问题只压住被点名的任务。
+  // T-2 未定档位，本次合流的是已声明档位的 T-1。
+  const repo = fixture(context, { tasks: [{ id: 'T-1' }, { id: 'T-2', review: null, risk: 'none' }] });
+  assertMerged(repo, invoke(repo));
+});
 
 test('pod mechanical review rejects a mixed strict/mechanical task list', (context) => {
   const repo = fixture(context, {

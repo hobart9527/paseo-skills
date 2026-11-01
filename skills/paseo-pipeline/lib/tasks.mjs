@@ -284,6 +284,14 @@ function newTask(fields) {
 }
 
 /**
+ * `Review` 的合法取值——**唯一属主**。
+ *
+ * 解析期用它判 `UNKNOWN_REVIEW`，合流期用它写出「请声明为哪几档」的报错。
+ * 两处若各写一份列表，新增一档时只改一处就会让合流入口把合法档位当成未知档位。
+ */
+export const REVIEW_TIERS = ['strict', 'standard', 'mechanical'];
+
+/**
  * 解析后的风险等级：显式 `Review` 优先（`mechanical` 与高风险冲突时由 parseTasks 报错），
  * 否则任一非 `none` 风险面 ⇒ `strict`；无风险面且未声明 ⇒ null（缺省，调用方 fail closed）。
  */
@@ -312,8 +320,8 @@ export function parseTasks(markdown) {
     if (!sawScopeField || task.scope.length === 0) {
       fail('MISSING_SCOPE', `${task.id} 缺少非空的 Write scope`, task.id);
     }
-    if (task.review !== null && !['strict', 'standard', 'mechanical'].includes(task.review)) {
-      fail('UNKNOWN_REVIEW', `${task.id} 的 Review 取值未知：${task.review}（须为 strict/standard/mechanical）`, task.id);
+    if (task.review !== null && !REVIEW_TIERS.includes(task.review)) {
+      fail('UNKNOWN_REVIEW', `${task.id} 的 Review 取值未知：${task.review}（须为 ${REVIEW_TIERS.join('/')}）`, task.id);
     }
     const unknownRisk = task.risk.filter((token) => !RISK_TOKENS.has(token));
     if (unknownRisk.length > 0) {
