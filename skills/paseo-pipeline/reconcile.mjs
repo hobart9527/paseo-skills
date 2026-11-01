@@ -53,7 +53,8 @@ if (changeProblem !== null) fatal(changeProblem);
 const emptyGroups = () => ({
   INVALID: [], DONE: [], ACTIVE: [], UNRESOLVED: [], MERGE: [],
   BLOCKED: [], BLOCKED_RESOURCE: [], READY: [], UNMAPPED: [], RUNNING: [],
-  FOREIGN: [], INTENT_PENDING: [], ORPHAN_INTENT: [], SPECULATIVE_READY: [], canDispatchNow: [], holdReasons: [],
+  FOREIGN: [], INTENT_PENDING: [], ORPHAN_INTENT: [], SPECULATIVE_READY: [], canDispatchNow: [],
+  holdReasons: [], taskHoldReasons: [],
 });
 
 function fatal(message) {
@@ -581,6 +582,16 @@ for (const { task, label, policy } of pendingDependencyTasks) {
       agents: intentEntry.agents, reason: intentEntry.reason,
     });
     emittedIntentKeys.add(intentEntry.key);
+    // 逐任务挂起原因：意图只压住它点名的任务，绝不能升级成全局 hold。
+    // 旧实现把「有意图未回执」写进全局 holdReasons，一条 T-02 的在途派发就直接清空
+    // canDispatchNow，与 SKILL §2.0「单个任务的阻塞只压住被点名的任务」相反。
+    out.taskHoldReasons.push({
+      task: label,
+      id: task.id,
+      key: intentEntry.key,
+      kind: intentEntry.kind,
+      reason: `派发意图尚无回执（${intentEntry.key}）；该任务不得重派`,
+    });
     stateOf.set(task.id, "INTENT_PENDING");
     held.push({ id: task.id, label, scope: task.scope });
     continue;
@@ -702,9 +713,10 @@ if (out.dirtyUnexplained.length > 0) {
 const room = Math.max(0, cap - liveWriterCount - foreignLiveWriters);
 if (runtime !== "ok") out.holdReasons.push(`runtime=${runtime}（非 ok 一律不放行）`);
 if (UNMAPPED.length > 0) out.holdReasons.push(`存在 ${UNMAPPED.length} 个 UNMAPPED 运行中 agent`);
-if (out.openIntentCount > 0) {
-  out.holdReasons.push(`有 ${out.openIntentCount} 项派发意图尚无回执；在排除重复之前不放行新派发`);
-}
+// 未回执意图**不进**全局 holdReasons：它只压住自己点名的那个任务（见上方逐任务分支与
+// out.taskHoldReasons）。孤儿意图仍由 nextAction 提升为最高优先级 arbitrate，但那是对
+// 执行器的动作指令，不是冻结无关任务的依据——否则一条挂在已 DONE 任务上的陈旧意图
+// 就能永久冻死整个 change。
 if (room === 0) {
   out.holdReasons.push(
     `cap=${cap} 已被 ${liveWriterCount} 个本 change 写入者`
@@ -885,6 +897,9 @@ if (asJson) {
     ? `LEASE    owner=${out.lease.owner} gen=${out.lease.generation} ${out.lease.valid ? "有效" : "已过期"} 到期=${out.lease.expiresAt}`
     : "LEASE    (未启用)");
   for (const r of out.holdReasons) console.log(`HOLD     ${r}`);
+  // 逐任务挂起：只点名那个任务，不读作全局阻断。执行器按这一行判断「谁不能派」，
+  // 按 canDispatchNow 判断「谁可以派」——两者互不覆盖。
+  for (const h of out.taskHoldReasons) console.log(`HOLD_TASK ${h.task}  (${h.reason})`);
   // 脏树必须总是可见（哪怕不阻断）：它是「有人就地改过集成树」的唯一运行时痕迹。
   if (out.dirty.length > 0) {
     console.log(`DIRTY    ${out.dirty.length} 个未提交文件（${out.dirtyUnexplained.length} 个无在途写手、${out.dirtyOutsideScope.length} 个在 scope 外）`);

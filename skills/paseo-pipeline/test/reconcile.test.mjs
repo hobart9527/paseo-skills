@@ -290,7 +290,7 @@ test('JSON contract preserves legacy keys and exposes all reconciliation categor
   assert.equal(result.change, change);
   assert.equal(result.cap, 3);
   assert.equal(result.runtime, 'ok');
-  for (const key of [...states, 'UNMAPPED', 'RUNNING', 'canDispatchNow']) {
+  for (const key of [...states, 'UNMAPPED', 'RUNNING', 'canDispatchNow', 'taskHoldReasons']) {
     assert.ok(Array.isArray(result[key]), `${key} must be an array`);
   }
   state(result, 'T-01', 'READY');
@@ -1468,7 +1468,9 @@ test('SCEN-REC-19 an open dispatch intent blocks a repeat dispatch of the same t
   state(result, 'T-01', 'INTENT_PENDING');
   dispatch(result, []);
   assert.match(JSON.stringify(result.INTENT_PENDING), /禁止重复派发/);
-  heldClosed(result, /派发意图尚无回执/);
+  // 挂起原因是**逐任务**的：意图压住它点名的任务，不是全局冻结（SCEN-REC-15）。
+  assert.match(JSON.stringify(result.taskHoldReasons), /派发意图尚无回执/);
+  assert.deepEqual(result.holdReasons, [], '未回执意图不得进全局 holdReasons');
 });
 
 test('SCEN-REC-19 an intent that already has a matching live agent is not a repeat either', (context) => {
@@ -1496,6 +1498,55 @@ test('SCEN-REC-19 an overdue intent with no agent at all becomes an orphan for a
   assert.equal(result.nextAction.kind, 'arbitrate');
   assert.match(result.nextAction.reason, /超期仍无对应 agent/);
   dispatch(result, []);
+});
+
+test('SCEN-REC-15 an open intent holds only its named task', (context) => {
+  // 一条 T-02 的在途派发不该冻结 T-01/T-03：旧实现把它写进全局 holdReasons，
+  // canDispatchNow 整列为空，与 SKILL §2.0「单个任务的阻塞只压住被点名的任务」相反。
+  const subject = fixture(context, [
+    { id: 'T-01', scope: 'src/alpha/' },
+    { id: 'T-02', scope: 'src/beta/' },
+    { id: 'T-03', scope: 'src/gamma/' },
+  ]);
+  subject.runState({
+    version: 1, run: 'local', lease: null, heartbeats: [],
+    intents: [intent({ task: 'T-02', key: 'local:T-02:1:impl:gongbu:dispatch' })],
+  });
+  const result = output(subject);
+  state(result, 'T-02', 'INTENT_PENDING');
+  dispatch(result, ['T-01', 'T-03']);
+  // 逐任务原因必须点名那条意图的键：只说「有意图」执行器无法判断该 record 还是 fail。
+  const hold = result.taskHoldReasons.find((entry) => taskId(entry) === 'T-02');
+  assert.ok(hold, `T-02 必须有逐任务挂起原因：${JSON.stringify(result.taskHoldReasons)}`);
+  assert.match(hold.reason, /local:T-02:1:impl:gongbu:dispatch/);
+  // 不得同时出现全局 hold：否则 canDispatchNow 已经被清空，上面两条断言不可能同时成立，
+  // 但显式断言能挡住「逐任务与全局各报一次」的双报回归。
+  assert.ok(!result.holdReasons.some((reason) => /意图/.test(reason)),
+    `未回执意图不得进全局 holdReasons：${JSON.stringify(result.holdReasons)}`);
+});
+
+test('SCEN-REC-16 an orphan intent on a finished task does not freeze the change', (context) => {
+  // 孤儿意图（超期仍无 agent）挂在已合流任务上：它是最高优先级仲裁动作，
+  // 但「先仲裁」不等于「别派」——无关的 READY 任务必须仍然可派。
+  const tasks = [{ id: 'T-01' }, { id: 'T-02', scope: 'src/beta/' }];
+  const subject = fixture(context, tasks);
+  const source = subject.taskBranch();
+  subject.mergeTask(source, [doneTask(source), tasks[1]]);
+  const stale = new Date(Date.now() - 45 * 60 * 1000).toISOString();
+  subject.runState({
+    version: 1, run: 'local', lease: null, heartbeats: [],
+    intents: [intent({ createdAt: stale })],
+  });
+  const result = output(subject);
+  state(result, 'T-01', 'DONE');
+  state(result, 'T-02', 'READY');
+  assert.equal(result.ORPHAN_INTENT.length, 1);
+  assert.equal(result.nextAction.kind, 'arbitrate', '孤儿意图必须是最高优先级动作');
+  assert.match(result.nextAction.reason, /超期仍无对应 agent/);
+  dispatch(result, ['T-02']);
+  assert.ok(result.nextAction.actions.some((action) => action.kind === 'dispatch'),
+    '仲裁与派发必须是同一轮里的并列动作');
+  assert.deepEqual(result.holdReasons, []);
 });
 
 test('SCEN-REC-19 an intent for a different attempt does not block this attempt', (context) => {
@@ -1582,7 +1633,10 @@ test('SCEN-REC-19 one intent appears exactly once in INTENT_PENDING and in the o
   assert.deepEqual(keys, ['local:T-01:1:impl:gongbu:dispatch']);
   assert.equal(result.INTENT_PENDING.length, 1);
   assert.equal(result.openIntentCount, 1);
-  assert.match(JSON.stringify(result.holdReasons), /有 1 项派发意图尚无回执/);
+  assert.equal(result.taskHoldReasons.length, 1);
+  assert.match(JSON.stringify(result.taskHoldReasons), /local:T-01:1:impl:gongbu:dispatch/);
+  // 同一条意图也不能借全局 hold 路径再报一次。
+  assert.deepEqual(result.holdReasons, []);
 });
 
 test('SCEN-REC-19 a terminal agent with no receipt yields an arbitrate action, not an unexplained state', (context) => {

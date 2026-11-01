@@ -25,7 +25,8 @@
   - Verify with: `node --test skills/paseo-pipeline/test/run-state.test.mjs`
   - Scenarios: SCEN-LED-01, SCEN-LED-02, SCEN-LED-03
 
-- [ ] 1.3 T-03 reconcile 冻结范围化：open intent 只压住点名任务，孤儿意图保持全局仲裁
+- [x] 1.3 T-03 reconcile 冻结范围化：open intent 只压住点名任务，孤儿意图保持全局仲裁
+  - Done: source=e24e170 review=pass(08dee51e@e24e170/29ce2ec)
   - Depends on: none
   - Write scope: skills/paseo-pipeline/reconcile.mjs, skills/paseo-pipeline/test/reconcile.test.mjs
   - Risk-surface: [error-handling]
