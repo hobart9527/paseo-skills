@@ -11,6 +11,13 @@
 //   node run-state.mjs review   <change> --task T-01 [--attempt 1] [--round 1] --verdict PASS|PASS_WITH_NITS|BLOCK --agent <id> [--sha <sha>] [--owner <id>]
 //   node run-state.mjs merge    <change> --task T-01 --sha <merge-sha> [--attempt 1] [--review-tag <tag>]
 //   node run-state.mjs confirm  <change> --checkpoint cp1|cp2 [--note <text>] [--owner <id>]
+//   node run-state.mjs --break-lock <change> [--force]
+//
+// 锁恢复：账本写入持 `paseo-pipeline/<change>/run-state.lock`。进程崩溃会留下残锁，
+// 之后每个动作都 exit 2（ELOCKED）。自动回收只处理「持有进程已死」或「探不到存活且超龄」的锁；
+// 跨主机的残锁与 pid 被复用的情形只能由人确认，用 `--break-lock` 手动清除。它只清持有者
+// 已死的锁，持有进程还活着就拒绝（清活锁等于制造它要防的并发改写）。
+// `--force` 仅用于「确认已死但探不到」：跨主机锁，或 pid 已被无关进程复用。
 //
 // 无 heartbeat 子命令：SKILL 已声明常规运行不建周期性 heartbeat，2026-10-26 的
 // `hardening-governance-contracts` 账本里 heartbeats 为 0，注册入口没有使用者。
@@ -28,9 +35,10 @@
 //   - fail 与 record 是互斥的两个终态：fail 允许同键重派（claim 复位该记录并记 retryOf），
 //     record 必须带真实 agent 且不得复活已 fail 的意图。
 import {
-  readRunState, updateRunState, intentKey, findByKey, openIntents, leaseStatus,
+  readRunState, updateRunState, runStatePath, intentKey, findByKey, openIntents, leaseStatus,
   isFailed, intentAgeMs, DEFAULT_LEASE_TTL_MS,
 } from './lib/run-state.mjs';
+import { breakLock } from './lib/lock.mjs';
 import { normalizePhase, isWriterRole } from './lib/roles.mjs';
 import { findAgentRecord } from './lib/paseo-state.mjs';
 import { changeIdProblem } from './lib/change-id.mjs';
@@ -124,8 +132,17 @@ const argv = process.argv.slice(2);
 const json = argv.includes('--json');
 const command = argv[0];
 const change = argv[1];
+// `--break-lock` 是旗标形态的恢复入口（不是账本子命令）：它只清锁、不读改写账本，
+// 因此 `--break-lock <change>` 里 change 仍落在第二个位置参数上，与其它命令同形。
+if (command === '--break-lock') {
+  if (!change || change.startsWith('--')) {
+    console.error('Usage: node run-state.mjs --break-lock <change> [--force]');
+    process.exit(1);
+  }
+}
 if (!command || !change) {
-  console.error('Usage: node run-state.mjs <begin|status|report|claim|record|fail|review|merge|confirm> <change> [flags]');
+  console.error('Usage: node run-state.mjs <begin|status|report|claim|record|fail|review|merge|confirm> <change> [flags]'
+    + ' | --break-lock <change> [--force]');
   process.exit(1);
 }
 // change 名必须是位置参数形态：把 `--change` 这类旗标当成 change 会静默新建一份游离账本
@@ -173,6 +190,9 @@ function ownerRefusal(draft, action) {
  * 持锁读改写，并把两种「动作被拒」统一成 exit 2：
  *   ELOCKED  另一个进程正持有账本锁（并发 claim），本次不改写任何内容；
  *   refusal  锁内发现的租约拒绝。
+ *
+ * ELOCKED 的文案必须给出出路：残留的锁会挡住之后的每条 claim/record/fail。不点名
+ * `--break-lock` 的话，使用者只能猜或删掉整份账本——后者会把派发记录一起丢掉。
  */
 function update(action, fn) {
   try {
@@ -180,7 +200,12 @@ function update(action, fn) {
     if (result?.refusal) fail(2, result.refusal);
     return result;
   } catch (error) {
-    if (error?.code === 'ELOCKED') fail(2, `运行账本被占用，${action} 未生效：${error.message}`);
+    if (error?.code === 'ELOCKED') {
+      fail(2, `运行账本被占用，${action} 未生效：${error.message}\n`
+        + '若确认上一次动作已崩溃、锁是残留：先看 status 确认没有在跑的派发，再执行 '
+        + `\`node run-state.mjs --break-lock ${change}\` 清除（持有进程仍存活时会被拒绝；`
+        + '跨主机锁或 pid 被复用时加 `--force`）。');
+    }
     throw error;
   }
 }
@@ -687,6 +712,36 @@ switch (command) {
     }
     console.log(json ? JSON.stringify({ change, intent: result.intent }) : `[run-state] fail ok ${key} reason=${reason}`);
     break;
+  }
+
+  case '--break-lock': {
+    // 唯一的手动锁恢复入口。它清的是**锁**，不是账本：残留的锁会挡住之后的每条
+    // claim/record/fail；删账本或重跑 begin 都换不回被挡住的写入。
+    //
+    // 判据只认持有者存活，不认年龄：刚崩掉的锁还很新，等不起；而持有进程还活着的锁
+    // 清掉就会让两条读改写同时进行——那正是这把锁要防的事故。跨主机与 pid 复用探不到，
+    // 只能由人确认后 `--force`。
+    const force = argv.includes('--force');
+    const file = runStatePath(change);
+    const result = breakLock(path.dirname(file), 'run-state', { force });
+    const shown = result.file.replace(`${path.sep}paseo-pipeline${path.sep}`, `${path.sep}`);
+    if (json) {
+      console.log(JSON.stringify({ change, ...result, file: shown }, null, 2));
+    } else if (result.reason === 'removed') {
+      console.log(`[run-state] --break-lock ok ${shown} 已清除残留锁（持有者 ${result.holder}）`);
+    } else if (result.reason === 'absent') {
+      console.log(`[run-state] --break-lock ${shown} 不存在，无需清除`);
+    }
+    if (result.reason === 'removed' || result.reason === 'absent') break;
+    if (result.reason === 'alive') {
+      fail(2, `锁仍由存活进程持有（${result.holder}），拒绝清除：清掉活锁会让两条读改写同时进行。`
+        + '先确认那个进程是不是卡死的派发；确已卡死请先结束它，再跑 --break-lock');
+    }
+    if (result.reason === 'unknown') {
+      fail(2, `无法确认持有者是否存活（${result.holder}）：跨主机的锁在本机探不到 pid，`
+        + '旧记录里可能没有 pid。确认持有者已死后加 `--force` 清除');
+    }
+    fail(2, `锁在判定与清除之间被换主（${result.holder}），未清除：重跑 --break-lock 重新判定`);
   }
 
   default:
