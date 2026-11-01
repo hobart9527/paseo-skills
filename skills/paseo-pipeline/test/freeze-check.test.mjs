@@ -21,6 +21,7 @@ function change(files) {
 const contract = `- [ ] 1.1 T-01 shared
   - Write scope: src/shared,test/shared.test.mjs
   - Verify with: node --test test/shared.test.mjs
+  - Scen: SCEN-1
 - [ ] 1.2 T-02 alpha
   - Depends on: T-01
   - Write scope: src/alpha,test/alpha.test.mjs
@@ -30,56 +31,86 @@ const contract = `- [ ] 1.1 T-01 shared
   - Depends on: T-01
   - Write scope: src/beta,test/beta.test.mjs
   - Verify with: node --test test/beta.test.mjs
+  - Scen: SCEN-1
 - [ ] 1.4 T-04 sink
   - Depends on: T-02,T-03
   - Write scope: test/sink.test.mjs
-  - Verify with: npm test`;
+  - Verify with: npm test
+  - Scen: SCEN-1`;
+const design = '## Impact Inventory\nnone\n';
 test('accepts narrow non-sink tasks and reports concurrency', () => {
-  const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'acceptance.md': table('| SCEN-1 | CLI | T-04 | node -e "0" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-04 | node -e "0" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
   const result = run(dir);
   assert.equal(result.status, 0);
 });
 test('rejects full-suite non-sink verify', () => {
   const bad = contract.replace('node --test test/alpha.test.mjs', 'npm test');
-  const dir = change({ 'tasks.md': bad, 'proposal.md': 'x', 'acceptance.md': 'x', 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  const dir = change({ 'tasks.md': bad, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': 'x', 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
   const result = run(dir);
   assert.equal(result.status, 1);
   assert.match(result.stdout, /VERIFY_NOT_NARROW T-02/);
 });
 test('rejects wave scope conflict', () => {
   const bad = contract.replace('src/beta,test/beta.test.mjs', 'src/alpha,test/beta.test.mjs');
-  const dir = change({ 'tasks.md': bad, 'proposal.md': 'x', 'acceptance.md': 'x', 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  const dir = change({ 'tasks.md': bad, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': 'x', 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
   const result = run(dir);
   assert.equal(result.status, 1);
-  assert.match(result.stdout, /WAVE_SCOPE_CONFLICT/);
+  assert.match(result.stdout, /SCOPE_CONFLICT/);
 });
 
 const table = (rows) => `| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |\n| --- | --- | --- | --- | --- | --- | --- |\n${rows}`;
 const acceptance = table('| SCEN-1 | CLI | T-02 | node -e "0" | yes | PENDING | pending |');
 test('accepts schema scenario headings with descriptions and rejects hidden full-suite legs', () => {
   const bad = contract.replace('node --test test/alpha.test.mjs', 'npm test && node --test test/alpha.test.mjs');
-  const dir = change({ 'tasks.md': bad, 'proposal.md': 'x', 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1 successful alpha\n' });
+  const dir = change({ 'tasks.md': bad, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1 successful alpha\n' });
   const result = run(dir);
   assert.equal(result.status, 1);
   assert.match(result.stdout, /VERIFY_FULL_SUITE_NON_SINK T-02/);
 });
 test('rejects zero parsed tasks and multiple full-suite sinks', () => {
-  const empty = change({ 'tasks.md': '# Tasks\n- [ ] 1.1 missing ID\n', 'proposal.md': 'x', 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  const empty = change({ 'tasks.md': '# Tasks\n- [ ] 1.1 missing ID\n', 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
   assert.match(run(empty).stdout, /EMPTY_TASKS/);
   const twoSinks = contract.replace('npm test', 'npm test').replace('  - Verify with: npm test', '  - Verify with: npm test').replace('- [ ] 1.3 T-03 beta\n  - Depends on: T-01\n  - Write scope: src/beta,test/beta.test.mjs\n  - Verify with: node --test test/beta.test.mjs', '- [ ] 1.3 T-03 beta\n  - Write scope: src/beta,test/beta.test.mjs\n  - Verify with: npm test');
-  const dir = change({ 'tasks.md': twoSinks, 'proposal.md': 'x', 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  const dir = change({ 'tasks.md': twoSinks, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
   const result = run(dir);
   assert.equal(result.status, 1);
   assert.match(result.stdout, /TOO_MANY_FULL_SUITE_SINKS/);
   assert.match(result.stdout, /VERIFY_FULL_SUITE_NON_SINK T-03/);
 });
 test('validates required acceptance scenarios and frozen state', () => {
-  const good = change({ 'tasks.md': contract, 'proposal.md': 'x', 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1 alpha works\n' });
+  const good = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1 alpha works\n' });
   assert.equal(run(good).status, 0);
-  const unknown = change({ 'tasks.md': contract, 'proposal.md': 'x', 'acceptance.md': table('| SCEN-X | CLI | T-02 | node -e "0" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  const unknown = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-X | CLI | T-02 | node -e "0" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
   assert.match(run(unknown).stdout, /UNKNOWN_ACCEPTANCE_SCEN/);
-  const notPending = change({ 'tasks.md': contract, 'proposal.md': 'x', 'acceptance.md': table('| SCEN-1 | CLI | T-02 | node -e "0" | yes | PASS | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  const notPending = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-02 | node -e "0" | yes | PASS | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
   assert.match(run(notPending).stdout, /ACCEPTANCE_NOT_FROZEN/);
-  const noRequired = change({ 'tasks.md': contract, 'proposal.md': 'x', 'acceptance.md': table('| SCEN-1 | CLI | T-02 | node -e "0" | no | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  const noRequired = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-02 | node -e "0" | no | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
   assert.match(run(noRequired).stdout, /MISSING_REQUIRED_ACCEPTANCE/);
+});
+
+test('rejects missing impact inventory, scenario-less and fixture-only tasks', () => {
+  const files = { 'proposal.md': 'x', 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' };
+  const noImpact = change({ ...files, 'tasks.md': contract, 'design.md': '## Context\n' });
+  assert.match(run(noImpact).stdout, /MISSING_IMPACT_INVENTORY/);
+  const noScen = change({ ...files, 'design.md': design, 'tasks.md': contract.replace('  - Verify with: node --test test/alpha.test.mjs\n', '  - Verify with: node --test test/alpha.test.mjs\n  - Review: standard\n').replace(/(T-03 beta[\s\S]*?)  - Scen: SCEN-1\n/, '$1') });
+  assert.match(run(noScen).stdout, /NO_SCEN T-03/);
+  const fixtureOnly = change({ ...files, 'design.md': design, 'tasks.md': contract.replace('src/beta,test/beta.test.mjs', 'test/beta.test.mjs') });
+  assert.match(run(fixtureOnly).stdout, /FIXTURE_ONLY_TASK T-03/);
+  const mech = change({ ...files, 'design.md': design, 'tasks.md': contract.replace(/(T-03 beta[\s\S]*?)  - Scen: SCEN-1\n/, '$1  - Review: mechanical\n').replace('src/beta,test/beta.test.mjs', 'test/beta.test.mjs') });
+  assert.equal(run(mech).status, 0);
+});
+
+test('rejects scope overlap between tasks in different waves with no dependency path', () => {
+  const files = { 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' };
+  const bad = contract.replace('src/beta,test/beta.test.mjs', 'src/shared/x,test/beta.test.mjs').replace('Write scope: src/alpha,test/alpha.test.mjs', 'Write scope: src/shared,test/alpha.test.mjs');
+  assert.match(run(change({ ...files, 'tasks.md': bad })).stdout, /SCOPE_CONFLICT/);
+  // ordered by dependency is fine: T-02 depends on T-01 which owns src/shared
+  const ok = contract.replace('Write scope: src/alpha,test/alpha.test.mjs', 'Write scope: src/shared/alpha,test/alpha.test.mjs');
+  assert.equal(run(change({ ...files, 'tasks.md': ok })).status, 0);
+});
+
+test('rejects Impact Inventory naming unknown tasks', () => {
+  const files = { 'proposal.md': 'x', 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'tasks.md': contract };
+  assert.match(run(change({ ...files, 'design.md': '## Impact Inventory\nfoo() -> fixtures -> T-99\n' })).stdout, /IMPACT_UNKNOWN_TASK T-99/);
+  assert.equal(run(change({ ...files, 'design.md': '## Impact Inventory\nfoo() -> fixtures -> T-02\n' })).status, 0);
 });

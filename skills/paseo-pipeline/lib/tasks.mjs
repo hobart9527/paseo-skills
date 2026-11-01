@@ -153,6 +153,10 @@ export function taskErrorsFor(errors, taskId) {
   return errors.filter((error) => error.task === taskId && !['UNKNOWN_DEP', 'SELF_DEP', 'CYCLE'].includes(error.code));
 }
 
+export function isTestPath(file) {
+  return /(^|\/)(test|tests|__tests__|spec)(\/|$)/i.test(file) || /(?:\.|_)(test|spec)\.[^.]+$/i.test(file);
+}
+
 export function isFileWithinScopes(filePath, scopes) {
   const normalized = normalizeScope(filePath);
   if (!normalized) return false;

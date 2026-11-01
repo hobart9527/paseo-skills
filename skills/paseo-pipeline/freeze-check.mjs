@@ -4,7 +4,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseTasks, computeWaves, normalizeScope, isFileWithinScopes } from './lib/tasks.mjs';
+import { parseTasks, computeWaves, normalizeScope, isFileWithinScopes, isTestPath } from './lib/tasks.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
@@ -62,19 +62,31 @@ const sinkIds = new Set(tasks.filter((task) => !tasks.some((other) => other.depe
 const waveList = [...waves.entries()].sort((a, b) => a[0] - b[0]).map(([wave, ids]) => ({ wave, ids }));
 const maxWidth = waveList.reduce((max, item) => Math.max(max, item.ids.length), 0);
 
-for (const { wave, ids } of waveList) {
-  const group = tasks.filter((task) => ids.includes(task.id));
-  for (let i = 0; i < group.length; i += 1) {
-    for (let j = i + 1; j < group.length; j += 1) {
-      const left = group[i];
-      const right = group[j];
-      const clash = left.scope.some((scope) => right.scope.some((other) => {
-        const a = normalizeScope(scope);
-        const b = normalizeScope(other);
-        return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
-      }));
-      if (clash) blocking.push(`WAVE_SCOPE_CONFLICT wave ${wave}: ${left.id} and ${right.id} overlap`);
-    }
+// Frontier scheduling runs any two tasks concurrently unless one transitively depends on the other,
+// so scope overlap is checked on every unordered pair, not only within a wave.
+const byId = new Map(tasks.map((task) => [task.id, task]));
+const ancestors = new Map();
+const ancestorsOf = (id, trail = new Set()) => {
+  if (ancestors.has(id)) return ancestors.get(id);
+  const out = new Set();
+  if (!trail.has(id)) {
+    trail.add(id);
+    for (const dep of byId.get(id)?.depends ?? []) { out.add(dep); ancestorsOf(dep, trail).forEach((x) => out.add(x)); }
+  }
+  ancestors.set(id, out);
+  return out;
+};
+for (let i = 0; i < tasks.length; i += 1) {
+  for (let j = i + 1; j < tasks.length; j += 1) {
+    const left = tasks[i];
+    const right = tasks[j];
+    if (ancestorsOf(left.id).has(right.id) || ancestorsOf(right.id).has(left.id)) continue;
+    const clash = left.scope.some((scope) => right.scope.some((other) => {
+      const a = normalizeScope(scope);
+      const b = normalizeScope(other);
+      return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+    }));
+    if (clash) blocking.push(`SCOPE_CONFLICT ${left.id} and ${right.id}: scopes overlap and neither depends on the other; add Depends on or split scope`);
   }
 }
 
@@ -105,6 +117,28 @@ for (const task of tasks) {
     blocking.push(`VERIFY_TOO_BROAD ${task.id}: combine full-suite and narrow checks on separate tasks/acceptance`);
   }
 }
+// Vertical slices: behavior tasks must claim a SCEN and own production code, not only tests.
+for (const task of tasks) {
+  if (task.review === 'mechanical') continue;
+  if (!task.scenarios.length) blocking.push(`NO_SCEN ${task.id}: non-mechanical task must claim at least one SCEN (or be Review: mechanical)`);
+  if (!sinkIds.has(task.id) && task.scope.length && task.scope.every((scope) => isTestPath(scope))) {
+    blocking.push(`FIXTURE_ONLY_TASK ${task.id}: scope has only test paths; fold fixtures into the behavior task that breaks them`);
+  }
+}
+
+// Impact inventory: exported symbols, call sites, affected fixtures and their owning task.
+const designMarkdown = read(path.join(changeDir, 'design.md'));
+if (!designMarkdown || !/^#{2,3}\s*Impact/im.test(designMarkdown)) {
+  blocking.push('MISSING_IMPACT_INVENTORY: design.md needs an "Impact Inventory" section (changed symbols, call sites, affected fixtures -> owning task)');
+} else {
+  const section = designMarkdown.split(/^#{2,3}\s*Impact/im)[1].split(/^#{1,3}\s/m)[0].replace(/<!--[\s\S]*?-->/g, '');
+  const known = new Set(tasks.map((task) => task.id));
+  for (const id of new Set(section.match(/\b[A-Za-z][A-Za-z0-9]*-\d+\b/g) ?? [])) {
+    if (/^SCEN-/i.test(id)) continue;
+    if (!known.has(id)) blocking.push(`IMPACT_UNKNOWN_TASK ${id}: Impact Inventory names a task that is not in tasks.md`);
+  }
+}
+
 const fullSuiteSinks = tasks.filter((task) => commandParts(task.verify).some((part) => FULL_SUITE.test(part)));
 if (fullSuiteSinks.length > 1) blocking.push(`TOO_MANY_FULL_SUITE_SINKS: ${fullSuiteSinks.map((task) => task.id).join(', ')}`);
 

@@ -168,6 +168,7 @@ artifacts:
       - **Goals / Non-Goals**: What this design achieves and explicitly excludes. Don't restate the proposal's scope - add only design-level boundaries.
       - **Decisions**: Key technical choices with rationale (why X over Y?). Include alternatives considered for each decision.
       - **Risks / Trade-offs**: Known limitations, things that could go wrong. Format: [Risk] → Mitigation
+      - **Impact Inventory** (required by freeze-check): for each changed exported symbol/behavior list call sites, fixtures/tests that will turn red, and the owning task ID. Fixtures broken by a behavior belong to the same task as that behavior.
       - **Migration Plan**: Steps to deploy, rollback strategy (if applicable)
       - **Open Questions**: Unknowns that can safely be answered later without
         changing the specs, the approach, or the task breakdown. Omit if none.

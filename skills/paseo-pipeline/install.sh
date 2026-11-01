@@ -18,7 +18,12 @@ while [ "$#" -gt 0 ]; do
 done
 BLOCK="# >>> paseo-pipeline >>>\nexport PIPELINE_HOME=\"$PIPELINE_HOME\"\n# <<< paseo-pipeline <<<"
 if [ "$MODE" = check ]; then
-  grep -q '^# >>> paseo-pipeline >>>' "$ZSHENV" && grep -Fq "export PIPELINE_HOME=\"$PIPELINE_HOME\"" "$ZSHENV" && exit 0
+  SETTINGS="${HOME:-}/.claude/settings.json"
+  grep -q '^# >>> paseo-pipeline >>>' "$ZSHENV" \
+    && grep -Fq "export PIPELINE_HOME=\"$PIPELINE_HOME\"" "$ZSHENV" \
+    && grep -Fq "node $PIPELINE_HOME/hooks/tier-write-hook.mjs" "$SETTINGS" \
+    && grep -Fq "node $PIPELINE_HOME/hooks/tier-reminder-hook.mjs" "$SETTINGS" \
+    && exit 0
   exit 1
 fi
 if ! grep -q '^# >>> paseo-pipeline >>>' "$ZSHENV"; then

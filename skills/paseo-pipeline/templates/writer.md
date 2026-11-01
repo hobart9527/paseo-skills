@@ -1,32 +1,16 @@
-# Writer brief
+# Implementation Brief
 
-Task: `<T-id>` in `<change>`.
+Task: `<T-id>` in `<change>`. Branch/workspace: `<branch>` / `<workspace>`.
+Contract: `<tasks.md + spec paths>`. Write scope: `<exact frozen scope>`.
+Test-author commit/files: `<ceshi agent id + test paths>`. Frozen Verify: `<command>`.
+Role trailer value: `<Lead-selected role>`.
 
-## Contract
-- Edit only files under listed Write scope.
-- Run listed Verify command. It is narrow; full suite runs only at sink/CP-2.
-- If an out-of-scope test must change, stop with `blocked` + `conflicting_tests`; do not edit it.
+## Rules
+- Implement only frozen behavior and only within Write scope. Treat test-author commits as immutable; never alter their files.
+- Confirm test-author's Red proof is committed. Implement the smallest behavior change, run frozen narrow Verify to Green, and add regression coverage only if permitted by scope and not editing test-author files.
+- If a test contradicts frozen contract, return `blocked: TEST_DISPUTE` with exact evidence. Do not edit the disputed test; Lead asks Hanlin for one contract ruling.
+- If required files fall outside scope or conflict with another task, stop with `BLOCKED_ON_CONFLICT` and paths. Do not silently amend scope.
+- Commit with `Pipeline-Role: <provided role>` and `Pipeline-Author: <agent-id>` trailers.
 
-## Flow
-1. Add/adjust failing test for claimed scenario.
-2. Implement minimal behavior change.
-3. Run frozen Verify until green.
-4. Commit all changes with trailers (last non-empty block):
-```
-Pipeline-Role: gongbu|gaogong|ceshi|jiangzuo
-Pipeline-Author: <agent-id>
-```
-Verify trailer: `git log -1 --format='%(trailers:key=Pipeline-Author,valueonly)'`.
-
-## Return envelope (≤15 lines)
-```
-task: <T-id>
-branch: task/<change>/<T-id>
-base: <sha>
-tip: <sha>
-verify: <command>
-verify_result: <exit/output digest>
-scens: <IDs>
-blocked: no|BLOCKED_ON_CONFLICT
-conflicting_tests: <paths if blocked>
-```
+## Return envelope
+`task`, `branch`, `base`, `tip`, `verify`, `verify_result`, `SCENs`, `blocked`, `conflicting_tests`, `commits`.

@@ -176,6 +176,13 @@ test('提醒不触发：纯评估长问句、斜杠命令、空串', () => {
   assert.equal(shouldRemind(''), false);
   assert.equal(shouldRemind(undefined), false);
   assert.equal(shouldRemind('你确定这14类的字典是完整的吗？'), false);
+  assert.equal(shouldRemind('复盘一下，然后分析是否需要执行这些修改？'), false);
+  assert.equal(shouldRemind('看看方案是否合理，有什么问题？'), false);
+});
+
+test('提醒触发：明确中文实施命令', () => {
+  assert.equal(shouldRemind('请直接执行上面的修复方案。'), true);
+  assert.equal(shouldRemind('按方案开始做这些修改。'), true);
 });
 
 test('tier-reminder-hook 进程：命中时输出 additionalContext，未命中与坏输入无输出', () => {

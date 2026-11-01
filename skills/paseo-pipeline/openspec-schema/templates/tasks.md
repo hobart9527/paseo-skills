@@ -14,7 +14,7 @@
 - [ ] 1.1 T-01 <一句话目标：改什么、改完什么行为可用>
   - Depends on: none
   - Write scope: path/to/file.mjs, path/to/file.test.mjs
-  - Review: mechanical
+  - Review: strict
   - Verify with: node --test path/to/file.test.mjs
   - Scenarios: SCEN-CAP-01
 
@@ -25,7 +25,7 @@
     `- [ ] 1.1 标题` 没有 ID 会被判 MALFORMED_LINE；`T-01:标题` 冒号紧贴 ID 同样不合法。
   - Write scope：必填非空，仓库根内相对路径，逗号分隔；不许绝对路径、不许 `..` 逃出根。
   - Depends on：必须引用本文件里存在的任务 ID；不许自依赖、不许成环。无依赖写 none。
-  - Review：strict / standard / mechanical；缺省 standard。
+  - Review：strict / standard / mechanical；机械任务可标记 mechanical，其余行为任务默认由 ceshi 先写 Red 测试，再由不同 Agent 实现。
   - Verify with：非汇点必须点名本任务 Write scope 内的测试/spec 路径；
     全量套件只允许一个汇点任务运行。需要环境变量就写全调用：
     PYTHONPATH=runtime python3 -m pytest tests/x_test.py

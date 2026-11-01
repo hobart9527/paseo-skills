@@ -17,3 +17,10 @@
 ## Risks / Trade-offs
 
 <!-- Known risks and trade-offs -->
+
+## Impact Inventory
+
+<!-- freeze-check 要求本节存在。每个被改的导出符号/函数：列出调用点、会因此变红的夹具与测试，以及负责它们的任务 ID。
+     没有被改的共享符号时写「无共享符号变更」。同一行为影响到的夹具必须与该行为在同一个任务里。
+| Symbol / behavior | Call sites | Affected fixtures/tests | Owning task |
+| --- | --- | --- | --- | -->
