@@ -94,7 +94,8 @@
 
 ## 3. P2：摩擦与文档债
 
-- [ ] 3.1 T-10 锁恢复入口手册化：--break-lock 写进 SKILL 与 usage，stale 判定并入 pid
+- [x] 3.1 T-10 锁恢复入口手册化：--break-lock 写进 SKILL 与 usage，stale 判定并入 pid
+  - Done: source=d7fdc74 review=pass(c67eee7e@d7fdc74/af03a28)
   - Depends on: none
   - Write scope: skills/paseo-pipeline/lib/lock.mjs, skills/paseo-pipeline/run-state.mjs, skills/paseo-pipeline/SKILL.md, skills/paseo-pipeline/test/lock.test.mjs
   - Risk-surface: [concurrency]
