@@ -304,6 +304,47 @@ for (const [label, script, key] of [
   }
 }
 
+// 上面那组四种家目录写法借了真实 home：checkout 不在 HOME 下时 portableHook 会退化成四条
+// 相同的绝对路径，「$HOME 能展开」这件事就没人测了。这里把 HOME 换成受控目录，在其下软链
+// skill 目录，于是四种写法在**任何 checkout 位置**都是真正的家目录形态，并且由 realpath
+// 落到同一个脚本。同时断言受控 HOME ≠ 进程 HOME：否则夹具又变成同一条绝对路径。
+test('the four home forms are accepted under a controlled HOME, not only when the checkout lives in the real home', (context) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor-home-'));
+  context.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const fakeHome = path.join(dir, 'home');
+  fs.mkdirSync(path.join(fakeHome, 'skills'), { recursive: true });
+  fs.symlinkSync(SKILL_DIR, path.join(fakeHome, 'skills', 'paseo-pipeline'), 'dir');
+  assert.notEqual(path.resolve(fakeHome), path.resolve(os.homedir()), '受控 HOME 必须与进程 HOME 不同，否则这组用例退化成绝对路径');
+
+  const config = path.join(dir, 'config.json');
+  fs.writeFileSync(config, JSON.stringify({ daemon: { agentProfiles: healthy() } }));
+  fs.writeFileSync(path.join(dir, '.zshenv'), `export PIPELINE_HOME=${JSON.stringify(SKILL_DIR)}\n`);
+
+  const forms = {
+    '$HOME': '$HOME/skills/paseo-pipeline/hooks/scope-guard-hook.mjs',
+    '${HOME}': '${HOME}/skills/paseo-pipeline/hooks/scope-guard-hook.mjs',
+    '~/': '~/skills/paseo-pipeline/hooks/scope-guard-hook.mjs',
+    'tier ~/': '~/skills/paseo-pipeline/hooks/tier-reminder-hook.mjs',
+  };
+  for (const [label, target] of Object.entries(forms)) {
+    test(`hook under ${label} expands against HOME and passes`, () => {
+      const isTier = label.startsWith('tier');
+      const settingsFile = path.join(dir, `settings-${label.replace(/\W/g, '')}.json`);
+      fs.writeFileSync(settingsFile, JSON.stringify(isTier
+        ? withCommand({ tier: `node ${JSON.stringify(target)}` })
+        : withCommand({ scopeGuard: `node ${JSON.stringify(target)}` })));
+      // HOME 只作用于 doctor 进程：expandHome 用它展开，--home 仍指临时目录读 config/zshenv。
+      const result = spawnSync(process.execPath, [DOCTOR, '--config', config, '--settings', settingsFile, '--home', dir], {
+        encoding: 'utf8',
+        env: { ...process.env, HOME: fakeHome, PIPELINE_HOME: SKILL_DIR },
+      });
+      const out = `${result.stdout}${result.stderr}`;
+      const row = line(out, isTier ? 'tier-reminder hook' : 'scope-guard hook');
+      assert.match(row, /^PASS/, `command=node ${target}\n${out}`);
+    });
+  }
+});
+
 // 软链仍是正例：注册的是 ~/.claude/skills/<link>/hooks/x.mjs，realpath 后与目标同源。
 test('hook registered through a symlinked path is accepted', (context) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor-hook-link-'));
