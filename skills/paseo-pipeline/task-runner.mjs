@@ -28,8 +28,9 @@
 //   35 依赖未完成
 //   36 任务没有可执行的 `Verify with`（与 merge-task 同一语义，拒绝以默认测试命令兜底）
 //   50 非 mechanical 档写手已交付并通过 Verify，等待真实审计（入口不代签审计结论）
-//   51 等待写手到终态超时（agent 可能仍在运行，禁止重派）
+//   51 等待写手到终态超时（agent 可能仍在运行，禁止重派；重跑同 task id 续等同一 attempt）
 //   52 任务分支 tip 等于 workspace 基点：写手未产出提交，Verify 没有覆盖任何实现
+//   53 写手 agent 处于 `error` 终态：已崩，不再等待，须人类处置（不重派一个已经出错的 agent）
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -41,6 +42,7 @@ import { parseTasks } from './lib/tasks.mjs';
 import { verifyDone } from './lib/ledger.mjs';
 import { checkHandoff } from './lib/handoff.mjs';
 import { readRunState, leaseStatus, corruptLedgerGuidance } from './lib/run-state.mjs';
+import { isWriterRole } from './lib/roles.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PIPELINE_HOME = process.env.PIPELINE_HOME || SCRIPT_DIR;
@@ -52,11 +54,16 @@ const WRITER_PROFILE_ID = 'agent_profile_gongbu';
 const paseoHome = process.env.PIPELINE_PASEO_HOME || path.join(os.homedir(), '.paseo');
 
 /**
- * 轮询可接受的「已收敛」状态。只认 `idle` 与 `closed`（agent 不再推进且没有出错）：
- * `running`/`initializing` 必须继续等，`timeout` 只是「这一轮等满了」，`error` 不能当成
- * 「可以接着验」——它会一直轮询到截止时间并由调用方 exit 51（不重派、也不合流）。
+ * 轮询可接受的「已收敛」状态：`idle`、`closed` 与 `error`。
+ *
+ * `error` 同样是终态：写手已经崩了，不会再推进。旧实现没把它算进来，于是写手崩掉之后
+ * 入口还会一轮一轮轮询到截止时间，再用一条「可能仍在运行」的 51 文案误导调用方——
+ * 本仓两周内实测过这种空等到超时。终态集一致对外：看到这三个状态就停止轮询，
+ * `error` 单独报告（exit 53），`idle`/`closed` 才继续走 Verify。
+ *
+ * `running`/`initializing` 必须继续等，`timeout` 只是「这一轮等满了」。
  */
-const TERMINAL_AGENT_STATUSES = new Set(['idle', 'closed']);
+const TERMINAL_AGENT_STATUSES = new Set(['idle', 'closed', 'error']);
 
 const argv = process.argv.slice(2);
 const isJson = argv.includes('--json');
@@ -200,6 +207,7 @@ function resolveAttempt() {
   return {
     attempt,
     branch: branchFor(attempt),
+    branchFor,
     latest: maxAttempt === 0 ? null : { attempt: maxAttempt, branch: branchFor(maxAttempt) },
   };
 }
@@ -251,11 +259,12 @@ function parseAgentId(stdout) {
  * 也不能反过来「失败即当作已就绪」：那会让 Verify 去验一个还没写完的检出。
  *
  * 顺序：
- *   1. `paseo wait <id> --timeout <s> --json`，`status=idle` 即完成，`status=timeout` 只表示
- *      这一轮等满了，继续轮询（同一 id，绝不重派）。
+ *   1. `paseo wait <id> --timeout <s> --json`，`status` 命中终态集（idle/closed/error）即返回，
+ *      `status=timeout` 只表示这一轮等满了，继续轮询（同一 id，绝不重派）。
  *   2. 非零退出或拿不到 `status`（含 `WAIT_FAILED`）→ 轮询 `paseo inspect <id> --json` 的
  *      `Status` 字段，直到终态或截止时间。
  *   3. 到截止时间仍未终态 → `timedOut: true`，由调用方 exit 51（agent 可能仍在运行）。
+ *   4. 观测到 `error` → 立即返回该状态（不耗截止时间），由调用方 exit 53。
  *
  * 轮询间隔默认 5s；`PIPELINE_AGENT_POLL_MS` 只作测试注入，与 `PIPELINE_PASEO_HOME` 同族。
  */
@@ -267,7 +276,8 @@ function awaitAgent(agentId, { timeoutMs: deadlineMs }) {
   const waitSecs = Math.max(1, Math.floor(deadlineMs / 1000));
   const waitRes = runCmd('paseo', ['wait', agentId, '--timeout', String(waitSecs), '--json'], { cwd: repoRoot });
   const waitStatus = readStatusField(waitRes.status === 0 ? parseJson(waitRes.stdout) : null);
-  if (waitStatus === 'idle') return { status: 'idle', timedOut: false };
+  // 终态一律立即返回：`error` 也在这里，不能落到下面的轮询循环里再耗到截止时间。
+  if (TERMINAL_AGENT_STATUSES.has(waitStatus)) return { status: waitStatus, timedOut: false };
   if (waitStatus === null) {
     log(`paseo wait did not report a parseable status (exit ${waitRes.status}); `
       + 'falling back to polling `paseo inspect`');
@@ -407,11 +417,14 @@ function ensureBranchAdvanced(branch, { writerAgentId = null, attemptNo = null }
  * ——那时合流已经开始，收口需要 `renew` 协议，不在本任务范围（见 SKILL 待办）。
  * 不持锁执行合流是刻意的：合流的测试命令是长耗时动作，把 spawnSync 放进锁临界区会
  * 让一次长测试把整个 run 的账本写入全部挡在锁外。
+ *
+ * `action` 只影响措辞：`--review-tag` 重入合流与「续等上次那个写手」用的是同一份判据，
+ * 两条路径都不经过 claim，都必须自己补上这道租约门。
  */
-function leaseRefusal() {
+function leaseRefusal(action = '--review-tag 重入合流') {
   const ledger = readRunState(change, repoRoot);
   if (ledger.corrupt) {
-    return `运行账本损坏，无法判定编排租约，拒绝 --review-tag 重入合流：\n`
+    return `运行账本损坏，无法判定编排租约，拒绝${action}：\n`
       + `${corruptLedgerGuidance(ledger.file)}\n（${ledger.error}）`;
   }
   const lease = leaseStatus(ledger.state);
@@ -422,10 +435,50 @@ function leaseRefusal() {
   }
   if (ownerOption === null) {
     return `存在有效编排租约（owner=${lease.owner} gen=${lease.generation}）；`
-      + '--review-tag 重入合流必须带 --owner <owner-id> 证明自己是当前编排者';
+      + `${action}必须带 --owner <owner-id> 证明自己是当前编排者`;
   }
   if (ownerOption !== lease.owner) {
-    return `当前编排 owner 是 ${lease.owner}，${ownerOption} 无权合流（旧 Lead 不得继续提交动作）`;
+    return `当前编排 owner 是 ${lease.owner}，${ownerOption} 无权${action}（旧 Lead 不得继续提交动作）`;
+  }
+  return null;
+}
+
+/**
+ * 找出「上次派发出去、agent 仍在跑」的写手（续等同一 attempt 的入口）。
+ *
+ * 退出 51 之后写手**可能仍在跑**，重跑同一条命令既不能重派（那会出两个写手共用一条分支），
+ * 也不能换一个新 attempt 掩盖上一次的产出。唯一正确的动作是回到原来那个 agent 上接着等。
+ *
+ * 判断依据只能是两条外部事实拼起来：账本里有**真实回执**的写手意图（`record` 把 agentId
+ * 写进意图，`resolvedAt` 只表示回执已登记，不表示 agent 结束），加上 `paseo inspect` 说
+ * 那个 agent 仍是 `initializing`/`running`。只看账本无法区分「还在跑」与「早就交付并被贴了
+ * disposition」——后者的 agent 是 idle/closed，续等它会把早已结案的产出重验一遍。
+ *
+ * 返回 null 表示没有可续等的写手（正常派发路径）。返回 `{ intent, status }` 表示命中：
+ * 本次运行不 claim、不派发，直接在 `intent.agentId` 上重新等待。
+ *
+ * 账本损坏时返回 `{ corruption }`：读不出在途派发就无从判断该续等还是该重派，
+ * 按「没有在途意图」放行会直接引入重复派发。
+ */
+function findResumableWriter() {
+  const ledger = readRunState(change, repoRoot);
+  if (ledger.corrupt) return { corruption: ledger };
+  const candidates = ledger.state.intents
+    .filter((intent) => intent.task === task.id
+      && intent.phase === 'impl' // 本入口只派 impl 写手：别的 phase 的在途 agent 不是它的续等对象
+      && typeof intent.agentId === 'string' && intent.agentId !== ''
+      && intent.failedAt === undefined
+      && isWriterRole(intent.role))
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  if (candidates.length === 0) return null;
+
+  for (const intent of candidates) {
+    // 状态读不到（`paseo inspect` 失败）时不拿它当证据：宁可走正常派发路径让 claim 的
+    // 幂等闸门去拒重复，也不要凭一次读失败把一次真实派发静默抹掉。
+    const inspectRes = runCmd('paseo', ['inspect', intent.agentId, '--json'], { cwd: repoRoot });
+    if (inspectRes.status !== 0) continue;
+    const status = readStatusField(parseJson(inspectRes.stdout));
+    if (status === 'initializing' || status === 'running') return { intent, status };
   }
   return null;
 }
@@ -585,7 +638,7 @@ if (!isDryRun) {
 }
 
 // 4. 分支与 attempt 推导（分支是 git 事实，不看目录存在性）
-const { attempt, branch: branchName } = resolveAttempt();
+const { attempt, branch: branchName, branchFor } = resolveAttempt();
 const integrationBranch = `integration/${change}`;
 const baseBranch = speculativeUpstreamBranch || integrationBranch;
 const baseShaRes = git(['rev-parse', '--verify', `${baseBranch}^{commit}`], { cwd: repoRoot });
@@ -630,109 +683,154 @@ if (reviewTagOption !== null) {
 
 const profile = isDryRun ? null : resolveWriterProfile();
 
-log(`Workspace target: branch=${branchName} base=${baseBranch}@${baseSha.slice(0, 7)} attempt=${attempt}`);
-
-// 5. 意图 claim（必须在派发之前：创建在途窗口里重派会被账本拒绝）
-const claimScript = path.join(PIPELINE_HOME, 'run-state.mjs');
-const claimRes = runCmd(process.execPath, [
-  claimScript, 'claim', change,
-  '--task', task.id,
-  '--attempt', String(attempt),
-  '--phase', 'impl',
-  '--role', 'gongbu',
-  '--owner', owner,
-  '--json',
-], { cwd: repoRoot });
-if (claimRes.status !== 0) {
-  fatal(`Failed to claim intent in run-state: ${claimRes.stderr || claimRes.stdout}`, claimRes.status);
-}
-let claimKey;
-try {
-  claimKey = JSON.parse(claimRes.stdout)?.intent?.key;
-} catch {
-  claimKey = undefined;
-}
-if (typeof claimKey !== 'string' || claimKey === '') {
-  fatal(`run-state claim returned no intent key; refusing to dispatch: ${claimRes.stdout}`);
+// 4c. 续等入口：上次派发的写手还在跑时，不 claim、不派发，回到同一个 agent 上接着等。
+//
+// 退出 51 只说明**本次等待**到了截止时间，写手可能仍在跑。此时重跑同一条命令的两个
+// 错误做法是：再派一个写手（同一个任务出两个写手、共用一条分支）、或者起一个新的 attempt
+// 把上一次的产出绕过去。正确做法是续等同一 attempt——判据见 findResumableWriter。
+//
+// dry-run 只看计划，不读运行态：它必须能在没有任何派发历史的仓库里跑通。
+// 续等走的是与重入合流同一条免检旁路（不经过 claim），因此租约判据在这里同样要补。
+let resumable = null;
+if (!isDryRun) {
+  const found = findResumableWriter();
+  if (found?.corruption) {
+    fatal(`运行账本损坏，无法判定是否有在途写手（续等还是重派都需要它）：\n`
+      + `${corruptLedgerGuidance(found.corruption.file)}\n（${found.corruption.error}）`, 2);
+  }
+  resumable = found;
 }
 
-// 6. 经 Paseo 创建任务 workspace 并派发写手。
-// 分支、基点、五标签都由这里决定；Paseo 负责建 worktree，本进程不碰 `git worktree add`。
-const { title, prompt } = buildWriterBrief({ baseBranch, baseSha, branch: branchName });
-const paseoArgs = [
-  'run', prompt,
-  '--title', title,
-  '--provider', profile.provider,
-];
-if (profile.mode !== null) paseoArgs.push('--mode', profile.mode);
-if (profile.thinking !== null) paseoArgs.push('--thinking', profile.thinking);
-paseoArgs.push(
-  '--new-workspace', 'worktree',
-  '--new-branch', branchName,
-  '--base', baseBranch,
-  // 五个身份标签缺一不可：reconcile 依赖它们做归属、cap 计数与 phase 排序。
-  '--label', `pipeline.change=${change}`,
-  '--label', `pipeline.task=${task.id}`,
-  '--label', `pipeline.attempt=${attempt}`,
-  '--label', 'pipeline.phase=impl',
-  '--label', 'pipeline.role=gongbu',
-  '--no-wait',
-  '--json',
-);
+let writerAgentId;
+if (resumable !== null) {
+  const refusal = leaseRefusal('续等上次派发的写手');
+  if (refusal !== null) fatal(refusal, 2);
+  writerAgentId = resumable.intent.agentId;
+  log(`Resuming wait on writer agent ${writerAgentId} (intent ${resumable.intent.key}, `
+    + `status ${resumable.status}): same attempt, no redispatch`);
+} else {
+  log(`Workspace target: branch=${branchName} base=${baseBranch}@${baseSha.slice(0, 7)} attempt=${attempt}`);
 
-log(`Dispatching writer via Paseo: branch=${branchName} provider=${profile.provider}`);
-const runRes = runCmd('paseo', paseoArgs, { cwd: repoRoot });
-if (runRes.status !== 0) {
-  // 派发失败必须作废意图：未回执意图会挡住后续重派（重复意图 exit 2）。
-  runCmd(process.execPath, [
-    claimScript, 'fail', change,
+  // 5. 意图 claim（必须在派发之前：创建在途窗口里重派会被账本拒绝）
+  const claimScript = path.join(PIPELINE_HOME, 'run-state.mjs');
+  const claimRes = runCmd(process.execPath, [
+    claimScript, 'claim', change,
+    '--task', task.id,
+    '--attempt', String(attempt),
+    '--phase', 'impl',
+    '--role', 'gongbu',
+    '--owner', owner,
+    '--json',
+  ], { cwd: repoRoot });
+  if (claimRes.status !== 0) {
+    fatal(`Failed to claim intent in run-state: ${claimRes.stderr || claimRes.stdout}`, claimRes.status);
+  }
+  let claimKey;
+  try {
+    claimKey = JSON.parse(claimRes.stdout)?.intent?.key;
+  } catch {
+    claimKey = undefined;
+  }
+  if (typeof claimKey !== 'string' || claimKey === '') {
+    fatal(`run-state claim returned no intent key; refusing to dispatch: ${claimRes.stdout}`);
+  }
+
+  // 6. 经 Paseo 创建任务 workspace 并派发写手。
+  // 分支、基点、五标签都由这里决定；Paseo 负责建 worktree，本进程不碰 `git worktree add`。
+  const { title, prompt } = buildWriterBrief({ baseBranch, baseSha, branch: branchName });
+  const paseoArgs = [
+    'run', prompt,
+    '--title', title,
+    '--provider', profile.provider,
+  ];
+  if (profile.mode !== null) paseoArgs.push('--mode', profile.mode);
+  if (profile.thinking !== null) paseoArgs.push('--thinking', profile.thinking);
+  paseoArgs.push(
+    '--new-workspace', 'worktree',
+    '--new-branch', branchName,
+    '--base', baseBranch,
+    // 五个身份标签缺一不可：reconcile 依赖它们做归属、cap 计数与 phase 排序。
+    '--label', `pipeline.change=${change}`,
+    '--label', `pipeline.task=${task.id}`,
+    '--label', `pipeline.attempt=${attempt}`,
+    '--label', 'pipeline.phase=impl',
+    '--label', 'pipeline.role=gongbu',
+    '--no-wait',
+    '--json',
+  );
+
+  log(`Dispatching writer via Paseo: branch=${branchName} provider=${profile.provider}`);
+  const runRes = runCmd('paseo', paseoArgs, { cwd: repoRoot });
+  if (runRes.status !== 0) {
+    // 派发失败必须作废意图：未回执意图会挡住后续重派（重复意图 exit 2）。
+    runCmd(process.execPath, [
+      claimScript, 'fail', change,
+      '--key', claimKey,
+      '--reason', 'paseo run exited non-zero',
+      '--owner', owner,
+    ], { cwd: repoRoot });
+    fatal(`paseo run failed; intent ${claimKey} voided: ${runRes.stderr || runRes.stdout}`, 1);
+  }
+  writerAgentId = parseAgentId(runRes.stdout);
+  if (writerAgentId === null) {
+    runCmd(process.execPath, [
+      claimScript, 'fail', change,
+      '--key', claimKey,
+      '--reason', 'paseo run produced no agent id',
+      '--owner', owner,
+    ], { cwd: repoRoot });
+    fatal(`paseo run returned no parsable agent id; intent ${claimKey} voided. Output: ${runRes.stdout}`);
+  }
+
+  // 回执只登记真实 agent id：workspace id 采集不到就省略，绝不编造。
+  const recordRes = runCmd(process.execPath, [
+    claimScript, 'record', change,
     '--key', claimKey,
-    '--reason', 'paseo run exited non-zero',
+    '--agent', writerAgentId,
     '--owner', owner,
   ], { cwd: repoRoot });
-  fatal(`paseo run failed; intent ${claimKey} voided: ${runRes.stderr || runRes.stdout}`, 1);
-}
-const writerAgentId = parseAgentId(runRes.stdout);
-if (writerAgentId === null) {
-  runCmd(process.execPath, [
-    claimScript, 'fail', change,
-    '--key', claimKey,
-    '--reason', 'paseo run produced no agent id',
-    '--owner', owner,
-  ], { cwd: repoRoot });
-  fatal(`paseo run returned no parsable agent id; intent ${claimKey} voided. Output: ${runRes.stdout}`);
+  if (recordRes.status !== 0) {
+    fatal(`Intent receipt failed (agent already dispatched: ${writerAgentId}); `
+      + `run manually: node ${claimScript} record ${change} --key '${claimKey}' --agent '${writerAgentId}': `
+      + `${recordRes.stderr || recordRes.stdout}`);
+  }
+  log(`Dispatched writer agent ${writerAgentId} (intent ${claimKey})`);
 }
 
-// 回执只登记真实 agent id：workspace id 采集不到就省略，绝不编造。
-const recordRes = runCmd(process.execPath, [
-  claimScript, 'record', change,
-  '--key', claimKey,
-  '--agent', writerAgentId,
-  '--owner', owner,
-], { cwd: repoRoot });
-if (recordRes.status !== 0) {
-  fatal(`Intent receipt failed (agent already dispatched: ${writerAgentId}); `
-    + `run manually: node ${claimScript} record ${change} --key '${claimKey}' --agent '${writerAgentId}': `
-    + `${recordRes.stderr || recordRes.stdout}`);
-}
-log(`Dispatched writer agent ${writerAgentId} (intent ${claimKey})`);
+// 续等接的是**上一次**派发的 attempt 与分支；重新派发才用本次推导出来的那组。
+// Verify、零提交判据、审计与合流都必须落在写手真正工作的分支上，否则续等会去验一条
+// 还没人碰过的新分支（tip 等于基点，把一次正常交付直接判成 exit 52）。
+const activeAttempt = resumable !== null ? (resumable.intent.attempt ?? attempt) : attempt;
+const activeBranch = branchFor(activeAttempt);
 
 // 7. 等待写手到终态（`paseo wait` 失败不致命：降级为状态轮询，超时 exit 51 且不重派）
 log(`Waiting for writer agent ${writerAgentId}...`);
 const settled = awaitAgent(writerAgentId, { timeoutMs });
 if (settled.timedOut) {
+  // 超时只说明「这一轮等满了」，不是失败也不是完成。文案必须给出可执行的续等路径：
+  // 重跑同一条命令会认出账本里在途的这条意图，继续等同一个 agent，不重派、不新开 attempt。
   fatal(`Agent ${writerAgentId} did not reach a terminal status within ${Math.round(timeoutMs / 1000)}s `
-    + `(last observed status=${settled.status}). The agent may still be running: do NOT redispatch it — `
-    + 'wait for its completion envelope or poll `paseo inspect` again.', 51);
+    + `(last observed status=${settled.status}). The agent may still be running: do NOT redispatch it. `
+    + 'Re-running this same command (same task id) continues waiting on the same attempt — it does '
+    + 'not dispatch a second writer and does not start a new attempt. '
+    + `To check on it directly: paseo inspect ${writerAgentId} --json`, 51);
+}
+if (settled.status === 'error') {
+  // `error` 是终态：写手已经停下，不会再推进，凭它跑 Verify 或合流只会把崩在半路的产出当成交付。
+  // 处置权在人类/编排者（reconcile 报成 UNRESOLVED）；这里绝不自动重派一个已经出错的 agent。
+  fatal(`Writer agent ${writerAgentId} reached status=error before the deadline: it has stopped and `
+    + 'will not make further progress. No Verify was run and nothing was merged. '
+    + `Inspect it with \`paseo inspect ${writerAgentId} --json\` and decide the recovery explicitly; `
+    + 're-running this command will not silently redispatch it.', 53);
 }
 log(`Writer agent ${writerAgentId} reached status=${settled.status}`);
 
 // 8. 验证写手成果：Verify 必须在写手自己的任务 workspace 里跑。
 // 工作区目录只从 git 的 worktree 登记里读（Paseo 建的那个），本进程不建任何 worktree。
-const worktreeDir = findWorkspaceForBranch(branchName);
+const worktreeDir = findWorkspaceForBranch(activeBranch);
 if (task.verify?.command) {
   if (worktreeDir === null) {
-    fatal(`Writer workspace for ${branchName} is not registered as a git worktree; `
+    fatal(`Writer workspace for ${activeBranch} is not registered as a git worktree; `
       + 'refusing to verify the wrong checkout', 1);
   }
   log(`Verifying implementation in ${worktreeDir}: ${task.verify.command}`);
@@ -743,7 +841,7 @@ if (task.verify?.command) {
 }
 
 // 8b. 交付诚实：任务分支 tip 必须领先 workspace 创建时的基点（判据见 ensureBranchAdvanced）。
-ensureBranchAdvanced(branchName, { writerAgentId, attemptNo: attempt });
+ensureBranchAdvanced(activeBranch, { writerAgentId, attemptNo: activeAttempt });
 
 // 9. 审计诚实：非 mechanical 档到这里就停。
 //
@@ -756,7 +854,7 @@ if (reviewTier !== 'mechanical') {
     `Task ${task.id} delivered by writer ${writerAgentId} and passed Verify, but review tier is `
     + `'${reviewTier}': a real independent auditor is required before merge. This entry does NOT `
     + 'create an audit intent, review record or reviewer identity. '
-    + `Next: dispatch the auditor (anchasi/hanlin) in this task's workspace branch ${branchName}, `
+    + `Next: dispatch the auditor (anchasi/hanlin) in this task's workspace branch ${activeBranch}, `
     + `then re-enter with the auditor's tag: node task-runner.mjs ${change} ${task.id} `
     + '--review-tag "pass(<reviewer-id8>@<tip7>/<base7>)"',
     50,
@@ -764,6 +862,6 @@ if (reviewTier !== 'mechanical') {
 }
 
 // 10. 原子合流（merge-task.mjs）：只有 mechanical 档会走到这里并直联合流。
-const reviewTag = mechanicalTag(branchName);
-mergeIntoIntegration({ branch: branchName, tag: reviewTag });
+const reviewTag = mechanicalTag(activeBranch);
+mergeIntoIntegration({ branch: activeBranch, tag: reviewTag });
 process.exit(0);

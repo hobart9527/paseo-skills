@@ -159,22 +159,24 @@ if (argv[0] === 'run') {
   }
   console.log('${AGENT_ID}');
 } else if (argv[0] === 'wait') {
-  // wait 模式：idle | failed（WAIT_FAILED + 非零退出）| timeout（首轮等满）
+  // wait 模式：idle | error（终态：已崩）| failed（WAIT_FAILED + 非零退出）| timeout（首轮等满）
   const mode = process.env.PASEO_FIXTURE_WAIT || 'idle';
   if (mode === 'failed') {
     console.error('WAIT_FAILED');
     process.exit(1);
   }
-  console.log(JSON.stringify({ id: argv[1], status: mode === 'timeout' ? 'timeout' : 'idle' }));
+  const status = mode === 'timeout' ? 'timeout' : (mode === 'error' ? 'error' : 'idle');
+  console.log(JSON.stringify({ id: argv[1], status }));
 } else if (argv[0] === 'inspect') {
-  // inspect 模式：idle | never（永远 running）| late（第 2 次起 idle）| failed（非零退出）
+  // inspect 模式：idle | error（终态：已崩）| never（永远 running）| late（第 2 次起 idle）| failed（非零退出）
   const mode = process.env.PASEO_FIXTURE_INSPECT || 'idle';
   const n = bump();
   if (mode === 'failed') {
     console.error('inspect failed');
     process.exit(1);
   }
-  const status = mode === 'never' ? 'running' : (mode === 'late' && n < 2 ? 'running' : 'idle');
+  const status = mode === 'never' ? 'running'
+    : (mode === 'error' ? 'error' : (mode === 'late' && n < 2 ? 'running' : 'idle'));
   console.log(JSON.stringify({ Id: argv[1], Name: 'fixture', Status: status }));
 } else {
   console.error('Unexpected paseo command: ' + argv[0]);
@@ -606,6 +608,31 @@ function writeLease(setup, { owner, generation = 1, expiresAt }) {
   fs.writeFileSync(ledgerPath(setup), leaseLedgerJson({ owner, generation, expiresAt }));
 }
 
+/** 直接落一份账本（续等入口要读「有回执的在途写手意图」，只有能预置意图才复现得出来）。 */
+function writeLedger(setup, { lease = null, intents = [] }) {
+  fs.mkdirSync(path.dirname(ledgerPath(setup)), { recursive: true });
+  const state = JSON.parse(leaseLedgerJson({ owner: 'unused', expiresAt: new Date(0).toISOString() }));
+  state.lease = lease;
+  state.intents = intents;
+  fs.writeFileSync(ledgerPath(setup), `${JSON.stringify(state, null, 2)}\n`);
+}
+
+/** 一条已回执的 impl 写手意图：`resolvedAt` 只代表回执已登记，不代表 agent 结束。 */
+function writerIntent(agentId = AGENT_ID) {
+  return {
+    key: 'local:T-01:1:impl:gongbu:dispatch',
+    task: 'T-01',
+    attempt: 1,
+    phase: 'impl',
+    role: 'gongbu',
+    action: 'dispatch',
+    createdAt: new Date(Date.now() - 60_000).toISOString(),
+    resolvedAt: new Date(Date.now() - 59_000).toISOString(),
+    agentId,
+    workspaceId: null,
+  };
+}
+
 function futureIso(ms = 30 * 60 * 1000) {
   return new Date(Date.now() + ms).toISOString();
 }
@@ -803,8 +830,8 @@ test('task-runner degrades a failed paseo wait to inspect polling and proceeds w
   assert.equal(mergeCalls(setup).length, 1, 'the run must proceed as if the wait had returned idle');
 });
 
-// SCEN-HND-07
-test('task-runner exits 51 when the agent never becomes idle and never redispatches', (context) => {
+// SCEN-HND-07, SCEN-HND-13
+test('task-runner exits 51 with re-entry guidance when the agent never reaches a terminal state', (context) => {
   const setup = fixture(context);
   setup.env.PASEO_FIXTURE_WAIT = 'failed';
   setup.env.PASEO_FIXTURE_INSPECT = 'never';
@@ -812,6 +839,128 @@ test('task-runner exits 51 when the agent never becomes idle and never redispatc
 
   assert.equal(res.status, 51, `${res.stdout}\n${res.stderr}`);
   assert.match(res.stderr, /do NOT redispatch/);
+  // SCEN-HND-13：文案必须给可执行的续等路径，而不是只喊「别重派」。
+  assert.match(res.stderr, /Re-running this same command \(same task id\) continues waiting on the same attempt/,
+    'the deadline message must state that re-invoking the same task id continues the same attempt');
+  assert.match(res.stderr, /does not dispatch a second writer/,
+    'the deadline message must state that re-entry does not redispatch');
+  assert.match(res.stderr, new RegExp(`last observed status=(running|idle|timeout)`),
+    'the deadline message must report the last observed status');
   assert.equal(runs(setup).length, 1, 'the deadline must not cause a second paseo run');
   assert.equal(mergeCalls(setup).length, 0, 'a timed-out wait must not merge');
+});
+
+// SCEN-HND-14
+test('task-runner treats a wait-reported error as terminal and exits 53 without polling', (context) => {
+  const setup = fixture(context);
+  setup.env.PASEO_FIXTURE_WAIT = 'error';
+  setup.env.PASEO_FIXTURE_INSPECT = 'never';
+  const res = invoke(setup, [change, 'T-01', '--timeout', '600', '--owner', 'test-owner']);
+
+  assert.equal(res.status, 53, `${res.stdout}\n${res.stderr}`);
+  assert.match(res.stderr, new RegExp(AGENT_ID), 'the error report must name the crashed agent id');
+  assert.match(res.stderr, /status=error/, 'the error report must state the observed state');
+  assert.doesNotMatch(res.stderr, /did not reach a terminal status/,
+    'error is terminal: it must not be reported as a deadline timeout');
+  // 终态不走轮询：一次 inspect 都不该发生（也就没有「耗掉截止时间」）。
+  const calls = paseoCalls(setup).map((argv) => argv[0]);
+  assert.ok(!calls.includes('inspect'), `a terminal error must not fall into polling: ${calls.join(',')}`);
+  assert.equal(runs(setup).length, 1, 'a crashed writer must not be redispatched by this entry');
+  assert.equal(mergeCalls(setup).length, 0, 'a crashed writer must not reach the merge gate');
+});
+
+// SCEN-HND-14
+test('task-runner treats an inspect-polled error as terminal and exits 53', (context) => {
+  const setup = fixture(context);
+  // wait 失败 → 降级轮询；轮询第一次就报 error：必须立刻返回，不等截止时间。
+  setup.env.PASEO_FIXTURE_WAIT = 'failed';
+  setup.env.PASEO_FIXTURE_INSPECT = 'error';
+  const startedAt = Date.now();
+  const res = invoke(setup, [change, 'T-01', '--timeout', '600', '--owner', 'test-owner']);
+
+  assert.equal(res.status, 53, `${res.stdout}\n${res.stderr}`);
+  assert.match(res.stderr, /status=error/);
+  assert.equal(runs(setup).length, 1, 'an errored writer must not be redispatched');
+  assert.equal(mergeCalls(setup).length, 0, 'an errored writer must not reach the merge gate');
+  // 600s 的截止时间几乎没被消耗：说明是终态早退，不是等满了才超时。
+  assert.ok(Date.now() - startedAt < 60_000,
+    `an error state must short-circuit the deadline, took ${Date.now() - startedAt}ms`);
+});
+
+// SCEN-HND-13
+test('task-runner re-runs waiting on the same in-flight writer instead of dispatching a second one', (context) => {
+  // 退出 51 之后写手可能仍在跑。重跑同一条命令若再派一个写手，同一任务就有两个写手共用一条分支。
+  // 账本里那条有真实回执、agent 仍 running 的意图就是「续等」的唯一证据。
+  const setup = fixture(context);
+  const branch = `task/${change}/T-01`;
+  deliverTaskBranch(setup, branch);
+  // 写手的那条检出必须是已登记的 worktree：续等不看目录存在性，但 Verify 只能落在写手的检出上。
+  git(setup.cwd, 'worktree', 'add', '-q', setup.worktreeDir, branch);
+  writeLedger(setup, { intents: [writerIntent()] });
+  setup.env.PASEO_FIXTURE_INSPECT = 'late';
+  const res = invoke(setup, [change, 'T-01', '--owner', 'test-owner']);
+
+  assert.equal(res.status, 0, `${res.stdout}\n${res.stderr}`);
+  assert.equal(runs(setup).length, 0, 're-entry must never dispatch a second writer');
+  assert.match(res.stdout, new RegExp(`Resuming wait on writer agent ${AGENT_ID}`),
+    'the entry must announce that it is continuing the same writer');
+  const waited = paseoCalls(setup).filter((argv) => argv[0] === 'wait').map((argv) => argv[1]);
+  assert.deepEqual(waited, [AGENT_ID], 'the wait must target the original agent id');
+  // 续等的 Verify 与合流必须落在**原 attempt 的分支**上，而不是一条还没人碰过的新分支。
+  const merges = mergeCalls(setup);
+  assert.equal(merges.length, 1, `exactly one merge call: ${JSON.stringify(merges)}`);
+  assert.equal(merges[0].argv[0], branch, 'the merge must target the branch the writer actually worked on');
+});
+
+// SCEN-HND-13
+test('task-runner does not resume a writer that already finished, and does not redispatch it', (context) => {
+  // 账本里有回执不等于 agent 还在跑：交付完的写手是 idle/closed，续等它会把早已结案的产出
+  // 重验一遍。判据只能是 Paseo 的实时状态；不续等时也不能顺手再派一个。
+  const setup = fixture(context, { verify: failCommand });
+  writeLedger(setup, { intents: [writerIntent()] });
+  setup.env.PASEO_FIXTURE_INSPECT = 'idle';
+  const res = invoke(setup, [change, 'T-01', '--owner', 'test-owner']);
+
+  assert.doesNotMatch(res.stdout, /Resuming wait/, 'a finished writer is not something to keep waiting on');
+  // 已回执的意图由 claim 的幂等闸门挡住重复派发（exit 2），不是悄悄再派一个写手。
+  assert.equal(res.status, 2, `${res.stdout}\n${res.stderr}`);
+  assert.equal(runs(setup).length, 0, 'an already-receipted attempt must not be dispatched twice');
+});
+
+// SCEN-HND-13
+test('task-runner refuses to resume a writer when the caller is not the lease owner', (context) => {
+  // 续等和 --review-tag 重入一样不经过 claim：不补租约判据，旧会话就能接着别人的写手继续推进。
+  const setup = fixture(context);
+  writeLedger(setup, {
+    lease: {
+      owner: 'lead-a',
+      generation: 1,
+      acquiredAt: new Date().toISOString(),
+      renewedAt: null,
+      expiresAt: futureIso(),
+      ttlMs: 30 * 60 * 1000,
+    },
+    intents: [writerIntent()],
+  });
+
+  // 写手仍在跑（inspect=running）才谈得上续等；租约判据在续等入口拦下非当前 owner。
+  setup.env.PASEO_FIXTURE_INSPECT = 'never';
+  const res = invoke(setup, [change, 'T-01', '--owner', 'lead-b']);
+  assert.equal(res.status, 2, `${res.stdout}\n${res.stderr}`);
+  assert.match(res.stderr, /lead-a/, 'the refusal must name the current lease owner');
+  assert.match(res.stderr, /续等/, 'the refusal must say which action it refused');
+  assert.equal(paseoCalls(setup).filter((argv) => argv[0] === 'wait').length, 0,
+    'a refused resume must not start waiting at all');
+});
+
+// SCEN-HND-13
+test('task-runner treats a corrupt ledger as unreadable when deciding resume versus dispatch', (context) => {
+  // 读不出在途派发就无从判断该续等还是该重派；按「没有在途意图」放行会直接引入重复派发。
+  const setup = fixture(context);
+  fs.mkdirSync(path.dirname(ledgerPath(setup)), { recursive: true });
+  fs.writeFileSync(ledgerPath(setup), '{ not json');
+
+  const res = invoke(setup, [change, 'T-01', '--owner', 'test-owner']);
+  assert.equal(res.status, 2, `${res.stdout}\n${res.stderr}`);
+  assert.equal(runs(setup).length, 0, 'a corrupt ledger must not be read as "nothing in flight"');
 });
