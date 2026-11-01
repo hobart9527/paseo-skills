@@ -157,6 +157,55 @@ export function confirmMockedState(expectedState, routes, hits, options = {}) {
   };
 }
 
+// Action-only state entry. A state may be defined solely by deep-interaction
+// actions (e.g. `"modal:actions": [{ "click": "[data-modal-trigger]" }]`) with
+// no state-specific routes, reusing the shared `"*"` mocks or live data. The
+// state is entered when every declared action ran; a failed action is a hard
+// non-confirmation regardless of what the DOM shows. Pure so it is testable.
+export function confirmActionState(expectedState, actions, options = {}) {
+  const list = Array.isArray(actions) ? actions : [];
+  const total = list.length;
+  const actionFailed = Boolean(options && options.actionError);
+  return {
+    expected: expectedState,
+    observed: actionFailed
+      ? `actions:0/${total} executed; action_failed: ${options.actionError}`
+      : `actions:${total}/${total} executed`,
+    signal: "actions",
+    action_error: (options && options.actionError) || null,
+    confirmed: total > 0 && !actionFailed,
+  };
+}
+
+// Surface mode decides the aesthetic floor the mechanical probes enforce.
+// Operate is the default because most product UI is task-shaped; Persuade /
+// Experience / Read release display scale and measure rules accordingly.
+export const SURFACE_MODES = ["operate", "persuade", "read", "experience"];
+
+export function resolveSurfaceMode(value) {
+  return SURFACE_MODES.includes(value) ? value : "operate";
+}
+
+// Port substitution for `--serve`. Only the documented placeholders are
+// replaced: a bare `PORT` inside an unrelated word (EXPORT, REPORT) must never
+// become a port number.
+export function applyPortPlaceholders(text, port) {
+  return String(text)
+    .replace(/\{port\}/g, String(port))
+    .replace(/\$PORT\b/g, String(port))
+    .replace(/\$\{PORT\}/g, String(port));
+}
+
+export function rewriteUrlPort(rawUrl, port) {
+  try {
+    const parsed = new URL(rawUrl);
+    parsed.port = String(port);
+    return parsed.toString();
+  } catch {
+    return rawUrl;
+  }
+}
+
 // Load and validate a mock file. Body sources are resolved relative to the
 // mock file so a fixture directory can be moved as a unit. Supports scenario
 // actions for deep interaction capture (e.g. click modal/drawer triggers).
@@ -253,7 +302,8 @@ async function loadPlaywright() {
 
 async function captureWithPlaywright(baseUrl, outputDir, viewports, states, schemes = ["light"], density = null,
                                      forcedColors = "none", contrast = "no-preference", concurrency = 4,
-                                     mocks = null) {
+                                     mocks = null, surfaceMode = "operate") {
+  surfaceMode = resolveSurfaceMode(surfaceMode);
   try {
     const pw = await loadPlaywright();
     if (!pw) return null;
@@ -276,9 +326,13 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
     // light rendition, and dark is an additional measured rendition, not a swap.
     for (const scheme of schemes) {
       for (const state of states) {
-        // A mock-driven state is entered through the network, not the URL: the
-        // ?state= echo would only confuse a router that does not expect it.
-        const mocked = Boolean(mocks && mocks[state] && mocks[state].length > 0);
+        // A mock-driven or action-driven state is entered through the network /
+        // interactions, not the URL: the ?state= echo would only confuse a
+        // router that does not expect it, and a page that ignores the param
+        // would be screenshotted as `default` while labelled otherwise.
+        const stateRoutes = (mocks && mocks[state]) || [];
+        const stateActions = (mocks && mocks.__actions && mocks.__actions[state]) || [];
+        const mocked = stateRoutes.length > 0 || stateActions.length > 0;
         const stateUrl = buildVariantUrl(baseUrl, mocked ? "default" : state, scheme, density);
         for (const vp of viewports) {
           // `state-vp` (legacy), `scheme-vp`, or `state-scheme-vp` when both vary.
@@ -292,8 +346,9 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
     }
 
     await mapConcurrent(tasks, concurrency, async ({ state, scheme, vp, prefix, targetFile, dim, stateUrl }) => {
+      let page = null;
       try {
-        const page = await browser.newPage({ viewport: dim, colorScheme: scheme });
+        page = await browser.newPage({ viewport: dim, colorScheme: scheme });
         await page.addInitScript(() => {
           window.__layoutShiftScore = 0;
           try {
@@ -331,7 +386,14 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
         };
         for (const route of sharedRoutes) await installRoute(route, () => {});
         for (const [i, route] of stateRoutes.entries()) await installRoute(route, () => { stateHits[i] += 1; });
-        await page.goto(stateUrl, { waitUntil: "networkidle", timeout: 15000 });
+        // `networkidle` alone hangs on pages with HMR WebSockets, SSE or polling:
+        // the request never goes idle, so every capture burns the full timeout.
+        // Wait for DOMContentLoaded, then settle on networkidle with a hard cap.
+        await page.goto(stateUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+        await Promise.race([
+          page.waitForLoadState("networkidle", { timeout: 4000 }).catch(() => {}),
+          page.waitForTimeout(4000),
+        ]);
 
         // Deep modal/drawer scenario actions: execute if defined for this state
         const stateActions = (mocks && mocks.__actions && mocks.__actions[state]) || [];
@@ -371,17 +433,23 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
             (location.hash.match(/state=([a-z0-9_-]+)/i)?.[1] ?? ""),
           domText: document.body?.innerText || "",
         }));
-        const stateConfirmation = stateRoutes.length > 0
-          ? confirmMockedState(state, stateRoutes, stateHits, { actionError })
-          : confirmStateEntry(state, domFacts, { actionError });
-        stateConfirmations[prefix] = stateConfirmation;
-        if (!stateConfirmation.confirmed) {
-          throw new Error(`state_unconfirmed: expected ${state}, observed ${stateConfirmation.observed || "none"}`);
+        // Action-only states are entered by interaction (modal, drawer, menu),
+        // not by DOM state: they have no state-specific routes, so requiring a
+        // `data-state` would reject a perfectly rendered modal. Precedence:
+        // mocked routes > declared actions > DOM state.
+        let stateConfirmation;
+        if (stateRoutes.length > 0) {
+          stateConfirmation = confirmMockedState(state, stateRoutes, stateHits, { actionError });
+        } else if (stateActions.length > 0) {
+          stateConfirmation = confirmActionState(state, stateActions, { actionError });
+        } else {
+          stateConfirmation = confirmStateEntry(state, domFacts, { actionError });
         }
+        stateConfirmations[prefix] = stateConfirmation;
         // Viewport containment evidence: record horizontal overflow at capture
         // time so a scrollWidth > clientWidth break surfaces in the same pass
         // as the screenshot instead of only at downstream task judging.
-        const metrics = await page.evaluate(({ failed, viewportWidth }) => {
+        const metrics = await page.evaluate(({ failed, viewportWidth, surfaceMode }) => {
           const de = document.documentElement;
           const smallTargets = [];
           const isDesktop = typeof viewportWidth === "number" ? viewportWidth > 768 : window.innerWidth > 768;
@@ -528,15 +596,53 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
             }
           }
 
-          // Realtime DOM contrast probe: WCAG AA check (4.5:1 normal, 3.0:1 large/bold)
-          function parseRgb(str) {
+          // Realtime DOM contrast probe: WCAG AA check (4.5:1 normal, 3.0:1 large/bold).
+          // CSS Color 4 makes `oklch()` / `color(display-p3 …)` the modern default,
+          // and `getComputedStyle` returns those verbatim in Chromium. A regex over
+          // `rgb()` silently skipped them. Rasterize every CSS color through a 1×1
+          // canvas instead: the engine resolves any color space and gives back
+          // premultiplied-agnostic sRGB bytes plus alpha.
+          const colorCanvas = document.createElement("canvas");
+          colorCanvas.width = 1;
+          colorCanvas.height = 1;
+          const colorCtx = colorCanvas.getContext("2d", { willReadFrequently: true });
+          const colorCache = new Map();
+          function parseColor(str) {
             if (!str) return null;
-            const m = str.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
-            if (!m) return null;
-            return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)];
+            if (colorCache.has(str)) return colorCache.get(str);
+            let out = null;
+            try {
+              // `CSS.supports` rejects values the canvas would silently ignore
+              // (e.g. a var() that failed to resolve), so a missing color is
+              // reported as unmeasured rather than as opaque black.
+              if (typeof CSS === "undefined" || !CSS.supports || !CSS.supports("color", str)) {
+                out = null;
+              } else {
+                // Paint over a transparent canvas: clear first so a previous
+                // color cannot bleed into a semi-transparent sample.
+                colorCtx.clearRect(0, 0, 1, 1);
+                colorCtx.fillStyle = str;
+                colorCtx.fillRect(0, 0, 1, 1);
+                const d = colorCtx.getImageData(0, 0, 1, 1).data;
+                out = { r: d[0], g: d[1], b: d[2], a: d[3] / 255 };
+              }
+            } catch {
+              out = null;
+            }
+            colorCache.set(str, out);
+            return out;
+          }
+          // Composite src over dst, both non-premultiplied sRGB in [0,255] + alpha.
+          function composite(src, dst) {
+            if (!src) return dst;
+            if (!dst) return { r: src.r, g: src.g, b: src.b, a: src.a };
+            const a = src.a + dst.a * (1 - src.a);
+            if (a === 0) return { r: 0, g: 0, b: 0, a: 0 };
+            const mix = (s, d) => (s * src.a + d * dst.a * (1 - src.a)) / a;
+            return { r: mix(src.r, dst.r), g: mix(src.g, dst.g), b: mix(src.b, dst.b), a };
           }
           function calcLuminance(rgb) {
-            const a = rgb.map((v) => {
+            const a = [rgb.r, rgb.g, rgb.b].map((v) => {
               v /= 255;
               return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
             });
@@ -547,6 +653,7 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
             const l2 = calcLuminance(rgb2);
             return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
           }
+          const WHITE_OPAQUE = { r: 255, g: 255, b: 255, a: 1 };
           const lowContrastElements = [];
           for (const el of document.querySelectorAll("p, span, h1, h2, h3, h4, h5, h6, button, a, label, td, th")) {
             const r = el.getBoundingClientRect();
@@ -554,19 +661,30 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
             const text = (el.textContent || "").trim();
             if (!text || el.children.length > 3) continue;
             const comp = window.getComputedStyle(el);
-            const fg = parseRgb(comp.color);
+            // Alpha in the text color means the glyph is composited over the
+            // backdrop; fold that into the effective foreground color first.
+            let fg = parseColor(comp.color);
             if (!fg) continue;
-            let bg = null;
+            // Walk ancestors accumulating the real backdrop, compositing each
+            // semi-transparent layer (dark-glass overlays, `bg-white/5` cards)
+            // until an opaque layer is reached.
+            const layers = [];
             let cur = el;
+            let opaqueBg = null;
             while (cur) {
               const bgComp = window.getComputedStyle(cur);
-              if (bgComp.backgroundColor && bgComp.backgroundColor !== "transparent" && !bgComp.backgroundColor.includes("rgba(0, 0, 0, 0)")) {
-                bg = parseRgb(bgComp.backgroundColor);
-                break;
+              const c = parseColor(bgComp.backgroundColor);
+              if (c && c.a > 0) {
+                if (c.a >= 1) { opaqueBg = c; break; }
+                layers.push(c);
               }
               cur = cur.parentElement;
             }
-            if (!bg) bg = [255, 255, 255];
+            // No opaque ancestor means the page canvas shows through; sRGB white
+            // is the browser default and the only deterministic assumption.
+            let bg = opaqueBg || WHITE_OPAQUE;
+            for (let i = layers.length - 1; i >= 0; i--) bg = composite(layers[i], bg);
+            if (fg.a < 1) fg = composite(fg, bg);
             const ratio = calcContrast(fg, bg);
             const fontSize = parseFloat(comp.fontSize) || 14;
             const isBold = parseInt(comp.fontWeight, 10) >= 700 || comp.fontWeight === "bold";
@@ -649,6 +767,105 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
             }
           }
 
+          // ---- Aesthetic probes (zero extra network, same DOM pass) ----------
+          // A page can pass every a11y probe and still read badly: 180-character
+          // lines, a flat type scale, cards inside cards, orphaned heading words.
+          // These are the cheapest mechanical signals for "looks assembled".
+          const measureCtx = colorCtx;
+          const chCache = new Map();
+          const chWidthFor = (comp) => {
+            const key = comp.font || `${comp.fontWeight} ${comp.fontSize} ${comp.fontFamily}`;
+            if (chCache.has(key)) return chCache.get(key);
+            let width = (parseFloat(comp.fontSize) || 16) * 0.5;
+            try {
+              measureCtx.font = key;
+              width = measureCtx.measureText("0").width || width;
+            } catch {}
+            chCache.set(key, width);
+            return width;
+          };
+          const measureLimit = { operate: 85, persuade: 72, read: 72, experience: 76 }[surfaceMode] || 85;
+          const overlongMeasures = [];
+          for (const el of document.querySelectorAll("p, li, dd, blockquote")) {
+            const r = el.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue;
+            if (el.querySelector("p, div, li, ul, ol, table")) continue;
+            const text = (el.textContent || "").trim();
+            if (text.length < 80) continue;
+            const comp = window.getComputedStyle(el);
+            const contentWidth = r.width - (parseFloat(comp.paddingLeft) || 0) - (parseFloat(comp.paddingRight) || 0);
+            if (contentWidth <= 0) continue;
+            const charsPerLine = contentWidth / chWidthFor(comp);
+            if (charsPerLine > measureLimit) {
+              overlongMeasures.push({
+                tag: el.tagName.toLowerCase(),
+                chars: Math.round(charsPerLine),
+                limit: measureLimit,
+              });
+            }
+          }
+
+          // Type-scale contrast: a display-driven surface needs a real jump
+          // between the biggest heading and body copy, not 20px vs 16px.
+          let headingScaleRatio = null;
+          const headings = [...document.querySelectorAll("h1, h2")]
+            .map((h) => ({ el: h, size: parseFloat(window.getComputedStyle(h).fontSize) || 0 }))
+            .filter((h) => h.size > 0 && h.el.getBoundingClientRect().height > 0);
+          const bodySamples = [...document.querySelectorAll("p")]
+            .map((p) => parseFloat(window.getComputedStyle(p).fontSize) || 0)
+            .filter((n) => n > 0);
+          if (headings.length > 0 && bodySamples.length > 0) {
+            bodySamples.sort((a, b) => a - b);
+            const bodySize = bodySamples[Math.floor(bodySamples.length / 2)];
+            const headingSize = Math.max(...headings.map((h) => h.size));
+            if (bodySize > 0) headingScaleRatio = Number((headingSize / bodySize).toFixed(2));
+          }
+
+          // Nested-card detection: framed containers (border/shadow + radius)
+          // inside other framed containers read as visual noise, not hierarchy.
+          const isCardLike = (el) => {
+            const c = window.getComputedStyle(el);
+            const hasBorder = parseFloat(c.borderTopWidth) > 0 && c.borderTopStyle !== "none";
+            const hasShadow = c.boxShadow && c.boxShadow !== "none";
+            const hasRadius = parseFloat(c.borderTopLeftRadius) > 0;
+            return hasRadius && (hasBorder || hasShadow);
+          };
+          const nestedCards = [];
+          for (const el of document.querySelectorAll("div, section, article, li, aside, form")) {
+            const r = el.getBoundingClientRect();
+            if (r.width < 80 || r.height < 40) continue;
+            if (!isCardLike(el)) continue;
+            let depth = 1;
+            let cur = el.parentElement;
+            while (cur && depth < 5) {
+              if (isCardLike(cur)) depth += 1;
+              cur = cur.parentElement;
+            }
+            if (depth >= 3) nestedCards.push({ tag: el.tagName.toLowerCase(), depth });
+          }
+
+          // Orphan heading: a multi-line heading whose last line is a short
+          // fragment. `text-wrap: balance` prevents it; the probe only flags
+          // headings that did not opt into balance/pretty.
+          const orphanHeadings = [];
+          for (const h of document.querySelectorAll("h1, h2, h3")) {
+            const comp = window.getComputedStyle(h);
+            if (/balance|pretty/.test(comp.textWrap || "")) continue;
+            const range = document.createRange();
+            range.selectNodeContents(h);
+            const rects = [...range.getClientRects()].filter((r) => r.width > 0 && r.height > 0);
+            if (rects.length < 2) continue;
+            const widths = rects.map((r) => r.width);
+            const last = widths[widths.length - 1];
+            const widest = Math.max(...widths);
+            if (widest > 0 && last < widest * 0.32) {
+              orphanHeadings.push({
+                text: (h.textContent || "").trim().slice(0, 30),
+                lines: rects.length,
+              });
+            }
+          }
+
           return {
             scrollWidth: de.scrollWidth,
             clientWidth: de.clientWidth,
@@ -673,6 +890,17 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
             th_without_scopes: thWithoutScopes.slice(0, 5),
             numeric_cell_misaligned_count: numericMisaligned.length,
             numeric_cell_misaligned: numericMisaligned.slice(0, 5),
+            surface_mode: surfaceMode,
+            measure_violation_count: overlongMeasures.length,
+            measure_violations: overlongMeasures.slice(0, 5),
+            heading_scale_ratio: headingScaleRatio,
+            heading_scale_flat: headingScaleRatio === null
+              ? null
+              : headingScaleRatio < (surfaceMode === "operate" || surfaceMode === "read" ? 1.5 : 2.2),
+            nested_card_count: nestedCards.length,
+            nested_cards: nestedCards.slice(0, 5),
+            orphan_heading_count: orphanHeadings.length,
+            orphan_headings: orphanHeadings.slice(0, 5),
             small_touch_targets: smallTargets.slice(0, 10),
             small_touch_target_count: smallTargets.length,
             min_touch_target_size: minTargetSize,
@@ -687,7 +915,7 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
             theme_observed: observedTheme,
             density_observed: observedDensity,
           };
-        }, { failed: failedUrls, viewportWidth: dim.width });
+        }, { failed: failedUrls, viewportWidth: dim.width, surfaceMode });
         Object.assign(metrics, resolveAppliedPreferences(
           { scheme, density, contrast, forcedColors },
           {
@@ -698,15 +926,30 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
           },
         ));
         viewportMetrics[prefix] = metrics;
+        // Capture the pixels even when the state was not confirmed: the image
+        // is diagnostic evidence (it shows what the page actually rendered),
+        // but it never enters `captured`, so it cannot count as state evidence.
         await page.screenshot({ path: targetFile, fullPage: false });
-        await page.close();
-        if (states.length > 1 && (state === "ideal" || state === states[0])) {
-          const defaultTarget = path.join(outputDir, `${vp}.png`);
-          if (!fs.existsSync(defaultTarget)) fs.copyFileSync(targetFile, defaultTarget);
+        if (stateConfirmation.confirmed) {
+          if (states.length > 1 && (state === "ideal" || state === states[0])) {
+            const defaultTarget = path.join(outputDir, `${vp}.png`);
+            if (!fs.existsSync(defaultTarget)) fs.copyFileSync(targetFile, defaultTarget);
+          }
+          captured[prefix] = targetFile;
         }
-        captured[prefix] = targetFile;
       } catch (error) {
+        // A capture error is a gap, not a clean run. Keep a best-effort
+        // screenshot so the failure is inspectable rather than invisible.
+        if (page) {
+          try {
+            await page.screenshot({ path: targetFile, fullPage: false });
+          } catch {}
+        }
         failures.push({ state, viewport: vp, error: error instanceof Error ? error.message : String(error) });
+      } finally {
+        if (page) {
+          try { await page.close(); } catch {}
+        }
       }
     });
 
@@ -716,24 +959,25 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
       const vp = k.split("-").pop();
       if (!vps[vp]) vps[vp] = v;
     }
+    // Unconfirmed states are first-class failures: the screenshot exists but
+    // does not represent the requested state, so the run cannot be "captured".
+    const unconfirmedFailures = Object.entries(stateConfirmations)
+      .filter(([, confirmation]) => !confirmation || confirmation.confirmed !== true)
+      .map(([prefix, confirmation]) => ({
+        state: confirmation?.expected || "unknown",
+        viewport: prefix.split("-").pop(),
+        error: `state_unconfirmed: expected ${confirmation?.expected || "unknown"}, observed ${confirmation?.observed || "none"}`,
+      }));
     return {
-      status: failures.length ? "capture_failed" : "captured",
+      status: failures.length || unconfirmedFailures.length ? "capture_failed" : "captured",
       runner: "playwright-concurrent",
+      surface_mode: surfaceMode,
       viewports: vps,
       captures: captured,
       viewport_metrics: viewportMetrics,
       state_confirmations: stateConfirmations,
       runtime_errors: runtimeErrors,
-      failures: [
-        ...failures,
-        ...Object.entries(stateConfirmations)
-          .filter(([, confirmation]) => !confirmation.confirmed)
-          .map(([prefix, confirmation]) => ({
-            state: confirmation.expected,
-            viewport: prefix.split("-").pop(),
-            error: `state_unconfirmed: expected ${confirmation.expected}, observed ${confirmation.observed || "none"}`,
-          })),
-      ],
+      failures: [...failures, ...unconfirmedFailures],
     };
   } catch {
     return null;
@@ -1118,6 +1362,23 @@ export function buildDiagnosticsSummary(result) {
   const entries = Object.entries(result.viewport_metrics || {});
   const domMeasured = tier === "playwright"
     && entries.some(([, m]) => m && m.dom_metrics !== "unmeasured_cli_runner");
+  // Evidence completeness is a gate input, not a footnote. A run that captured
+  // nothing, failed captures, or left states unconfirmed has no measured
+  // evidence — scoring its empty probe set as 100/A+ was the false-clean this
+  // closes. `no_screenshots` stays separate so the reason is actionable.
+  const failures = Array.isArray(result.failures) ? result.failures : [];
+  const unconfirmedStates = [
+    ...Object.entries(result.state_confirmations || {})
+      .filter(([, c]) => !c || c.confirmed !== true)
+      .map(([prefix, c]) => `${prefix}: ${c?.observed || "not entered"}`),
+    ...(Array.isArray(result.unconfirmed_states) ? result.unconfirmed_states : []),
+  ];
+  const screenshotCount = Object.keys(result.captures || {}).length;
+  const noScreenshots = screenshotCount === 0;
+  const captureIncomplete = noScreenshots
+    || failures.length > 0
+    || unconfirmedStates.length > 0
+    || (result.status !== undefined && result.status !== "captured");
   const measured = (m) => domMeasured && m && m.dom_metrics !== "unmeasured_cli_runner";
   const known = (key) => entries.filter(([, m]) => measured(m) && m[key] !== null && m[key] !== undefined);
   const unmeasuredViewports = entries
@@ -1229,7 +1490,45 @@ export function buildDiagnosticsSummary(result) {
   } else if (actionErrors.length > 0) {
     fatalCrash = true;
     fatalReason = `action_errors detected: ${actionErrors.slice(0, 2).join("; ")}`;
+  } else if (captureIncomplete) {
+    // No evidence cannot pass. Distinguish "nothing captured" from "captured
+    // but a state/route failed" so the retry target is obvious.
+    fatalCrash = true;
+    fatalReason = noScreenshots
+      ? "no_screenshots: capture produced no confirmed screenshot"
+      : `capture_incomplete: ${failures.length} capture failure(s), ${unconfirmedStates.length} unconfirmed state(s)`;
   }
+
+  // Aesthetic deductions are aggregated across viewports, deduplicated so the
+  // same page pattern does not multiply by state count.
+  const aesthetic = (key, field) => entries
+    .filter(([, m]) => measured(m) && typeof m[key] === "number")
+    .reduce((acc, [, m]) => acc + (m[key] || 0), 0);
+  const uniqueNestedCards = (() => {
+    const seen = new Map();
+    for (const [, m] of entries) {
+      if (!measured(m) || !Array.isArray(m.nested_cards)) continue;
+      for (const card of m.nested_cards) {
+        const k = `${card.tag}|${card.depth}`;
+        if (!seen.has(k)) seen.set(k, card);
+      }
+    }
+    return seen.size;
+  })();
+  const uniqueOrphanHeadings = (() => {
+    const seen = new Map();
+    for (const [, m] of entries) {
+      if (!measured(m) || !Array.isArray(m.orphan_headings)) continue;
+      for (const h of m.orphan_headings) {
+        if (!seen.has(h.text)) seen.set(h.text, h);
+      }
+    }
+    return seen.size;
+  })();
+  const measureViolationCount = aesthetic("measure_violation_count");
+  const nestedCardCount = uniqueNestedCards;
+  const orphanHeadingCount = uniqueOrphanHeadings;
+  const flatScaleEntries = entries.filter(([, m]) => measured(m) && m.heading_scale_flat === true);
 
   // Deterministic Craft Health Index (CHI: 0-100)
   const deductions = [];
@@ -1294,6 +1593,27 @@ export function buildDiagnosticsSummary(result) {
     }
   }
 
+  // Aesthetic floors: a page can be a11y-clean and still read as assembled.
+  if (measureViolationCount > 0) {
+    const measureDeduct = Math.min(6, measureViolationCount * 2);
+    deductions.push({ rule: "measure_width", points: measureDeduct, reason: `${measureViolationCount} text block(s) exceed the readable measure limit` });
+    score -= measureDeduct;
+  }
+  if (flatScaleEntries.length > 0) {
+    deductions.push({ rule: "type_scale", points: 5, reason: `Heading/body scale ratio too flat on ${flatScaleEntries.length} viewport(s)` });
+    score -= 5;
+  }
+  if (nestedCardCount > 0) {
+    const nestedDeduct = Math.min(6, nestedCardCount * 2);
+    deductions.push({ rule: "nested_cards", points: nestedDeduct, reason: `${nestedCardCount} card(s) nested three or more frames deep` });
+    score -= nestedDeduct;
+  }
+  if (orphanHeadingCount > 0) {
+    const orphanDeduct = Math.min(4, orphanHeadingCount);
+    deductions.push({ rule: "orphan_heading", points: orphanDeduct, reason: `${orphanHeadingCount} multi-line heading(s) end in an orphaned fragment` });
+    score -= orphanDeduct;
+  }
+
   score = Math.max(0, Math.min(100, score));
   let grade = "A+";
   if (score < 60) grade = "F";
@@ -1310,10 +1630,16 @@ export function buildDiagnosticsSummary(result) {
     total_deductions: 100 - score,
   };
 
-  const gatePassed = !fatalCrash && craft_health_index.score >= 90;
+  // Probe availability is a gate input: "unmeasured" is a gap, never a pass.
+  // The system-browser fallback cannot read the DOM, so it can never clear the
+  // gate on its own — Playwright (or a rerun) is required.
+  const probeUnmeasured = !domMeasured;
+  const gatePassed = !fatalCrash && !probeUnmeasured && craft_health_index.score >= 90;
   const gateReason = fatalCrash
     ? fatalReason
-    : (gatePassed ? `Score ${score} >= 90 (Grade ${grade})` : `Score ${score} < 90 (Grade ${grade})`);
+    : probeUnmeasured
+      ? "probe_unmeasured: no DOM metrics (system-browser CLI runner or empty capture)"
+      : (gatePassed ? `Score ${score} >= 90 (Grade ${grade})` : `Score ${score} < 90 (Grade ${grade})`);
 
   return {
     status: result.status,
@@ -1334,12 +1660,18 @@ export function buildDiagnosticsSummary(result) {
     },
     craft_health_index,
     craft_gate: {
-      // Stage 6 entry gate: CHI >= 90 (Grade A) and zero fatal crashes. Probe-unavailable dims are
+      // Stage 6 entry gate: CHI >= 90 (Grade A), zero fatal crashes, complete
+      // capture evidence, and DOM-measured probes. Unavailable dimensions are
       // excluded (null), never counted as pass.
       threshold: 90,
       passed: gatePassed,
       score,
       reason: gateReason,
+      evidence_complete: !captureIncomplete,
+      probe_measured: domMeasured,
+      screenshots: screenshotCount,
+      failures: failures.length,
+      unconfirmed_states: unconfirmedStates.length,
     },
     max_cls_score: maxClsScore,
     small_touch_targets_count: touchCount,
@@ -1376,13 +1708,31 @@ export async function runSelfTest() {
   } catch {}
   const searchPyPath = path.resolve(__dirname, "vendor/ui-ux-pro-max/scripts/search.py");
   const searchPyExists = fs.existsSync(searchPyPath);
+  // The vendored impeccable engine ships a per-platform binary; probing it
+  // here means a run never discovers a missing/offline launcher only at Stage 4.
+  let impeccableOk = false;
+  let impeccableVersion = null;
+  try {
+    const launcher = path.resolve(__dirname, "vendor/impeccable/scripts/impeccable");
+    if (fs.existsSync(launcher)) {
+      const res = spawnSync(launcher, ["engine-probe"], { encoding: "utf8", timeout: 5000 });
+      const match = (res.stdout || "").match(/impeccable-engine\s+(\S+)/);
+      impeccableOk = res.status === 0 && Boolean(match);
+      impeccableVersion = match ? match[1] : null;
+    }
+  } catch {}
 
   const dummyDom = { bodyState: "stressed", domText: "stressed error" };
   const confState = confirmStateEntry("stressed", dummyDom);
   const confMock = confirmMockedState("empty", [{ url: "**/api" }], [1]);
 
   const dummyResult = {
-    status: "ok",
+    status: "captured",
+    runner: "playwright-concurrent",
+    captures: { "390": "390.png" },
+    runtime_errors: [],
+    failures: [],
+    state_confirmations: {},
     viewport_metrics: {
       "390": {
         small_touch_target_count: 0,
@@ -1395,6 +1745,7 @@ export async function runSelfTest() {
         numeric_cell_misaligned_count: 0,
         horizontal_overflow: false,
         stylesheets_applied: true,
+        dom_metrics: "full",
       },
     },
   };
@@ -1410,6 +1761,8 @@ export async function runSelfTest() {
     accesslint_cli_available: accesslintOk,
     accesslint_chrome_available: accesslintChromeOk,
     ui_ux_pro_max_available: searchPyExists,
+    impeccable_engine_available: impeccableOk,
+    impeccable_engine_version: impeccableVersion,
     system_browser: sysBrowser,
     port_allocator_working: portOk,
     state_entry_truth_table: confState.confirmed && confMock.confirmed,
@@ -1444,6 +1797,7 @@ async function main() {
   let sourceRevision = "unversioned";
   let serveCmd = null;
   let portArg = null;
+  let surfaceMode = "operate";
   const dependencies = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -1451,6 +1805,12 @@ async function main() {
       serveCmd = args[++i] || null;
     } else if (args[i] === "--port") {
       portArg = args[++i] || null;
+    } else if (args[i] === "--surface-mode") {
+      surfaceMode = args[++i] || "operate";
+      if (!SURFACE_MODES.includes(surfaceMode)) {
+        process.stderr.write(`--surface-mode accepts ${SURFACE_MODES.join(", ")}\n`);
+        process.exit(2);
+      }
     } else if (args[i] === "--target-path") {
       targetPath = args[++i] || null;
     } else if (args[i] === "--target-platform") {
@@ -1519,8 +1879,12 @@ async function main() {
     }
     if (!url) {
       url = `http://127.0.0.1:${allocatedPort}`;
-    } else {
-      url = url.replace(/\{port\}|PORT/g, String(allocatedPort));
+    } else if (/\{port\}|\$PORT|\$\{PORT\}/.test(url)) {
+      url = applyPortPlaceholders(url, allocatedPort);
+    } else if (!portArg || portArg === "auto") {
+      // A fixed URL plus an auto-allocated port would poll the wrong server:
+      // rewrite the URL's port so `waitForServer` watches the one we started.
+      url = rewriteUrlPort(url, allocatedPort);
     }
   }
 
@@ -1530,15 +1894,20 @@ async function main() {
   }
 
   if (serveCmd) {
-    const finalCmd = serveCmd.replace(/\{port\}|PORT/g, String(allocatedPort));
+    const finalCmd = applyPortPlaceholders(serveCmd, allocatedPort);
+    // `detached: true` makes the child its own process-group leader, so the
+    // cleanup below can SIGTERM the whole tree (npm → sh → vite). Without it
+    // `process.kill(-pid)` targets a group that does not exist, the fallback
+    // only kills the shell, and the real dev server stays resident.
     serverProcess = spawn(finalCmd, {
       shell: true,
       stdio: "ignore",
+      detached: process.platform !== "win32",
       env: { ...process.env, PORT: String(allocatedPort) },
     });
     const ready = await waitForServer(url, 20000);
     if (!ready) {
-      if (serverProcess && !serverProcess.killed) serverProcess.kill("SIGKILL");
+      await stopServerTree(serverProcess);
       process.stderr.write(`--serve: timed out waiting for server at ${url}\n`);
       process.exit(2);
     }
@@ -1559,7 +1928,7 @@ async function main() {
 
     // 1. Try Playwright
     let result = await captureWithPlaywright(url, outputDir, viewports, states, schemes, density,
-                                             forcedColors, contrast, 4, mocks);
+                                             forcedColors, contrast, 4, mocks, surfaceMode);
 
     // 2. Try System Browser CLI if Playwright unavailable. It cannot intercept
     // requests, so mock-driven states would screenshot the live data: refuse.
@@ -1595,10 +1964,9 @@ async function main() {
         manifestPath: customManifest,
       });
       process.stdout.write(JSON.stringify({ ...result, diagnostics_summary, metadata, evidence_record: recording }, null, 2) + "\n");
-      // Mechanical craft gate: exit 3 when CHI < 90 so Stage 5 rework is
-      // script-decidable (skill docs promise probe-based enforcement, not LLM
-      // judgment). Probe-unmeasured capture keeps exit 0; its report already
-      // marks unmeasured dims which reviewers must treat as gaps.
+      // Mechanical craft gate: exit 3 when CHI < 90, when capture evidence is
+      // incomplete (no screenshots / failed or unconfirmed states), or when no
+      // DOM probe ran. Exit 0 therefore always means "measured and passing".
       const chiGate = diagnostics_summary?.craft_gate;
       if (chiGate && chiGate.passed === false) {
         process.exit(3);
@@ -1614,14 +1982,35 @@ async function main() {
       process.exit(2);
     }
   } finally {
-    if (serverProcess && !serverProcess.killed) {
-      try {
-        process.kill(-serverProcess.pid, "SIGTERM");
-      } catch {
-        serverProcess.kill("SIGTERM");
-      }
-    }
+    await stopServerTree(serverProcess);
   }
+}
+
+// Terminate the entire `--serve` tree. The child is a process-group leader
+// (`detached: true`), so a negative pid signals npm, its shell and the dev
+// server together; SIGKILL follows when the group ignores SIGTERM. Windows has
+// no process groups here, so it falls back to the direct child.
+async function stopServerTree(proc, graceMs = 1500) {
+  if (!proc || !proc.pid) return;
+  const signalGroup = (sig) => {
+    try {
+      if (process.platform === "win32") proc.kill(sig);
+      else process.kill(-proc.pid, sig);
+      return true;
+    } catch {
+      try { proc.kill(sig); return true; } catch { return false; }
+    }
+  };
+  signalGroup("SIGTERM");
+  const exited = await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), graceMs);
+    proc.once("exit", () => { clearTimeout(timer); resolve(true); });
+    if (proc.exitCode !== null || proc.signalCode !== null) {
+      clearTimeout(timer);
+      resolve(true);
+    }
+  });
+  if (!exited) signalGroup("SIGKILL");
 }
 
 // Importable seam: the module is inert unless executed directly (`node capture.mjs`).
