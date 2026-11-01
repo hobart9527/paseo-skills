@@ -227,7 +227,6 @@ artifacts:
       - [ ] 1.1 T-01 <one-line goal>
         - Depends on: <T-xx, T-yy | none>
         - Write scope: <repo-relative path>[, <path>]
-        - Reads: <repo-relative path>[, <path>]      (optional)
         - Review: <strict | standard | mechanical>
         - Verify with: <executable command>
         - Scenarios: <SCEN-xxx-yy>[, ...]
@@ -241,11 +240,6 @@ artifacts:
         paths, no `..` escaping the repo root.
       - `Depends on` must name task IDs that exist in this file; no self-dependency,
         no cycles.
-      - `Reads` is optional: paths OUTSIDE this task's Write scope that its Verify or tests
-        touch. `merge-task` re-verifies an already-Done task only when it is a dependency of
-        the merging task, or its Write scope + Reads overlap what the merging task writes.
-        A shared ancestor alone no longer triggers a replay, so an undeclared cross-scope
-        coupling is caught only by the sink's full suite. Repo-relative, no `..`.
       - `Review` is one of `strict` / `standard` / `mechanical`; omitting it means
         `standard`.
       - `Verify with` must be an executable command. For every non-sink task it must

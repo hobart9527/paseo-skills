@@ -81,10 +81,6 @@ test('schema declares every artifact the pipeline reads, in flow order', () => {
   assert.doesNotMatch(schema, /SKILL\.md「Entry and CP-1」/);
 });
 
-test('Reads is documented where authors and the schema define tasks', () => {
-  for (const file of ['openspec-schema/schema.yaml', 'openspec-schema/templates/tasks.md', 'templates/author.md', 'SKILL.md']) assert.match(read(file), /Reads/, file);
-});
-
 test('route=handoff at the structural check skips R0', () => {
   assert.match(read('SKILL.md'), /`\[ROUTE\] handoff` here: skip R0/);
 });

@@ -5,7 +5,7 @@
 import { spawnSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseTasks, parseTaskLine, parseReviewTag, isFileWithinScopes, graphErrors, isTestPath, verifyLegs, needsReplay } from './lib/tasks.mjs';
+import { parseTasks, parseTaskLine, parseReviewTag, isFileWithinScopes, graphErrors, isTestPath, verifyLegs } from './lib/tasks.mjs';
 import { missingDependency, dependencyMessage } from './lib/toolchain.mjs';
 import { listAgents, inspectAgent, modelOf, findAgents } from './lib/paseo-agents.mjs';
 
@@ -291,14 +291,20 @@ if (result.error || result.status !== 0 || result.signal || result.timedOut || v
 // Cross-task regression: with the merge applied, every already-Done task whose scope
 // could be affected by this task's changes must still pass its narrow Verify. Broad
 // (whole-suite) legs are skipped here; they belong to the sink and final acceptance.
-// Replay only a task this one depends on, or whose footprint (Write scope plus declared
-// `Reads`) overlaps what this task writes (`needsReplay`). A shared ancestor alone does not
-// qualify: with a Wave 0 task every sibling shares one, which made replay O(N²). Coupling
-// that crosses scopes must be declared with `Reads`; the sink's full suite backstops the rest.
+// Only replay tasks that share a transitive dependency with the current task or whose
+// scope overlaps the files this task touches — fully independent branches cannot regress.
+const scopesOverlap = (scopesA, scopesB) => scopesA.some((a) => scopesB.some((b) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)));
+const taskAncestors = new Set();
+{ const walk = (id) => { for (const dep of (parsed.tasks.find((t) => t.id === id)?.depends ?? [])) { taskAncestors.add(dep); walk(dep); } }; walk(taskId); }
 const regressionStart = Date.now();
 let replayed = 0;
 for (const prior of parsed.tasks.filter((item) => item.done && item.id !== taskId && item.verify)) {
-  if (!needsReplay(task, prior, parsed.tasks)) continue;
+  // Skip if prior is fully independent: no shared dependency chain AND no scope overlap.
+  const priorAncestors = new Set();
+  { const walk = (id) => { for (const dep of (parsed.tasks.find((t) => t.id === id)?.depends ?? [])) { priorAncestors.add(dep); walk(dep); } }; walk(prior.id); }
+  const sharesDep = taskAncestors.has(prior.id) || priorAncestors.has(taskId)
+    || [...taskAncestors].some((a) => priorAncestors.has(a));
+  if (!sharesDep && !scopesOverlap(task.scope, prior.scope)) continue;
   const legs = verifyLegs(prior.verify).filter((leg) => !leg.broad);
   if (!legs.length) continue;
   replayed += 1;

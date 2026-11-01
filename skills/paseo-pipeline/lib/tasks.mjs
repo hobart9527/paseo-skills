@@ -80,7 +80,6 @@ export function parseTasks(markdown) {
         checked: checked.toLowerCase() === 'x',
         depends: [],
         scope: [],
-        reads: [],
         verify: '',
         scenarios: [],
         review: 'standard',
@@ -108,15 +107,6 @@ export function parseTasks(markdown) {
     if (!current) continue;
     if (key === 'depends on') current.depends.push(...splitList(value));
     else if (key === 'write scope') current.scope.push(...splitList(value).map(normalizeScope).filter(Boolean));
-    else if (key === 'reads') {
-      // Paths outside Write scope that this task's Verify touches. They need not exist yet
-      // (another task may create them), so only the path shape is validated.
-      for (const item of splitList(value)) {
-        const normalized = normalizeScope(item);
-        if (normalized) current.reads.push(normalized);
-        else errors.push({ code: 'BAD_READS', task: current.id, message: `${current.id} Reads must be repo-relative without "..": ${item}` });
-      }
-    }
     else if (key === 'verify with') current.verify = (current.verify ? `${current.verify} ${normalizeCommand(value)}` : normalizeCommand(value)).trim();
     else if (key === 'scen' || key === 'scenarios') current.scenarios.push(...splitList(value));
     else if (key === 'review') current.review = value.trim().toLowerCase() || 'standard';
@@ -176,26 +166,6 @@ export function isTestPath(file) {
   return /(^|\/)(test|tests|__tests__|spec|e2e|fixtures?|testdata|__snapshots__)(\/|$)/i.test(value)
     || /(?:^|\/)test_[^/]*\.py$/i.test(value)
     || /(?:\.|_)(test|spec|e2e)\.[^.]+$/i.test(value);
-}
-
-/** True when any path in `a` equals, contains or is contained by a path in `b`. */
-export function pathsOverlap(a, b) {
-  return a.some((left) => b.some((right) => left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`)));
-}
-
-/**
- * Decide whether an already-Done task must be re-verified when `task` merges.
- * Replay on a dependency edge, or when the prior task's footprint (Write scope plus
- * declared Reads) overlaps what `task` writes. Disjoint scopes are enforced at freeze,
- * so an undeclared read is the only way two independent tasks can interfere; the sink's
- * full suite is the backstop for that.
- */
-export function needsReplay(task, prior, tasks) {
-  const byId = new Map(tasks.map((item) => [item.id, item]));
-  const ancestors = new Set();
-  const walk = (id) => { for (const dep of byId.get(id)?.depends ?? []) { if (!ancestors.has(dep)) { ancestors.add(dep); walk(dep); } } };
-  walk(task.id);
-  return ancestors.has(prior.id) || pathsOverlap(task.scope, [...prior.scope, ...prior.reads]);
 }
 
 export function isFileWithinScopes(filePath, scopes) {

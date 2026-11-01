@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseTasks, parseTaskLine, computeWaves, isFileWithinScopes, parseReviewTag, isTestPath, verifyLegs, needsReplay } from '../lib/tasks.mjs';
+import { parseTasks, parseTaskLine, computeWaves, isFileWithinScopes, parseReviewTag, isTestPath, verifyLegs } from '../lib/tasks.mjs';
 
 const md = `
 - [ ] 1.1 T-01 contract
@@ -83,23 +83,6 @@ test('official task template is parser-compatible', () => {
   assert.deepEqual(tasks[0].depends, []);
   assert.equal(tasks[0].verify, 'node --test test/a.test.mjs');
   assert.equal(parseTaskLine('- [x] 1.1 T-010 label').id, 'T-010');
-});
-
-test('Reads is parsed, optional, and must be repo-relative', () => {
-  const body = (reads) => `- [ ] 1.1 T-01 a\n  - Write scope: src/a\n${reads}  - Verify with: node --test src/a/a.test.mjs\n`;
-  assert.deepEqual(parseTasks(body('  - Reads: src/b, lib/x.mjs\n')).tasks[0].reads, ['src/b', 'lib/x.mjs']);
-  assert.deepEqual(parseTasks(body('')).tasks[0].reads, []);
-  assert.ok(parseTasks(body('  - Reads: ../etc\n')).errors.some((error) => error.code === 'BAD_READS'));
-  assert.ok(parseTasks(body('  - Reads: /abs/path\n')).errors.some((error) => error.code === 'BAD_READS'));
-});
-
-test('needsReplay: dependency edge or footprint overlap, never a shared ancestor alone', () => {
-  const { tasks } = parseTasks(`- [ ] 1.1 T-01 root\n  - Write scope: src/core\n  - Verify with: node --test src/core/c.test.mjs\n- [ ] 1.2 T-02 a\n  - Depends on: T-01\n  - Write scope: src/a\n  - Reads: src/b\n  - Verify with: node --test src/a/a.test.mjs\n- [ ] 1.3 T-03 b\n  - Depends on: T-01\n  - Write scope: src/b\n  - Verify with: node --test src/b/b.test.mjs\n- [ ] 1.4 T-04 c\n  - Depends on: T-01\n  - Write scope: src/c\n  - Verify with: node --test src/c/c.test.mjs\n`);
-  const [root, a, b, c] = tasks;
-  assert.equal(needsReplay(a, root, tasks), true, 'dependency edge');
-  assert.equal(needsReplay(b, a, tasks), true, 'prior reads what this task writes');
-  assert.equal(needsReplay(c, a, tasks), false, 'siblings sharing only an ancestor');
-  assert.equal(needsReplay(c, b, tasks), false);
 });
 
 test('malformed checkbox lines are reported instead of silently ignored', () => {
