@@ -14,6 +14,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+// 上限的默认值只有一份（判据在 lib/tier-gate.mjs）。这里 import 而不是抄一个 3：
+// 抄一份就会在有人改默认值时让 doctor 报告的上限与真实拦截阈值分家。
+import { DEFAULT_LIMIT as TIER_DEFAULT_LIMIT } from './lib/tier-gate.mjs';
 
 // 一律比较真实路径：用户常把 skill 目录软链到 ~/.claude/skills/，而 install.sh 写入的是
 // 解析后的真实目录；拿未解析的 SKILL_DIR 去比会把正常安装判成「指向别处」（实测）。
@@ -116,11 +119,14 @@ if (config.__error) {
   }
 }
 
-// 3. scope-guard hook 已装
+// 3. 两个 hook 已按 install.sh 的形状注册
 //
 // 注册值可以是 `$HOME/...`、`${HOME}/...`、`~/...` 或绝对路径——它们由 shell 展开后指向同一个
 // 文件，判据要比较**展开后的路径**，不能比较字面量。按字面量比对会把可移植写法误判成漂移，
 // 逼着人去把 `$HOME` 换成硬编码用户名，那是往反方向修。
+//
+// 两条 hook 分开判：漏装 scope-guard 是「写入无人守护」，漏装 tier-reminder 是「分级提醒
+// 不会出现在决策点」，两种故障的修法不同，合成一行会丢掉是哪一个没装。
 const settings = readJson(settingsPath);
 
 /** 展开 hook 命令里的家目录写法，供路径比对；不识别其它变量（不认识就是原样）。 */
@@ -132,32 +138,78 @@ function expandHome(text) {
     .replace(/(^|[\s"'])~(?=\/)/g, (_, before) => `${before}${os.homedir()}`);
 }
 
-
-if (settings.__error) {
-  fail('scope-guard hook', `${settingsPath} 无法读取：${settings.__error}`);
-} else {
-  const hookScript = path.join(SKILL_DIR, 'hooks', 'scope-guard-hook.mjs');
-  // 按条目判，而不是在整份 JSON 里找字符串：挂在 matcher=Bash 上的同一条 command 会
-  // 让字符串包含判定 PASS，而 Write/Edit 实际没人守护（实测过）。
-  const hookName = path.basename(hookScript);
-  const entries = (settings.hooks?.PreToolUse ?? []).flatMap((entry) => {
-    const matchers = entry?.matcher === undefined ? [] : String(entry.matcher).split('|');
-    return (entry?.hooks ?? [])
+/** 某个事件下所有登记项，归一成 {matchers, command}；matchers 为 null 表示 entry 没写 matcher。 */
+function hookEntries(event) {
+  const groups = settings.hooks?.[event];
+  if (!Array.isArray(groups)) return [];
+  return groups.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object' || !Array.isArray(entry.hooks)) return [];
+    const matchers = entry.matcher === undefined ? null : String(entry.matcher).split('|');
+    return entry.hooks
       .filter((hook) => typeof hook?.command === 'string')
       .map((hook) => ({ matchers, command: hook.command }));
   });
+}
+
+/**
+ * 判一个 hook 是否按 install.sh 的形状注册在指定事件上。
+ *
+ * `requiredMatchers` 非空时，还要求**同一个 entry** 的 matcher 覆盖全部工具：同一条 command
+ * 挂到 matcher=Bash 上时，整份 JSON 的字符串包含判定会 PASS，而 Write/Edit 实际没人守护（实测过）。
+ */
+function checkHook(name, { event, script, requiredMatchers = [] }) {
+  const hookName = path.basename(script);
+  const entries = hookEntries(event);
   const matching = entries.filter((entry) => entry.command.includes(hookName));
-  const guarded = matching.filter((entry) => ['Write', 'Edit'].every((tool) => entry.matchers.includes(tool)));
-  const correct = guarded.filter((entry) => expandHome(entry.command).includes(hookScript));
+  const guarded = requiredMatchers.length === 0
+    ? matching
+    : matching.filter((entry) => requiredMatchers.every((tool) => entry.matchers?.includes(tool)));
+  const correct = guarded.filter((entry) => expandHome(entry.command).includes(script));
+  const where = `${settingsPath} 的 hooks.${event}`;
   if (matching.length === 0) {
-    fail('scope-guard hook', `${settingsPath} 的 hooks.PreToolUse 里没有 scope-guard-hook.mjs`);
+    fail(name, `${where} 里没有 ${hookName}（${installHint}）`);
   } else if (guarded.length === 0) {
-    fail('scope-guard hook', `已注册但 matcher 未覆盖 Write 与 Edit（当前 ${matching.map((e) => e.matchers.join('|') || '(无)').join(', ')}）`);
+    fail(name, `已注册但 matcher 未覆盖 ${requiredMatchers.join(' 与 ')}（当前 ${matching.map((e) => e.matchers?.join('|') || '(无)').join(', ')}）`);
   } else if (correct.length === 0) {
-    fail('scope-guard hook', `已注册但路径不是 ${hookScript}`);
+    fail(name, `已注册但路径不是 ${script}`);
   } else {
-    pass('scope-guard hook', 'PreToolUse 已注册，matcher 覆盖 Write/Edit');
+    pass(name, `${event} 已注册${requiredMatchers.length > 0 ? `，matcher 覆盖 ${requiredMatchers.join('/')}` : ''}`);
   }
+}
+
+if (settings.__error) {
+  // settings.json 读不到时两条 hook 都无法判断：分别记失败，别让其中一个看起来还行。
+  fail('scope-guard hook', `${settingsPath} 无法读取：${settings.__error}`);
+  fail('tier-reminder hook', `${settingsPath} 无法读取：${settings.__error}`);
+} else {
+  checkHook('scope-guard hook', {
+    event: 'PreToolUse',
+    script: path.join(SKILL_DIR, 'hooks', 'scope-guard-hook.mjs'),
+    requiredMatchers: ['Write', 'Edit'],
+  });
+  checkHook('tier-reminder hook', {
+    event: 'UserPromptSubmit',
+    script: path.join(SKILL_DIR, 'hooks', 'tier-reminder-hook.mjs'),
+  });
+}
+
+// 3b. tier-gate 的生效状态
+//
+// tier-gate 默认开：主 checkout 的 main/master 上，单会话写第 limit+1 个不同业务文件即拒绝。
+// 它默认生效却零输出，等于「装了、也可能被一条环境变量静默关掉」——doctor 不替用户改环境，
+// 只把当前到底拦不拦、拦在第几个文件说出来，让 `PIPELINE_TIER_GATE=off` 这类排障残留可见。
+const tierGateOff = process.env.PIPELINE_TIER_GATE === 'off';
+const rawTierLimit = process.env.PIPELINE_TIER_GATE_LIMIT;
+const parsedTierLimit = Number.parseInt(rawTierLimit ?? '', 10);
+const tierLimitValid = Number.isInteger(parsedTierLimit) && parsedTierLimit >= 1;
+const effectiveTierLimit = tierLimitValid ? parsedTierLimit : TIER_DEFAULT_LIMIT;
+if (rawTierLimit !== undefined && rawTierLimit !== '' && !tierLimitValid) {
+  fail('tier-gate', `PIPELINE_TIER_GATE_LIMIT=${rawTierLimit} 不是 ≥1 的整数，被忽略，实际仍按默认上限 ${TIER_DEFAULT_LIMIT}`);
+} else if (tierGateOff) {
+  pass('tier-gate', `PIPELINE_TIER_GATE=off — 已整体关闭（排障态）：主 checkout 的 main 上不再按 Tier 1 上限拦截；不需要时取消该变量`);
+} else {
+  const source = tierLimitValid ? `，由 PIPELINE_TIER_GATE_LIMIT=${rawTierLimit} 覆盖` : `（默认上限）`;
+  pass('tier-gate', `生效：主 checkout 的 main/master 上写第 ${effectiveTierLimit + 1} 个不同业务文件即拒绝${source}`);
 }
 
 // 4. 外部命令

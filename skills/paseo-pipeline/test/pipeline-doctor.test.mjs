@@ -22,17 +22,44 @@ function healthy() {
 }
 
 const HOOK = path.join(SKILL_DIR, 'hooks', 'scope-guard-hook.mjs');
+const TIER_HOOK = path.join(SKILL_DIR, 'hooks', 'tier-reminder-hook.mjs');
 
 /** 把绝对 HOOK 路径换成真实 settings.json 里常见的可移植写法。 */
-function portableHook(style) {
+function portableHook(style, hook = HOOK) {
   const home = os.homedir();
-  if (!HOOK.startsWith(home)) return HOOK;
+  if (!hook.startsWith(home)) return hook;
   const prefixes = { dollar: '$HOME', brace: '${HOME}', tilde: '~', absolute: home };
-  return `${prefixes[style]}${HOOK.slice(home.length)}`;
+  return `${prefixes[style]}${hook.slice(home.length)}`;
 }
 
 function hookSettings(command) {
   return { hooks: { PreToolUse: [{ matcher: 'Write|Edit', hooks: [{ type: 'command', command }] }] } };
+}
+
+/**
+ * 健康基线 = install.sh 实际写出的两条 hook（含 matcher）。
+ * 只装 scope-guard 不算健康：tier-reminder 缺失时，分级提醒不会出现在决策点上。
+ */
+function installedHooks() {
+  return {
+    hooks: {
+      PreToolUse: [{ matcher: 'Write|Edit|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: `node ${HOOK}` }] }],
+      UserPromptSubmit: [{ hooks: [{ type: 'command', command: `node ${TIER_HOOK}` }] }],
+    },
+  };
+}
+
+/** 从 settings 里删掉指向某个 hook 脚本的条目（模拟「只装了一条」）。 */
+function withoutHook(settings, script) {
+  const name = path.basename(script);
+  const next = { hooks: {} };
+  for (const [event, groups] of Object.entries(settings.hooks)) {
+    const kept = groups
+      .map((entry) => ({ ...entry, hooks: (entry.hooks ?? []).filter((hook) => !String(hook.command).includes(name)) }))
+      .filter((entry) => entry.hooks.length > 0);
+    next.hooks[event] = kept;
+  }
+  return next;
 }
 
 function run(profiles, { settings, env = {}, zshenv = true } = {}) {
@@ -40,17 +67,19 @@ function run(profiles, { settings, env = {}, zshenv = true } = {}) {
   const config = path.join(dir, 'config.json');
   const settingsFile = path.join(dir, 'settings.json');
   fs.writeFileSync(config, JSON.stringify({ daemon: { agentProfiles: profiles } }));
-  // 健康基线 = install.sh 实际写出的形状（含 matcher）。不是任意「hooks 里有这个脚本」就算装好：
-  // 少了 matcher，Write/Edit 根本不会被守护。
-  fs.writeFileSync(settingsFile, JSON.stringify(settings ?? hookSettings(`node ${HOOK}`)));
+  fs.writeFileSync(settingsFile, JSON.stringify(settings ?? installedHooks()));
   // 非交互检查读的是 `zsh -c` 下的 $HOME/.zshenv；用临时 HOME 才能既正反两向断言，
   // 又不去碰真实 home。`--home` 同时把这个 HOME 交给 config/settings 的默认路径。
   if (zshenv) {
     fs.writeFileSync(path.join(dir, '.zshenv'), `export PIPELINE_HOME=${JSON.stringify(SKILL_DIR)}\n`);
   }
+  // tier-gate 的开关与上限来自环境变量：先清掉调用者 shell 里可能有的残留，用例里再显式给，
+  // 否则 doctor 报的「生效/关闭」取决于跑测试的人机器上碰巧设了什么。
+  const base = { ...process.env, PIPELINE_HOME: SKILL_DIR };
+  for (const key of ['PIPELINE_TIER_GATE', 'PIPELINE_TIER_GATE_LIMIT', 'PIPELINE_TIER_GATE_STATE']) delete base[key];
   const result = spawnSync(process.execPath, [DOCTOR, '--config', config, '--settings', settingsFile, '--home', dir], {
     encoding: 'utf8',
-    env: { ...process.env, PIPELINE_HOME: SKILL_DIR, ...env },
+    env: { ...base, ...env },
   });
   fs.rmSync(dir, { recursive: true, force: true });
   return { code: result.status, out: `${result.stdout}${result.stderr}` };
@@ -61,9 +90,64 @@ const line = (out, name) => out.split('\n').find((l) => l.includes(name)) ?? '';
 
 test('healthy profile set passes every config-derived check', () => {
   const { out } = run(healthy());
-  for (const name of ['profile 齐全', 'modeId 合法', 'scope-guard hook', 'PIPELINE_HOME', '非交互 PIPELINE_HOME']) {
+  for (const name of ['profile 齐全', 'modeId 合法', 'scope-guard hook', 'tier-reminder hook', 'tier-gate', 'PIPELINE_HOME', '非交互 PIPELINE_HOME']) {
     assert.match(line(out, name), /^PASS/, `${name}\n${out}`);
   }
+});
+
+// tier-reminder 漏装时，分级提醒不会出现在「该不该动手」的决策点上，而 scope-guard 那行照样 PASS。
+// 两条 hook 是两种故障，必须分别可见；合成一行会让人以为装好了。
+test('missing tier-reminder hook registration is rejected while scope-guard still passes', () => {
+  const { code, out } = run(healthy(), { settings: withoutHook(installedHooks(), TIER_HOOK) });
+  assert.equal(code, 1);
+  assert.match(line(out, 'tier-reminder hook'), /^FAIL.*tier-reminder-hook\.mjs.*install\.sh/);
+  assert.match(line(out, 'scope-guard hook'), /^PASS/);
+});
+
+test('tier-reminder hook registered under the wrong event is rejected', () => {
+  // 挂到 PreToolUse 上不会报错，但 UserPromptSubmit 永远不会触发它。
+  const settings = { hooks: { ...installedHooks().hooks, UserPromptSubmit: [], PreToolUse: [
+    ...installedHooks().hooks.PreToolUse,
+    { matcher: 'Write|Edit', hooks: [{ type: 'command', command: `node ${TIER_HOOK}` }] },
+  ] } };
+  const { code, out } = run(healthy(), { settings });
+  assert.equal(code, 1);
+  assert.match(line(out, 'tier-reminder hook'), /^FAIL.*hooks\.UserPromptSubmit/);
+});
+
+// tier-gate 默认开，并且默认生效这件事本身要看得见：否则用户不知道它拦在哪里，
+// 也不知道一条 `PIPELINE_TIER_GATE=off` 把它关掉了（排障残留）。
+test('tier-gate reports effective default-on state with the shared default limit', async () => {
+  const { DEFAULT_LIMIT } = await import('../lib/tier-gate.mjs');
+  const { out } = run(healthy());
+  const row = line(out, 'tier-gate');
+  assert.match(row, /^PASS/);
+  assert.match(row, /生效/);
+  assert.match(row, new RegExp(`第 ${DEFAULT_LIMIT + 1} 个`), `上限必须来自 lib/tier-gate.mjs 的默认值\n${row}`);
+  assert.doesNotMatch(row, /关闭/);
+});
+
+test('tier-gate off is reported as a deliberate opt-out, not a silent pass', () => {
+  const { out } = run(healthy(), { env: { PIPELINE_TIER_GATE: 'off' } });
+  const row = line(out, 'tier-gate');
+  assert.match(row, /^PASS/);
+  assert.match(row, /PIPELINE_TIER_GATE=off/);
+  assert.match(row, /关闭/);
+});
+
+test('tier-gate limit override is reflected in the reported threshold', () => {
+  const { out } = run(healthy(), { env: { PIPELINE_TIER_GATE_LIMIT: '7' } });
+  const row = line(out, 'tier-gate');
+  assert.match(row, /^PASS/);
+  assert.match(row, /第 8 个/);
+  assert.match(row, /PIPELINE_TIER_GATE_LIMIT=7/);
+});
+
+// 上限不是静默忽略：写错值时 report 出来的阈值与真实拦截阈值必须一致，不一致就是假绿。
+test('an invalid tier-gate limit fails instead of being silently ignored', () => {
+  const { code, out } = run(healthy(), { env: { PIPELINE_TIER_GATE_LIMIT: '0' } });
+  assert.equal(code, 1);
+  assert.match(line(out, 'tier-gate'), /^FAIL.*PIPELINE_TIER_GATE_LIMIT=0.*默认上限/);
 });
 
 // 这一项判的是「daemon 起的 agent 能不能读到」：只看当前进程的 PIPELINE_HOME 不够，

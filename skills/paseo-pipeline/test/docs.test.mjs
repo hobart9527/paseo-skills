@@ -53,7 +53,10 @@ test('完成定义区分四种完成，且明确结构闸门不等于验收通�
   assert.match(text, /单测通过只证明模块级行为|不是「跑一遍全量单测/);
 });
 
-test('SCEN-DOC-04: 验收闸门列出全部必需条件，并声明 FAIL/未验证不可折算 PASS', () => {
+// 这条用例原先标注 `SCEN-DOC-04`，但证据双闸门的断言从未在任何 spec 里声明过——那个编号是
+// 借来的。本 change 的 spec delta 把 `SCEN-DOC-04` 用于「tier gate documented + doctor」，
+// 两条断言共用一个编号时，静态对账分不清是哪一条在覆盖它，所以这里摘掉编号。
+test('验收闸门列出全部必需条件，并声明 FAIL/未验证不可折算 PASS', () => {
   const text = section('证据双闸门');
   assert.match(text, /--gate structure/);
   assert.match(text, /--gate acceptance/);
@@ -538,6 +541,44 @@ test('SCEN-DOC-28: 写范围守卫与脏树检测都被写进 SKILL，且不宣�
     '账本锚点必须写明是按目标路径而非 cwd 反推');
   const recover = section('失败处置与恢复');
   assert.match(recover, /UNEXPLAINED/, '脏树分级必须写进恢复流程');
+});
+
+test('SCEN-DOC-04: tier-gate 的判据、开关、上限与覆盖缺口写进 §8，且默认值与代码同源', async () => {
+  // 缺陷形态：`PIPELINE_TIER_GATE` / `PIPELINE_TIER_GATE_LIMIT` 只写在 `lib/tier-gate.mjs`
+  // 的注释里，默认开却零文档——用户既不知道它在拦，也不知道 `=off` 能关。文档写了但默认值
+  // 抄错（比如代码改成 5 而文档还写 3）同样会误导，所以上限从模块导入后逐字比对。
+  const { DEFAULT_LIMIT } = await import('../lib/tier-gate.mjs');
+  const text = section('硬底线与硬红线');
+
+  assert.match(text, /tier-gate/, '§8 必须点名 tier-gate');
+  assert.match(text, /默认开/, '必须写明它默认生效');
+  assert.match(text, /主 checkout[\s\S]{0,80}(?:main|master)[\s\S]{0,80}本会话写过的不同业务文件/,
+    '判据必须写清：主 checkout 的 main/master 上、按本会话写过的不同业务文件计数');
+  assert.match(text, /同一个文件反复写只计一次|同一文件反复写只计一次/, '去重口径必须写明');
+  assert.match(text, /PIPELINE_TIER_GATE=off/, '关闭方式必须写明');
+  assert.match(text, new RegExp(`PIPELINE_TIER_GATE_LIMIT[^\\n]{0,40}默认 ${DEFAULT_LIMIT}`),
+    `上限覆盖与默认值必须写明，且默认值必须等于 lib/tier-gate.mjs 的 DEFAULT_LIMIT（${DEFAULT_LIMIT}）`);
+  assert.match(text, /sed -i|重定向/, '覆盖缺口（shell 写入）必须写明');
+  assert.match(text, /减速带/, '不得把它说成沙箱');
+  assert.match(text, /pipeline-doctor\.mjs[\s\S]{0,200}scope-guard-hook\.mjs[\s\S]{0,200}tier-reminder-hook\.mjs/,
+    'doctor 校验两条 hook 必须写明，且两条都要点名');
+  assert.match(text, /tier-gate[\s\S]{0,80}生效|生效[\s\S]{0,80}tier-gate/, 'doctor 报出生效状态必须写明');
+});
+
+// 文档说的判据必须与代码半径一致：写了「只在主 checkout 的 main/master 生效」「openspec/ 放行」，
+// 就要能从文档读出这条边界，否则执行者会以为在 worktree 里也会被拦（于是不敢正常干活）。
+// 断言只取 tier-gate 那一段：整节里 scope-guard 的正文也含这几个词，整节匹配等于没断言。
+// 它是 SCEN-DOC-04 的第二条断言，共用编号但内容互补（判据 vs 边界），不另起场景号。
+test('tier-gate 的放行边界与代码一致（worktree、openspec、fail-open）', () => {
+  const text = section('硬底线与硬红线');
+  const start = text.indexOf('**Tier 1 写入上限');
+  assert.ok(start >= 0, '§8 必须有 tier-gate 段落（以 **Tier 1 写入上限 开头）');
+  const rest = text.slice(start + '**Tier 1 写入上限'.length);
+  const end = rest.indexOf('\n\n**');
+  const gate = end >= 0 ? rest.slice(0, end) : rest;
+  assert.match(gate, /linked worktree|功能分支|游离 HEAD/, '非主 checkout 放行必须写在 tier-gate 段内');
+  assert.match(gate, /openspec\//, 'openspec 产物放行必须写在 tier-gate 段内');
+  assert.match(gate, /fail-open/, '读取失败时的放行（fail-open）必须写在 tier-gate 段内');
 });
 
 // --- 2026-10-31 单一 CLI 派发入口与交接序列（pipeline-dispatch-convergence） ---
