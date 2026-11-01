@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   intentKey, leaseStatus, openIntents, findByKey, intentAgeMs, DEFAULT_LEASE_TTL_MS,
+  readRunState, writeRunState,
 } from '../lib/run-state.mjs';
 
 const script = fileURLToPath(new URL('../run-state.mjs', import.meta.url));
@@ -778,4 +779,179 @@ test('confirm rejects an unknown checkpoint and values that are not timestamps i
   const listed = JSON.parse(subject.run('status', '--json').stdout).confirmations;
   assert.deepEqual(listed, [], '非法确认记录被丢弃，不补默认值');
   assert.equal(JSON.parse(subject.run('report', '--json').stdout).confirmations.cp1At, null);
+});
+
+// --- SCEN-LED-01..03 账本损坏：拒绝覆盖、报告为损坏而不是缺席 ---
+//
+// 2026-11-01 自审实测：run-state.json 被写坏（截断的 JSON）之后，`claim` 把「解析失败」
+// 读成「没有账本」，随即用空 state 原子写回。原本 3 条派发意图 + 1 条审查结论的账本，
+// 在一次没有任何报错的命令之后变成 1 条意图 + 0 条结论，看起来像一次干净的 begin。
+// 这里钉住三件事：
+//   1. 损坏 != 缺席：readRunState 必须给出 corrupt=true，只读消费者才可能 fail closed；
+//   2. 任何写入路径（CLI 的 begin/claim/record 与库里的 writeRunState）都拒绝覆盖；
+//   3. 拒绝时现场字节不变，并给出可执行的恢复指引（修好或移开，而不是重跑 begin）。
+
+const CORRUPT_TEXT = '{ "version": 1, "intents": [ { "key": "local:T-01:1:impl:gongbu:dispatch" ';
+
+function corrupt(subject, text = CORRUPT_TEXT) {
+  mkdirSync(path.dirname(subject.file), { recursive: true });
+  writeFileSync(subject.file, text);
+}
+
+// 库层读写在进程内调用，账本根目录只认 PIPELINE_RUN_STATE_DIR（或 cwd 的 git common dir）。
+// 子进程用 fixture.env 拿到它；进程内必须显式设置并还原，否则会去读别的目录、把「读不到
+// 该 change 的账本」当成缺席——这恰好是本次要修的那类误判，测试自己不能犯。
+function withLedgerDir(subject, fn) {
+  const previous = process.env.PIPELINE_RUN_STATE_DIR;
+  process.env.PIPELINE_RUN_STATE_DIR = subject.env.PIPELINE_RUN_STATE_DIR;
+  try {
+    return fn();
+  } finally {
+    if (previous === undefined) delete process.env.PIPELINE_RUN_STATE_DIR;
+    else process.env.PIPELINE_RUN_STATE_DIR = previous;
+  }
+}
+
+function assertRefused(result) {
+  assert.notEqual(result.status, 0, `损坏账本上不得成功写入：${result.stdout}`);
+  assert.match(result.stderr, /run-state\.json/, '拒绝必须点名文件');
+  // 两种损坏形状各有点名的原因：JSON 解析失败 vs 合法 JSON 但不是账本对象。
+  assert.match(result.stderr, /不是合法 JSON|顶层不是 JSON 对象/, '拒绝必须点名解析错误本身');
+  assert.match(result.stderr, /拒绝覆盖/, '拒绝必须写明「不覆盖」这件事');
+  assert.match(result.stderr, /移开|修复/, '拒绝必须给出恢复指引，否则操作者会直接重跑 begin');
+}
+
+// SCEN-LED-01
+test('SCEN-LED-01 begin/claim/record refuse to overwrite a corrupt ledger and leave it byte-identical', (context) => {
+  const subject = fixture(context);
+  corrupt(subject);
+  const before = readFileSync(subject.file, 'utf8');
+
+  // 三条变异入口各跑一次：任何一条把空 state 写回，事故就会重演。
+  assertRefused(subject.run('begin', '--owner', 'lead-a'));
+  assertRefused(subject.run('claim', '--task', 'T-01', '--attempt', '1', '--phase', 'impl', '--role', 'gongbu'));
+  assertRefused(subject.run('record', '--key', 'local:T-01:1:impl:gongbu:dispatch', '--agent', 'agent-1'));
+
+  assert.equal(readFileSync(subject.file, 'utf8'), before, '损坏文件必须字节级不变');
+  // 崩溃残留的锁也不能留下：拒绝路径同样要释放 run-state.lock，否则之后连重试都卡住。
+  assert.equal(existsSync(path.join(path.dirname(subject.file), 'run-state.lock')), false,
+    '拒绝写入后不得留下锁文件');
+});
+
+// SCEN-LED-01
+test('SCEN-LED-01 the library write path refuses a corrupt ledger even without the CLI in between', (context) => {
+  const subject = fixture(context);
+  corrupt(subject);
+  const before = readFileSync(subject.file, 'utf8');
+
+  withLedgerDir(subject, () => {
+    assert.throws(
+      () => writeRunState(change, { version: 1, run: null, lease: null, intents: [] }),
+      (error) => error.code === 'ECORRUPT' && error.file === subject.file,
+      'writeRunState 也必须守住现场：绕过 updateRunState 的调用方同样不该清空账本',
+    );
+  });
+  assert.equal(readFileSync(subject.file, 'utf8'), before);
+});
+
+// SCEN-LED-01
+test('SCEN-LED-01 recoverable JSON that is not a ledger object is corrupt, not silently emptied', (context) => {
+  const subject = fixture(context);
+  // `[]` 与 `null` 都是合法 JSON，normalize 会把它们归一成空 state——这正是静默清空的
+  // 第二种形状。顶层必须是账本对象，否则按损坏处置。
+  for (const text of ['[]', 'null', '"a string"']) {
+    corrupt(subject, text);
+    assertRefused(subject.run('begin', '--owner', 'lead-a'));
+    assert.equal(readFileSync(subject.file, 'utf8'), text, `顶层非对象的 ${text} 不得被改写`);
+  }
+});
+
+// SCEN-LED-01
+test('SCEN-LED-01 moving the corrupt file aside is the documented recovery path, and begin then works', (context) => {
+  const subject = fixture(context);
+  corrupt(subject);
+  assertRefused(subject.run('begin', '--owner', 'lead-a'));
+
+  // 指引里写的两条路之一：移开留档后重跑同一命令。这里用 rename 走同一条路径。
+  const moved = `${subject.file}.corrupt-20261031T120000`;
+  fs.renameSync(subject.file, moved);
+  const retried = subject.run('begin', '--owner', 'lead-a');
+  assert.equal(retried.status, 0, retried.stderr);
+  assert.equal(fs.readFileSync(moved, 'utf8'), CORRUPT_TEXT, '现场留档必须保留原始字节');
+  assert.equal(subject.read().lease.owner, 'lead-a');
+});
+
+// SCEN-LED-02
+test('SCEN-LED-02 readRunState reports corruption as corruption, never as an absent ledger', (context) => {
+  const subject = fixture(context);
+
+  // 本条只钉住**供 reconcile 判定的信号**（corrupt 标志与错误的可达性）。
+  // reconcile 侧据此输出 corruption hold 的接线在 T-03（reconcile.mjs 属其 Write scope）。
+  withLedgerDir(subject, () => {
+    const absent = readRunState(change);
+    assert.deepEqual(
+      { present: absent.present, corrupt: absent.corrupt, error: absent.error },
+      { present: false, corrupt: false, error: null },
+      '文件不存在才是缺席',
+    );
+
+    corrupt(subject);
+    const unparsable = readRunState(change);
+    assert.equal(unparsable.present, true, '文件在就不能报成缺席——否则 reconcile 会把它当 lease-free');
+    assert.equal(unparsable.corrupt, true);
+    assert.match(unparsable.error, /run-state\.json/);
+    assert.match(unparsable.error, /不是合法 JSON/);
+  });
+});
+
+// SCEN-LED-02
+test('SCEN-LED-02 status reports a corrupt ledger as recorded-with-an-error, never as 无记录', (context) => {
+  const subject = fixture(context);
+  corrupt(subject);
+  const status = subject.run('status', '--json');
+  assert.equal(status.status, 0, '只读诊断不得因账本损坏而崩溃');
+  const parsed = JSON.parse(status.stdout);
+  // 关键回归：旧实现在这里 present=false，status 打印「无记录」，调用方据此以为这是一次
+  // 尚未开始的 run。现在 present=true 且 error 非空——「有账本但读不了」不能被读成「没有账本」。
+  assert.equal(parsed.present, true, '损坏账本不是缺席账本');
+  assert.match(parsed.error, /不是合法 JSON/);
+  assert.equal(parsed.lease, null, '读不出内容就没有租约可报');
+  const human = subject.run('status').stdout;
+  assert.match(human, /有记录/, '人类可读输出必须说「有记录」，而不是「无记录」');
+  assert.match(human, /不是合法 JSON/, '人类可读输出同样要说出损坏原因');
+});
+
+// SCEN-LED-03
+test('SCEN-LED-03 corruption is distinguishable from an idle lease so the scope guard cannot degrade to allow', (context) => {
+  const subject = fixture(context);
+
+  // 守卫的降级路径是「没有有效租约 → 放行」。损坏账本给出的 state 同样是空 state、同样没有
+  // 租约，所以只靠 leaseStatus 无法区分「真的没有 run」与「账本读不了」。
+  // 唯一的机械信号是 corrupt 标志：消费者必须先看它，才可能在损坏时拒绝而不是放行。
+  //
+  // **本任务只提供信号，不改守卫本身**：lib/scope-guard.mjs 不在 T-02 的 Write scope 内，
+  // 而 tasks.md 里也没有任何任务把它列为 Write scope（见交接说明的 scope 缺口一节）。
+  // 守卫改为「损坏即 deny」需要另一张 ticket；在那之前，这里是库层契约的下界钉子。
+  withLedgerDir(subject, () => {
+    corrupt(subject);
+    const ledger = readRunState(change);
+    assert.equal(ledger.corrupt, true);
+    assert.equal(leaseStatus(ledger.state), null,
+      '空 state 没有租约是设计使然；正因如此，corrupt 标志是唯一的防线');
+    assert.notEqual(ledger.error, null, '错误文本随损坏一起返回，供守卫原样打印');
+  });
+});
+
+// SCEN-LED-02
+test('SCEN-LED-02 a read failure other than ENOENT is corruption, not absence', (context) => {
+  const subject = fixture(context);
+  // 目录占了 run-state.json 的位置：文件「在」，但读不出。按缺席处理会让下一次写把
+  // 目录内容当空账本覆盖（或直接 rename 掉）。
+  mkdirSync(subject.file, { recursive: true });
+  withLedgerDir(subject, () => {
+    const ledger = readRunState(change);
+    assert.equal(ledger.present, true);
+    assert.equal(ledger.corrupt, true);
+    assert.match(ledger.error, /无法读取/);
+  });
 });

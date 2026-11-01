@@ -24,8 +24,11 @@
 // common dir 在同一仓库的所有 worktree 间共享，因此 Lead 在集成 worktree 写入的记录
 // 对其它 worktree 立即可见。可用 PIPELINE_RUN_STATE_DIR 覆盖（测试与特殊部署）。
 //
-// 写入是原子的（tmp + rename）；读取永不抛：文件缺失或损坏按「无记录」返回，
-// 由调用方决定是否 fail closed。
+// 写入是原子的（tmp + rename）；读取永不抛。文件缺失按「无记录」返回；文件存在但读不出、
+// 解析不了或顶层不是账本对象时按「损坏」返回（present=true, corrupt=true）——损坏与缺席
+// 必须可区分，否则只读消费者会把「账本读不了」当成「没有 run」。写入一律拒绝覆盖损坏文件
+// （ECORRUPT，保留现场）：旧实现在解析失败时把空 state 原子写回，一次 claim 就能把
+// 「3 条派发意图 + 1 条审查结论」的账本改成「1 条意图 + 0 条结论」，而且没有任何报错。
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -128,26 +131,76 @@ function normalize(raw) {
 
 /**
  * 读取运行账本。
- * @returns {{present: boolean, state: ReturnType<typeof emptyState>, error: string|null, file: string}}
+ *
+ * 三种结果互斥，调用方不得只判 `present`：
+ *   缺失  present=false, corrupt=false, error=null
+ *   损坏  present=true,  corrupt=true,  error=<文件 + 原因>   —— 只读消费者据此输出「损坏」并 fail closed
+ *   正常  present=true,  corrupt=false, error=null
+ *
+ * 损坏时 `state` 仍是空 state（字段形状稳定，避免调用方崩在 undefined 上），但它**不代表
+ * 账本内容**：任何写入路径都必须先看 `corrupt`，绝不能把这个空壳写回文件。
+ *
+ * @returns {{present: boolean, corrupt: boolean, state: ReturnType<typeof emptyState>,
+ *            error: string|null, file: string}}
  */
 export function readRunState(change, cwd = process.cwd()) {
   const file = runStatePath(change, cwd);
-  if (!fs.existsSync(file)) return { present: false, state: emptyState(), error: null, file };
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (error) {
+    // ENOENT 才是「缺席」。权限、目录同名等其它读失败同样是「文件在但读不出」：
+    // 当作缺席会让随后的 updateRunState 用空 state 覆盖它。
+    if (error.code === 'ENOENT') return { present: false, corrupt: false, state: emptyState(), error: null, file };
+    return { present: true, corrupt: true, state: emptyState(), error: `${file} 无法读取：${error.message}`, file };
+  }
   let raw;
   try {
-    raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    raw = JSON.parse(text);
   } catch (error) {
-    return { present: false, state: emptyState(), error: `${file} 不是合法 JSON：${error.message}`, file };
+    return { present: true, corrupt: true, state: emptyState(), error: `${file} 不是合法 JSON：${error.message}`, file };
   }
-  return { present: true, state: normalize(raw), error: null, file };
+  // 合法 JSON 也可能是 `null`、数组或字符串：`normalize` 把它们都归一成空 state，
+  // 写回时同样是一次静默清空。账本顶层必须是对象，否则按损坏处置。
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {
+      present: true, corrupt: true, state: emptyState(),
+      error: `${file} 顶层不是 JSON 对象（读到 ${raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw}）`,
+      file,
+    };
+  }
+  return { present: true, corrupt: false, state: normalize(raw), error: null, file };
+}
+
+/**
+ * 损坏账本的处置指引。写入被拒时原样打印：只说「拒绝了」会让操作者以为重跑一次就好，
+ * 而重跑 `begin` 恰恰是旧实现里把现场清空的那一步。
+ */
+export function corruptLedgerGuidance(file) {
+  return `运行账本已损坏，拒绝覆盖（现场保留在 ${file}）。\n`
+    + `  - 若文件还能修：按 JSON 修复后重跑同一命令；\n`
+    + `  - 若已无法修复：先把它移开（如 mv "${file}" "${file}.corrupt-$(date +%Y%m%d%H%M%S)"）留档，`
+    + '再重跑同一命令从空账本开始；\n'
+    + '  - 不要直接重跑 begin 指望拿到新账本：从损坏文件开始，begin 同样会被拒绝。';
 }
 
 export function writeRunState(change, state, cwd = process.cwd()) {
   const file = runStatePath(change, cwd);
+  // 直接写入口也要守住损坏现场：绕过 updateRunState 的调用方同样不该用空壳覆盖账本。
+  const existing = readRunState(change, cwd);
+  if (existing.corrupt) throw corruptLedgerError(existing);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
   fs.renameSync(tmp, file);
+}
+
+function corruptLedgerError(ledger) {
+  const error = new Error(`${corruptLedgerGuidance(ledger.file)}（${ledger.error}）`);
+  error.code = 'ECORRUPT';
+  error.file = ledger.file;
+  error.detail = ledger.error;
+  return error;
 }
 
 /**
@@ -158,6 +211,10 @@ export function writeRunState(change, state, cwd = process.cwd()) {
  * `fn` 抛错时不写回——否则一次失败的校验会把半改的 state 落盘。
  * `fn` 返回 `{ skipWrite: true, ... }` 时也不写回：留给你在锁内做完校验后再决定拒绝，
  * 例如租约校验——在锁外校验等于比对一个可能已被并发持锁者推进过的旧快照。
+ *
+ * 账本损坏（ECORRUPT）时在**锁内**判定并抛错，绝不写回：旧实现在这里把解析失败读成空
+ * state，然后把空 state 原子写回——损坏的账本看起来像一次干净的 begin，实为清空。
+ * 判定必须在锁内：锁外读完到真正拿锁之间，另一个进程可能刚把账本写坏。
  */
 export function updateRunState(change, fn, cwd = process.cwd()) {
   const file = runStatePath(change, cwd);
@@ -170,7 +227,10 @@ export function updateRunState(change, fn, cwd = process.cwd()) {
     throw error;
   }
   try {
-    const { state } = readRunState(change, cwd);
+    const ledger = readRunState(change, cwd);
+    // 在锁内判定：锁外判完到拿锁之间，另一个进程可能刚把账本写坏。
+    if (ledger.corrupt) throw corruptLedgerError(ledger);
+    const state = ledger.state;
     const result = fn(state);
     if (!(result && result.skipWrite === true)) writeRunState(change, state, cwd);
     return { result, state };
