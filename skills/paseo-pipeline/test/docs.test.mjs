@@ -36,7 +36,11 @@ function section(heading) {
   return lines.slice(self.index + 1, end ? end.index : lines.length).join('\n');
 }
 
-test('SCEN-DOC-03: 完成定义区分四种完成，且明确结构闸门不等于验收通过', () => {
+// 这条用例原先标注 `SCEN-DOC-03`，但「四种完成」从未在任何 spec 里声明过——那个编号是借来的。
+// 本 change 的 spec delta 把 `SCEN-DOC-03` 用于「信封字段数与共享定义绑定」，两条断言共用
+// 一个编号时，静态对账分不清是哪一条在覆盖它（旧用例在、新用例缺失也会显示已覆盖）。
+// 所以这里摘掉编号，只在真正对应的用例上写。
+test('完成定义区分四种完成，且明确结构闸门不等于验收通过', () => {
   const text = section('完成定义');
   // 四种完成必须各自出现，且不得互相替代。
   assert.match(text, /阶段信封完成/);
@@ -487,6 +491,39 @@ test('SCEN-DOC-27: 运行账本的 review/merge/record --envelope 都有可照�
   assert.match(text, /首次通过率/, '首次通过率的口径必须写明');
   assert.match(text, /READY 等待/, 'READY 等待的口径必须写明');
   assert.match(text, /change 名必须是位置参数形态|位置参数/, 'change 名形态校验必须写明');
+});
+
+test('SCEN-DOC-03: 信封字段数与清单绑定到 ENVELOPE_REQUIRED_FIELDS，任一侧单独改动即红', async () => {
+  // 缺陷形态：SKILL 写「7 个统一字段」并抄上 7 个名字，而 `lib/envelope.mjs` 的
+  // `ENVELOPE_REQUIRED_FIELDS` 是 8 个（多 `kind`）。照正文写出的信封会被
+  // `record --envelope` 以「缺少必填字段 kind」拒收（exit 2）——文档承诺与代码相反。
+  // 所以两侧都按**模块导出的清单**逐名比对：名字、数量、顺序任何一处单独改动都红。
+  const { ENVELOPE_REQUIRED_FIELDS } = await import('../lib/envelope.mjs');
+  const namesIn = (text) => [...text.matchAll(/`([a-z][a-z0-9_]*)`/g)].map((match) => match[1]);
+
+  // 「运行账本」一节：`record --envelope` 那段把数量与清单写在括号里；只取括号里第一段
+  // 清单（顿号/斜杠分隔），括号后半句的解释文字不参与比对。
+  const ledger = /(\d+)\s*个统一字段（([^）]*)）/.exec(section('运行账本'));
+  assert.ok(ledger, '运行账本必须写明「N 个统一字段（清单）」，否则无从对账');
+  assert.equal(Number(ledger[1]), ENVELOPE_REQUIRED_FIELDS.length,
+    `SKILL 写的字段数 ${ledger[1]} 与 ENVELOPE_REQUIRED_FIELDS 的 ${ENVELOPE_REQUIRED_FIELDS.length} 不一致`);
+  const ledgerList = ledger[2].split(/[，,]/)[0].split(/[/、]/).join(' ');
+  assert.deepEqual(namesIn(ledgerList), ENVELOPE_REQUIRED_FIELDS,
+    '运行账本抄录的字段清单必须与 ENVELOPE_REQUIRED_FIELDS 逐项相同');
+
+  // 「信封规范」小节：数量在一行，清单在下一行（模板顺序）。
+  const envelopeSpec = section('信封规范');
+  const declared = /统一字段共\s*(\d+)\s*个/.exec(envelopeSpec);
+  assert.ok(declared, '信封规范必须写明「统一字段共 N 个」');
+  assert.equal(Number(declared[1]), ENVELOPE_REQUIRED_FIELDS.length,
+    `信封规范写的字段数 ${declared[1]} 与 ENVELOPE_REQUIRED_FIELDS 的 ${ENVELOPE_REQUIRED_FIELDS.length} 不一致`);
+  const listLine = envelopeSpec.split('\n')
+    .find((line) => /^`[a-z][a-z0-9_]*`(?:、`[a-z][a-z0-9_]*`)*。?$/.test(line.trim()));
+  assert.ok(listLine, '信封规范必须列出字段清单');
+  assert.deepEqual(namesIn(listLine), ENVELOPE_REQUIRED_FIELDS,
+    '信封规范抄录的字段清单必须与 ENVELOPE_REQUIRED_FIELDS 逐项相同（含 kind 与顺序）');
+  // 唯一真源必须被点名，否则改模块时没人知道文档还抄了一份。
+  assert.match(envelopeSpec, /ENVELOPE_REQUIRED_FIELDS/, '必须指明清单的唯一真源是模块导出');
 });
 
 test('SCEN-DOC-28: 写范围守卫与脏树检测都被写进 SKILL，且不宣称物理隔离', () => {

@@ -36,7 +36,8 @@
   - Verify with: `node --test skills/paseo-pipeline/test/reconcile.test.mjs`
   - Scenarios: SCEN-REC-15, SCEN-REC-16
 
-- [ ] 1.4 T-04 信封字段文档订正：7→8（含 kind），测试断言与 ENVELOPE_REQUIRED_FIELDS 单源绑定
+- [x] 1.4 T-04 信封字段文档订正：7→8（含 kind），测试断言与 ENVELOPE_REQUIRED_FIELDS 单源绑定
+  - Done: source=bd7a63d review=pass(mechanical@bd7a63d/0a396c8)
   - Depends on: none
   - Write scope: skills/paseo-pipeline/SKILL.md, skills/paseo-pipeline/test/docs.test.mjs
   - Risk-surface: [none]
