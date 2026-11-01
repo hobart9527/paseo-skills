@@ -1,9 +1,20 @@
 # Builder 硬禁令紧凑胶囊（常驻注入层）
 
-> 本胶囊是 20 个 vendor 切片的不可妥协禁令/契约压缩层（~4KB），常驻注入所有编码角色的 brief。
+> 本胶囊是不可妥协禁令/契约压缩层（~7KB），常驻注入所有编码角色的 brief。
 > 它只负责「不许做」与「必须做」；「为什么」与复杂场景模板在第三层 vendor 手册按需查阅。
 > 上游切片锁定于 `~/.claude/skills/paseo-ui/vendor/`（LOCK.json 管理），冲突时以本 Skill「规则裁决链」为最高裁决。
 > **裁决链内嵌**：本胶囊条款位于「业务真实需求 > 项目既有代码与 DESIGN.md」之下、「impeccable 通用规范」之上；当胶囊条款与项目既有代码约定冲突时（如项目无 `index.css` token 体系、既有表格组件已定列宽方案），以项目既有约定优先，并在交接报告中记录差异。
+> **Surface Mode**：brief 首行必须声明 Surface Mode（`operate | persuade | read | experience`）；模式判错即缺陷；未标注模式的条款全模式适用。
+
+## 表面模式（Surface Mode）
+
+按**被改造的表面**判定唯一模式，不按整个产品；一个产品可同时有多个模式（落地页 `persuade`、后台 `operate`、文档 `read`）。
+
+- `operate`（工作台、后台、编辑器、设置、审批流）：高信噪比、零装饰动效、禁渐变/毛玻璃、禁改字距。全部紧缩条款生效。
+- `persuade`（落地页、营销页、定价页）：允许**一次**英雄区编排式入场、display 负字距（≥ `-0.02em`，floor `-0.04em`）、同色系光晕、非对称 Bento、≥25% 视口留白。
+- `read`（文档、博客、帮助中心、变更日志）：衬线/人文无衬线配对、`60–72ch` 行宽、行高 `1.65–1.75`、章节锚点节奏。
+- `experience`（作品集、展厅、创意交互）：同 `persuade`，作品本身主导首屏；控件仍须可识别、可键盘操作。
+- 任何模式不得放宽可访问性、语义结构或工程禁令；模式只影响审美下限。
 
 ## 动效（baseline-ui / to-spring / 60fps / accessible-animation / review-animations）
 
@@ -13,11 +24,13 @@
 - 严禁自定义 `cubic-bezier`（Spring 物理参数除外）；严禁 `transition: all`（显式列出属性）。
 - 必须配 `prefers-reduced-motion` 降级；循环动画离屏必须暂停。
 - 高度折叠用 CSS Grid `grid-template-rows: 0fr -> 1fr` 或 `framer-motion layoutId`。
+- **唯一例外**：`persuade` / `experience` 英雄区允许恰好一次编排式入场（staggered reveal），仍须 `prefers-reduced-motion` 降级，仍禁布局属性过渡，≤1 个主导时刻。
 
 ## 排版与数据（better-typography / semantic-html-first）
 
-- 金额、数量、比率、计数器强制 `tabular-nums`；金额一律右对齐。
-- 默认禁止修改 `tracking-*`；标题用 `text-balance`，正文用 `text-pretty`。
+- 金额、数量、比率、计数器强制 `tabular-nums`；金额一律右对齐。（全模式）
+- `operate` 默认禁止修改 `tracking-*`；`persuade` / `experience` 的 display 级特大字号允许负字距（≥ `-0.02em`，floor `-0.04em`，写入 `DESIGN.md`）。
+- 正文行宽设计目标 `65–75ch`（`read` 表面 `60–72ch`）；探针扣分线（非放宽许可）：`operate` ≤85ch、`persuade`/`read` ≤72ch、`experience` ≤76ch，超过即计 `measure_violation_count`；标题用 `text-balance`，正文用 `text-pretty`。
 - 图标按钮必须有 `aria-label`；操作按钮文案按功能重写，禁止「确定/提交」类含糊文案。
 
 ## 语义结构（semantic-html-first / baseline-ui）
@@ -37,10 +50,31 @@
 
 ## 色彩（better-colors / interface-design）
 
-- 操作型界面禁全屏/多色渐变与纯装饰毛玻璃；一个视图一个主色填充动作。
-- 组件内严禁硬编码色值（hex/rgb/oklch 字面量）；必须走语义 token（`--color-*` 按角色命名）。
-- 同一色相 15° 内只承担一个含义；颜色永远不是唯一语义载体（配图标或文字）。
+- `operate` 禁全屏/多色渐变与纯装饰毛玻璃；`persuade` / `experience` 允许同色系、低饱和、服务叙事的光晕/材质层次；彩虹渐变与无意义发光全模式禁止。
+- 组件内严禁硬编码色值（hex/rgb/oklch 字面量）；必须走语义 token（`--color-*` 按角色命名）。（全模式）
+- 一个视图一个主色填充动作；同一色相 15° 内只承担一个含义；颜色永远不是唯一语义载体（配图标或文字）。
 - 状态徽章遵循「文字 + 语义底色 + 矢量微图标」。
+
+## 微质感与现代 CSS
+
+- 同心圆角：`R_outer = R_inner + padding`；内外等圆角视为缺陷。
+- 深色模式用 `1px` 微高光内边框（如 `ring-1 ring-white/10` 或 `oklch(1 0 0 / 0.08)`）替代生硬黑影。
+- 光学对齐：箭头/播放图标视觉重心微移 1–2px；胶囊按钮左右内边距大于上下（如 `px-3.5 py-1.5`）；图标与文字 `gap-1.5/2` 居中。
+- 组件自响应优先 `@container`；同行卡片内部标题/正文/底栏用 `subgrid` 对齐；流体字阶用 `clamp()`。
+- 卡片内禁止再套带边框/阴影的卡片（≥3 层即缺陷）。
+
+## 图表与数据可视化
+
+- 图型匹配数据关系：趋势→折线、比较→条形、占比→饼图（>5 类改条形图）。
+- 直接标注替代远距离图例；色盲安全双编码（不只靠颜色）；数据标签 `tabular-nums`。
+- 空/加载/错误三态齐全；坐标轴有单位；暗色模式不得刺眼。
+
+## 审美底线
+
+- 拒绝三等分图标卡、居中 Hero + 等宽卡片行、卡片套卡片。
+- 标题 `text-wrap: balance`，正文 `text-pretty`；多行标题不得留孤字。
+- 标题与正文字号比：`operate` / `read` ≥1.5，`persuade` / `experience` ≥2.2。
+- 正文行宽：设计目标 `65–75ch`；探针扣分线同上（`operate` ≤85ch、`persuade`/`read` ≤72ch、`experience` ≤76ch）。
 
 ## 防位移与性能（core-web-vitals / react-best-practices / baseline-ui）
 
