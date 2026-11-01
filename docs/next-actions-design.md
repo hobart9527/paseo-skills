@@ -99,7 +99,7 @@ BLOCKED_ATTEMPTS 已有 3 个尝试分支（与 lead.md 熔断一致）
 2. **`IDLE_NO_RESULT` 的阈值**和"上次观察"：是否接受仅用 `UpdatedAt` 的启发式。
 3. **关键路径优先**是否要做成默认。它改变现有"先到先派"行为。
 4. **放哪里运行**：Lead 每轮必跑，还是仅在压缩恢复和通知后跑。后者省 token，前者更稳。
-5. 是否同时输出成本汇总（读 `LastUsage`），与 `lead.md` 熔断对齐。注意 `LastUsage` 在我实测的一个 agent 上全为 0，需先确认 Paseo 何时填充。
+5. 是否同时输出成本汇总（读 `LastUsage`）。`lead.md` 的花费汇报已撤掉，原因是 `LastUsage.CostUsd` 在我实测的一个 agent 上全为 0，Paseo 何时填充未确认。确认有真实数据后再议。
 
 6. **标签键名未在仓库里约定。** `lead.md` 只说"task/change/role labels"，没写键名；实测只见 `pipeline.change`。需先固定 `pipeline.task`、`pipeline.role` 等键，否则 `next-actions` 无从过滤。
 

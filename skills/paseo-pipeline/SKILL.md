@@ -65,7 +65,7 @@ After context compaction or a resumed session, the first action is to re-read `t
 - Test author and implementer must be different agents and models. Reviewer model must differ from implementer and should differ from tester where available (`merge-task` warns on overlap; Lead picks another profile). If unavailable, block and report; do not claim heterogeneity.
 - Agent identity: every trailer and review tag uses the agent's full UUID (`$PASEO_AGENT_ID` inside the agent). Paseo's 7-char `shortId` is accepted in a review tag and resolves by prefix; a bare 7-char author in a trailer is not — use the UUID.
 - Every dispatch uses Paseo native workspaces, labels, finish notifications, plus a background `paseo wait` backstop (see `lead.md`), never foreground over 600s. A returned or timed-out wait means "inspect now", not success. Lost notifications trigger reconciliation, not duplicate dispatch. Rework uses original agent/workspace when safe.
-- Circuit breakers (`lead.md`): at most 3 attempts per task and a cost report at each merge; on breach the Lead stops dispatching that task and escalates to the human.
+- Circuit breaker (`lead.md`): at most 3 attempts per task; on breach the Lead stops dispatching that task and escalates to the human.
 - Contract amendments after CP-1: main session updates tasks, human confirms delta, commit, Lead reloads.
 
 ## Merge gate

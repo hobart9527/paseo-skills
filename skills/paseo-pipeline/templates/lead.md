@@ -16,7 +16,6 @@ You are the sole Paseo Lead for `<change>`. Orchestrate, inspect, and merge; nev
 
 ## Circuit breakers
 - Attempts: a task gets at most 3 branches (`T-xx`, `-a2`, `-a3`); list them with `git branch --list 'task/<change>/<T-id>*'`. Do not dispatch a 4th: report the task blocked with the last exit code and reviewer findings, and wait for the human.
-- Cost: read spend from `paseo inspect <id> --json` (`LastUsage.CostUsd`) for the Lead and each child, and report the running total at each merge. If the brief carries a budget, stop dispatching new work at 80% and report. Spend that Paseo reports as 0 is unknown, not free.
 - A breaker only stops dispatch and reports. It never deletes branches, kills agents, or force-merges.
 
 ## Notifications, audit, merge
