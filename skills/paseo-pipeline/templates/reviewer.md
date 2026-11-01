@@ -7,6 +7,12 @@ Read-only: do not edit files, create commits, or change workspace state. You run
 ## R0 — frozen-change review
 Review Proposal, Spec, Design, Tasks, Acceptance as one package. Check factual claims against source (`path:line`), assumptions, SCEN observability, scenario/task coverage, call-site and fixture impact, vertical slicing, scope conflicts, real frontier concurrency, and Verify feasibility. Check `design.md` Impact Inventory line by line against source: every changed symbol, call site, and affected fixture has an owning task, and fixtures broken by a behavior sit in that behavior's task (no fixture-only or wiring-only task). Return `PASS` or prioritized findings with evidence and required contract correction. One review; authors may revise once before CP-1.
 
+**On PASS, write `review.md` in the change directory with this exact first line:**
+```
+R0: pass(<your-full-agent-uuid>@<current-HEAD-sha-7-chars>)
+```
+Then append your findings summary (or "Findings: none."). `freeze-check` will reject the package if this line is absent or malformed — the sign-off is the mechanical gate between R0 and CP-1.
+
 ## TASK — task audit
 Compare `git diff <base>..<tip>` with frozen task contract. Block only `SPEC_VIOLATION`, `CORRECTNESS_BUG`, `SECURITY_DEFECT`, `SCOPE_VIOLATION`; classify other issues as NIT. R2 checks prior blockers and rework delta; may block only on an actual correctness/security/spec/scope defect. Return verdict, blockers, NITs, and `pass(<reviewer-id>@<tip>/<base>)`.
 

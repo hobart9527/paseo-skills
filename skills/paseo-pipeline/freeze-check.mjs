@@ -163,6 +163,15 @@ else {
 
 if (!read(path.join(changeDir, 'proposal.md'))) blocking.push('MISSING_PROPOSAL: proposal.md not found');
 
+// R0 sign-off: hanlin must have reviewed the complete contract package before CP-1.
+// The sign-off is written to review.md as `R0: pass(<uuid>@<sha>)` by the reviewer.
+// freeze-check enforces its presence so no one can skip the independent review step.
+const reviewMarkdown = read(path.join(changeDir, 'review.md'));
+const r0Match = reviewMarkdown && reviewMarkdown.match(/^R0:\s*pass\(([^@)]+)@([a-f0-9]{7,40})\)/im);
+if (!r0Match) {
+  blocking.push('MISSING_R0_SIGNOFF: review.md must contain `R0: pass(<reviewer-uuid>@<sha>)` — run hanlin R0 review before freeze');
+}
+
 if (tasks.length === 0) blocking.push('EMPTY_TASKS: tasks.md parsed to zero tasks');
 const route = maxWidth >= 2 && tasks.length >= 4 ? 'pipeline' : 'handoff';
 const summary = {

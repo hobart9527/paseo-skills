@@ -38,8 +38,10 @@ const contract = `- [ ] 1.1 T-01 shared
   - Verify with: npm test
   - Scen: SCEN-1`;
 const design = '## Impact Inventory\nnone\n';
+// A valid R0 sign-off written by hanlin after independent review.
+const REVIEW = 'R0: pass(9b2f4c1e-aaaa-4a2b-8c3d-000000000099@abcdef1)\n';
 test('accepts narrow non-sink tasks and reports concurrency', () => {
-  const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-04 | node -e "0" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-04 | node -e "0" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW });
   const result = run(dir);
   assert.equal(result.status, 0);
 });
@@ -51,7 +53,7 @@ test('rejects full-suite non-sink verify', () => {
   assert.match(result.stdout, /VERIFY_NOT_NARROW T-02/);
 });
 test('accepts scoped non-node runners and rejects unscoped ones', () => {
-  const files = { 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' };
+  const files = { 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW };
   const scoped = contract
     .replace('Write scope: src/alpha,test/alpha.test.mjs', 'Write scope: pkg/alpha')
     .replace('node --test test/alpha.test.mjs', 'go test ./pkg/alpha')
@@ -107,7 +109,7 @@ test('rejects zero parsed tasks and multiple full-suite sinks', () => {
   assert.match(result.stdout, /VERIFY_FULL_SUITE_NON_SINK T-03/);
 });
 test('validates required acceptance scenarios and frozen state', () => {
-  const good = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1 alpha works\n' });
+  const good = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1 alpha works\n', 'review.md': REVIEW });
   assert.equal(run(good).status, 0);
   const unknown = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-X | CLI | T-02 | node -e "0" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
   assert.match(run(unknown).stdout, /UNKNOWN_ACCEPTANCE_SCEN/);
@@ -118,7 +120,7 @@ test('validates required acceptance scenarios and frozen state', () => {
 });
 
 test('rejects missing impact inventory, scenario-less and fixture-only tasks', () => {
-  const files = { 'proposal.md': 'x', 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' };
+  const files = { 'proposal.md': 'x', 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW };
   const noImpact = change({ ...files, 'tasks.md': contract, 'design.md': '## Context\n' });
   assert.match(run(noImpact).stdout, /MISSING_IMPACT_INVENTORY/);
   const noScen = change({ ...files, 'design.md': design, 'tasks.md': contract.replace('  - Verify with: node --test test/alpha.test.mjs\n', '  - Verify with: node --test test/alpha.test.mjs\n  - Review: standard\n').replace(/(T-03 beta[\s\S]*?)  - Scen: SCEN-1\n/, '$1') });
@@ -130,7 +132,7 @@ test('rejects missing impact inventory, scenario-less and fixture-only tasks', (
 });
 
 test('rejects scope overlap between tasks in different waves with no dependency path', () => {
-  const files = { 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' };
+  const files = { 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW };
   const bad = contract.replace('src/beta,test/beta.test.mjs', 'src/shared/x,test/beta.test.mjs').replace('Write scope: src/alpha,test/alpha.test.mjs', 'Write scope: src/shared,test/alpha.test.mjs');
   assert.match(run(change({ ...files, 'tasks.md': bad })).stdout, /SCOPE_CONFLICT/);
   // ordered by dependency is fine: T-02 depends on T-01 which owns src/shared
@@ -139,7 +141,29 @@ test('rejects scope overlap between tasks in different waves with no dependency 
 });
 
 test('rejects Impact Inventory naming unknown tasks', () => {
-  const files = { 'proposal.md': 'x', 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'tasks.md': contract };
+  const files = { 'proposal.md': 'x', 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'tasks.md': contract, 'review.md': REVIEW };
   assert.match(run(change({ ...files, 'design.md': '## Impact Inventory\nfoo() -> fixtures -> T-99\n' })).stdout, /IMPACT_UNKNOWN_TASK T-99/);
   assert.equal(run(change({ ...files, 'design.md': '## Impact Inventory\nfoo() -> fixtures -> T-02\n' })).status, 0);
+});
+
+test('rejects missing R0 sign-off (no review.md)', () => {
+  const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  const result = run(dir);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /MISSING_R0_SIGNOFF/);
+});
+
+test('rejects malformed R0 sign-off (wrong format)', () => {
+  for (const bad of ['R0: approved by hanlin', 'R0: pass(no-at-sign)', 'signed off']) {
+    const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': bad });
+    assert.equal(run(dir).status, 1, `should reject: ${bad}`);
+    assert.match(run(dir).stdout, /MISSING_R0_SIGNOFF/, `should name error: ${bad}`);
+  }
+});
+
+test('accepts valid R0 sign-off with full UUID or short SHA', () => {
+  const withFullUuid = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': 'R0: pass(9b2f4c1e-aaaa-4a2b-8c3d-000000000099@abcdef1)\n\nFindings: none.\n' });
+  assert.equal(run(withFullUuid).status, 0);
+  const withLongSha = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': 'R0: pass(hanlin-agent-uuid@abcdef1234567890abcdef1234567890abcdef12)\n' });
+  assert.equal(run(withLongSha).status, 0);
 });

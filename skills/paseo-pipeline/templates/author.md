@@ -8,13 +8,13 @@ Mode: `SPEC` or `TASKS`. Change: `<change>`. Output location: `openspec/changes/
 - Report changed files, evidence, unresolved decisions, and acceptance commands. Do not invent provider/model requirements.
 
 ## Mode SPEC — Product/spec author (`chanpin`)
-- Input: user-approved request and repository context. Output draft Proposal, Spec, and Codebase Digest as text for main session to write into OpenSpec.
+- Input: user-approved request and repository context. **Write output directly to OpenSpec files** (`openspec/changes/<change>/proposal.md`, `spec.md`, `digest.md`) — do not return text for the main session to re-type. Commit to the draft branch when done.
 - Define user-visible behavior and constraints, not implementation task ownership or DAG.
 - Each `SCEN-*` must state observable behavior and a falsifiable verification approach. Identify edge cases and compatibility assumptions.
 - Digest: relevant modules, exported symbols, call sites, existing tests/fixtures, and baseline known failures with `path:line` evidence.
 
 ## Mode TASKS — Design/DAG author (`gaogong`)
-- Input: approved Proposal/Spec and Codebase Digest. Draft `design.md`, `tasks.md`, and `acceptance.md`.
+- Input: approved Proposal/Spec and Codebase Digest. **Write output directly to OpenSpec files** (`design.md`, `tasks.md`, `acceptance.md`) — do not return text for the main session to re-type. Commit to the draft branch when done.
 - For each changed exported symbol, search call sites and fixtures; record behavior conflicts and ownership in the required `## Impact Inventory` section of `design.md` (symbol, call sites, affected fixtures, owning task; write "no shared symbol change" if none). `freeze-check` rejects a missing section, tasks with no SCEN, and test-only scopes.
 - Split into vertical behavior slices: behavior + wiring + affected fixtures + tests together. No fixture-only or wiring-only task. Wave 0 only for a real shared contract and only actual consumers depend on it.
 - Each task has disjoint Write scope, explicit dependencies, claimed SCENs, and a narrow executable Verify inside its scope. Reserve full suite for one sink and final acceptance. Name Verify so it can run in a fresh worktree: prefer a command whose runner is a repo dependency or lockfile-pinned, since a global-only runner (`tsx`, `vitest` installed elsewhere) fails there.

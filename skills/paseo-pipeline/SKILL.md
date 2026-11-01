@@ -20,8 +20,8 @@ Use only when the frozen DAG has `maxWidth >= 2` and `tasks >= 4`; otherwise use
 ## Roles and briefs
 Read profile notes with `list_profiles`; use live agent provider/model for independence checks. Never hardcode model names in prompts. Briefs: `templates/author.md` (SPEC/TASKS), `tester.md`, `writer.md`, `reviewer.md` (R0/TASK/FINAL/ARBITER), `lead.md`. `auditor.md` is compatibility alias only.
 
-- `chanpin`: drafts Proposal/Spec/Codebase Digest as text; main session writes OpenSpec files.
-- `gaogong`: design/DAG/acceptance, complex implementation, confirmed-blocker fixes.
+- `chanpin`: writes Proposal/Spec/Codebase Digest directly to OpenSpec files and commits; does not return text for main session to re-type.
+- `gaogong`: writes Design/Tasks/Acceptance directly to OpenSpec files and commits; also handles complex implementation and confirmed-blocker fixes.
 - `hanlin`: independent package R0 and one-turn arbitration; not package author or task reviewer for same dispute.
 - `ceshi`: behavior Red tests before implementation.
 - `gongbu` / `jiangzuo`: default / UI implementation.
@@ -32,11 +32,16 @@ Read profile notes with `list_profiles`; use live agent provider/model for indep
 - `auto-review` profiles (`ceshi`, `gaogong`, `anchasi`) can stop on a permission prompt and never finish. When a child goes idle without a finish result, check pending permission requests before concluding it is stalled; do not widen a read-only reviewer to `bypassPermissions` to avoid the prompt.
 
 ## Entry and CP-1
-1. Main session runs `openspec new change <name> --schema paseo-pipeline`. The schema resolves from the global OpenSpec schema link installed by `install.sh`; do not keep stale project-local copies that shadow it.
-2. `chanpin` returns evidence-based Proposal/Spec/Digest. Main session writes drafts. `gaogong` drafts Design/Tasks/Acceptance with vertical slices, call-site/fixture impact, baseline known reds, and narrow Verify.
-3. Run `node "$PIPELINE_HOME"/freeze-check.mjs openspec/changes/<name>` (also enforces `design.md` Impact Inventory, SCEN per task, no test-only tasks); inspect route, waves, width, critical path.
-4. `hanlin` performs one read-only R0 on complete package after mechanical freeze-check. Authors may revise once.
-5. Present final contract, R0 findings/responses, DAG/scopes/Verify/acceptance. Freeze only after human confirms CP-1. The CP-1 prompt must name the executor ("确认冻结并交给 shangshu 执行"), never just "确认冻结并启动实施".
+
+制宪阶段是一条有序的 agent 串联管道，每步 blocking。主会话按以下顺序调度，不得跳过或乱序：
+
+1. Run `openspec new change <name> --schema paseo-pipeline`. The schema resolves from the global OpenSpec schema link installed by `install.sh`; do not keep stale project-local copies that shadow it.
+2. **Dispatch `chanpin`** (use `templates/author.md` Mode SPEC brief). `chanpin` writes `proposal.md`, `spec.md`, `digest.md` directly into `openspec/changes/<name>/` and commits to the draft branch. Main session does not re-type its output.
+3. **Dispatch `gaogong`** (use `templates/author.md` Mode TASKS brief) after `chanpin` commits. `gaogong` reads the committed spec files, writes `design.md`, `tasks.md`, `acceptance.md` directly, and commits. Main session does not re-type its output.
+4. Run `node "$PIPELINE_HOME"/freeze-check.mjs openspec/changes/<name>` (enforces `design.md` Impact Inventory, SCEN per task, no test-only tasks, R0 sign-off). If it blocks, dispatch the relevant author (`chanpin` or `gaogong`) to fix, then re-run freeze-check. Do not proceed past a blocking freeze-check.
+5. **Dispatch `hanlin`** (use `templates/reviewer.md` Mode R0 brief) in an independent read-only workspace after freeze-check passes structurally. `hanlin` reviews the complete contract package and **writes `review.md`** to `openspec/changes/<name>/` with the sign-off line `R0: pass(<uuid>@<sha>)`. If `hanlin` finds blockers, dispatch the relevant author to revise once, re-run freeze-check, then re-dispatch `hanlin`. A second R0 is final.
+6. Re-run `freeze-check` after `hanlin` writes `review.md`. It now validates the R0 sign-off. This is the mechanical gate — no human can accidentally skip the independent review.
+7. Present final contract, R0 findings/responses, DAG/scopes/Verify/acceptance. Freeze only after human confirms CP-1. The CP-1 prompt must name the executor ("确认冻结并交给 shangshu 执行"), never just "确认冻结并启动实施".
 
 ## Handoff after CP-1
 
@@ -67,7 +72,7 @@ After context compaction or a resumed session, the first action is to re-read `t
 node "$PIPELINE_HOME"/merge-task.mjs \
   task/<change>/<T> <T> 'pass(<reviewer-uuid>@<tip>/<base>)'
 ```
-`merge-task` checks branch/task identity, dependency Done, frozen Write scope, commit trailers, test-author protection, agent/model independence, review binding, base drift, Verify, and clean worktree; then no-ff merges and records Done. After its own Verify it re-runs every already-Done task's narrow Verify on the merged tree (whole-suite legs skipped). It also proves Red: the test-author commits alone must make the frozen Verify fail on an assertion, not on a load/import/collection error (exit 33 if it passes, cannot run, or fails non-behaviourally). Exit codes: 2 usage; 10 conflict; 20 verify; 21 cross-task regression; 30 scope; 31 provenance; 32 review; 33 Red proof; 34 base/drift; 35 dependency; 36 unchecked-out dependencies. It is the sole Done writer.
+`merge-task` checks branch/task identity, dependency Done, frozen Write scope, commit trailers, test-author protection, agent/model independence, review binding, base drift, Verify, and clean worktree; then no-ff merges and records Done. After its own Verify it re-runs every already-Done task's narrow Verify on the merged tree (whole-suite legs skipped; only tasks sharing a transitive dependency or overlapping scope are replayed). It also proves Red: the test-author commits alone must make the frozen Verify fail on an assertion, not on a load/import/collection error (exit 33 if it passes, cannot run, or fails non-behaviourally). Exit codes: 2 usage; 10 conflict; 20 verify; 21 cross-task regression; 30 scope; 31 provenance; 32 review; 33 Red proof; 34 base/drift; 35 dependency; 36 unchecked-out dependencies. It is the sole Done writer.
 
 Exit 36 means the worktree cannot resolve a package or runner (`Cannot find package 'tsx'`, `command not found`). It is an environment fault, not a task failure: a linked worktree does not inherit `node_modules`/`.venv`. Install once in that worktree (`npm ci`/`pnpm install`/`venv`, per lockfile) and retry — never edit tests or Verify to work around it.
 
