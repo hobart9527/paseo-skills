@@ -308,10 +308,24 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
     const pw = await loadPlaywright();
     if (!pw) return null;
     const { chromium } = pw;
-    const browser = await chromium.launch({
-      headless: true,
-      args: ["--allow-file-access-from-files"],
-    });
+    let browser;
+    try {
+      browser = await chromium.launch({
+        headless: true,
+        args: ["--allow-file-access-from-files"],
+      });
+    } catch {
+      const sysBrowser = findSystemBrowser();
+      if (sysBrowser) {
+        browser = await chromium.launch({
+          headless: true,
+          executablePath: sysBrowser,
+          args: ["--allow-file-access-from-files"],
+        });
+      } else {
+        return null;
+      }
+    }
     const captured = {};
     const failures = [];
     const runtimeErrors = [];
