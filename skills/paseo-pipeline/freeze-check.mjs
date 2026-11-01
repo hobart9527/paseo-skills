@@ -4,14 +4,18 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { parseTasks, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
+// --structural: validate the contract the authors wrote, before hanlin reviews it. The R0
+// sign-off is the output of that review, so requiring it here would deadlock the entry flow.
+const structural = args.includes('--structural');
 const positional = args.filter((arg) => !arg.startsWith('--'));
 const changeDir = positional[0];
 if (!changeDir) {
-  console.error('Usage: freeze-check.mjs <change-dir> [--json]');
+  console.error('Usage: freeze-check.mjs <change-dir> [--json] [--structural]');
   process.exit(2);
 }
 
@@ -164,12 +168,31 @@ else {
 if (!read(path.join(changeDir, 'proposal.md'))) blocking.push('MISSING_PROPOSAL: proposal.md not found');
 
 // R0 sign-off: hanlin must have reviewed the complete contract package before CP-1.
-// The sign-off is written to review.md as `R0: pass(<uuid>@<sha>)` by the reviewer.
-// freeze-check enforces its presence so no one can skip the independent review step.
-const reviewMarkdown = read(path.join(changeDir, 'review.md'));
-const r0Match = reviewMarkdown && reviewMarkdown.match(/^R0:\s*pass\(([^@)]+)@([a-f0-9]{7,40})\)/im);
-if (!r0Match) {
-  blocking.push('MISSING_R0_SIGNOFF: review.md must contain `R0: pass(<reviewer-uuid>@<sha>)` — run hanlin R0 review before freeze');
+// hanlin is read-only and returns `R0: pass(<uuid>@<sha>)` as text; the main session records it
+// as the first line of review.md. The sha is the commit hanlin reviewed, so any contract edit
+// after it voids the sign-off. --structural skips this: it runs before the review exists.
+function gitIn(dir, gitArgs) {
+  return spawnSync('git', ['-C', dir, ...gitArgs], { encoding: 'utf8' });
+}
+const nulList = (result) => (result.stdout || '').split('\0').filter(Boolean);
+if (!structural) {
+  const reviewMarkdown = read(path.join(changeDir, 'review.md'));
+  const r0Match = reviewMarkdown && reviewMarkdown.match(/^R0:\s*pass\(([^@)]+)@([a-f0-9]{7,40})\)/im);
+  if (!r0Match) {
+    blocking.push('MISSING_R0_SIGNOFF: review.md must contain `R0: pass(<reviewer-uuid>@<sha>)` — run hanlin R0 review before freeze');
+  } else if (gitIn(changeDir, ['rev-parse', '--is-inside-work-tree']).status === 0) {
+    const sha = r0Match[2];
+    if (gitIn(changeDir, ['rev-parse', '--verify', '--quiet', `${sha}^{commit}`]).status !== 0) {
+      blocking.push(`STALE_R0_SIGNOFF: reviewed commit ${sha} does not exist in this repository`);
+    } else {
+      // Working tree (staged, unstaged, untracked) vs the reviewed commit; review.md is written after the review.
+      const diff = gitIn(changeDir, ['diff', '--name-only', '-z', sha, '--', '.']);
+      const untracked = gitIn(changeDir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.']);
+      const drift = [...new Set([...nulList(diff), ...nulList(untracked)])].filter((file) => path.basename(file) !== 'review.md');
+      if (diff.status !== 0) blocking.push(`STALE_R0_SIGNOFF: cannot diff contract against reviewed commit ${sha}`);
+      else if (drift.length) blocking.push(`STALE_R0_SIGNOFF: contract changed after R0 reviewed ${sha}: ${drift.slice(0, 5).join(', ')} — re-run hanlin R0`);
+    }
+  }
 }
 
 if (tasks.length === 0) blocking.push('EMPTY_TASKS: tasks.md parsed to zero tasks');

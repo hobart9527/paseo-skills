@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 const root = path.resolve(import.meta.dirname, '..');
 function run(dir) {
@@ -166,4 +166,30 @@ test('accepts valid R0 sign-off with full UUID or short SHA', () => {
   assert.equal(run(withFullUuid).status, 0);
   const withLongSha = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': 'R0: pass(hanlin-agent-uuid@abcdef1234567890abcdef1234567890abcdef12)\n' });
   assert.equal(run(withLongSha).status, 0);
+});
+
+test('--structural passes without review.md; default mode still blocks', () => {
+  const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  const structural = spawnSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--json', '--structural'], { encoding: 'utf8' });
+  assert.equal(structural.status, 0, structural.stdout);
+  assert.equal(run(dir).status, 1);
+});
+
+test('R0 sign-off is bound to the reviewed commit: unknown sha and later edits are rejected', () => {
+  const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  const sh = (...a) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8' }).trim();
+  sh('init', '-q'); sh('config', 'user.email', 't@t'); sh('config', 'user.name', 't');
+  sh('add', '.'); sh('commit', '-qm', 'draft');
+  const sha = sh('rev-parse', '--short', 'HEAD');
+  const sign = (s) => fs.writeFileSync(path.join(dir, 'review.md'), `R0: pass(hanlin-uuid@${s})\n`);
+
+  sign(sha);
+  assert.equal(run(dir).status, 0, 'review.md itself is not contract drift');
+
+  sign('deadbee');
+  assert.match(run(dir).stdout, /STALE_R0_SIGNOFF.*does not exist/);
+
+  sign(sha);
+  fs.appendFileSync(path.join(dir, 'tasks.md'), '\n');
+  assert.match(run(dir).stdout, /STALE_R0_SIGNOFF.*tasks\.md/);
 });

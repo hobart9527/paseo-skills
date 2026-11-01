@@ -36,11 +36,11 @@ Read profile notes with `list_profiles`; use live agent provider/model for indep
 制宪阶段是一条有序的 agent 串联管道，每步 blocking。主会话按以下顺序调度，不得跳过或乱序：
 
 1. Run `openspec new change <name> --schema paseo-pipeline`. The schema resolves from the global OpenSpec schema link installed by `install.sh`; do not keep stale project-local copies that shadow it.
-2. **Dispatch `chanpin`** (use `templates/author.md` Mode SPEC brief). `chanpin` writes `proposal.md`, `spec.md`, `digest.md` directly into `openspec/changes/<name>/` and commits to the draft branch. Main session does not re-type its output.
-3. **Dispatch `gaogong`** (use `templates/author.md` Mode TASKS brief) after `chanpin` commits. `gaogong` reads the committed spec files, writes `design.md`, `tasks.md`, `acceptance.md` directly, and commits. Main session does not re-type its output.
-4. Run `node "$PIPELINE_HOME"/freeze-check.mjs openspec/changes/<name>` (enforces `design.md` Impact Inventory, SCEN per task, no test-only tasks, R0 sign-off). If it blocks, dispatch the relevant author (`chanpin` or `gaogong`) to fix, then re-run freeze-check. Do not proceed past a blocking freeze-check.
-5. **Dispatch `hanlin`** (use `templates/reviewer.md` Mode R0 brief) in an independent read-only workspace after freeze-check passes structurally. `hanlin` reviews the complete contract package and **writes `review.md`** to `openspec/changes/<name>/` with the sign-off line `R0: pass(<uuid>@<sha>)`. If `hanlin` finds blockers, dispatch the relevant author to revise once, re-run freeze-check, then re-dispatch `hanlin`. A second R0 is final.
-6. Re-run `freeze-check` after `hanlin` writes `review.md`. It now validates the R0 sign-off. This is the mechanical gate — no human can accidentally skip the independent review.
+2. **Dispatch `chanpin`** (`templates/author.md` Mode SPEC). It writes `proposal.md`, `specs/<capability>/spec.md`, `digest.md` into `openspec/changes/<name>/` and commits to the draft branch; main session does not re-type.
+3. **Dispatch `gaogong`** (`templates/author.md` Mode TASKS) after `chanpin` commits. It reads the committed spec, writes `design.md`, `tasks.md`, `acceptance.md`, and commits.
+4. Run `node "$PIPELINE_HOME"/freeze-check.mjs openspec/changes/<name> --structural` (Impact Inventory, SCEN per task, no test-only tasks; `--structural` skips the R0 check, which cannot exist before `hanlin` runs). If it blocks, dispatch the relevant author to fix and re-run. Do not proceed past a block.
+5. **Dispatch `hanlin`** (`templates/reviewer.md` Mode R0) in a read-only workspace once the structural check passes and the contract is committed. `hanlin` writes nothing: it returns findings, or `R0: pass(<its-agent-uuid>@<reviewed-HEAD-sha>)`. On pass, main session writes that line first in `openspec/changes/<name>/review.md` (uuid = the agent it dispatched, sha = the commit it reviewed). On blockers, dispatch the author to revise once, re-run freeze-check, re-dispatch `hanlin`. A second R0 is final.
+6. Re-run `freeze-check` without `--structural`. It rejects a missing sign-off, and `STALE_R0_SIGNOFF` when the sha is unknown or any contract file changed after it. This is the mechanical gate.
 7. Present final contract, R0 findings/responses, DAG/scopes/Verify/acceptance. Freeze only after human confirms CP-1. The CP-1 prompt must name the executor ("确认冻结并交给 shangshu 执行"), never just "确认冻结并启动实施".
 
 ## Handoff after CP-1
@@ -93,7 +93,7 @@ Use live Paseo state plus branch tips and Done lines. Do not re-dispatch solely 
 5. After CP-2, present cleanup list. Delete/archive only after human confirmation; push requires separate confirmation.
 
 ## Hard lines
-- Lead/main session never edits business code; `chanpin` drafts contract as text only.
+- Lead/main session never edits business code; `chanpin` and `gaogong` write contract files only, never business code; `hanlin` writes nothing.
 - No self-review; use actual provider/model values, not profile-name assumptions.
 - No manual Done/check boxes; no full-suite Verify on non-sink tasks.
 - Never treat a missing dependency as a Red result or fix it by editing tests/Verify; install in the workspace and rerun.

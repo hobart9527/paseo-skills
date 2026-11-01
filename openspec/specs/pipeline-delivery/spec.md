@@ -7,7 +7,7 @@ Deliver contract-driven changes through Paseo's native multi-agent workspaces an
 ## Requirements
 
 ### Requirement: Contract first, independently checked once
-The main session SHALL clarify the request and create the OpenSpec change. The product role SHALL draft Proposal, Spec, and codebase evidence as text; the main session writes the draft. A planner SHALL draft Design, Tasks, and Acceptance as vertical behavior slices. A separate reviewer SHALL review the complete package once before CP-1, checking evidence, observable scenarios, impact, graph feasibility, scope, and Verify commands. Authors MAY revise once. CP-1 requires explicit human approval after `freeze-check` passes.
+The main session SHALL clarify the request and create the OpenSpec change. The product role SHALL write Proposal, Spec, and codebase evidence directly to the change directory and commit them. A planner SHALL draft Design, Tasks, and Acceptance as vertical behavior slices. A separate read-only reviewer SHALL review the complete package once before CP-1 and return an R0 sign-off bound to the reviewed commit, which the main session records in `review.md`, checking evidence, observable scenarios, impact, graph feasibility, scope, and Verify commands. Authors MAY revise once. CP-1 requires explicit human approval after `freeze-check` passes.
 
 #### Scenario: Contract review catches unsupported claims
 - **WHEN** the package contains unsupported code claims, unobservable scenarios, or infeasible task Verify commands

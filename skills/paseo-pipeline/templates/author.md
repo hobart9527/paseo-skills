@@ -8,7 +8,7 @@ Mode: `SPEC` or `TASKS`. Change: `<change>`. Output location: `openspec/changes/
 - Report changed files, evidence, unresolved decisions, and acceptance commands. Do not invent provider/model requirements.
 
 ## Mode SPEC — Product/spec author (`chanpin`)
-- Input: user-approved request and repository context. **Write output directly to OpenSpec files** (`openspec/changes/<change>/proposal.md`, `spec.md`, `digest.md`) — do not return text for the main session to re-type. Commit to the draft branch when done.
+- Input: user-approved request and repository context. **Write output directly to OpenSpec files** (`openspec/changes/<change>/proposal.md`, `specs/<capability>/spec.md`, `digest.md`) — do not return text for the main session to re-type. Commit to the draft branch when done.
 - Define user-visible behavior and constraints, not implementation task ownership or DAG.
 - Each `SCEN-*` must state observable behavior and a falsifiable verification approach. Identify edge cases and compatibility assumptions.
 - Digest: relevant modules, exported symbols, call sites, existing tests/fixtures, and baseline known failures with `path:line` evidence.
@@ -20,7 +20,7 @@ Mode: `SPEC` or `TASKS`. Change: `<change>`. Output location: `openspec/changes/
 - Each task has disjoint Write scope, explicit dependencies, claimed SCENs, and a narrow executable Verify inside its scope. Reserve full suite for one sink and final acceptance. Name Verify so it can run in a fresh worktree: prefer a command whose runner is a repo dependency or lockfile-pinned, since a global-only runner (`tsx`, `vitest` installed elsewhere) fails there.
 - **Concurrent tasks must have fully disjoint Write scopes, including test paths.** `freeze-check` rejects scope overlap between tasks that can run in parallel. Never list a shared parent directory (e.g. `test`) when two concurrent tasks each own a file under it — list the individual files or subdirectories instead (e.g. `test/add.test.mjs` and `test/mul.test.mjs`). A coarse `test` scope on two parallel tasks collapses concurrency to zero.
 - Do not pad DAG to qualify. If real `maxWidth < 2` or task count < 4, recommend Tier 2.
-- Run baseline full suite in a clean worktree; record known reds. Run `freeze-check` and report its route, waves, max width, and critical path.
+- Run baseline full suite in a clean worktree; record known reds. Run `freeze-check --structural` (R0 sign-off does not exist yet) and report its route, waves, max width, and critical path.
 
 ## Return envelope
 `mode`, draft paths/content, evidence, assumptions/unverified, task count, max width, route, baseline, freeze-check result, blockers.

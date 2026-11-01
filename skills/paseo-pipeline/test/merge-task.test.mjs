@@ -176,6 +176,14 @@ test('reports a missing dependency-local binary as exit 36 as well', () => {
   assert.equal(r.status, 36, r.out);
   assert.match(r.out, /cannot resolve "node_modules"/);
 });
+test('green Verify that dies with exit 1 on a missing package is exit 36, not 20', () => {
+  // Red stops at the failing assertion; on Green the tests pass and the next leg hits an uninstalled package.
+  const f = fixture({ verify: `node --test test/a.test.mjs && node --input-type=module -e "import 'nopkg-xyz'"` });
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', tag(f)]);
+  assert.equal(r.status, 36, r.out);
+  assert.match(r.out, /cannot resolve "nopkg-xyz"/);
+  assert.equal(git(f.cwd, 'status', '--porcelain'), '');
+});
 test('failed verify leaves integration clean and allows retry', () => {
   const tasks = `- [ ] T-01 work\n  - Write scope: src,test\n  - Verify with: node --test test/a.test.mjs\n`;
   const f = taggedFixture(tasks);

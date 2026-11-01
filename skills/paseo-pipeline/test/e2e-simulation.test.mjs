@@ -191,11 +191,25 @@ Composite arithmetic expressions.
   assert.equal(fcNoR0.status, 1);
   assert.match(fcNoR0.out, /MISSING_R0_SIGNOFF/);
 
-  // Gate Check 1.4: hanlin signs off R0 (the制宪 review gate)
-  write(`openspec/changes/${change}/review.md`, `R0: pass(${HANLIN_1}@abcdef1)
+  // Gate Check 1.3b: --structural runs before R0 exists and must not demand the sign-off
+  const fcStructural = runFreezeCheck(changeDir, ['--structural']);
+  assert.equal(fcStructural.status, 0, fcStructural.stdout);
+
+  // Gate Check 1.4: contract is committed, hanlin (read-only) reviews that commit, main session records the sign-off
+  git('add', 'openspec');
+  git('commit', '-qm', 'docs(openspec): contract draft for calc-v1');
+  const reviewedSha = git('rev-parse', '--short', 'HEAD');
+  write(`openspec/changes/${change}/review.md`, `R0: pass(${HANLIN_1}@${reviewedSha})
 
 Findings: none. Contract package is coherent; scopes disjoint; Verify narrow.
 `);
+
+  // Gate Check 1.4b: editing the contract after R0 voids the sign-off
+  write(`openspec/changes/${change}/tasks.md`, `${validTasks}\n`);
+  const fcStale = runFreezeCheck(changeDir);
+  assert.equal(fcStale.status, 1);
+  assert.match(fcStale.out, /STALE_R0_SIGNOFF/);
+  git('checkout', '--', `openspec/changes/${change}/tasks.md`);
 
   // Gate Check 1.5: Valid Contract Freeze
   const fcValid = runFreezeCheck(changeDir, ['--json']);

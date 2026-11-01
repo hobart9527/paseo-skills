@@ -40,8 +40,8 @@ function paseoAgents() {
   }
 }
 
-// `paseo ls --all` returns at most 100 agents and drops some archived ones, so a
-// model that is missing from the list is not proof the agent never existed.
+// `paseo ls --all` may omit some archived agents (it already returns more than 100 entries),
+// so a model that is missing from the list is not proof the agent never existed.
 function paseoInspect(agentId) {
   const result = spawnSync('paseo', ['inspect', agentId, '--json'], { encoding: 'utf8', timeout: 10_000 });
   if (result.error || result.status !== 0) return null;
@@ -74,7 +74,7 @@ function modelFor(agentId, agents) {
   const matches = findAgents(agentId, agents);
   if (matches.length === 1) return modelOf(matches[0]);
   // Unique shortId prefix in the live list; otherwise ask Paseo directly, because
-  // `ls` caps at 100 entries and hides some archived agents.
+  // `ls` hides some archived agents.
   if (matches.length === 0) return modelOf(paseoInspect(agentId));
   return null;
 }
@@ -301,8 +301,10 @@ const after = git(['status', '--porcelain=v1', '--untracked-files=all']);
 const verifyChanged = after !== before;
 // Missing dependency first: it produces a non-zero exit that would otherwise be read as
 // a plain Verify failure (exit 20) and send the operator hunting for a test bug.
-if (!verifyChanged && [undefined, 0, 126, 127].includes(result.status)) {
-  const verifyMissing = missingDependency(result.output);
+// Node/Python report a missing package with exit 1, so any non-zero status qualifies; a real
+// assertion failure that merely quotes the message still wins (same guard as the Red check).
+if (!verifyChanged && result.status !== 0) {
+  const verifyMissing = isBehavioralRed(result.output) ? null : missingDependency(result.output);
   if (verifyMissing) {
     gitMaybe(['merge', '--abort']);
     fail(`frozen Verify: ${dependencyMessage(verifyMissing)}`, 36);
