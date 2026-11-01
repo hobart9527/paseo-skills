@@ -526,19 +526,38 @@ test('SCEN-DISP-04: 不存在第二 CLI 派发入口，hotfix.sh 是 task-runner
   assert.match(hotfix, /exec\s+node[^\n]*task-runner\.mjs/, 'hotfix.sh 必须 exec 委托到唯一入口');
 });
 
-test('SCEN-HND-09: SKILL 的交接序列先提交冻结产物、再跑 handoff-check、最后才建集成 workspace', () => {
+test('SCEN-HND-09: SKILL 的交接序列先提交冻结产物、再建集成 workspace、最后在它上面跑 handoff-check', () => {
   const handoff = section('冻结前准备');
-  // 顺序是契约：集成 workspace 一建，写手就可能被派出去读一个 git 里还不存在的契约。
+  // 顺序是契约，而且必须是**能照抄执行**的那一条：门禁的分支判据只在 integration/<name>
+  // 存在时严格成立，先跑门禁再建分支会得到一条永远判不了的分支判据（旧文档顺序正是这样，
+  // 2026-10-31 审计判为 P0 死锁）。所以顺序是：提交产物 → 建集成分支 → 在它上面跑门禁。
   const commitAt = handoff.indexOf('提交冻结产物');
   const checkAt = handoff.indexOf('handoff-check.mjs');
   const workspaceAt = handoff.indexOf('建集成 workspace');
   assert.ok(commitAt >= 0, '交接序列必须包含「提交冻结产物」');
   assert.ok(checkAt >= 0, '交接序列必须包含 handoff-check');
   assert.ok(workspaceAt >= 0, '交接序列必须包含「建集成 workspace」');
-  assert.ok(commitAt < checkAt, '提交冻结产物必须排在 handoff-check 之前；实际顺序相反');
-  assert.ok(checkAt < workspaceAt, 'handoff-check 必须排在建集成 workspace 之前；实际顺序相反');
+  assert.ok(commitAt < workspaceAt, '提交冻结产物必须排在建集成 workspace 之前；实际顺序相反');
+  assert.ok(workspaceAt < checkAt, 'handoff-check 必须在集成分支建好之后跑；实际顺序相反');
   // 门禁必须给得出可照抄的命令，否则读者仍会跳过它。
   assert.match(handoff, /handoff-check\.mjs\s+<name>/, '交接门禁必须给出可照抄的命令');
+});
+
+test('SCEN-HND-10: SKILL 写明分支判据分语境，且延后不等于通过', () => {
+  // 代码支持「分支还不存在时延后判据」，文档不写，读者就会把 ok/exit 0 当成分支也判过了；
+  // 反过来文档不提延后，读者又会以为门禁只能建完分支后跑。
+  const handoff = section('冻结前准备');
+  assert.match(handoff, /分支判据分语境/, 'SKILL 必须点明分支判据按语境分岔');
+  assert.match(handoff, /BRANCH_DEFERRED/, '延后必须有一个可检索的标记名，而不是含糊的「已放行」');
+  // 延后说明必须出现在默认（人读）输出里，而不是只靠 --json；否则终端上读到的
+  // RESULT 是一句无条件的「交接就绪」（2026-10-31 审计 B1）。
+  assert.match(handoff, /NOTE \[BRANCH_DEFERRED\]/, '默认输出里的 NOTE 行必须写出来');
+  assert.match(handoff, /延后事实不能只藏在 JSON 里|只藏在 JSON/, '必须说明默认输出也带延后说明');
+  assert.match(handoff, /WRONG_BRANCH/, '严格语境下的拒绝码必须写出来');
+  assert.match(handoff, /延后不是通过|不是通过/, '必须明确延后不等于该判据已通过');
+  assert.match(handoff, /重跑/, '建完集成分支后必须重跑门禁');
+  // B2：同名 tag 不得替换成基点。
+  assert.match(handoff, /同名 tag[\s\S]{0,120}不因[\s\S]{0,40}tag|不因同名 tag/, '同名 tag 的处置必须写明');
 });
 
 test('SCEN-DOC-29: task-runner 用法行的选项集合与脚本 Usage 一致（含 --owner）', () => {

@@ -8,7 +8,12 @@
 //   - change 目录是否已提交 —— `git status --porcelain` 逐路径点名，不报个数。
 //   - tasks.md 是否在集成基点 —— 查 git 对象（`cat-file -e <base>:<path>`），**不读工作树**。
 //     工作树可能被未提交改动污染，读它就等于把门禁判据交给了被检查对象。
-//   - 当前分支必须是 integration/<name> —— 不假定、不推导，直接问 `rev-parse`。
+//   - 当前分支必须是 integration/<name> —— 但**只在该分支已存在时**。
+//     合法顺序是「提交冻结产物 → 跑交接门禁 → 建集成 workspace」，第三步之前集成分支还不存在；
+//     此时硬要求当前分支是 integration/<name>，会把合法顺序判成 WRONG_BRANCH 死锁
+//     （2026-10-31 审计 P0）。集成分支尚不存在时分支判据延后，按当前 commit 核对产物，
+//     并把延后这件事写进 `notes`（`BRANCH_DEFERRED`）；分支一旦存在就按严格口径判。
+//     task-runner 每次派发前复用时分支必然已存在，因此延后不会漏到派发。
 //
 // task-runner（T-03）派发前调用同一份 checkHandoff；CLI 外壳只做参数解析、输出与退出码。
 // 判据逻辑禁止在调用方复制，否则两处判法漂移时门禁先绿后红。
@@ -26,6 +31,11 @@ export const HANDOFF_CODES = {
   WRONG_BRANCH: 'WRONG_BRANCH',
   DIRTY_CHANGE_DIR: 'DIRTY_CHANGE_DIR',
   TASKS_NOT_AT_BASE: 'TASKS_NOT_AT_BASE',
+};
+
+/** 不进 `problems` 的事实：判定延后了，但门禁并没有放过任何东西。 */
+export const HANDOFF_NOTES = {
+  BRANCH_DEFERRED: 'BRANCH_DEFERRED',
 };
 
 /**
@@ -50,15 +60,23 @@ function git(root, args) {
  * @param {string} [options.root]   仓库根（默认 cwd）
  * @param {string} options.change   change 名（openspec/changes/<name>）
  * @param {string} [options.base]   集成基点（默认 HEAD：集成分支就是当前位置）
- * @returns {{ ok: boolean, branch: string|null, base: string, change: string,
- *             problems: Array<{ code: string, message: string, path?: string }> }}
+ * @returns {{ ok: boolean, branch: string|null, base: string, effectiveBase: string,
+ *             deferred: boolean, change: string,
+ *             problems: Array<{ code: string, message: string, path?: string }>,
+ *             notes: Array<{ code: string, message: string }> }}
  *
  * `problems` 为空才 `ok`。每个 DIRTY_CHANGE_DIR 一条、`path` 精确到违规文件，
  * 供 CLI 逐行输出，也供 task-runner 直接引用而不必重算。
+ *
+ * `notes` 不进阻断项、不改退出码：它记录「这条判据这次没判、为什么」。目前唯一来源是
+ * 集成分支尚不存在时的分支判据延后（`BRANCH_DEFERRED`）——把延后留在结构化输出里，
+ * 调用方与人都看得到这次门禁少判了一条，而不是以为判过了。
  */
 export function checkHandoff({ root = process.cwd(), change, base = 'HEAD' } = {}) {
   const problems = [];
+  const notes = [];
   const changeDir = path.posix.join('openspec', 'changes', change);
+  const expectedBranch = `integration/${change}`;
 
   const badChange = changeIdProblem(change);
   if (badChange !== null) {
@@ -66,8 +84,11 @@ export function checkHandoff({ root = process.cwd(), change, base = 'HEAD' } = {
       ok: false,
       branch: null,
       base,
+      effectiveBase: base,
+      deferred: false,
       change: change ?? null,
       problems: [{ code: HANDOFF_CODES.BAD_CHANGE, message: badChange }],
+      notes,
     };
   }
 
@@ -77,26 +98,44 @@ export function checkHandoff({ root = process.cwd(), change, base = 'HEAD' } = {
       ok: false,
       branch: null,
       base,
+      effectiveBase: base,
+      deferred: false,
       change,
       problems: [{
         code: HANDOFF_CODES.NOT_A_REPO,
         message: `${root} 不是 git 仓库：交接门禁只能核对已提交事实，无法在非仓库目录判断`,
       }],
+      notes,
     };
   }
 
+  // --- 集成分支是否存在：分支判据分语境的唯一开关 ---
+  // 用 `refs/heads/` 全名查，不让 `rev-parse integration/<name>` 的短名消歧规则替我们猜
+  // （同名 tag 会让短名解析到别的对象，判定随仓库内容漂移）。
+  const branchExists = git(root, ['show-ref', '--verify', '--quiet', `refs/heads/${expectedBranch}`]).status === 0;
+
   // --- 基点：必须能解析成一个 commit ---
   // 解析不到时后续 cat-file 只报「对象不存在」，会把「基点写错了」误报成「tasks.md 没提交」。
-  const baseSha = git(root, ['rev-parse', '--verify', '--quiet', `${base}^{commit}`]);
-  const baseOk = baseSha.status === 0 && /^[0-9a-f]{40}$/.test(baseSha.stdout.trim());
-  if (!baseOk) {
+  // 例外只有一种：基点写的就是还没创建的集成分支名。那是合法顺序里的「建分支之前」，
+  // 此时按当前 commit 核对产物（等价于基点 = HEAD），并把延后记进 notes。
+  //
+  // 这个例外必须**先于** `rev-parse` 判定：`rev-parse integration/<name>^{commit}` 在分支不存在时
+  // 仍可能解析到同名 tag，于是基点悄悄变成 tag 指向的那份历史——当前 commit 缺 tasks.md 也会
+  // 因为 tag 有而放行（2026-10-31 审计 B2）。判据是「基点是集成分支名且该分支不存在」，与
+  // 名字能否解析无关。
+  const baseIsMissingIntegrationBranch = base === expectedBranch && !branchExists;
+  let effectiveBase = baseIsMissingIntegrationBranch ? 'HEAD' : base;
+  let baseCheckable = false;
+  const baseSha = git(root, ['rev-parse', '--verify', '--quiet', `${effectiveBase}^{commit}`]);
+  baseCheckable = baseSha.status === 0 && /^[0-9a-f]{40}$/.test(baseSha.stdout.trim());
+  if (!baseCheckable) {
     problems.push({
       code: HANDOFF_CODES.BASE_UNREADABLE,
       message: `集成基点 ${base} 解析不到 commit：无法判断 change 产物是否已提交在基点上`,
     });
   }
 
-  // --- 分支：必须是 integration/<name> ---
+  // --- 分支：集成分支存在时必须是 integration/<name>，不存在时延后 ---
   const branchResult = git(root, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const rawBranch = branchResult.status === 0 ? branchResult.stdout.trim() : '';
   const branch = rawBranch === '' || rawBranch === 'HEAD' ? null : rawBranch;
@@ -106,12 +145,23 @@ export function checkHandoff({ root = process.cwd(), change, base = 'HEAD' } = {
       message: `读不到当前分支（git rev-parse --abbrev-ref HEAD 返回 ${JSON.stringify(rawBranch)}）：`
         + `交接必须在 integration/${change} 上进行，detached HEAD 或空仓库都不满足`,
     });
-  } else if (branch !== `integration/${change}`) {
-    problems.push({
-      code: HANDOFF_CODES.WRONG_BRANCH,
-      message: `当前分支是 ${branch}，交接门禁要求 integration/${change}：`
-        + '在别的分支上核对 change 产物与 tasks.md 基点，核对的是另一份历史',
-    });
+  } else if (branch !== expectedBranch) {
+    if (branchExists) {
+      problems.push({
+        code: HANDOFF_CODES.WRONG_BRANCH,
+        message: `当前分支是 ${branch}，交接门禁要求 ${expectedBranch}：`
+          + '在别的分支上核对 change 产物与 tasks.md 基点，核对的是另一份历史',
+      });
+    } else {
+      // 集成分支还没建：合法顺序里这一步在它之前。不能在这里报 WRONG_BRANCH——
+      // 那会让「提交产物 → 跑门禁 → 建 workspace」这条文档顺序必然死锁。
+      notes.push({
+        code: HANDOFF_NOTES.BRANCH_DEFERRED,
+        message: `${expectedBranch} 尚不存在，本次按当前分支 ${branch} 的 commit 核对 change 产物，`
+          + '分支判据延到集成 workspace 创建之后再判：建完必须在 '
+          + `${expectedBranch} 上重跑本门禁（task-runner 每次派发前也会复用同一判据）`,
+      });
+    }
   }
 
   // --- change 目录：不得有未提交或未跟踪文件 ---
@@ -154,18 +204,20 @@ export function checkHandoff({ root = process.cwd(), change, base = 'HEAD' } = {
 
   // --- tasks.md：必须能从集成基点读到 ---
   // 只查 git 对象，不看工作树：工作树可能被未提交改动污染，读它等于让被检查对象自己作证。
-  if (baseOk) {
+  // 读的是 `effectiveBase`：集成分支还没建时它退回 HEAD（见上），否则与 `base` 相同。
+  if (baseCheckable) {
     const tasksPath = `${changeDir}/tasks.md`;
-    const exists = git(root, ['cat-file', '-e', `${base}:${tasksPath}`]);
+    const exists = git(root, ['cat-file', '-e', `${effectiveBase}:${tasksPath}`]);
     if (exists.status !== 0) {
       problems.push({
         code: HANDOFF_CODES.TASKS_NOT_AT_BASE,
         path: tasksPath,
-        message: `${tasksPath} 在基点 ${base} 上读不到（${base}:${tasksPath} 不存在）：`
+        message: `${tasksPath} 在基点 ${effectiveBase} 上读不到（${effectiveBase}:${tasksPath} 不存在）：`
           + 'task-runner 派发时读不到任务契约，合流阶段才暴露就是返工',
       });
     }
   }
 
-  return { ok: problems.length === 0, branch, base, change, problems };
+  const deferred = notes.some((note) => note.code === HANDOFF_NOTES.BRANCH_DEFERRED);
+  return { ok: problems.length === 0, branch, base, effectiveBase, deferred, change, problems, notes };
 }

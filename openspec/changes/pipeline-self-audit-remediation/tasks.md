@@ -9,7 +9,8 @@
 
 ## 1. P0：死锁与承诺-实现相反
 
-- [ ] 1.1 T-01 交接序列与门禁判据统一：handoff-check 在集成分支存在后执行，分支判据分语境
+- [x] 1.1 T-01 交接序列与门禁判据统一：handoff-check 在集成分支存在后执行，分支判据分语境
+  - Done: source=1dc5d75 review=pass(5b49c368@1dc5d75/29ce2ec)
   - Depends on: none
   - Write scope: skills/paseo-pipeline/lib/handoff.mjs, skills/paseo-pipeline/handoff-check.mjs, skills/paseo-pipeline/SKILL.md, skills/paseo-pipeline/test/handoff-check.test.mjs, skills/paseo-pipeline/test/docs.test.mjs
   - Risk-surface: [error-handling]
