@@ -29,7 +29,7 @@ Read profile notes with `list_profiles`; use live agent provider/model for indep
 - `shangshu`: sole Lead; schedules, reconciles, merges, reports.
 
 ## Entry and CP-1
-1. Main session runs `openspec new change <name> --schema paseo-pipeline`.
+1. Main session runs `openspec new change <name> --schema paseo-pipeline`. The schema resolves from the global OpenSpec schema link installed by `install.sh`; do not keep stale project-local copies that shadow it.
 2. `chanpin` returns evidence-based Proposal/Spec/Digest. Main session writes drafts. `gaogong` drafts Design/Tasks/Acceptance with vertical slices, call-site/fixture impact, baseline known reds, and narrow Verify.
 3. Run `node "$PIPELINE_HOME"/freeze-check.mjs openspec/changes/<name>` (also enforces `design.md` Impact Inventory, SCEN per task, no test-only tasks); inspect route, waves, width, critical path.
 4. `hanlin` performs one read-only R0 on complete package after mechanical freeze-check. Authors may revise once.

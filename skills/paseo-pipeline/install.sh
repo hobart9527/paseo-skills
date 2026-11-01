@@ -17,14 +17,30 @@ while [ "$#" -gt 0 ]; do
   esac; shift
 done
 BLOCK="# >>> paseo-pipeline >>>\nexport PIPELINE_HOME=\"$PIPELINE_HOME\"\n# <<< paseo-pipeline <<<"
+SCHEMA_DIR="${XDG_DATA_HOME:-${HOME:-}/.local/share}/openspec/schemas/paseo-pipeline"
+SCHEMA_SRC="$PIPELINE_HOME/openspec-schema"
+schema_current() {
+  [ -f "$SCHEMA_DIR/schema.yaml" ] && diff -rq "$SCHEMA_SRC" "$SCHEMA_DIR" >/dev/null 2>&1
+}
 if [ "$MODE" = check ]; then
   SETTINGS="${HOME:-}/.claude/settings.json"
+  schema_current || exit 1
   grep -q '^# >>> paseo-pipeline >>>' "$ZSHENV" \
     && grep -Fq "export PIPELINE_HOME=\"$PIPELINE_HOME\"" "$ZSHENV" \
     && grep -Fq "node $PIPELINE_HOME/hooks/tier-write-hook.mjs" "$SETTINGS" \
     && grep -Fq "node $PIPELINE_HOME/hooks/tier-reminder-hook.mjs" "$SETTINGS" \
     && exit 0
   exit 1
+fi
+if [ -e "$SCHEMA_DIR" ] || [ -L "$SCHEMA_DIR" ]; then
+  if ! schema_current; then
+    echo "Stale or conflicting OpenSpec schema: $SCHEMA_DIR" >&2
+    echo "Expected match for: $SCHEMA_SRC" >&2
+    exit 1
+  fi
+elif [ "$MODE" != dry ]; then
+  mkdir -p "$(dirname "$SCHEMA_DIR")"
+  ln -s "$SCHEMA_SRC" "$SCHEMA_DIR"
 fi
 if ! grep -q '^# >>> paseo-pipeline >>>' "$ZSHENV"; then
   [ "$MODE" = dry ] || printf '%b\n' "$BLOCK" >> "$ZSHENV"

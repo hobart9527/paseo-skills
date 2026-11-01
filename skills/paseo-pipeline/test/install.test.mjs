@@ -14,6 +14,15 @@ test('writes PIPELINE_HOME idempotently', (context) => {
   } }));
   const first = spawnSync('bash', [install], { env, encoding: 'utf8' }); assert.equal(first.status, 0, first.stderr);
   const text = fs.readFileSync(path.join(home, '.zshenv'), 'utf8'); assert.match(text, /export PIPELINE_HOME=/);
+  const dataHome = path.join(home, '.local', 'share');
+  const schema = path.join(dataHome, 'openspec', 'schemas', 'paseo-pipeline');
+  assert.equal(fs.readlinkSync(schema), path.join(path.dirname(install), 'openspec-schema'));
+  const wrongSchema = fs.readFileSync(path.join(schema, 'schema.yaml'), 'utf8') + '\n';
+  fs.rmSync(schema); fs.mkdirSync(schema, { recursive: true }); fs.writeFileSync(path.join(schema, 'schema.yaml'), wrongSchema);
+  assert.equal(spawnSync('bash', [install], { env: { ...env, XDG_DATA_HOME: dataHome }, encoding: 'utf8' }).status, 1);
+  fs.rmSync(path.dirname(schema), { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(schema), { recursive: true });
+  fs.symlinkSync(path.resolve(path.dirname(install), 'openspec-schema'), schema);
   const before = fs.statSync(path.join(home, '.zshenv')).mtimeMs;
   const second = spawnSync('bash', [install], { env, encoding: 'utf8' }); assert.equal(second.status, 0);
   assert.equal(fs.statSync(path.join(home, '.zshenv')).mtimeMs, before);

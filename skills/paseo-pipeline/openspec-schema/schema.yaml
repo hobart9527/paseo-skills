@@ -1,7 +1,6 @@
-# 项目内 schema：paseo-pipeline
+# 全局 schema：paseo-pipeline
 #
-# 派生自 OpenSpec 1.8.0 内置的 `spec-driven`（/opt/homebrew/lib/node_modules/
-# @fission-ai/openspec/schemas/spec-driven/schema.yaml）。项目内 schema 是**整份替换**，
+# 派生自 OpenSpec 1.8.0 内置的 `spec-driven`（`@fission-ai/openspec/schemas/spec-driven/schema.yaml`）。OpenSpec schema 是**整份替换**，
 # 不是叠加，所以这里必须连 proposal/specs/design 一起保留。
 #
 # 与上游的差异（只有三处，其余逐字相同）：
