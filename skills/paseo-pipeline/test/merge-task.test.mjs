@@ -442,6 +442,41 @@ test('skips regression replay for fully independent prior task (P2b: O(N²) fix)
   assert.match(r.out, /merged T-01/);
 });
 
+test('replays a prior task only when it declares Reads on what this task writes', () => {
+  // T-00 and T-01 share the ancestor T-02 but have disjoint scopes. Without `Reads` the prior is
+  // skipped (the merge succeeds); declaring `Reads: src` makes the poison file a detected regression.
+  const build2 = (reads) => taggedFixture([
+    '- [x] T-02 root',
+    '  - Write scope: lib/root',
+    '  - Review: mechanical',
+    '  - Verify with: node --test test/a.test.mjs',
+    '  - Done: source=abcdef1 review=pass(mechanical@abcdef1/abcdef1)',
+    '- [x] T-00 sibling',
+    '  - Depends on: T-02',
+    '  - Write scope: lib/sib',
+    ...(reads ? ['  - Reads: src'] : []),
+    '  - Review: mechanical',
+    '  - Verify with: node --test test/prior.test.mjs',
+    '  - Done: source=abcdef1 review=pass(mechanical@abcdef1/abcdef1)',
+    '- [ ] T-01 target',
+    '  - Depends on: T-02',
+    '  - Write scope: src,test',
+    `  - Verify with: ${GREEN}`,
+    '',
+  ].join('\n'));
+  for (const [reads, expected] of [[false, 0], [true, 21]]) {
+    const f = build2(reads);
+    write(f.cwd, 'test/prior.test.mjs', `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\ntest('sibling', () => { assert.equal(fs.existsSync('src/poison.txt'), false); });\n`);
+    write(f.cwd, 'test/a.test.mjs', RED_TEST); git(f.cwd, 'add', 'test');
+    git(f.cwd, 'commit', '-qm', `red\n\nPipeline-Role: ceshi\nPipeline-Author: ${TESTER}`);
+    write(f.cwd, 'src/a.txt', 'a'); write(f.cwd, 'src/poison.txt', 'x'); git(f.cwd, 'add', 'src');
+    git(f.cwd, 'commit', '-qm', `w\n\nPipeline-Role: gongbu\nPipeline-Author: ${WRITER}`);
+    const tip = git(f.cwd, 'rev-parse', 'HEAD'); git(f.cwd, 'switch', '-q', `integration/${f.change}`);
+    const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
+    assert.equal(r.status, expected, `reads=${reads}\n${r.out}`);
+  }
+});
+
 test('still replays regression for tasks with overlapping scope', () => {
   // T-00 and T-01 both touch scope containing 'src' → must replay.
   const tasks = [
