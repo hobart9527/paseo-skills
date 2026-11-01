@@ -70,9 +70,14 @@ function tasksContent(verifyCommand = passCommand, review = 'mechanical') {
  * 所以这里出现的任何一条都只可能是入口自己设置的。
  */
 const mergeStub = `import fs from 'node:fs';
+import path from 'node:path';
+const ledgerFile = process.env.PASEO_LEDGER_FILE;
 const record = {
   argv: process.argv.slice(2),
   allowances: Object.keys(process.env).filter((key) => key.startsWith('PIPELINE_ALLOW_')).sort(),
+  // 合流子进程运行期间，入口是不是还攥着 run-state 锁？锁文件与账本同目录
+  // （run-state.lock），持有与否是可直接观测的文件事实，不需要探针进程。
+  runStateLockHeld: fs.existsSync(path.join(path.dirname(ledgerFile), 'run-state.lock')),
 };
 fs.appendFileSync(process.env.MERGE_CALL_FILE, JSON.stringify(record) + '\\n');
 process.exit(0);
@@ -208,7 +213,7 @@ if (argv[0] === 'run') {
   git(repo, 'add', tasksPath);
   git(repo, 'commit', '-m', 'docs: add tasks.md');
 
-  return { cwd: repo, env, callsFile, snapshotFile, worktreeDir, stateDir, home, mergeCallFile };
+  return { cwd: repo, env, callsFile, snapshotFile, worktreeDir, stateDir, home, bin, mergeCallFile };
 }
 
 function invoke(setup, args) {
@@ -501,6 +506,221 @@ test('task-runner accepts a review tag re-entry and sets no gate relaxation', (c
   const state = fs.existsSync(ledgerPath(setup)) ? ledger(setup) : { intents: [], reviews: [] };
   assert.deepEqual(state.reviews, [], 'a tagged re-entry must not write review records');
   assert.deepEqual(state.intents.filter((entry) => entry.phase === 'audit'), [], 'no audit intent');
+});
+
+/**
+ * 在夹具账本里放一份编排租约（形状与 run-state.mjs 落盘的一致）。
+ *
+ * 用文件而不是 `run-state begin`：夹具要精确控制 `expiresAt`（过期场景没法等 30 分钟），
+ * 而租约字段本来就是这个形状——测试断言的是入口读账本的行为，不是 begin 的行为。
+ */
+function leaseLedgerJson({ owner, generation = 1, expiresAt }) {
+  return `${JSON.stringify({
+    version: 1,
+    run: null,
+    lease: {
+      owner,
+      generation,
+      acquiredAt: new Date().toISOString(),
+      renewedAt: null,
+      expiresAt,
+      ttlMs: 30 * 60 * 1000,
+    },
+    intents: [],
+    heartbeats: [],
+    reviews: [],
+    merges: [],
+    readyObs: [],
+    confirmations: [],
+    skill: null,
+  }, null, 2)}\n`;
+}
+
+function writeLease(setup, { owner, generation = 1, expiresAt }) {
+  fs.mkdirSync(path.dirname(ledgerPath(setup)), { recursive: true });
+  fs.writeFileSync(ledgerPath(setup), leaseLedgerJson({ owner, generation, expiresAt }));
+}
+
+function futureIso(ms = 30 * 60 * 1000) {
+  return new Date(Date.now() + ms).toISOString();
+}
+
+/**
+ * 在入口的 `bin` 目录里装一个 `git` 转发器：命中一次性目标调用时先把账本换成另一个 owner，
+ * 再原样透传真正的 git。
+ *
+ * 为什么不用「等 N 毫秒后 begin」：那靠时序对齐，慢机器上必然飘。git 调用是入口内部
+ * 确定会发生的同步点，把接管钉在某个调用上，复现「入口检查之后、合流之前被接管」时不带计时因素。
+ */
+function installGitShim(setup, { marker, ledger: ledgerText }) {
+  const realGit = spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim();
+  const shim = `#!/usr/bin/env node
+const fs = require('node:fs');
+const { execFileSync } = require('node:child_process');
+const argv = process.argv.slice(2);
+const marker = process.env.GIT_SHIM_MARKER;
+const targeted = argv[0] === 'rev-parse' && argv.includes('--verify')
+  && argv.some((arg) => arg.startsWith('task/'));
+if (targeted && !fs.existsSync(marker)) {
+  fs.writeFileSync(marker, 'fired');
+  fs.writeFileSync(process.env.GIT_SHIM_LEDGER_FILE, process.env.GIT_SHIM_LEDGER);
+}
+try {
+  execFileSync(process.env.REAL_GIT, argv, { stdio: 'inherit' });
+} catch (error) {
+  process.exit(typeof error.status === 'number' ? error.status : 1);
+}
+`;
+  fs.writeFileSync(path.join(setup.bin, 'git'), shim, { mode: 0o755 });
+  setup.env.REAL_GIT = realGit;
+  setup.env.GIT_SHIM_MARKER = marker;
+  setup.env.GIT_SHIM_LEDGER_FILE = ledgerPath(setup);
+  setup.env.GIT_SHIM_LEDGER = ledgerText;
+}
+
+// SCEN-HND-11
+test('task-runner refuses a --review-tag re-entry that is not the lease owner', (context) => {
+  // 重入不经过 claim，旧实现因此是一条免检旁路：旧会话拿着旧标签就能合流并写入账本。
+  // 判据必须与 claim 一致——有效租约下 --owner 必填且必须匹配。
+  const setup = fixture(context, { review: 'strict' });
+  const branch = `task/${change}/T-01`;
+  const { tip7, base7 } = deliverTaskBranch(setup, branch);
+  const tag = `pass(1234abcd@${tip7}/${base7})`;
+  writeLease(setup, { owner: 'lead-a', expiresAt: futureIso() });
+
+  // a. 省略 --owner：缺省的 runner-<pid> 不算身份证明。
+  const omitted = invoke(setup, [change, 'T-01', '--review-tag', tag]);
+  assert.equal(omitted.status, 2, `${omitted.stdout}\n${omitted.stderr}`);
+  assert.match(omitted.stderr, /lead-a/, 'the refusal must name the current owner');
+  assert.match(omitted.stderr, /--owner/, 'the refusal must say the flag is required');
+  assert.equal(mergeCalls(setup).length, 0, 'an owner-less re-entry must not reach the merge gate');
+
+  // b. owner 不匹配：旧 Lead 不得继续提交动作。
+  const stale = invoke(setup, [change, 'T-01', '--review-tag', tag, '--owner', 'lead-b']);
+  assert.equal(stale.status, 2, `${stale.stdout}\n${stale.stderr}`);
+  assert.match(stale.stderr, /lead-a/);
+  assert.equal(mergeCalls(setup).length, 0, 'a foreign owner must not reach the merge gate');
+
+  // c. 当前 owner 重入：照常进入合流门禁（门禁本身仍由 merge-task 判）。
+  const allowed = invoke(setup, [change, 'T-01', '--review-tag', tag, '--owner', 'lead-a']);
+  assert.equal(allowed.status, 0, `${allowed.stdout}\n${allowed.stderr}`);
+  assert.equal(mergeCalls(setup).length, 1, 'the lease owner must proceed to the merge gate');
+});
+
+// SCEN-HND-11
+test('task-runner refuses a --review-tag re-entry on an expired lease even for its recorded owner', (context) => {
+  // 与 claim 同一判据：过期即须显式 begin 领新代际，旧 owner 的身份不再构成授权。
+  const setup = fixture(context, { review: 'strict' });
+  const branch = `task/${change}/T-01`;
+  const { tip7, base7 } = deliverTaskBranch(setup, branch);
+  writeLease(setup, { owner: 'lead-a', expiresAt: new Date(Date.now() - 60_000).toISOString() });
+
+  const res = invoke(setup, [change, 'T-01', '--review-tag', `pass(1234abcd@${tip7}/${base7})`, '--owner', 'lead-a']);
+  assert.equal(res.status, 2, `${res.stdout}\n${res.stderr}`);
+  assert.match(res.stderr, /过期/);
+  assert.match(res.stderr, /begin/, 'the refusal must say how to get a new generation');
+  assert.equal(mergeCalls(setup).length, 0, 'an expired lease must not reach the merge gate');
+});
+
+// SCEN-HND-11
+test('task-runner treats a corrupt ledger as unreadable on a --review-tag re-entry, not as lease-free', (context) => {
+  // 读不出租约 ≠ 没有租约：把损坏当「未启用租约」放行，等于让一次损坏降级成合流许可。
+  const setup = fixture(context, { review: 'strict' });
+  const branch = `task/${change}/T-01`;
+  const { tip7, base7 } = deliverTaskBranch(setup, branch);
+  fs.mkdirSync(path.dirname(ledgerPath(setup)), { recursive: true });
+  fs.writeFileSync(ledgerPath(setup), '{ not json');
+
+  const res = invoke(setup, [change, 'T-01', '--review-tag', `pass(1234abcd@${tip7}/${base7})`, '--owner', 'lead-a']);
+  assert.equal(res.status, 2, `${res.stdout}\n${res.stderr}`);
+  assert.match(res.stderr, /损坏/);
+  assert.equal(mergeCalls(setup).length, 0, 'a corrupt ledger must not reach the merge gate');
+  assert.equal(fs.readFileSync(ledgerPath(setup), 'utf8'), '{ not json',
+    'the corrupt ledger must be left untouched');
+});
+
+// SCEN-HND-11
+test('task-runner re-checks the lease before merging when another owner takes over mid-re-entry', (context) => {
+  // 接管判据：入口开头的校验只对「校验那一刻」成立。检查之后、合流之前租约可能被新 owner
+  // 的 begin 接管，旧 owner 不能凭开头那次通过把交付合进去，所以合流前必须终判。
+  //
+  // 复现方式钉在入口一定会发生的调用上：`ensureBranchAdvanced` 的 `rev-parse --verify`
+  // 之前把账本换成 lead-b 的租约（模拟 lead-b 的 begin 落在那个窗口里）。修复前合流照常
+  // 发生 → 本断言红；修复后终判看到 lead-b → exit 2、0 次合流。
+  const setup = fixture(context, { review: 'strict' });
+  const branch = `task/${change}/T-01`;
+  const { tip7, base7 } = deliverTaskBranch(setup, branch);
+  writeLease(setup, { owner: 'lead-a', expiresAt: futureIso() });
+  installGitShim(setup, {
+    marker: path.join(path.dirname(setup.mergeCallFile), 'shim-fired'),
+    ledger: leaseLedgerJson({ owner: 'lead-b', generation: 2, expiresAt: futureIso() }),
+  });
+
+  const res = invoke(setup, [change, 'T-01', '--review-tag', `pass(1234abcd@${tip7}/${base7})`, '--owner', 'lead-a']);
+  assert.equal(res.status, 2, `${res.stdout}\n${res.stderr}`);
+  assert.match(res.stderr, /lead-b/, 'the refusal must name the owner that took over');
+  assert.equal(mergeCalls(setup).length, 0, 'the take-over must stop the merge, not race it');
+});
+
+// SCEN-HND-11
+test('task-runner re-checks lease expiry before merging, not only on entry', (context) => {
+  // 同一窗口的另一种后果：租约在重入过程中过期（没有 begin 接手）。过期即须显式 begin，
+  // 入口不得凭开头那次「还有效」把合流做完。
+  const setup = fixture(context, { review: 'strict' });
+  const branch = `task/${change}/T-01`;
+  const { tip7, base7 } = deliverTaskBranch(setup, branch);
+  writeLease(setup, { owner: 'lead-a', expiresAt: futureIso() });
+  installGitShim(setup, {
+    marker: path.join(path.dirname(setup.mergeCallFile), 'shim-fired'),
+    ledger: leaseLedgerJson({ owner: 'lead-a', generation: 2, expiresAt: new Date(Date.now() - 60_000).toISOString() }),
+  });
+
+  const res = invoke(setup, [change, 'T-01', '--review-tag', `pass(1234abcd@${tip7}/${base7})`, '--owner', 'lead-a']);
+  assert.equal(res.status, 2, `${res.stdout}\n${res.stderr}`);
+  assert.match(res.stderr, /过期/);
+  assert.equal(mergeCalls(setup).length, 0, 'an expired-lease merge must be refused before merging');
+});
+
+// SCEN-HND-11
+test('task-runner runs the merge subprocess without holding the run-state lock', (context) => {
+  // 合流子进程里的验证命令是长耗时动作，可能跑几十分钟；把它包进 run-state 锁临界区，
+  // 整个 run 的 begin/claim/record 都会被挡在锁外。锁只保护账本读改写，不保护合流。
+  // 替身在子进程里检查锁文件是否存在——这是可直接观测的文件事实，不靠探针进程抢锁。
+  const setup = fixture(context, { review: 'strict' });
+  const branch = `task/${change}/T-01`;
+  const { tip7, base7 } = deliverTaskBranch(setup, branch);
+  writeLease(setup, { owner: 'lead-a', expiresAt: futureIso() });
+
+  const res = invoke(setup, [change, 'T-01', '--review-tag', `pass(1234abcd@${tip7}/${base7})`, '--owner', 'lead-a']);
+  assert.equal(res.status, 0, `${res.stdout}\n${res.stderr}`);
+  const merges = mergeCalls(setup);
+  assert.equal(merges.length, 1, `exactly one merge call: ${JSON.stringify(merges)}`);
+  assert.equal(merges[0].runStateLockHeld, false,
+    'the run-state lock must be free while the merge subprocess runs');
+});
+
+// SCEN-HND-11
+test('task-runner records the merge in the run ledger through the real merge gate', (context) => {
+  // 账本记账在 merge-task 结束时发生（updateRunState）。入口若在合流子进程运行期间攥着
+  // run-state 锁，merge-task 的记账会 ELOCKED 并被自己吞成一条 warning——合流成功，
+  // merges[] 却永远少一条，report 的「已合流任务」随之失真。这里用**真实** merge-task
+  // 走完整门禁，断言账本恰好新增一条合流记录。
+  const setup = fixture(context, { review: 'mechanical' });
+  const branch = `task/${change}/T-01`;
+  const { tip7, base7 } = deliverTaskBranch(setup, branch);
+  writeLease(setup, { owner: 'lead-a', expiresAt: futureIso() });
+  // 只换回真实合流入口；run-state 与 lib 仍是夹具符号链接指向的真实实现。
+  setup.env.PIPELINE_HOME = path.dirname(runnerScript);
+
+  const before = ledger(setup).merges.length;
+  const res = invoke(setup, [change, 'T-01', '--review-tag', `pass(mechanical@${tip7}/${base7})`, '--owner', 'lead-a']);
+  assert.equal(res.status, 0, `${res.stdout}\n${res.stderr}`);
+
+  const after = ledger(setup).merges;
+  assert.equal(after.length, before + 1,
+    `the merge must be booked exactly once: ${JSON.stringify(after)}`);
+  assert.equal(after[after.length - 1].task, 'T-01');
+  assert.match(after[after.length - 1].sha, /^[0-9a-f]{40}$/, 'the booked sha must be a real merge commit');
 });
 
 // SCEN-HND-07

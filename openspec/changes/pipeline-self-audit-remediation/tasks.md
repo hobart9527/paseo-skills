@@ -47,7 +47,8 @@
 
 ## 2. P1：断裂与阻塞
 
-- [ ] 2.1 T-05 --review-tag 重入补租约校验：与 claim 同判据，非 owner 拒绝合流
+- [x] 2.1 T-05 --review-tag 重入补租约校验：与 claim 同判据，非 owner 拒绝合流
+  - Done: source=9328c1c review=pass(c77e1263@9328c1c/e7105f1)
   - Depends on: none
   - Write scope: skills/paseo-pipeline/task-runner.mjs, skills/paseo-pipeline/test/task-runner.test.mjs
   - Risk-surface: [error-handling]

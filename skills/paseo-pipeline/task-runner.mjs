@@ -39,6 +39,7 @@ import { fileURLToPath } from 'node:url';
 import { parseTasks } from './lib/tasks.mjs';
 import { verifyDone } from './lib/ledger.mjs';
 import { checkHandoff } from './lib/handoff.mjs';
+import { readRunState, leaseStatus, corruptLedgerGuidance } from './lib/run-state.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PIPELINE_HOME = process.env.PIPELINE_HOME || SCRIPT_DIR;
@@ -75,7 +76,10 @@ if (positional.length < 2) {
 }
 
 const [change, targetTaskId] = positional;
-const owner = getOpt('--owner', `runner-${process.pid}`);
+// `--owner` 是否**显式给出**与它的缺省值是两回事：重入合流的租约判据只认显式传参，
+// 缺省值 `runner-<pid>` 是给派发路径用的，绝不能冒充租约持有者。
+const ownerOption = getOpt('--owner');
+const owner = ownerOption !== null ? ownerOption : `runner-${process.pid}`;
 const timeoutMs = Number(getOpt('--timeout', 540 * 1000));
 
 /**
@@ -351,6 +355,53 @@ function ensureBranchAdvanced(branch, { writerAgentId = null, attemptNo = null }
 }
 
 /**
+ * `--review-tag` 重入的编排租约判据：与 `run-state.mjs` 的 `ownerRefusal`（claim/record/
+ * fail/review/merge 共用的那一份）逐条同口径。
+ *
+ * 为什么重入必须查：重入路径不调 claim，直接 resolveAttempt → mergeIntoIntegration。
+ * 旧会话（租约已过期，或 owner 已被新代际取代）只要手里有一条旧 `pass(...)` 标签，就能
+ * 完成一次账本写入并把分支合进集成分支——与 claim 相比这是一条完全免检的旁路。
+ * merge-task 不知道自己也不应该知道谁是当前编排者，所以这条判据只能在这里补。
+ *
+ * 判据逐条对齐 ownerRefusal：
+ *   - 无租约：放行（未启用租约的单机场景，与 claim 一致）；
+ *   - 租约已过期：拒绝，即使 `--owner` 与旧 owner 相同——过期即须 `begin` 领新代际；
+ *   - 租约有效且未显式给 `--owner`：拒绝（缺省的 `runner-<pid>` 不算身份证明）；
+ *   - 租约有效且 owner 不匹配：拒绝。
+ *
+ * 账本损坏（ECORRUPT）同样拒绝：读不出租约 ≠ 没有租约，按「没有」放行就是把一次损坏
+ * 降级成合流许可；现场原样保留，不写回。
+ *
+ * **保证边界（不得在文档里放大）**：本函数在 `run-state` 锁**外**读取，因此它保证的是
+ * 「一次按当前有效租约的判定」，不是「判定到合流之间不会被接管」。被 begin 接管后，
+ * 下一次（或本次合流前的终判）会看到新 owner 并拒绝。残余窗口是**合流执行期间租约到期**
+ * ——那时合流已经开始，收口需要 `renew` 协议，不在本任务范围（见 SKILL 待办）。
+ * 不持锁执行合流是刻意的：合流的测试命令是长耗时动作，把 spawnSync 放进锁临界区会
+ * 让一次长测试把整个 run 的账本写入全部挡在锁外。
+ */
+function leaseRefusal() {
+  const ledger = readRunState(change, repoRoot);
+  if (ledger.corrupt) {
+    return `运行账本损坏，无法判定编排租约，拒绝 --review-tag 重入合流：\n`
+      + `${corruptLedgerGuidance(ledger.file)}\n（${ledger.error}）`;
+  }
+  const lease = leaseStatus(ledger.state);
+  if (lease === null) return null;
+  if (!lease.valid) {
+    return `编排租约已过期（owner=${lease.owner} gen=${lease.generation}，到期 ${lease.expiresAt}）；`
+      + '过期租约的会话不得事后合流：先执行 run-state begin 领取新代际，再带 --owner 重入';
+  }
+  if (ownerOption === null) {
+    return `存在有效编排租约（owner=${lease.owner} gen=${lease.generation}）；`
+      + '--review-tag 重入合流必须带 --owner <owner-id> 证明自己是当前编排者';
+  }
+  if (ownerOption !== lease.owner) {
+    return `当前编排 owner 是 ${lease.owner}，${ownerOption} 无权合流（旧 Lead 不得继续提交动作）`;
+  }
+  return null;
+}
+
+/**
  * 调 `merge-task.mjs` 合流。
  *
  * 门禁（tag 与 SHA 一致、作者来源、写范围、测试、审查独立性）全部由 merge-task 自己判——
@@ -358,7 +409,7 @@ function ensureBranchAdvanced(branch, { writerAgentId = null, attemptNo = null }
  * 入口替调用者按下它，等于把门禁变成可被自动跳过的装饰。
  * （异构不在此列：原因子 3c 已删除，异构由 Profile 的 provider/model 组合保证。）
  */
-function mergeIntoIntegration({ branch, tag }) {
+function mergeIntoIntegration({ branch, tag, onPreMerge = null }) {
   if (speculativeUpstreamBranch) {
     log(`Waiting for upstream dependencies [${missingDeps.join(', ')}] to land in ${integrationBranch}...`);
     const waitStart = Date.now();
@@ -377,6 +428,10 @@ function mergeIntoIntegration({ branch, tag }) {
       fatal(`Timed out waiting for upstream dependencies [${missingDeps.join(', ')}] to merge into ${integrationBranch}`, 35);
     }
   }
+
+  // 所有长耗时动作（speculative 等上游、合流子进程里的测试命令）都在这一次终判**之后**
+  // 或者在它之前完成；终判本身只读账本、不持锁。见 leaseRefusal 的「保证边界」。
+  if (onPreMerge !== null) onPreMerge();
 
   log(`Executing atomic merge: branch=${branch}, tag=${tag}, fast=${isFast}`);
 
@@ -505,15 +560,32 @@ const baseSha = baseShaRes.stdout.trim();
 // 标签原样交给 merge-task 自己验（tip/base 一致、作者来源、3b 独立）；
 // 本入口不创建审计意图、不写 review 记录、不替调用者放宽任何门禁。
 // 合流对象是**已交付**的那次 attempt（最新现存任务分支），不是下一次派发的新分支。
+//
+// 重入不经过 claim，因此这里必须显式补上与 claim 同判据的编排租约校验（见 leaseRefusal）：
+// 否则旧会话手里的旧标签就是一条免检的合流旁路。
 if (reviewTagOption !== null) {
-  const { latest } = resolveAttempt();
+  const { latest, attempt: nextAttempt } = resolveAttempt();
+  // 先判租约：它比「有没有分支」更根本（无权合流时连合流对象都不该去找）。
+  const initialRefusal = leaseRefusal();
+  if (initialRefusal !== null) fatal(initialRefusal, 2);
   if (latest === null) {
     fatal(`--review-tag given but no task branch for ${task.id} exists: nothing has been delivered to review`);
   }
   // 重入不派发写手，但零提交判据同样适用：tip 等于基点说明那条分支没有交付内容可合。
   // 合流门禁只会报「没有东西可合」，分不清空交付与「工作已被吸收」，所以必须在合流前判。
-  ensureBranchAdvanced(latest.branch, { attemptNo: latest.attempt });
-  mergeIntoIntegration({ branch: latest.branch, tag: reviewTagOption });
+  // 传 attempt 而不是 null：重入的下一步是「重派写手到下一次 attempt」，措辞与派发路径一致。
+  ensureBranchAdvanced(latest.branch, { attemptNo: nextAttempt });
+  // 合流前再判一次：上面到合流之间还有 speculative 等上游这类长耗时动作，租约可能已经
+  // 过期或被 begin 接管。终判不持锁——合流子进程里的测试命令可能跑几十分钟，把
+  // spawnSync 放进 run-state 锁临界区会挡住整个 run 的账本写入（仲裁 PATCH C1/C4）。
+  mergeIntoIntegration({
+    branch: latest.branch,
+    tag: reviewTagOption,
+    onPreMerge: () => {
+      const finalRefusal = leaseRefusal();
+      if (finalRefusal !== null) fatal(finalRefusal, 2);
+    },
+  });
   process.exit(0);
 }
 
