@@ -52,10 +52,10 @@ npm install -g @accesslint/cli @accesslint/chrome playwright @playwright/cli
 ## 🛠️ Skill Highlights
 
 ### 1. `paseo-pipeline`
-- **OpenSpec Lifecycle**: Bound to OpenSpec (`proposal` -> `specs` -> `design` -> `tasks` -> `validate` -> `apply` -> `archive`).
-- **Separation of Concerns**: OpenSpec manages task lifecycles; `list_profiles` notes dictate model capabilities; Pipeline exclusively handles autonomous dispatch.
-- **Contract Verification (`contract-check.mjs`)**: Enforces explicit dependency trees, verifies file boundary isolations, and prevents race conditions.
-- **Deterministic Merge (`merge-task.mjs`)**: Safe automated merge back to trunk with pre-commit gates.
+- **Contract Freeze (`freeze-check.mjs`)**: Parses task DAG and waves, enforces scenario mapping, scope isolation, and narrow per-task verification before dispatch.
+- **Paseo-native orchestration**: Paseo owns agents, workspaces, labels, and finish notifications; git owns durable state. No lease ledger or polling loop.
+- **Frontier concurrency**: Tasks dispatch as soon as dependencies are Done and scopes are disjoint; vertical slices keep behavior, wiring, fixtures, and tests together.
+- **Deterministic Merge (`merge-task.mjs`)**: Enforces provenance trailers, independent review, dependency completion, Write scope, drift checks, and frozen Verify before `--no-ff` integration.
 
 ### 2. `paseo-ui` (Paseo UI 2.0)
 - **Dual-Mode Execution**:

@@ -9,7 +9,7 @@ import { assessTierGate } from '../lib/tier-gate.mjs';
 import { shouldRemind, REMINDER } from '../hooks/tier-reminder-hook.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const GUARD_HOOK = path.join(here, '..', 'hooks', 'scope-guard-hook.mjs');
+const GUARD_HOOK = path.join(here, '..', 'hooks', 'tier-write-hook.mjs');
 const REMINDER_HOOK = path.join(here, '..', 'hooks', 'tier-reminder-hook.mjs');
 
 const sh = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -137,7 +137,7 @@ function runGuardHook(payload, env = {}) {
   return spawnSync('node', [GUARD_HOOK], { input: JSON.stringify(payload), encoding: 'utf8', env: { ...process.env, ...env } });
 }
 
-test('scope-guard-hook 进程：第 4 个文件输出 deny JSON，其前不输出', () => withState((dir) => {
+test('tier-write-hook 进程：第 4 个文件输出 deny JSON，其前不输出', () => withState((dir) => {
   const root = makeRepo();
   const env = { PIPELINE_TIER_GATE_STATE: dir };
   const call = (n) => runGuardHook({ session_id: 'proc1', tool_name: 'Edit', tool_input: { file_path: path.join(root, 'src', n) } }, env);
@@ -154,7 +154,7 @@ test('scope-guard-hook 进程：第 4 个文件输出 deny JSON，其前不输�
   assert.match(out.hookSpecificOutput.permissionDecisionReason, /tier-gate/);
 }));
 
-test('scope-guard-hook 进程：非写入工具与坏输入不干预', () => {
+test('tier-write-hook 进程：非写入工具与坏输入不干预', () => {
   assert.equal(runGuardHook({ session_id: 's', tool_name: 'Read', tool_input: { file_path: '/x' } }).stdout.trim(), '');
   const bad = spawnSync('node', [GUARD_HOOK], { input: 'not json', encoding: 'utf8' });
   assert.equal(bad.status, 0);

@@ -8,8 +8,8 @@
 #   1. tasks 的 instruction 与 templates/tasks.md 改成 pipeline 可解析的任务格式。
 #      上游只要求 `- [ ] X.Y 描述`，parseTasks 需要 `T-xx` 编号 + 元数据子字段；
 #      这个差距实测导致「validate --strict 通过、parseTasks 解析出 0 个任务」。
-#   2. specs 的 instruction 追加 SCEN- 编号要求（contract-check 按编号对账）。
-#   3. 新增 acceptance 产物（冻结的业务验收矩阵，check-evidence --matrix 消费）。
+#   2. specs 的 instruction 追加 SCEN- 编号要求（freeze-check 按编号对账）。
+#   3. 新增 acceptance 产物（冻结的业务验收矩阵，人类 CP-2 验收消费）。
 #
 # 升级 OpenSpec 后重跑一次冒烟探测：复制到临时仓库 → new change --schema → instructions
 # 出现元数据 → validate --strict → archive。探测命令见 SKILL.md §2.0。
@@ -141,7 +141,7 @@ artifacts:
       ```
 
       **Scenario ids (paseo-pipeline):** every scenario heading must carry an id of
-      the form `#### Scenario: SCEN-<CAP>-NN <description>`. `contract-check.mjs`
+      the form `#### Scenario: SCEN-<CAP>-NN` optionally followed by a description. `freeze-check.mjs`
       reconciles tasks.md `Scenarios:` against these ids, and a spec whose scenarios
       have no ids is silently skipped at validation time - the change then looks
       verified when nothing was checked. Declare each id exactly once.
@@ -209,7 +209,6 @@ artifacts:
       - [ ] 1.1 T-01 <one-line goal>
         - Depends on: <T-xx, T-yy | none>
         - Write scope: <repo-relative path>[, <path>]
-        - Risk-surface: [<token>, ... | none]
         - Review: <strict | standard | mechanical>
         - Verify with: <executable command>
         - Scenarios: <SCEN-xxx-yy>[, ...]
@@ -223,18 +222,12 @@ artifacts:
         paths, no `..` escaping the repo root.
       - `Depends on` must name task IDs that exist in this file; no self-dependency,
         no cycles.
-      - `Risk-surface` tokens are from this closed set, unknown tokens are an error
-        rather than a silent downgrade:
-        `none`, `error-handling`, `numerical`, `concurrency`, `crypto/auth`,
-        `irreversible`, `persistence`, `public-api`.
-      - `Review` is one of `strict` / `standard` / `mechanical`. `mechanical` with any
-        non-`none` risk surface is rejected. Omit `Review` and a non-`none` risk
-        surface resolves to `strict`; with no risk surface it stays unresolved and
-        the merger fails closed.
-      - `Verify with` must be an executable command (a known command name, an explicit
-        path/`$VAR` invocation, or a lowercase command shape). Natural-language
-        descriptions are rejected at merge time. Write the full invocation when the
-        command needs env vars: `PYTHONPATH=runtime python3 -m pytest tests/x_test.py`.
+      - `Review` is one of `strict` / `standard` / `mechanical`; omitting it means
+        `standard`.
+      - `Verify with` must be an executable command. For every non-sink task it must
+        name a test/spec path inside that task's `Write scope`; only one sink task may
+        run the full suite. Write the full invocation when the command needs env vars:
+        PYTHONPATH=runtime python3 -m pytest tests/x_test.py.
       - `Scenarios` lists the `SCEN-*` ids from the spec delta that this task carries.
         Every id must exist in the spec, and every declared id must be claimed by at
         least one task.
@@ -264,7 +257,7 @@ artifacts:
       which tasks.md and the test suite do not: a task can be merged and its unit
       tests green while the feature is unreachable from the real entry point.
 
-      Format is fixed because `test/check-evidence.mjs --gate acceptance --matrix`
+      Format is fixed because `CP-2 human acceptance review`
       parses it:
 
       ```

@@ -6,7 +6,7 @@
 // 模型在思考与输出里一次都没提到 Tier，直接跑测试、改代码。规则只在会话开头出现一次，
 // 几十轮之后到了「该不该动手」的决策点，没有任何东西把它推回眼前。
 //
-// 与 scope-guard-hook 分开：事件不同（UserPromptSubmit vs PreToolUse），失败语义也不同——
+// 与写入闸门分开：事件不同（UserPromptSubmit vs PreToolUse），失败语义也不同——
 // 这里出错就什么都不输出，没有任何副作用。
 //
 // 安装：~/.claude/settings.json → hooks.UserPromptSubmit 追加
@@ -32,8 +32,8 @@ const QUESTION_ONLY = /^(为什么|怎么|如何|是否|能不能|可不可以|�
 export const REMINDER = [
   '[分级提醒] 本轮可能进入实施。动手改任何文件之前，第一句话先输出分级声明：计划改哪些文件、属于哪一级、依据。',
   '- Tier 1：≤3 个文件、单一目录、不涉及 schema/认证/迁移 → 在当前会话直接改，验证后原子提交。',
-  '- Tier 2：超出 Tier 1，但只在单个模块内、不涉及持久化/并发/不可逆 → 用 /paseo-handoff 交给 worktree 里的 Agent。',
-  '- Tier 3：跨模块共享契约，或涉及持久化/并发/不可逆变更 → 用 /paseo-pipeline。',
+  '- Tier 2：超出 Tier 1，或涉及 schema/并发/持久化但无真实 DAG 并发收益 → 用 /paseo-handoff 或主会话明确授权的 worktree Agent。',
+  '- Tier 3：冻结 DAG 有 maxWidth>=2 且任务>=4，跨模块并发交付收益明显 → 用 /paseo-pipeline。',
   '判定不了时按高一级处理。开工后发现范围变大，立刻停手升级，不在原通道硬撑。纯评估、纯讨论不需要声明。',
 ].join('\n');
 

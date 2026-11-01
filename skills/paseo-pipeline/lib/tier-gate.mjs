@@ -2,16 +2,17 @@
 // 超过上限就拒绝，并指向 Tier 2 / Tier 3 通道。
 //
 // 为什么需要它：2026-10-31 两个会话在用户说「执行上面的优化」后，没有做任何分级判断就在
-// 主 checkout 直接改了十几个文件。分级表在上下文里，但决策点上没人去查它。scope-guard 只在
+// 主 checkout 直接改了十几个文件。分级表在上下文里，但决策点上没人去查它。旧 scope 闸门只在
 // 有编排租约时生效，租约之外一律放行，所以这类「根本没进流水线」的写入没有任何东西拦。
 //
 // 判据只数「本会话写过的文件」，不数 git 脏文件：仓库里原有的未提交改动不是本会话造成的，
 // 数它们会让新任务一开工就被拦。
 //
-// 刻意保守，宁可少拦（与 scope-guard 一致）：
+// 刻意保守，宁可少拦（旧 scope 闸门一致）：
 //   - 不在主 checkout 的 main/master 上（linked worktree、功能分支、游离 HEAD）→ 放行。
 //     Tier 2 的 handoff 写手与 Tier 3 的 Worktree 写手天然落在这里。
 //   - 目标在仓库之外、或在 openspec/ 下 → 放行。Tier 3 的主会话要在主 checkout 写 spec 产物。
+//   - 目标在 .superpowers/（gitignore 的原型/草稿产物）下 → 放行，同属文档类产物。
 //   - 缺 session_id、读不到 git、状态文件损坏 → 放行（fail-open）。
 //   - PIPELINE_TIER_GATE=off 整体关闭；PIPELINE_TIER_GATE_LIMIT 调上限（默认 3）。
 //
@@ -139,6 +140,9 @@ export function assessTierGate({ target, sessionId }) {
   const rel = relativeInRepo(target, ctx.root);
   if (rel === null) return { verdict: 'allow', note: 'outside repo' };
   if (rel === 'openspec' || rel.startsWith('openspec/')) return { verdict: 'allow', note: 'openspec artifact' };
+  // 可视化原型/草稿目录：gitignore 里的一次性产物（brainstorm 原型页等），
+  // 不进仓库、不参与构建，与 openspec/ 同属「写多少都不算越级」的文档类产物。
+  if (rel === '.superpowers' || rel.startsWith('.superpowers/')) return { verdict: 'allow', note: 'gitignored scratch artifact' };
 
   const file = stateFile(sessionId);
   const state = readState(file);
