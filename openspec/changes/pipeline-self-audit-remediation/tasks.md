@@ -18,7 +18,8 @@
   - Verify with: `node --test skills/paseo-pipeline/test/handoff-check.test.mjs skills/paseo-pipeline/test/docs.test.mjs`
   - Scenarios: SCEN-HND-02, SCEN-HND-09, SCEN-HND-10
 
-- [ ] 1.2 T-02 账本损坏 refuse-to-write：解析失败保留现场，updateRunState 拒绝覆盖
+- [x] 1.2 T-02 账本损坏 refuse-to-write：解析失败保留现场，updateRunState 拒绝覆盖
+  - Done: source=a249b46 review=pass(a111f4e8@a249b46/29ce2ec)
   - Depends on: none
   - Write scope: skills/paseo-pipeline/lib/run-state.mjs, skills/paseo-pipeline/test/run-state.test.mjs
   - Risk-surface: [persistence]
