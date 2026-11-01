@@ -840,10 +840,14 @@ test('task-runner exits 51 with re-entry guidance when the agent never reaches a
   assert.equal(res.status, 51, `${res.stdout}\n${res.stderr}`);
   assert.match(res.stderr, /do NOT redispatch/);
   // SCEN-HND-13：文案必须给可执行的续等路径，而不是只喊「别重派」。
-  assert.match(res.stderr, /Re-running this same command \(same task id\) continues waiting on the same attempt/,
+  assert.match(res.stderr, /re-running this same command \(same task id\) continues waiting on the same attempt \(attempt 1\)/i,
     'the deadline message must state that re-invoking the same task id continues the same attempt');
   assert.match(res.stderr, /does not dispatch a second writer/,
-    'the deadline message must state that re-entry does not redispatch');
+    'the deadline message must state that re-entry does not redispatch while the writer is still running');
+  // B1：续等是有条件的。文案例句只覆盖「仍在跑」的情形，收敛之后重跑会开新 attempt，
+  // 把它写成无条件承诺就是与被审计实现相反的话。
+  assert.match(res.stderr, /If it has settled[\s\S]{0,160}attempt 2/,
+    'the deadline message must state the other branch: a settled writer causes a new attempt');
   assert.match(res.stderr, new RegExp(`last observed status=(running|idle|timeout)`),
     'the deadline message must report the last observed status');
   assert.equal(runs(setup).length, 1, 'the deadline must not cause a second paseo run');
@@ -916,15 +920,22 @@ test('task-runner re-runs waiting on the same in-flight writer instead of dispat
 test('task-runner does not resume a writer that already finished, and does not redispatch it', (context) => {
   // 账本里有回执不等于 agent 还在跑：交付完的写手是 idle/closed，续等它会把早已结案的产出
   // 重验一遍。判据只能是 Paseo 的实时状态；不续等时也不能顺手再派一个。
+  //
+  // 断言只表达这条用例真正证明的东西：不续等（没有 wait 回到旧 agent），且这次 attempt 的
+  // 派发意图不会被再派一次——挡它的是 claim 的幂等键，不是「分支不存在」这类夹具偶然。
+  // 旧断言直接断言 exit 2，把 exit 2 的另一成因（无分支时 attempt 仍算 1、撞上同一条键）
+  // 当成了命题本身；一旦分支存在，同一个断言就换了含义。
   const setup = fixture(context, { verify: failCommand });
   writeLedger(setup, { intents: [writerIntent()] });
   setup.env.PASEO_FIXTURE_INSPECT = 'idle';
   const res = invoke(setup, [change, 'T-01', '--owner', 'test-owner']);
 
   assert.doesNotMatch(res.stdout, /Resuming wait/, 'a finished writer is not something to keep waiting on');
-  // 已回执的意图由 claim 的幂等闸门挡住重复派发（exit 2），不是悄悄再派一个写手。
-  assert.equal(res.status, 2, `${res.stdout}\n${res.stderr}`);
-  assert.equal(runs(setup).length, 0, 'an already-receipted attempt must not be dispatched twice');
+  const waited = paseoCalls(setup).filter((argv) => argv[0] === 'wait');
+  assert.deepEqual(waited, [], 'a settled writer must not be waited on again');
+  assert.equal(runs(setup).length, 0,
+    `an already-receipted attempt must not be dispatched twice: ${res.stdout}\n${res.stderr}`);
+  assert.match(res.stderr, /拒绝重复派发/, 'the same attempt must be refused by the claim idempotency gate');
 });
 
 // SCEN-HND-13
@@ -953,6 +964,45 @@ test('task-runner refuses to resume a writer when the caller is not the lease ow
     'a refused resume must not start waiting at all');
 });
 
+// SCEN-HND-13（N3）
+test('task-runner resumes a running writer without resolving the writer profile', (context) => {
+  // 续等不派发，写手 profile 是只与派发有关的门禁。放在续等入口之前解析，会把一条纯等待
+  // 路径变成硬失败：配置里 profile 暂时读不到时，本该能等完已派发的那一轮，却连等都不让等。
+  const setup = fixture(context, { profile: null }); // agentProfiles 为空：任何派发都会 fail closed
+  const branch = `task/${change}/T-01`;
+  deliverTaskBranch(setup, branch);
+  git(setup.cwd, 'worktree', 'add', '-q', setup.worktreeDir, branch);
+  writeLedger(setup, { intents: [writerIntent()] });
+  setup.env.PASEO_FIXTURE_INSPECT = 'never'; // 写手仍在跑 → 走续等
+  setup.env.PASEO_FIXTURE_WAIT = 'idle'; // 这一轮等到了终态
+
+  const res = invoke(setup, [change, 'T-01', '--owner', 'test-owner']);
+  assert.equal(res.status, 0, `${res.stdout}\n${res.stderr}`);
+  assert.doesNotMatch(res.stderr, /profile/,
+    'a resume must not fail on the writer profile: it dispatches nothing');
+  assert.equal(runs(setup).length, 0, 'a resume must never dispatch');
+});
+
+// SCEN-HND-13（N2）
+test('task-runner judges the lease before reading live Paseo state on the resume path', (context) => {
+  // 租约判定只需要账本里的回执。先 `paseo inspect` 再判租约，会让非 owner 的调用也去读一次
+  // 外部活态，并把拒绝理由写成「我读到了什么」而不是「你无权续等」。
+  const setup = fixture(context);
+  writeLedger(setup, {
+    lease: {
+      owner: 'lead-a', generation: 1, acquiredAt: new Date().toISOString(), renewedAt: null,
+      expiresAt: futureIso(), ttlMs: 30 * 60 * 1000,
+    },
+    intents: [writerIntent()],
+  });
+  setup.env.PASEO_FIXTURE_INSPECT = 'never';
+
+  const res = invoke(setup, [change, 'T-01', '--owner', 'lead-b']);
+  assert.equal(res.status, 2, `${res.stdout}\n${res.stderr}`);
+  const calls = paseoCalls(setup).map((argv) => argv[0]);
+  assert.deepEqual(calls, [], `a refused resume must not touch Paseo at all: ${calls.join(',')}`);
+});
+
 // SCEN-HND-13
 test('task-runner treats a corrupt ledger as unreadable when deciding resume versus dispatch', (context) => {
   // 读不出在途派发就无从判断该续等还是该重派；按「没有在途意图」放行会直接引入重复派发。
@@ -963,4 +1013,89 @@ test('task-runner treats a corrupt ledger as unreadable when deciding resume ver
   const res = invoke(setup, [change, 'T-01', '--owner', 'test-owner']);
   assert.equal(res.status, 2, `${res.stdout}\n${res.stderr}`);
   assert.equal(runs(setup).length, 0, 'a corrupt ledger must not be read as "nothing in flight"');
+});
+
+/**
+ * 在集成分支上追加一个无关提交，模拟「写手拉出任务分支之后，别的任务合流进了集成」。
+ *
+ * 这条事实是 B2 的前提：任务分支的基点停在旧集成 HEAD，而本次运行看到的集成 HEAD 已经前进。
+ * 返回旧基点的 7 位短 sha（真实 fork point）。
+ */
+function advanceIntegration(setup) {
+  const fork7 = git(setup.cwd, 'rev-parse', '--short=7', integrationBranch);
+  write(setup.cwd, 'src/other.txt', 'another task landed\n');
+  git(setup.cwd, 'add', 'src/other.txt');
+  git(setup.cwd, 'commit', '-m', 'feat: unrelated task merged while the writer was branched');
+  return fork7;
+}
+
+// SCEN-HND-13（B2）
+test('task-runner keeps the zero-commit guard on a resume after the integration branch moved', (context) => {
+  // 续等接的是一次**更早**的派发：写手拉出任务分支后集成可能已经前进。拿当前集成 HEAD 当
+  // 基点，零提交的任务分支 tip（停在旧 HEAD）就不再等于基点，exit 52 守卫被静默绕过——
+  // 于是「写手什么都没交」的分支会被 Verify 一遍然后当作交付合流。
+  const setup = fixture(context, { review: 'mechanical' });
+  const branch = `task/${change}/T-01`;
+  const baseIsh = git(setup.cwd, 'rev-parse', integrationBranch);
+  git(setup.cwd, 'branch', branch, baseIsh); // 写手建了分支（Paseo 派发时就建），但一个提交都没有
+  advanceIntegration(setup);
+  git(setup.cwd, 'worktree', 'add', '-q', setup.worktreeDir, branch);
+  writeLedger(setup, { intents: [writerIntent()] });
+  setup.env.PASEO_FIXTURE_INSPECT = 'never'; // 写手仍在跑 → 走续等路径
+
+  const res = invoke(setup, [change, 'T-01', '--owner', 'test-owner']);
+  assert.equal(res.status, 52, `${res.stdout}\n${res.stderr}`);
+  assert.match(res.stderr, /写手未产出提交/,
+    'the zero-commit guard must compare against the real fork point, not a moved integration HEAD');
+  assert.equal(runs(setup).length, 0, 'a resume must never dispatch a writer');
+  assert.equal(mergeCalls(setup).length, 0, 'a branch with no writer commits must not reach the merge gate');
+});
+
+// SCEN-HND-13（B2）
+test('task-runner derives the review tag base from the fork point on a resume after the integration branch moved', (context) => {
+  // mechanicalTag 产出 `pass(mechanical@<tip>/<base>)`。base 取当前集成 HEAD 时，
+  // 集成前进过就得到「base 不是 tip 的祖先」的标签，真实 merge-task 直接 exit 34；
+  // 假合流替身不校验，所以这里断言标签本身，而不是合流是否成功。
+  const setup = fixture(context, { review: 'mechanical' });
+  const branch = `task/${change}/T-01`;
+  const { tip7 } = deliverTaskBranch(setup, branch);
+  const fork7 = advanceIntegration(setup);
+  git(setup.cwd, 'worktree', 'add', '-q', setup.worktreeDir, branch);
+  writeLedger(setup, { intents: [writerIntent()] });
+  setup.env.PASEO_FIXTURE_INSPECT = 'never';
+
+  const res = invoke(setup, [change, 'T-01', '--owner', 'test-owner']);
+  assert.equal(res.status, 0, `${res.stdout}\n${res.stderr}`);
+  const merges = mergeCalls(setup);
+  assert.equal(merges.length, 1, `exactly one merge call: ${JSON.stringify(merges)}`);
+  assert.equal(merges[0].argv[2], `pass(mechanical@${tip7}/${fork7})`,
+    'the tag base must be the commit the writer actually branched from (a common ancestor of tip)');
+});
+
+// SCEN-HND-13（B1）
+test('task-runner redispatches a settled writer on re-entry, and the deadline message says so', (context) => {
+  // 51 的文案过去无条件承诺「重跑不重派、不开新 attempt」。实现只在写手仍 initializing/running
+  // 时续等；两次调用之间写手收敛（idle/closed/error）后，重跑会正常走派发、开出 -a2。
+  // 这不是缺陷而是必要行为（收敛的写手不能靠等待推进），但承诺必须与实现一致：
+  // 文案写成有条件的真话，并由这条用例把「已收敛 → 新 attempt」钉成事实。
+  const setup = fixture(context);
+  setup.env.PASEO_FIXTURE_WAIT = 'failed';
+  setup.env.PASEO_FIXTURE_INSPECT = 'never';
+  const first = invoke(setup, [change, 'T-01', '--timeout', '600', '--owner', 'test-owner']);
+  assert.equal(first.status, 51, `${first.stdout}\n${first.stderr}`);
+  assert.match(first.stderr, /still initializing or running/,
+    'the deadline message must state the condition under which re-entry resumes');
+  assert.match(first.stderr, /settled[\s\S]{0,200}attempt 2/,
+    'the deadline message must state what re-entry does once the writer has settled');  assert.equal(runs(setup).length, 1, 'the deadline itself must not redispatch');
+
+  // 写手在两次调用之间收敛：换成第二个 worktree 路径，写手照常交付。
+  setup.env.PASEO_FIXTURE_WAIT = 'idle';
+  setup.env.PASEO_FIXTURE_INSPECT = 'idle';
+  setup.env.PASEO_FIXTURE_WORKTREE = `${setup.worktreeDir}-2`;
+  const second = invoke(setup, [change, 'T-01', '--owner', 'test-owner']);
+  assert.equal(second.status, 0, `${second.stdout}\n${second.stderr}`);
+  const dispatched = runs(setup);
+  assert.equal(dispatched.length, 2, 'a settled writer is replaced by a new attempt, not waited on');
+  assert.deepEqual(optionValues(dispatched[1], '--new-branch'), [`task/${change}/T-01-a2`],
+    'the redispatch must go to the next attempt branch, exactly as the message says');
 });

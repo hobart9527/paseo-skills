@@ -324,12 +324,31 @@ function readStatusField(value) {
  * mechanical 档的直联合流标签。只有 `Review: mechanical` 的任务能这么合：
  * 给 strict/standard 档套 mechanical 标签等于让门禁承认「这份交付没被审过也合格」。
  */
-function mechanicalTag(branch) {
+function mechanicalTag(branch, base) {
   const tip = git(['rev-parse', branch], { cwd: repoRoot });
   if (tip.status !== 0) {
     fatal(`Branch ${branch} cannot be resolved for the mechanical review tag: ${tip.stderr || tip.stdout}`);
   }
-  return `pass(mechanical@${tip.stdout.trim().slice(0, 7)}/${baseSha.slice(0, 7)})`;
+  return `pass(mechanical@${tip.stdout.trim().slice(0, 7)}/${base.slice(0, 7)})`;
+}
+
+/**
+ * 任务分支的真实派发基点：`git merge-base <branch> <integration>`。
+ *
+ * 不能用「本次运行时刻的集成 HEAD」代替。续等/重跑接的是一次**更早**的派发：写手拉分支
+ * 之后集成可能已前进（别的任务合流了），此时拿当前 HEAD 当基点会同时坏两件事——
+ *   - `ensureBranchAdvanced` 拿 tip 与一个写手从未见过的基点比，零提交的写手也能过；
+ *   - `mechanicalTag` 产出的 `pass(mechanical@<tip>/<base>)` 里 base 不是 tip 的祖先，
+ *     `merge-task.mjs` 的 exit 34 校验会拒掉这次合流（实测过）。
+ * fork point 是唯一同时满足「是集成历史的祖先」与「是 tip 的祖先」的那个提交。
+ */
+function forkPointSha(branch) {
+  const res = git(['merge-base', branch, baseBranch], { cwd: repoRoot });
+  if (res.status !== 0 || res.stdout.trim() === '') {
+    fatal(`Cannot compute the fork point of ${branch} against ${baseBranch}: ${res.stderr || res.stdout}. `
+      + 'Without the real dispatch base, the zero-commit guard and the review tag base would both be wrong.');
+  }
+  return res.stdout.trim();
 }
 
 /**
@@ -373,7 +392,7 @@ function requireExecutableVerify() {
  * 写手，但**同样适用**：重入时 tip 等于基点说明那条分支没有交付内容，合流的就是空交付；
  * 而合并门禁只会报「没有东西可合」，分不清空交付与「已被吸收的交付」。
  */
-function ensureBranchAdvanced(branch, { writerAgentId = null, attemptNo = null } = {}) {
+function ensureBranchAdvanced(branch, { base, writerAgentId = null, attemptNo = null } = {}) {
   const tipRes = git(['rev-parse', '--verify', `${branch}^{commit}`], { cwd: repoRoot });
   if (tipRes.status !== 0) {
     fatal(`Task branch ${branch} cannot be resolved: ${tipRes.stderr || tipRes.stdout}`, 1);
@@ -383,13 +402,13 @@ function ensureBranchAdvanced(branch, { writerAgentId = null, attemptNo = null }
     ? `redispatch the writer (attempt ${attemptNo + 1})`
     : 'redispatch the writer or inspect what that attempt delivered';
   const agentHint = writerAgentId === null ? '' : ` or inspect agent ${writerAgentId}'s output first`;
-  if (tip === baseSha) {
+  if (tip === base) {
     fatal(`写手未产出提交：task branch ${branch} tip (${tip.slice(0, 7)}) equals the `
-      + `workspace base (${baseSha.slice(0, 7)}). The branch has no writer commits, so the `
+      + `workspace base (${base.slice(0, 7)}). The branch has no writer commits, so the `
       + `Verify result cannot prove the implementation was delivered. Do NOT dispatch an `
       + `auditor or merge: ${next}${agentHint}.`, 52);
   }
-  log(`Branch advanced: ${branch} tip=${tip.slice(0, 7)} base=${baseSha.slice(0, 7)}`);
+  log(`Branch advanced: ${branch} tip=${tip.slice(0, 7)} base=${base.slice(0, 7)}`);
   return tip;
 }
 
@@ -463,14 +482,12 @@ function leaseRefusal(action = '--review-tag 重入合流') {
 function findResumableWriter() {
   const ledger = readRunState(change, repoRoot);
   if (ledger.corrupt) return { corruption: ledger };
-  const candidates = ledger.state.intents
-    .filter((intent) => intent.task === task.id
-      && intent.phase === 'impl' // 本入口只派 impl 写手：别的 phase 的在途 agent 不是它的续等对象
-      && typeof intent.agentId === 'string' && intent.agentId !== ''
-      && intent.failedAt === undefined
-      && isWriterRole(intent.role))
-    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  const candidates = resumableCandidates(ledger.state);
   if (candidates.length === 0) return null;
+  // 租约先于外部读取：`paseo inspect` 是唯一一次读活态 Paseo 的动作，非 owner 连这一次
+  // 都不该做——判据只需要账本里的回执，且拒绝理由应当先说「你无权续等」而不是「我读到了什么」。
+  const refusal = leaseRefusal('续等上次派发的写手');
+  if (refusal !== null) return { leaseRefusal: refusal };
 
   for (const intent of candidates) {
     // 状态读不到（`paseo inspect` 失败）时不拿它当证据：宁可走正常派发路径让 claim 的
@@ -481,6 +498,22 @@ function findResumableWriter() {
     if (status === 'initializing' || status === 'running') return { intent, status };
   }
   return null;
+}
+
+/**
+ * 账本里「可能仍在跑」的写手意图，只看账本、不读 Paseo。
+ *
+ * 拆出来是为了让租约判定发生在第一次 `paseo inspect` 之前（见 findResumableWriter），
+ * 同时保持候选排序与筛选规则只有一份。
+ */
+function resumableCandidates(state) {
+  return state.intents
+    .filter((intent) => intent.task === task.id
+      && intent.phase === 'impl' // 本入口只派 impl 写手：别的 phase 的在途 agent 不是它的续等对象
+      && typeof intent.agentId === 'string' && intent.agentId !== ''
+      && intent.failedAt === undefined
+      && isWriterRole(intent.role))
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
 }
 
 /**
@@ -665,8 +698,10 @@ if (reviewTagOption !== null) {
   }
   // 重入不派发写手，但零提交判据同样适用：tip 等于基点说明那条分支没有交付内容可合。
   // 合流门禁只会报「没有东西可合」，分不清空交付与「工作已被吸收」，所以必须在合流前判。
+  // 基点取分支的真实 fork point，不取当前集成 HEAD：这条分支可能是在集成前进之前拉出来的，
+  // 用新 HEAD 比会让「写手零提交」的分支因为 tip ≠ 新 HEAD 而静默过关。
   // 传 attempt 而不是 null：重入的下一步是「重派写手到下一次 attempt」，措辞与派发路径一致。
-  ensureBranchAdvanced(latest.branch, { attemptNo: nextAttempt });
+  ensureBranchAdvanced(latest.branch, { base: forkPointSha(latest.branch), attemptNo: nextAttempt });
   // 合流前再判一次：上面到合流之间还有 speculative 等上游这类长耗时动作，租约可能已经
   // 过期或被 begin 接管。终判不持锁——合流子进程里的测试命令可能跑几十分钟，把
   // spawnSync 放进 run-state 锁临界区会挡住整个 run 的账本写入（仲裁 PATCH C1/C4）。
@@ -681,8 +716,6 @@ if (reviewTagOption !== null) {
   process.exit(0);
 }
 
-const profile = isDryRun ? null : resolveWriterProfile();
-
 // 4c. 续等入口：上次派发的写手还在跑时，不 claim、不派发，回到同一个 agent 上接着等。
 //
 // 退出 51 只说明**本次等待**到了截止时间，写手可能仍在跑。此时重跑同一条命令的两个
@@ -690,7 +723,12 @@ const profile = isDryRun ? null : resolveWriterProfile();
 // 把上一次的产出绕过去。正确做法是续等同一 attempt——判据见 findResumableWriter。
 //
 // dry-run 只看计划，不读运行态：它必须能在没有任何派发历史的仓库里跑通。
-// 续等走的是与重入合流同一条免检旁路（不经过 claim），因此租约判据在这里同样要补。
+//
+// 续等走的是与重入合流同一条免检旁路（不经过 claim），因此租约判据在这里同样要补；
+// 那边租约必须在读任何外部活态之前判（见 findResumableWriter）。
+//
+// 放在写手 profile 解析**之前**：续等不派发，就不该因为「gongbu profile 解析不出来」
+// 而被挡在门外——那是一个只与派发有关的门禁，用在这里会把一条纯等待路径变成硬失败。
 let resumable = null;
 if (!isDryRun) {
   const found = findResumableWriter();
@@ -698,17 +736,17 @@ if (!isDryRun) {
     fatal(`运行账本损坏，无法判定是否有在途写手（续等还是重派都需要它）：\n`
       + `${corruptLedgerGuidance(found.corruption.file)}\n（${found.corruption.error}）`, 2);
   }
+  if (found?.leaseRefusal !== undefined) fatal(found.leaseRefusal, 2);
   resumable = found;
 }
 
 let writerAgentId;
 if (resumable !== null) {
-  const refusal = leaseRefusal('续等上次派发的写手');
-  if (refusal !== null) fatal(refusal, 2);
   writerAgentId = resumable.intent.agentId;
   log(`Resuming wait on writer agent ${writerAgentId} (intent ${resumable.intent.key}, `
     + `status ${resumable.status}): same attempt, no redispatch`);
 } else {
+  const profile = isDryRun ? null : resolveWriterProfile();
   log(`Workspace target: branch=${branchName} base=${baseBranch}@${baseSha.slice(0, 7)} attempt=${attempt}`);
 
   // 5. 意图 claim（必须在派发之前：创建在途窗口里重派会被账本拒绝）
@@ -802,17 +840,28 @@ if (resumable !== null) {
 // 还没人碰过的新分支（tip 等于基点，把一次正常交付直接判成 exit 52）。
 const activeAttempt = resumable !== null ? (resumable.intent.attempt ?? attempt) : attempt;
 const activeBranch = branchFor(activeAttempt);
+// 基点同理必须跟着 attempt 走。续等时 `baseSha` 是**本次运行时刻**的集成 HEAD，
+// 而那条分支是从更早的 HEAD 拉出来的：集成在两次调用之间前进过，它就既不是 tip 的祖先、
+// 也不是「写手动手之前的样子」。用错的基点会同时让零提交守卫失效（tip ≠ 新 HEAD 恒成立）
+// 与 review tag 的 base 校验失败（merge-task exit 34）。fork point 是唯一正确的替代。
+const activeBaseSha = resumable !== null ? forkPointSha(activeBranch) : baseSha;
 
 // 7. 等待写手到终态（`paseo wait` 失败不致命：降级为状态轮询，超时 exit 51 且不重派）
 log(`Waiting for writer agent ${writerAgentId}...`);
 const settled = awaitAgent(writerAgentId, { timeoutMs });
 if (settled.timedOut) {
-  // 超时只说明「这一轮等满了」，不是失败也不是完成。文案必须给出可执行的续等路径：
-  // 重跑同一条命令会认出账本里在途的这条意图，继续等同一个 agent，不重派、不新开 attempt。
+  // 超时只说明「这一轮等满了」，不是失败也不是完成。文案必须给出可执行的续等路径，
+  // 而且必须与实现一致：续等只在**写手仍 initializing/running**时才发生（见
+  // findResumableWriter）。写手在两次调用之间收敛（idle/closed/error）后无从续等，
+  // 重跑会按新 attempt 正常派发。旧文案无条件承诺「不重派、不开新 attempt」，
+  // 那半句在一次写手已收敛的重跑上就是假话——实测就开出了 -a2。
   fatal(`Agent ${writerAgentId} did not reach a terminal status within ${Math.round(timeoutMs / 1000)}s `
     + `(last observed status=${settled.status}). The agent may still be running: do NOT redispatch it. `
-    + 'Re-running this same command (same task id) continues waiting on the same attempt — it does '
-    + 'not dispatch a second writer and does not start a new attempt. '
+    + `- While that writer is still initializing or running, re-running this same command (same task id) `
+    + `continues waiting on the same attempt (attempt ${activeAttempt}): it does not dispatch a second writer `
+    + 'and does not start a new attempt.\n'
+    + `- If it has settled (idle/closed/error) by then, there is nothing left to wait on: re-entry `
+    + `dispatches attempt ${activeAttempt + 1} on branch ${branchFor(activeAttempt + 1)} instead.\n`
     + `To check on it directly: paseo inspect ${writerAgentId} --json`, 51);
 }
 if (settled.status === 'error') {
@@ -841,7 +890,7 @@ if (task.verify?.command) {
 }
 
 // 8b. 交付诚实：任务分支 tip 必须领先 workspace 创建时的基点（判据见 ensureBranchAdvanced）。
-ensureBranchAdvanced(activeBranch, { writerAgentId, attemptNo: activeAttempt });
+ensureBranchAdvanced(activeBranch, { base: activeBaseSha, writerAgentId, attemptNo: activeAttempt });
 
 // 9. 审计诚实：非 mechanical 档到这里就停。
 //
@@ -862,6 +911,6 @@ if (reviewTier !== 'mechanical') {
 }
 
 // 10. 原子合流（merge-task.mjs）：只有 mechanical 档会走到这里并直联合流。
-const reviewTag = mechanicalTag(activeBranch);
+const reviewTag = mechanicalTag(activeBranch, activeBaseSha);
 mergeIntoIntegration({ branch: activeBranch, tag: reviewTag });
 process.exit(0);
