@@ -58,6 +58,8 @@ const AGENTS = [
   { id: CESHI_4, shortId: '4444001', provider: 'codex/gpt' },
   { id: GONGBU_4, shortId: '4444002', provider: 'claude/haiku' },
   { id: ANCHASI_4, shortId: ANCHASI_4_SHORT, provider: 'anthropic/opus' },
+
+  { id: HANLIN_1, shortId: '1111004', name: '[Pipeline] hanlin R0', provider: 'claude/cc' },
 ];
 
 function setupSandbox() {

@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 
 const root = path.resolve(import.meta.dirname, '..');
-function run(dir) {
-  try { execFileSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--json'], { encoding: 'utf8' }); return { status: 0 }; }
+// Signer lookup needs a live Paseo; fixtures that only exercise the contract rules skip it.
+function run(dir, flags = ['--skip-signer-check'], env = process.env) {
+  try { execFileSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--json', ...flags], { encoding: 'utf8', env }); return { status: 0 }; }
   catch (error) { return { status: error.status, stdout: error.stdout, stderr: error.stderr }; }
 }
 function change(files) {
@@ -170,8 +171,7 @@ test('accepts valid R0 sign-off with full UUID or short SHA', () => {
 
 test('--structural passes without review.md; default mode still blocks', () => {
   const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
-  const structural = spawnSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--json', '--structural'], { encoding: 'utf8' });
-  assert.equal(structural.status, 0, structural.stdout);
+  assert.equal(run(dir, ['--structural']).status, 0);
   assert.equal(run(dir).status, 1);
 });
 
@@ -192,4 +192,60 @@ test('R0 sign-off is bound to the reviewed commit: unknown sha and later edits a
   sign(sha);
   fs.appendFileSync(path.join(dir, 'tasks.md'), '\n');
   assert.match(run(dir).stdout, /STALE_R0_SIGNOFF.*tasks\.md/);
+});
+
+// ---- R0 signer must be a real Paseo agent ----
+function fakePaseo(agents, { inspect = false } = {}) {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-bin-'));
+  const payload = Buffer.from(JSON.stringify(agents)).toString('base64');
+  const inspectBranch = inspect ? `printf '{"Id":"%s","Name":"[Pipeline] hanlin R0","Provider":"claude","Model":"cc"}' "$2"` : 'exit 1';
+  fs.writeFileSync(path.join(bin, 'paseo'), `#!/bin/sh\nif [ "$1" = inspect ]; then ${inspectBranch}; else printf '%s' '${payload}' | base64 -d; fi\n`);
+  fs.chmodSync(path.join(bin, 'paseo'), 0o755);
+  return { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+}
+const SIGNER = '9b2f4c1e-aaaa-4a2b-8c3d-000000000099';
+const signed = () => change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': `R0: pass(${SIGNER}@abcdef1)\n` });
+
+test('R0 signer: a uuid that is not a Paseo agent blocks, a hanlin agent passes', () => {
+  const unknown = run(signed(), [], fakePaseo([{ id: 'ffffffff-0000-4000-8000-000000000000', shortId: 'fffffff', name: 'other', provider: 'codex/gpt' }]));
+  assert.equal(unknown.status, 1);
+  assert.match(unknown.stdout, /R0_SIGNER_UNKNOWN/);
+  const known = run(signed(), [], fakePaseo([{ id: SIGNER, shortId: '9b2f4c1', name: '[Pipeline] hanlin R0', provider: 'claude/cc' }]));
+  assert.equal(known.status, 0);
+});
+
+test('R0 signer: archived agent missing from `ls` is resolved through inspect', () => {
+  assert.equal(run(signed(), [], fakePaseo([], { inspect: true })).status, 0);
+});
+
+test('R0 signer: non-hanlin name is an advisory, not a block', () => {
+  const dir = signed();
+  const env = fakePaseo([{ id: SIGNER, shortId: '9b2f4c1', name: 'random chat', provider: 'claude/cc' }]);
+  const out = execFileSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--json'], { encoding: 'utf8', env });
+  assert.match(JSON.parse(out).advisories.join('\n'), /R0_SIGNER_NOT_HANLIN/);
+});
+
+test('R0 signer: an unreachable Paseo blocks unless --skip-signer-check', () => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-bin-'));
+  fs.writeFileSync(path.join(bin, 'paseo'), '#!/bin/sh\nexit 1\n');
+  fs.chmodSync(path.join(bin, 'paseo'), 0o755);
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+  const res = run(signed(), [], env);
+  assert.equal(res.status, 1);
+  assert.match(res.stdout, /R0_SIGNER_UNVERIFIED/);
+  assert.equal(run(signed(), ['--skip-signer-check'], env).status, 0);
+});
+
+// ---- Tier 3 admission advisory ----
+const diamond = (n) => Array.from({ length: n }, (_, i) => i).map((i) => `- [ ] 1.${i} T-0${i + 1} t${i}\n  - Write scope: src/t${i}.mjs,test/t${i}.test.mjs\n  - Verify with: node --test test/t${i}.test.mjs\n  - Scen: SCEN-1${i === 0 ? '' : `\n  - Depends on: T-01`}`).join('\n');
+
+test('low speedup advisory fires on a near-serial DAG and stays silent on a wide one', () => {
+  const files = { 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW };
+  const adv = (tasks) => JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change({ ...files, 'tasks.md': tasks }), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
+  const wide = adv(diamond(6)); // T-01 then 5 parallel: 6 tasks / 2 waves = 3x
+  assert.equal(wide.route, 'pipeline');
+  assert.deepEqual(wide.advisories, []);
+  const chain = adv(`- [ ] 1.1 T-01 a\n  - Write scope: src/a.mjs,test/a.test.mjs\n  - Verify with: node --test test/a.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.2 T-02 b\n  - Depends on: T-01\n  - Write scope: src/b.mjs,test/b.test.mjs\n  - Verify with: node --test test/b.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.3 T-03 c\n  - Depends on: T-01\n  - Write scope: src/c.mjs,test/c.test.mjs\n  - Verify with: node --test test/c.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.4 T-04 d\n  - Depends on: T-02,T-03\n  - Write scope: src/d.mjs,test/d.test.mjs\n  - Verify with: node --test test/d.test.mjs\n  - Scen: SCEN-1`);
+  assert.equal(chain.speedup, 1.33);
+  assert.match(chain.advisories.join('\n'), /ADVISORY_LOW_SPEEDUP/);
 });

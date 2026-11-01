@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseTasks, parseTaskLine, parseReviewTag, isFileWithinScopes, graphErrors, isTestPath, verifyLegs } from './lib/tasks.mjs';
 import { missingDependency, dependencyMessage } from './lib/toolchain.mjs';
+import { listAgents, inspectAgent, modelOf, findAgents } from './lib/paseo-agents.mjs';
 
 const WRITER_ROLES = new Set(['gongbu', 'gaogong', 'ceshi', 'jiangzuo']);
 const TEST_ROLES = new Set(['ceshi']);
@@ -29,45 +30,9 @@ function gitMaybe(args) {
 }
 
 function paseoAgents() {
-  const result = spawnSync('paseo', ['ls', '--all', '--json'], { encoding: 'utf8', timeout: 10_000 });
-  if (result.error || result.status !== 0) fail('cannot resolve agent provider/model from `paseo ls --all --json`', 32);
-  try {
-    const agents = JSON.parse(result.stdout);
-    if (!Array.isArray(agents)) throw new Error('expected agent array');
-    return agents;
-  } catch {
-    fail('invalid JSON from `paseo ls --all --json`', 32);
-  }
-}
-
-// `paseo ls --all` may omit some archived agents (it already returns more than 100 entries),
-// so a model that is missing from the list is not proof the agent never existed.
-function paseoInspect(agentId) {
-  const result = spawnSync('paseo', ['inspect', agentId, '--json'], { encoding: 'utf8', timeout: 10_000 });
-  if (result.error || result.status !== 0) return null;
-  try { return JSON.parse(result.stdout); } catch { return null; }
-}
-
-const providerOf = (agent) => {
-  const value = agent?.provider ?? agent?.Provider;
-  return typeof value === 'string' && value.includes('/') ? value.toLowerCase() : null;
-};
-// `paseo ls` packs "provider/model" into `provider`; `paseo inspect --json` splits them
-// and uses capitalised keys (`Provider`, `Model`).
-const modelOf = (agent) => providerOf(agent)
-  ?? (() => {
-    const provider = agent?.provider ?? agent?.Provider;
-    const model = agent?.model ?? agent?.Model;
-    return provider && model ? `${provider}/${model}`.toLowerCase() : null;
-  })();
-
-// Agent ids arrive as full UUIDs (Pipeline-Author trailers, `$PASEO_AGENT_ID`) or as
-// Paseo's 7-char shortId. Match both shapes; more than one hit means ambiguity, so
-// fail closed instead of guessing.
-function findAgents(agentId, agents) {
-  const wanted = String(agentId || '').toLowerCase();
-  if (!wanted) return [];
-  return agents.filter((agent) => [agent.id, agent.shortId].some((value) => typeof value === 'string' && value.toLowerCase().startsWith(wanted)));
+  const { agents, error } = listAgents();
+  if (error) fail(error, 32);
+  return agents;
 }
 
 function modelFor(agentId, agents) {
@@ -75,7 +40,7 @@ function modelFor(agentId, agents) {
   if (matches.length === 1) return modelOf(matches[0]);
   // Unique shortId prefix in the live list; otherwise ask Paseo directly, because
   // `ls` hides some archived agents.
-  if (matches.length === 0) return modelOf(paseoInspect(agentId));
+  if (matches.length === 0) return modelOf(inspectAgent(agentId));
   return null;
 }
 

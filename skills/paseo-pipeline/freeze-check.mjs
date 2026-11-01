@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo-agents.mjs';
 import { parseTasks, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
 
 const args = process.argv.slice(2);
@@ -12,10 +13,12 @@ const json = args.includes('--json');
 // --structural: validate the contract the authors wrote, before hanlin reviews it. The R0
 // sign-off is the output of that review, so requiring it here would deadlock the entry flow.
 const structural = args.includes('--structural');
+// --skip-signer-check: offline escape hatch; the R0 signer uuid is then format-checked only.
+const skipSignerCheck = args.includes('--skip-signer-check');
 const positional = args.filter((arg) => !arg.startsWith('--'));
 const changeDir = positional[0];
 if (!changeDir) {
-  console.error('Usage: freeze-check.mjs <change-dir> [--json] [--structural]');
+  console.error('Usage: freeze-check.mjs <change-dir> [--json] [--structural] [--skip-signer-check]');
   process.exit(2);
 }
 
@@ -175,12 +178,30 @@ function gitIn(dir, gitArgs) {
   return spawnSync('git', ['-C', dir, ...gitArgs], { encoding: 'utf8' });
 }
 const nulList = (result) => (result.stdout || '').split('\0').filter(Boolean);
+const advisories = [];
 if (!structural) {
   const reviewMarkdown = read(path.join(changeDir, 'review.md'));
   const r0Match = reviewMarkdown && reviewMarkdown.match(/^R0:\s*pass\(([^@)]+)@([a-f0-9]{7,40})\)/im);
   if (!r0Match) {
     blocking.push('MISSING_R0_SIGNOFF: review.md must contain `R0: pass(<reviewer-uuid>@<sha>)` — run hanlin R0 review before freeze');
-  } else if (gitIn(changeDir, ['rev-parse', '--is-inside-work-tree']).status === 0) {
+  } else {
+    // The signer must be a real Paseo agent, so a made-up uuid cannot satisfy the gate. Role is not
+    // exposed by `paseo ls`; a name without `hanlin` is only an advisory, merge-task keeps the hard
+    // reviewer-vs-author and model checks.
+    if (!skipSignerCheck) {
+      const signer = r0Match[1].trim();
+      const { agents, error } = listAgents();
+      if (error) blocking.push(`R0_SIGNER_UNVERIFIED: ${error}; fix Paseo or pass --skip-signer-check`);
+      else {
+        const hits = findAgents(signer, agents);
+        const resolved = hits.length === 1 ? hits[0] : hits.length === 0 ? inspectAgent(signer) : null;
+        if (hits.length > 1) blocking.push(`R0_SIGNER_UNKNOWN: signer ${signer} matches ${hits.length} agents; use the full agent uuid`);
+        else if (!resolved) blocking.push(`R0_SIGNER_UNKNOWN: signer ${signer} is not a Paseo agent`);
+        else if (!/hanlin/i.test(nameOf(resolved))) advisories.push(`R0_SIGNER_NOT_HANLIN: signer name "${nameOf(resolved)}" does not mention hanlin; confirm the R0 reviewer was dispatched as hanlin`);
+      }
+    }
+  }
+  if (r0Match && gitIn(changeDir, ['rev-parse', '--is-inside-work-tree']).status === 0) {
     const sha = r0Match[2];
     if (gitIn(changeDir, ['rev-parse', '--verify', '--quiet', `${sha}^{commit}`]).status !== 0) {
       blocking.push(`STALE_R0_SIGNOFF: reviewed commit ${sha} does not exist in this repository`);
@@ -196,6 +217,12 @@ if (!structural) {
 }
 
 if (tasks.length === 0) blocking.push('EMPTY_TASKS: tasks.md parsed to zero tasks');
+// Expected speedup of running the DAG concurrently vs one task at a time. Under 1.5x the three-agent
+// chain per task and serial merges usually eat the gain; advisory only, never a reason to pad the DAG.
+const speedup = waveList.length ? Number((tasks.length / waveList.length).toFixed(2)) : 0;
+if (tasks.length >= 4 && maxWidth >= 2 && speedup < 1.5) {
+  advisories.push(`ADVISORY_LOW_SPEEDUP: ${tasks.length} tasks over critical path ${waveList.length} = ${speedup}x; compare with Tier 2 handoff before CP-1`);
+}
 const route = maxWidth >= 2 && tasks.length >= 4 ? 'pipeline' : 'handoff';
 const summary = {
   change: path.resolve(changeDir),
@@ -203,8 +230,10 @@ const summary = {
   waves: waveList,
   maxWidth,
   criticalPath: waveList.length,
+  speedup,
   route,
   blocking: [...new Set(blocking)],
+  advisories,
 };
 if (json) console.log(JSON.stringify(summary, null, 2));
 else {
@@ -212,6 +241,7 @@ else {
   console.log(`tasks=${tasks.length} waves=${waveList.length} maxWidth=${maxWidth} criticalPath=${waveList.length}`);
   console.log(`[ROUTE] ${route}${route === 'pipeline' ? ': DAG has real concurrency' : ': no concurrency benefit; use Tier 2 handoff'}`);
   for (const wave of waveList) console.log(`WAVE ${wave.wave}: ${wave.ids.join(', ')}`);
+  for (const item of summary.advisories) console.log(`ADVISE ${item}`);
   for (const item of summary.blocking) console.error(`BLOCK ${item}`);
   console.log(summary.blocking.length ? `RESULT freeze rejected (${summary.blocking.length})` : 'RESULT freeze ok');
 }

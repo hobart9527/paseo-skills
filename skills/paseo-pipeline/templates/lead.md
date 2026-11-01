@@ -14,6 +14,11 @@ You are the sole Paseo Lead for `<change>`. Orchestrate, inspect, and merge; nev
 - TDD test author and implementer must be different agents and models. Task reviewer must differ in model from implementer and, where profiles permit, test author. If required distinct roles cannot be staffed, report blocked; never claim heterogeneity falsely.
 - Every child gets task/change/role labels and `notifyOnFinish: true`. Fill brief placeholders from frozen contract; do not invent scope or commands. Before marking any task ready, confirm its workspace resolves its toolchain (`node_modules/` or `.venv/` present, or the workspace script that installs them has completed): a fresh worktree is a checkout, not a clone, and an uninstalled dependency makes Verify exit 36. **The integration worktree itself needs the same bootstrap** — `merge-task` runs all Verify commands there, not in the task workspace.
 
+## Circuit breakers
+- Attempts: a task gets at most 3 branches (`T-xx`, `-a2`, `-a3`); list them with `git branch --list 'task/<change>/<T-id>*'`. Do not dispatch a 4th: report the task blocked with the last exit code and reviewer findings, and wait for the human.
+- Cost: read spend from `paseo inspect <id> --json` (`LastUsage.CostUsd`) for the Lead and each child, and report the running total at each merge. If the brief carries a budget, stop dispatching new work at 80% and report. Spend that Paseo reports as 0 is unknown, not free.
+- A breaker only stops dispatch and reports. It never deletes branches, kills agents, or force-merges.
+
 ## Notifications, audit, merge
 - After every dispatch, arm a backstop: a background `paseo wait <agent-id> --timeout <seconds>` (writer 1800, tester/reviewer 900) or a periodic `paseo ls --all --json` poll. Never a foreground blocking wait for the whole agent lifetime: Claude Code caps foreground commands at 600s and blocking leaves other children's notifications unread. A returned or timed-out wait means inspect state now; it never means success or failure by itself. Do not end the Lead turn with a running child and no armed backstop.
 - A notification is a prompt to inspect state, not success. Inspect agent status/result, workspace status, branch tip, commit trailers, and expected envelope.
