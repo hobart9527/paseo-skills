@@ -109,6 +109,29 @@ function isBehavioralRed(output) {
   return !RED_NON_BEHAVIOR.some((pattern) => pattern.test(text));
 }
 
+// Greenfield TDD: a test that statically imports a module the task is about to
+// create fails with ERR_MODULE_NOT_FOUND on the base. That IS behavioral Red —
+// the test asserts the module exists, which is exactly the gap the implementer
+// fills. `isBehavioralRed` rejects it because ERR_MODULE_NOT_FOUND is in the
+// non-behavior list. This function re-evaluates: if every missing-module path
+// resolves to a file inside the task's Write scope, the Red is legitimate.
+const MISSING_MODULE_PATH = /Cannot find module '([^']+)'/g;
+function isGreenfieldRed(output, taskScope) {
+  const text = String(output || '');
+  const paths = [...text.matchAll(MISSING_MODULE_PATH)].map((m) => m[1]);
+  if (!paths.length) return false;
+  // Only file paths (starting with . or /) qualify; bare package names do not.
+  const filePaths = paths.filter((p) => /^[./]/.test(p));
+  if (filePaths.length === 0) return false;
+  // The missing file must sit inside the task's Write scope. Use the URL form
+  // that Node prints (`file:///abs/path`) → strip to repo-relative later; but
+  // `Cannot find module` already carries the resolved absolute path, so we
+  // check whether any scope prefix appears in it.
+  return filePaths.every((absPath) =>
+    taskScope.some((scope) => absPath.includes(`/${scope}/`) || absPath.endsWith(`/${scope}`))
+  );
+}
+
 // A fresh linked worktree has no node_modules/.venv, so the frozen Verify can fail
 // before any test runs. Exit 36 marks that environment fault instead of blaming the task.
 
@@ -264,7 +287,7 @@ if (task.review !== 'mechanical') {
   if (redMissing) fail(`Red check: ${dependencyMessage(redMissing)}`, 36);
   if (red.error || red.timedOut || red.signal || [126, 127].includes(red.status)) fail(`Red check could not run Verify (exit ${red.status ?? 'n/a'}): ${task.verify}`, 33);
   if (red.status === 0) fail(`Red check: frozen Verify already passes on the test-author commit ${redTip.slice(0, 7)}; tests do not prove new behavior`, 33);
-  if (!isBehavioralRed(red.output)) fail(`Red check: Verify failed without a test assertion (collection/import/syntax error) on ${redTip.slice(0, 7)}; name a runnable test path: ${task.verify}`, 33);
+  if (!isBehavioralRed(red.output) && !isGreenfieldRed(red.output, task.scope)) fail(`Red check: Verify failed without a test assertion (collection/import/syntax error) on ${redTip.slice(0, 7)}; name a runnable test path: ${task.verify}`, 33);
 }
 
 const merge = gitMaybe(['merge', '--no-ff', '--no-commit', tip]);
@@ -290,9 +313,21 @@ if (result.error || result.status !== 0 || result.signal || result.timedOut || v
   fail(`frozen Verify failed or changed worktree: ${task.verify}`, 20);
 }
 
-// Cross-task regression: with the merge applied, every already-Done task's frozen narrow Verify must still pass.
-// Broad (whole-suite) legs are skipped here; they belong to the sink and final acceptance.
+// Cross-task regression: with the merge applied, every already-Done task whose scope
+// could be affected by this task's changes must still pass its narrow Verify. Broad
+// (whole-suite) legs are skipped here; they belong to the sink and final acceptance.
+// Only replay tasks that share a transitive dependency with the current task or whose
+// scope overlaps the files this task touches — fully independent branches cannot regress.
+const scopesOverlap = (scopesA, scopesB) => scopesA.some((a) => scopesB.some((b) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)));
+const taskAncestors = new Set();
+{ const walk = (id) => { for (const dep of (parsed.tasks.find((t) => t.id === id)?.depends ?? [])) { taskAncestors.add(dep); walk(dep); } }; walk(taskId); }
 for (const prior of parsed.tasks.filter((item) => item.done && item.id !== taskId && item.verify)) {
+  // Skip if prior is fully independent: no shared dependency chain AND no scope overlap.
+  const priorAncestors = new Set();
+  { const walk = (id) => { for (const dep of (parsed.tasks.find((t) => t.id === id)?.depends ?? [])) { priorAncestors.add(dep); walk(dep); } }; walk(prior.id); }
+  const sharesDep = taskAncestors.has(prior.id) || priorAncestors.has(taskId)
+    || [...taskAncestors].some((a) => priorAncestors.has(a));
+  if (!sharesDep && !scopesOverlap(task.scope, prior.scope)) continue;
   const legs = verifyLegs(prior.verify).filter((leg) => !leg.broad);
   if (!legs.length) continue;
   const regression = await run(legs.map((leg) => leg.command).join(' && '), timeout);

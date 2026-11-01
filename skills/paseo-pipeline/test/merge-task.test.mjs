@@ -335,7 +335,134 @@ test('rejects Red proof that only fails to load the test file', () => {
   // Removing a test-author file is itself a scope/provenance violation.
   assert.equal(r.status, 30, r.out);
 });
+test('accepts greenfield Red: static import of a not-yet-created module inside Write scope', () => {
+  // The canonical greenfield TDD pattern: ceshi writes `import { foo } from '../src/foo.mjs'`
+  // when src/foo.mjs does not exist on base. Node dies with ERR_MODULE_NOT_FOUND. This IS
+  // behavioral Red — the test asserts the module's existence. merge-task must not reject it
+  // as a non-behavioral failure (exit 33).
+  const GREENFIELD_RED = `import test from 'node:test';
+import assert from 'node:assert/strict';
+import { isNumber } from '../src/a.mjs';
+test('isNumber', () => { assert.equal(isNumber(42), true); });
+`;
+  const change = `c${++seq}`;
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'merge-'));
+  git(cwd, 'init', '-q', '-b', 'main');
+  write(cwd, `openspec/changes/${change}/tasks.md`, `- [ ] 1.1 T-01 task\n  - Write scope: src,test\n  - Verify with: node --test test/a.test.mjs\n`);
+  write(cwd, `openspec/changes/${change}/proposal.md`, 'p\n');
+  write(cwd, `openspec/changes/${change}/acceptance.md`, 'a\n');
+  git(cwd, 'add', '.'); git(cwd, 'commit', '-qm', 'base');
+  git(cwd, 'switch', '-qc', `integration/${change}`);
+  const base = git(cwd, 'rev-parse', 'HEAD');
+  git(cwd, 'switch', '-qc', `task/${change}/T-01`);
+
+  // ceshi: static import of module that does not exist yet
+  write(cwd, 'test/a.test.mjs', GREENFIELD_RED);
+  git(cwd, 'add', '.'); git(cwd, 'commit', '-qm', `red\n\nPipeline-Role: ceshi\nPipeline-Author: ${TESTER}`);
+
+  // gongbu: create the module
+  write(cwd, 'src/a.mjs', 'export function isNumber(n) { return typeof n === "number"; }\n');
+  git(cwd, 'add', '.'); git(cwd, 'commit', '-qm', `impl\n\nPipeline-Role: gongbu\nPipeline-Author: ${WRITER}`);
+
+  const tip = git(cwd, 'rev-parse', 'HEAD');
+  git(cwd, 'switch', '-q', `integration/${change}`);
+
+  const r = invoke(cwd, [`task/${change}/T-01`, 'T-01', passTag(tip, base)]);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /merged T-01/);
+});
+
+test('rejects greenfield Red when missing module is outside Write scope', () => {
+  const OUTSIDE_RED = `import test from 'node:test';
+import assert from 'node:assert/strict';
+import { foo } from '../lib/outside.mjs';
+test('foo', () => { assert.equal(foo(), 1); });
+`;
+  const change = `c${++seq}`;
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'merge-'));
+  git(cwd, 'init', '-q', '-b', 'main');
+  // Write scope is only src,test — NOT lib
+  write(cwd, `openspec/changes/${change}/tasks.md`, `- [ ] 1.1 T-01 task\n  - Write scope: src,test\n  - Verify with: node --test test/a.test.mjs\n`);
+  write(cwd, `openspec/changes/${change}/proposal.md`, 'p\n');
+  write(cwd, `openspec/changes/${change}/acceptance.md`, 'a\n');
+  git(cwd, 'add', '.'); git(cwd, 'commit', '-qm', 'base');
+  git(cwd, 'switch', '-qc', `integration/${change}`);
+  const base = git(cwd, 'rev-parse', 'HEAD');
+  git(cwd, 'switch', '-qc', `task/${change}/T-01`);
+
+  write(cwd, 'test/a.test.mjs', OUTSIDE_RED);
+  git(cwd, 'add', '.'); git(cwd, 'commit', '-qm', `red\n\nPipeline-Role: ceshi\nPipeline-Author: ${TESTER}`);
+
+  write(cwd, 'src/a.mjs', 'export const x = 1;\n');
+  git(cwd, 'add', '.'); git(cwd, 'commit', '-qm', `impl\n\nPipeline-Role: gongbu\nPipeline-Author: ${WRITER}`);
+
+  const tip = git(cwd, 'rev-parse', 'HEAD');
+  git(cwd, 'switch', '-q', `integration/${change}`);
+
+  const r = invoke(cwd, [`task/${change}/T-01`, 'T-01', passTag(tip, base)]);
+  // lib/ is outside scope → still exit 33
+  assert.equal(r.status, 33, r.out);
+});
+
+test('skips regression replay for fully independent prior task (P2b: O(N²) fix)', () => {
+  // T-00 and T-01 have disjoint scopes and no shared dependencies.
+  // T-00's verify would fail (test asserts 'src/poison.txt' absent, but nobody adds it),
+  // yet merge-task must not run it when merging T-01, because they are independent.
+  const tasks = [
+    '- [x] T-00 independent',
+    '  - Write scope: lib',
+    '  - Review: mechanical',
+    '  - Verify with: node --test test/prior.test.mjs',
+    '  - Done: source=abcdef1 review=pass(mechanical@abcdef1/abcdef1)',
+    '- [ ] T-01 target',
+    '  - Write scope: src,test',
+    `  - Verify with: ${GREEN}`,
+    '',
+  ].join('\n');
+  const f = taggedFixture(tasks);
+  // Prior's verify deliberately fails — it checks a file that does not exist.
+  write(f.cwd, 'test/prior.test.mjs', `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\ntest('independent', () => { assert.equal(fs.existsSync('lib/data.txt'), true); });\n`);
+  write(f.cwd, 'test/a.test.mjs', RED_TEST); git(f.cwd, 'add', 'test');
+  git(f.cwd, 'commit', '-qm', `red\n\nPipeline-Role: ceshi\nPipeline-Author: ${TESTER}`);
+  write(f.cwd, 'src/a.txt', 'a'); git(f.cwd, 'add', 'src');
+  git(f.cwd, 'commit', '-qm', `w\n\nPipeline-Role: gongbu\nPipeline-Author: ${WRITER}`);
+  const tip = git(f.cwd, 'rev-parse', 'HEAD'); git(f.cwd, 'switch', '-q', `integration/${f.change}`);
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
+  // If regression replay were O(N²), it would run T-00's verify and get exit 21.
+  // With P2b fix, T-00 is skipped → merge succeeds.
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /merged T-01/);
+});
+
+test('still replays regression for tasks with overlapping scope', () => {
+  // T-00 and T-01 both touch scope containing 'src' → must replay.
+  const tasks = [
+    '- [x] T-00 overlapper',
+    '  - Write scope: src/core',
+    '  - Review: mechanical',
+    '  - Verify with: node --test test/prior.test.mjs',
+    '  - Done: source=abcdef1 review=pass(mechanical@abcdef1/abcdef1)',
+    '- [ ] T-01 target',
+    '  - Write scope: src,test',
+    `  - Verify with: ${GREEN}`,
+    '',
+  ].join('\n');
+  const f = taggedFixture(tasks);
+  // Prior's verify will fail: asserts poison file absent, but T-01 adds it.
+  write(f.cwd, 'test/prior.test.mjs', `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\ntest('overlap', () => { assert.equal(fs.existsSync('src/poison.txt'), false); });\n`);
+  write(f.cwd, 'test/a.test.mjs', RED_TEST); git(f.cwd, 'add', 'test');
+  git(f.cwd, 'commit', '-qm', `red\n\nPipeline-Role: ceshi\nPipeline-Author: ${TESTER}`);
+  write(f.cwd, 'src/a.txt', 'a'); write(f.cwd, 'src/poison.txt', 'x'); git(f.cwd, 'add', 'src');
+  git(f.cwd, 'commit', '-qm', `w\n\nPipeline-Role: gongbu\nPipeline-Author: ${WRITER}`);
+  const tip = git(f.cwd, 'rev-parse', 'HEAD'); git(f.cwd, 'switch', '-q', `integration/${f.change}`);
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
+  // src/core overlaps src → prior IS replayed → regression detected
+  assert.equal(r.status, 21, r.out);
+  assert.match(r.out, /regress already-Done T-00/);
+});
+
 test('rejects when implementation commit precedes test-author commit', () => {
   const f = build([['src/a.txt', 'a', 'gongbu', WRITER], ['test/a.test.mjs', RED_TEST, 'ceshi', TESTER]]);
+
   const r = run3(f); assert.equal(r.status, 31, r.out); assert.match(r.out, /must precede/);
 });
