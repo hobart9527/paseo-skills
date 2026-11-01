@@ -2,7 +2,7 @@
 import { spawnSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseTasks, isFileWithinScopes, graphErrors, taskErrorsFor, REVIEW_TAG } from './lib/tasks.mjs';
+import { parseTasks, isFileWithinScopes, graphErrors, taskErrorsFor, REVIEW_TAG, REVIEW_TIERS } from './lib/tasks.mjs';
 import { verifyDone, buildMergeAcceptance, expandDoneSource as expandDoneSourceFor, batchDependencyClosure } from './lib/ledger.mjs';
 import {
   WRITER_ROLES, CONTROL_ROLES, READONLY_ROLES, REVIEWER_ROLES,
@@ -16,7 +16,8 @@ const usage = [
   '       node merge-task.mjs <branch> <task-ids> <review-tag> --fast [--allow-legacy-author]',
   'review-tag: pass(<reviewer-id8>@<tip7>/<base7>)',
   '--allow-legacy-author requires PIPELINE_ALLOW_LEGACY_AUTHOR=1 and is recorded in run-log.',
-  'Note: this validates tag/SHA consistency, author provenance, scope containment, and tests.',
+  'Note: this validates tag/SHA consistency, review tier resolution, author provenance, '
+    + 'scope containment, and tests.',
   'Verify with: every requested task MUST declare an executable `Verify with`; it is always run first.',
   '  The positional <test-cmd> is appended (an identical duplicate is skipped), never a substitute.',
   '  Fast-path: --fast flag or <test-cmd>="fast" runs only frozen Verify with commands for rapid merge.',
@@ -340,6 +341,31 @@ for (const task of requestedTasks) {
   fail(`task is already Done: ${task.id}`
     + `${task.doneLine ? ` (Done source=${task.doneLine.source})` : ' (no Done line)'}; `
     + `this merge would target ${tip7} — a different revision cannot be merged under the same task`, 1);
+}
+
+// --- 审查档位未定 ⇒ fail closed（SCEN-MRG-11） ---
+//
+// SKILL §2.1-2 与 spec 的合流门禁说的是同一件事：`Review` 显式声明优先；缺省时只有
+// **非 `none` 风险面**能推导出 `strict`；两样都没有就是未定，合流必须拒绝。
+// 旧实现从不读 `requiredReview`，于是 parser 返回的 null 在合流口被静默当成放行——
+// 文档承诺「fail closed」，代码实际「fail open」，而三处缺省口径还各不相同
+// （parser null、task-runner 记 `standard`、freeze-check 按 `standard` 估派发数）。
+//
+// 这里不发明默认值：`standard`/`mechanical` 都是**放宽**，替调用者选一个等于让
+// 未定的审查档位凭空通过。拒绝理由是独立的，不得混成写范围（30）或作者血统（31）——
+// 那两种失败会把人引向修改代码或提交元数据，而真正的修法是回 tasks.md 声明档位。
+//
+// 退出码取 1（SKILL §5 的「其余失败」），不新增专用码：本 change 明确不动 merge-task
+// 的退出码语义，而新增一个码就必须同步改 SKILL 的码表——码表不在本任务写范围内，
+// 那条改动会立刻变成新的「文档承诺密度超过实现」缺口。可判定性由消息承担：
+// 前置 `undecided review tier:` 是稳定锚点，比一个未写入文档的数字更可靠。
+const undecided = requestedTasks.filter((task) => task.requiredReview === null);
+if (undecided.length > 0) {
+  fail(`undecided review tier: ${undecided.map((task) => task.id).join(', ')} `
+    + 'has no `Review:` declaration and no non-`none` Risk-surface to derive one from; '
+    + `refusing to merge without a decided tier (declare one of: ${REVIEW_TIERS.join(', ')}). `
+    + 'No default tier is applied — `standard` and `mechanical` are both relaxations relative to fail-closed.',
+  1);
 }
 
 // --- 因子 0: 依赖必须被证明 Done (Dependency Gate) ---

@@ -63,7 +63,8 @@
   - Verify with: `node --test skills/paseo-pipeline/test/task-runner.test.mjs`
   - Scenarios: SCEN-HND-12
 
-- [ ] 2.3 T-07 缺省档位合流 fail closed：merge-task 读 requiredReview，未定即拒
+- [x] 2.3 T-07 缺省档位合流 fail closed：merge-task 读 requiredReview，未定即拒
+  - Done: source=39e5d36 review=pass(8b370984@39e5d36/0a396c8)
   - Depends on: none
   - Write scope: skills/paseo-pipeline/merge-task.mjs, skills/paseo-pipeline/lib/tasks.mjs, skills/paseo-pipeline/test/merge-task.test.mjs
   - Risk-surface: [error-handling]
