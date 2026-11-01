@@ -109,7 +109,8 @@
 
 ## 4. 收尾
 
-- [ ] 4.1 T-13 corrupt 信号消费端接线：scope-guard 拒绝降级，reconcile 输出 corruption 行
+- [x] 4.1 T-13 corrupt 信号消费端接线：scope-guard 拒绝降级，reconcile 输出 corruption 行
+  - Done: source=9323999 review=pass(c2d7aabc@9323999/6551b72)
   - Depends on: T-02
   - Write scope: skills/paseo-pipeline/lib/scope-guard.mjs, skills/paseo-pipeline/reconcile.mjs, skills/paseo-pipeline/hooks/scope-guard-hook.mjs, skills/paseo-pipeline/test/guard-scope.test.mjs, skills/paseo-pipeline/test/reconcile.test.mjs
   - Risk-surface: [error-handling]

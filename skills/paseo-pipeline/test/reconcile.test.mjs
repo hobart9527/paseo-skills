@@ -230,7 +230,7 @@ else { process.stderr.write('unexpected command\\n'); process.exit(2); }
     writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
   }
 
-  return { git, writeTasks, runtime, taskBranch, mergeTask, run, podMembers, podBranch, runState, root };
+  return { git, writeTasks, runtime, taskBranch, mergeTask, run, podMembers, podBranch, runState, root, env };
 }
 
 function output(subject, args = []) {
@@ -1587,14 +1587,56 @@ test('SCEN-REC-19 no run-state file at all is not an error and blocks nothing', 
   state(result, 'T-01', 'READY');
 });
 
-test('SCEN-REC-19 a corrupt run-state file is reported as absent, never fatal to reconcile', (context) => {
+test('SCEN-LED-02 a corrupt run-state file is never reported as an absent ledger', (context) => {
   const subject = fixture(context, [{ id: 'T-01' }]);
   const file = path.join(subject.root, 'run-state', change, 'run-state.json');
   mkdirSync(path.dirname(file), { recursive: true });
   writeFileSync(file, '{ not json');
   const result = output(subject);
-  assert.equal(result.lease, null);
-  state(result, 'T-01', 'READY');
+  // SCEN-LED-02：损坏不是缺席。旧实现把解析失败读成空 state，于是 lease=null 被报成
+  // 「未启用编排租约」，对账照常给出 READY/派发——整个 run 的意图与回执都读不出来，报告却
+  // 说一切正常。现在必须有一条点名文件与错误的 corruption 行。
+  assert.notEqual(result.corruption, null, '损坏账本必须有显式的 corruption 记录');
+  assert.equal(result.corruption.file, file);
+  assert.match(result.corruption.error, /不是合法 JSON/);
+  assert.match(result.corruption.guidance, /移开|修复/);
+  assert.equal(result.lease, null, '读不出内容就没有租约可报——但 corruption 行必须同时存在');
+  heldClosed(result, /运行账本损坏/);
+  assert.equal(result.nextAction.kind, 'hold');
+  assert.match(result.nextAction.reason, /账本损坏/);
+  assert.equal(result.INTENT_PENDING.length + result.ORPHAN_INTENT.length, 0,
+    '读不出的意图不得被报成「没有在途意图」以外的任何结论');
+});
+
+test('SCEN-LED-02 the human-readable output carries a CORRUPT line naming the file and error', (context) => {
+  const subject = fixture(context, [{ id: 'T-01' }]);
+  const file = path.join(subject.root, 'run-state', change, 'run-state.json');
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, '{ "version": 1, ');
+  const result = spawnSync(process.execPath, [reconcile, change], {
+    cwd: path.join(subject.root, 'repo'), env: subject.env, encoding: 'utf8', timeout: 30_000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^CORRUPT\s+.*run-state\.json/m);
+  assert.match(result.stdout, /不是合法 JSON/);
+  // 「未启用」会把读不出说成没有 run；损坏行存在时不得再给出这句。
+  assert.doesNotMatch(result.stdout, /LEASE\s+\(未启用\)/);
+  // 分类行可以照常打印（与 runtime 非 ok 同一形状：状态可见），但派发必须被全局挂起。
+  assert.match(result.stdout, /HOLD\s+运行账本损坏/);
+  assert.match(result.stdout, /^NEXT hold:/m);
+  assert.doesNotMatch(result.stdout, /^ALSO dispatch:/m);
+});
+
+test('SCEN-LED-02 a valid-JSON non-object ledger is corrupt too, never silently empty', (context) => {
+  // 第二种损坏形状：合法 JSON、顶层却不是账本对象。normalize 会把它归一成空 state，
+  // 于是对账看到一个「没有租约、没有意图」的干净 run——与截断 JSON 同一种静默降级。
+  const subject = fixture(context, [{ id: 'T-01' }]);
+  const file = path.join(subject.root, 'run-state', change, 'run-state.json');
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, '[]');
+  const result = output(subject);
+  assert.match(result.corruption.error, /顶层不是 JSON 对象/);
+  heldClosed(result, /运行账本损坏/);
 });
 
 // 以下三条来自 2026-10-26 在真实仓库（1604 条持久 agent）上的集成复验，修复前全部失败。

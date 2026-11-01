@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assessAnyWrite } from '../lib/scope-guard.mjs';
 
 // guard-scope 是 PreToolUse 侧的减速带：有编排租约期间，命中任务 Write scope 的写入必须
 // 能对上一个在途写手意图。它与 reconcile 的脏树检测共用 `isFileWithinScopes` 与
@@ -15,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 const script = fileURLToPath(new URL('../guard-scope.mjs', import.meta.url));
 const change = 'guard-demo';
 
-function fixture(context, { tasks = null, lease = null, intents = [] } = {}) {
+function fixture(context, { tasks = null, lease = null, intents = [], rawLedger = null } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'pipeline-guard-'));
   context.after(() => rmSync(root, { recursive: true, force: true }));
   const repo = path.join(root, 'repo');
@@ -30,7 +31,12 @@ function fixture(context, { tasks = null, lease = null, intents = [] } = {}) {
     GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_CONFIG_NOSYSTEM: '1',
   };
-  if (lease !== null || intents.length > 0) {
+  if (rawLedger !== null) {
+    // 损坏账本：原样落盘，不经 JSON.stringify（测试要的正是「不是合法 JSON」）。
+    const dir = path.join(stateDir, change);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, 'run-state.json'), rawLedger);
+  } else if (lease !== null || intents.length > 0) {
     const dir = path.join(stateDir, change);
     mkdirSync(dir, { recursive: true });
     writeFileSync(path.join(dir, 'run-state.json'), `${JSON.stringify({
@@ -239,6 +245,323 @@ test('SCEN-GRD-05 a flag-shaped change name is a usage error, never a stray ledg
   assert.match(result.stderr, /正确写法：node guard-scope\.mjs <change>/);
 });
 
+// --- SCEN-LED-03 账本损坏时守卫不得静默失效 ---
+//
+// 守卫所有的放行路径都从「没有有效租约」开始。损坏账本给出的同样是空 state、同样没有租约，
+// 所以只靠 leaseStatus 无法区分「真的没有 run」与「账本读不了」。旧实现在这里输出
+// `无编排租约（未在 run 内）` 并 exit 0：一次 deny 就这样静默退化成 allow，且输出里
+// 没有任何可以事后追查的信号。判据是 readRunState 的 corrupt 标志（T-02 提供），
+// 消费端必须**先看它**再决定放行。
+const CORRUPT_LEDGER = '{ "version": 1, "intents": [ { "key": "local:T-01:1:impl:gongbu:dispatch" ';
+
+test('SCEN-LED-03 a corrupt ledger denies a scoped write instead of reporting no active lease', (context) => {
+  const subject = fixture(context, { tasks: TASKS, rawLedger: CORRUPT_LEDGER });
+  const raw = subject.run('src/T-01.mjs');
+  assert.equal(raw.status, 2, `损坏账本上的 scope 写入必须拒绝：${raw.stdout}${raw.stderr}`);
+  const result = verdictOf(raw);
+  assert.equal(result.verdict, 'deny');
+  // 关键回归：不得再出现「无编排租约」这条把损坏读成缺席的理由。
+  assert.doesNotMatch(result.reason, /无编排租约|未在 run 内/);
+  assert.match(result.reason, /账本已损坏/);
+  assert.match(result.reason, /不是合法 JSON/, '拒绝必须点名解析错误本身');
+  // 结构化标记：调用方不必解析中文理由即可判断「读不出来」而不是「没有 run」。
+  assert.ok(result.corrupt, 'verdict must carry the corrupt marker');
+  assert.match(result.corrupt.file, /run-state\.json$/);
+  assert.match(result.corrupt.error, /不是合法 JSON/);
+  assert.deepEqual(result.scopeOwners, ['T-01']);
+});
+
+test('SCEN-LED-03 a corrupt ledger still marks the verdict corrupt on an out-of-scope path', (context) => {
+  // scope 外的写入照常放行（损坏账本不该冻结整个仓库），但输出必须带上损坏标记：
+  // 否则调用方看到的就是一句「不在任何 scope 内」，与健康账本的输出无法区分。
+  const subject = fixture(context, { tasks: TASKS, rawLedger: CORRUPT_LEDGER });
+  const result = verdictOf(subject.run('src/other.mjs'));
+  assert.equal(result.verdict, 'allow');
+  assert.match(result.reason, /不在任何任务的 Write scope 内/);
+  assert.ok(result.corrupt, '即便放行也必须报告账本损坏');
+  assert.match(result.corrupt.error, /不是合法 JSON/);
+});
+
+test('SCEN-LED-03 a corrupt ledger without a readable tasks.md is still corruption, never a plain allow', (context) => {
+  // R1 审计 SPEC_VIOLATION：损坏 + 读不到 scope 判据时放行，等于用「读不出」当「不在 scope 内」
+  // 的证据——scope 未知时根本没有「确证在 scope 外」这个结论。损坏账本本身就是必须处置的
+  // 现场，收窄成 hold 也不会把健康仓库锁死：账本健康时这条路径照旧 fail-open（见 GRD-04）。
+  const subject = fixture(context, { tasks: null, rawLedger: CORRUPT_LEDGER });
+  const raw = subject.run('src/T-01.mjs');
+  assert.equal(raw.status, 2, `scope 未知 + 账本损坏必须拒绝：${raw.stdout}${raw.stderr}`);
+  const result = verdictOf(raw);
+  assert.equal(result.verdict, 'deny');
+  assert.match(result.reason, /账本已损坏/);
+  assert.match(result.reason, /无法判定 scope/, '理由必须写明是 scope 未知，不是「不在 scope 内」');
+  assert.ok(result.corrupt);
+  assert.deepEqual(result.scopeOwners, [], 'scope 未知时不得编造 owner');
+});
+
+test('SCEN-LED-03 a corrupt ledger with a broken tasks.md is corruption too', (context) => {
+  // 第二种「scope 未知」形状：tasks.md 在，但解析失败（缺 Write scope）。与缺席同等处置。
+  const subject = fixture(context, {
+    tasks: '- [ ] 1.1 T-01 Demo task\n  - Depends on: none\n  - Verify with: `true`\n',
+    rawLedger: CORRUPT_LEDGER,
+  });
+  const raw = subject.run('src/T-01.mjs');
+  assert.equal(raw.status, 2, `${raw.stdout}${raw.stderr}`);
+  const result = verdictOf(raw);
+  assert.equal(result.verdict, 'deny');
+  assert.match(result.reason, /无法判定 scope/);
+  assert.ok(result.corrupt);
+});
+
+test('SCEN-LED-03 a corrupt ledger with an unreadable tasks.md denies (EISDIR)', (context) => {
+  // 第三种「scope 未知」形状：tasks.md 存在但读不出来。existsSync 只看得到名字，
+  // 目录、权限不足、I/O 错误都会在 readFileSync 抛异常——旧实现让异常直接冒到顶层，
+  // CLI 变成崩溃（exit 1 + 栈），既不是 allow 也不是 deny，hook 侧则被 catch 吞成放行。
+  // 必须与「缺席」「解析失败」同等处置：损坏时 deny，健康时 fail-open。
+  const subject = fixture(context, { tasks: null, rawLedger: CORRUPT_LEDGER });
+  mkdirSync(path.join(subject.repo, 'openspec', 'changes', change, 'tasks.md'));
+  const raw = subject.run('src/T-01.mjs');
+  assert.equal(raw.status, 2, `scope 判据读不出来 + 账本损坏必须拒绝：${raw.stdout}${raw.stderr}`);
+  const result = verdictOf(raw);
+  assert.equal(result.verdict, 'deny');
+  assert.match(result.reason, /读取失败/, '理由必须点名是读取失败，不是「不在 scope 内」');
+  assert.match(result.reason, /无法判定 scope/);
+  assert.ok(result.corrupt);
+});
+
+test('SCEN-LED-03 an unreadable tasks.md still fails open while the ledger is healthy (EISDIR)', (context) => {
+  // 同一形状在健康账本下必须保持旧语义：守卫是减速带不是沙箱，读不出 scope 就放行。
+  // 否则一份坏掉的 tasks.md 会把整个有租约的仓库锁死。
+  const subject = fixture(context, { tasks: null, lease: validLease() });
+  mkdirSync(path.join(subject.repo, 'openspec', 'changes', change, 'tasks.md'));
+  const raw = subject.run('src/T-01.mjs');
+  assert.equal(raw.status, 0, `健康账本下读不出 scope 仍应放行：${raw.stdout}${raw.stderr}`);
+  const result = verdictOf(raw);
+  assert.equal(result.verdict, 'allow');
+  assert.match(result.reason, /读取失败/);
+  assert.match(result.reason, /无法判定 scope（fail-open）/);
+  assert.equal(result.corrupt, null, '健康账本不得伪造损坏标记');
+});
+
+test('SCEN-LED-03 an allow from a healthy lease never hides a corrupt ledger elsewhere', (context) => {
+  // R1 审计 SPEC_VIOLATION：assessAnyWrite 扫到第一个活跃租约就 return allow，另一个 change
+  // 的账本坏了却没人报告——扫描形态下损坏信号被「先到先得」的放行吃掉。
+  const subject = fixture(context, { tasks: TASKS, lease: validLease() });
+  // 再放一个**别的 change** 的损坏账本（目录名即 change 名）。它自带 tasks.md，
+  // 使 scope 可判定：目标在它之外 → 这一路本就放行，测的是放行时不得吞掉损坏。
+  const corruptDir = path.join(subject.root, 'run-state', 'other-change');
+  mkdirSync(corruptDir, { recursive: true });
+  writeFileSync(path.join(corruptDir, 'run-state.json'), CORRUPT_LEDGER);
+  const otherOps = path.join(subject.repo, 'openspec', 'changes', 'other-change');
+  mkdirSync(otherOps, { recursive: true });
+  writeFileSync(path.join(otherOps, 'tasks.md'), TASKS.replace(/T-01/g, 'X-01'));
+
+  const result = spawnSync(process.execPath, [script, '--path', 'src/other.mjs', '--json'], {
+    cwd: subject.repo, env: subject.env, encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, `健康租约下的 scope 外写入仍应放行：${result.stdout}${result.stderr}`);
+  const verdict = JSON.parse(result.stdout);
+  assert.equal(verdict.verdict, 'allow');
+  // 放行可以，但损坏必须出现在**同一份**输出里：否则调用方只看到「不在 scope 内」，
+  // 而另一个 change 的租约与在途意图此刻全部不可读，这个事实被静默吞掉了。
+  assert.ok(Array.isArray(verdict.corruptions), 'allow verdict must carry corruptions');
+  assert.equal(verdict.corruptions.length, 1);
+  assert.equal(verdict.corruptions[0].change, 'other-change');
+  assert.match(verdict.corruptions[0].file, /run-state\.json$/);
+  assert.match(verdict.reason, /账本已损坏/, '人类可读理由里同样要提到损坏');
+});
+
+test('SCEN-LED-03 a corrupt change alone still reports corruption on an allow, both channels', (context) => {
+  // 同一条规则的退化情形：只有损坏账本、且目标在 scope 外。CLI 的 JSON 与人类可读通道
+  // 都必须显式报告 corruption，hook 的放行路径同样不能一声不吭。
+  const subject = fixture(context, { tasks: TASKS, rawLedger: CORRUPT_LEDGER });
+
+  const json = spawnSync(process.execPath, [script, '--path', 'src/other.mjs', '--json'], {
+    cwd: subject.repo, env: subject.env, encoding: 'utf8',
+  });
+  assert.equal(json.status, 0);
+  const verdict = JSON.parse(json.stdout);
+  assert.equal(verdict.verdict, 'allow');
+  assert.equal(verdict.corruptions.length, 1);
+  assert.match(verdict.reason, /账本已损坏/);
+
+  const human = spawnSync(process.execPath, [script, '--path', 'src/other.mjs'], {
+    cwd: subject.repo, env: subject.env, encoding: 'utf8',
+  });
+  assert.equal(human.status, 0);
+  assert.match(human.stdout, /账本已损坏/, '人类可读通道在放行时也要说出损坏');
+
+  // 库层信号（hook 的判据源）：放行时也必须带出损坏全集，hook 才有东西可报。
+  // 适配层 hooks/scope-guard-hook.mjs 把这批 corruptions 转成非阻断的
+  // additionalContext（见 SCEN-LED-03「the hook reports a corrupt ledger even when
+  // it allows the write」）。判据留在这里，适配层只负责转述。
+  //
+  // 进程内调用只认 PIPELINE_RUN_STATE_DIR（或 cwd 的 git common dir），必须显式设置并还原，
+  // 否则会去读真实仓库的账本目录——测试自己就犯了「读错目录当缺席」那类误判。
+  const previous = process.env.PIPELINE_RUN_STATE_DIR;
+  process.env.PIPELINE_RUN_STATE_DIR = subject.env.PIPELINE_RUN_STATE_DIR;
+  try {
+    assert.deepEqual(
+      assessAnyWrite({ target: path.join(subject.repo, 'src', 'other.mjs'), cwd: subject.repo })
+        .corruptions.map((c) => c.change),
+      [change],
+      '库层 allow 必须带出损坏全集，供 hook 适配层消费',
+    );
+  } finally {
+    if (previous === undefined) delete process.env.PIPELINE_RUN_STATE_DIR;
+    else process.env.PIPELINE_RUN_STATE_DIR = previous;
+  }
+});
+
+test('SCEN-LED-03 a ledger named by the verdict is not repeated by the scan-level note', (context) => {
+  // 两层都会往 reason 里写损坏：assessWrite 写「它依据的那份」，assessAnyWrite 再整批补
+  // 「其余还没提到的」。没有去重时同一份账本在一句话里出现两遍（实测：
+  // 「…运行账本已损坏（<file>）…；另有 1 个 change 的运行账本已损坏（c1）…」）。
+  // 重复不是致命的，但它让「有几个 change 坏了」这句话自相矛盾，读的人会以为有两份。
+  const subject = fixture(context, { tasks: TASKS, rawLedger: CORRUPT_LEDGER });
+  const result = spawnSync(process.execPath, [script, '--path', 'src/other.mjs', '--json'], {
+    cwd: subject.repo, env: subject.env, encoding: 'utf8',
+  });
+  assert.equal(result.status, 0);
+  const verdict = JSON.parse(result.stdout);
+  assert.equal(verdict.verdict, 'allow');
+  assert.equal(verdict.corruptions.length, 1, '结构化字段仍须给出全集');
+  const mentions = verdict.reason.split('run-state.json').length - 1;
+  assert.equal(mentions, 1, `同一份损坏账本在理由里只该出现一次：${verdict.reason}`);
+  assert.doesNotMatch(verdict.reason, /另有\s*\d+\s*个 change/, '已点名的账本不得再被扫描层补一遍');
+});
+
+test('SCEN-LED-03 the scan still reports a corrupt ledger the first verdict did not name', (context) => {
+  // 去重只去掉「已经在理由里点过名」的，不能顺手把「别的 change 也坏了」这条事实吃掉。
+  const subject = fixture(context, { tasks: TASKS, lease: validLease() });
+  const corruptDir = path.join(subject.root, 'run-state', 'other-change');
+  mkdirSync(corruptDir, { recursive: true });
+  writeFileSync(path.join(corruptDir, 'run-state.json'), CORRUPT_LEDGER);
+  // 它自带 tasks.md，目标是它 scope 之外的路径：这一路本就放行，测的是「补上未点名的损坏」。
+  const otherOps = path.join(subject.repo, 'openspec', 'changes', 'other-change');
+  mkdirSync(otherOps, { recursive: true });
+  writeFileSync(path.join(otherOps, 'tasks.md'), TASKS.replace(/T-01/g, 'X-01'));
+  const result = spawnSync(process.execPath, [script, '--path', 'src/other.mjs', '--json'], {
+    cwd: subject.repo, env: subject.env, encoding: 'utf8',
+  });
+  assert.equal(result.status, 0);
+  const verdict = JSON.parse(result.stdout);
+  assert.deepEqual(verdict.corruptions.map((c) => c.change), ['other-change']);
+  assert.match(verdict.reason, /other-change/, '未点名的那份必须在理由里补上');
+});
+
+test('SCEN-LED-03 PIPELINE_GUARD_SCOPE=off remains the explicit escape hatch for a corrupt ledger', (context) => {
+  const subject = fixture(context, { tasks: TASKS, rawLedger: CORRUPT_LEDGER });
+  const result = spawnSync(process.execPath, [script, change, '--path', 'src/T-01.mjs', '--json'], {
+    cwd: subject.repo, env: { ...subject.env, PIPELINE_GUARD_SCOPE: 'off' }, encoding: 'utf8',
+  });
+  assert.equal(result.status, 0);
+  assert.match(JSON.parse(result.stdout).reason, /PIPELINE_GUARD_SCOPE=off/);
+});
+
+test('SCEN-LED-03 the lease scan treats a corrupt ledger as corrupt, not as an idle lease', (context) => {
+  // hook 用的扫描形态：损坏 change 没有可读租约，若只遍历 active，它会整个消失，
+  // 输出退化成「无有效编排租约」——正是 hook 拿到空输出即放行的那条路。
+  const subject = fixture(context, { tasks: TASKS, rawLedger: CORRUPT_LEDGER });
+  const result = spawnSync(process.execPath, [script, '--path', 'src/T-01.mjs', '--json'], {
+    cwd: subject.repo, env: subject.env, encoding: 'utf8',
+  });
+  assert.equal(result.status, 2, `${result.stdout}${result.stderr}`);
+  const verdict = JSON.parse(result.stdout);
+  assert.equal(verdict.verdict, 'deny');
+  assert.equal(verdict.change, change);
+  assert.ok(verdict.corrupt);
+  assert.match(verdict.reason, /账本已损坏/);
+});
+
+test('SCEN-LED-03 the hook denies a scoped write while the ledger is corrupt', (context) => {
+  const subject = fixture(context, { tasks: TASKS, rawLedger: CORRUPT_LEDGER });
+  const result = runHook(subject, {
+    session_id: 'hook-test', tool_name: 'Write',
+    tool_input: { file_path: path.join(subject.repo, 'src', 'T-01.mjs') },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.hookSpecificOutput.permissionDecision, 'deny',
+    '账本损坏时 hook 必须拒绝，不能把损坏读成没有 run');
+  assert.match(output.hookSpecificOutput.permissionDecisionReason, /账本已损坏/);
+});
+
+test('SCEN-LED-03 the hook reports a corrupt ledger even when it allows the write', (context) => {
+  // 放行路径此前一声不吭：库层已经把损坏放进 reason/corruptions，但 hook 只在 deny 时输出，
+  // 于是「扫描到一个坏掉的他 change」在 model 看来完全不存在——R1 审计 SPEC_VIOLATION
+  // 的另一半。放行仍然放行，但必须带一条非阻断提示：change 名 + 账本路径 + 解析错误。
+  const subject = fixture(context, { tasks: TASKS, rawLedger: CORRUPT_LEDGER });
+  const result = runHook(subject, {
+    session_id: 'hook-test', tool_name: 'Write',
+    tool_input: { file_path: path.join(subject.repo, 'src', 'other.mjs') },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.notEqual(result.stdout.trim(), '', '损坏账本上的放行不得静默');
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.hookSpecificOutput.hookEventName, 'PreToolUse');
+  assert.equal(output.hookSpecificOutput.permissionDecision, undefined,
+    '提示必须是非阻断的：不能把 scope 外的无关写入也 deny');
+  const note = output.hookSpecificOutput.additionalContext;
+  assert.equal(typeof note, 'string');
+  assert.match(note, new RegExp(change), '提示要点名损坏的 change');
+  assert.match(note, /run-state\.json/, '提示要给出账本路径');
+  assert.match(note, /不是合法 JSON/, '提示要带上解析错误本身');
+});
+
+test('SCEN-LED-03 a healthy ledger emits no non-blocking hint at all', (context) => {
+  // 反向约束：提示只在 corruptions 非空时出现。健康账本上的放行保持零输出，
+  // 否则每次无关写入都会被一条噪音提示污染上下文。
+  const subject = fixture(context, { tasks: TASKS, lease: validLease() });
+  const result = runHook(subject, {
+    session_id: 'hook-test', tool_name: 'Write',
+    tool_input: { file_path: path.join(subject.repo, 'src', 'other.mjs') },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), '');
+});
+
+test('SCEN-LED-03 a tier-gate deny merges the corruption hint instead of emitting twice', (context) => {
+  // 两条信号同时成立：scope-guard 放行（scope 外）但账本损坏，tier-gate 因第 4 个文件拒绝。
+  // 若各写一份 JSON，stdout 会变成两个对象拼接，Claude Code 解析失败 → deny 退化。
+  // 必须合并成**一个** deny 对象：理由里既有 tier-gate 也有损坏说明。
+  const subject = fixture(context, { tasks: TASKS, rawLedger: CORRUPT_LEDGER });
+  execFileSync('git', ['checkout', '-q', '-b', 'main'], { cwd: subject.repo, env: subject.env, stdio: 'ignore' });
+  const tierState = mkdtempSync(path.join(tmpdir(), 'pipeline-tier-'));
+  context.after(() => rmSync(tierState, { recursive: true, force: true }));
+  const env = { PIPELINE_TIER_GATE_STATE: tierState };
+  const call = (name) => runHook(subject, {
+    session_id: 'merge-session', tool_name: 'Write',
+    tool_input: { file_path: path.join(subject.repo, 'src', name) },
+  }, env);
+  for (const name of ['a.mjs', 'b.mjs', 'c.mjs']) {
+    assert.equal(call(name).status, 0);
+  }
+  const fourth = call('d.mjs');
+  assert.equal(fourth.status, 0, fourth.stderr);
+  const lines = fourth.stdout.trim().split('\n').filter((line) => line !== '');
+  assert.equal(lines.length, 1, `stdout 只能是单个 JSON 对象：${fourth.stdout}`);
+  const output = JSON.parse(lines[0]);
+  assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(output.hookSpecificOutput.permissionDecisionReason, /tier-gate/);
+  assert.match(output.hookSpecificOutput.permissionDecisionReason, /账本已损坏/,
+    '合并后的 deny 理由不得吞掉损坏信号');
+});
+
+test('SCEN-LED-03 a hook that cannot load its judgement module stays silent (top-level catch)', (context) => {
+  // 顶层 catch 是「宁可漏拦，不锁死工作」的最后一道：lib 缺失、import 抛错时
+  // hook 仍须 exit 0 且零输出。把 hook 单独复制到一个没有 lib/ 的目录即可复现。
+  const isolated = mkdtempSync(path.join(tmpdir(), 'pipeline-hook-iso-'));
+  context.after(() => rmSync(isolated, { recursive: true, force: true }));
+  mkdirSync(path.join(isolated, 'hooks'), { recursive: true });
+  const copy = path.join(isolated, 'hooks', 'scope-guard-hook.mjs');
+  writeFileSync(copy, readFileSync(hook, 'utf8'));
+  const result = spawnSync(process.execPath, [copy], {
+    cwd: isolated, env: { ...process.env, PIPELINE_TIER_GATE_STATE: isolated }, encoding: 'utf8', timeout: 30_000,
+    input: JSON.stringify({ session_id: 'iso', tool_name: 'Write', tool_input: { file_path: path.join(isolated, 'x.mjs') } }),
+  });
+  assert.equal(result.status, 0, `加载失败也必须放行：${result.stderr}`);
+  assert.equal(result.stdout.trim(), '');
+});
+
 // --- PreToolUse hook 适配层（hooks/scope-guard-hook.mjs） ---
 //
 // hook 是判据的**第二个调用点**，所以两条约束必须被测试证伪：
@@ -247,9 +570,9 @@ test('SCEN-GRD-05 a flag-shaped change name is a usage error, never a stray ledg
 // 如果这两条只靠人工走查，hook 会在某次协议变更后静默失效——而它失效时没有任何信号。
 const hook = fileURLToPath(new URL('../hooks/scope-guard-hook.mjs', import.meta.url));
 
-function runHook(subject, payload) {
+function runHook(subject, payload, extraEnv = {}) {
   return spawnSync(process.execPath, [hook], {
-    cwd: subject.repo, env: subject.env, encoding: 'utf8', timeout: 30_000,
+    cwd: subject.repo, env: { ...subject.env, ...extraEnv }, encoding: 'utf8', timeout: 30_000,
     input: typeof payload === 'string' ? payload : JSON.stringify(payload),
   });
 }
