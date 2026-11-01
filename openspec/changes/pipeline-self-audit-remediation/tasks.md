@@ -74,7 +74,8 @@
   - Verify with: `node --test skills/paseo-pipeline/test/merge-task.test.mjs`
   - Scenarios: SCEN-MRG-11
 
-- [ ] 2.4 T-08 tier-gate 文档化与 doctor 校验：SKILL §8 补判据与开关，doctor 查两 hook
+- [x] 2.4 T-08 tier-gate 文档化与 doctor 校验：SKILL §8 补判据与开关，doctor 查两 hook
+  - Done: source=e404b7c review=pass(5e3cf735@e404b7c/e7105f1)
   - Depends on: none
   - Write scope: skills/paseo-pipeline/SKILL.md, skills/paseo-pipeline/pipeline-doctor.mjs, skills/paseo-pipeline/test/pipeline-doctor.test.mjs, skills/paseo-pipeline/test/docs.test.mjs
   - Risk-surface: [none]
