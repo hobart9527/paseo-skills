@@ -825,8 +825,13 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
           const headings = [...document.querySelectorAll("h1, h2")]
             .map((h) => ({ el: h, size: parseFloat(window.getComputedStyle(h).fontSize) || 0 }))
             .filter((h) => h.size > 0 && h.el.getBoundingClientRect().height > 0);
-          const bodySamples = [...document.querySelectorAll("p")]
-            .map((p) => parseFloat(window.getComputedStyle(p).fontSize) || 0)
+          const bodySamples = [...document.querySelectorAll("p, li, td, dd")]
+            .map((el) => {
+              const r = el.getBoundingClientRect();
+              if (r.width === 0 || r.height === 0) return 0;
+              const size = parseFloat(window.getComputedStyle(el).fontSize) || 0;
+              return (size > 0 && size <= 18) ? size : 0;
+            })
             .filter((n) => n > 0);
           if (headings.length > 0 && bodySamples.length > 0) {
             bodySamples.sort((a, b) => a - b);
@@ -880,6 +885,53 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
             }
           }
 
+          // Layout property transition probe: transition on width/height/top/left/margin/padding/all
+          const layoutTransitions = [];
+          const layoutPropPattern = /\b(all|width|height|top|left|right|bottom|margin|margin-top|margin-bottom|margin-left|margin-right|padding|padding-top|padding-bottom|padding-left|padding-right)\b/i;
+          for (const el of document.querySelectorAll("button, a, input, [role=button], nav, aside, dialog, .transition, [class*='transition']")) {
+            const comp = window.getComputedStyle(el);
+            const tp = comp.transitionProperty;
+            if (!tp || tp === "none") continue;
+            const dur = comp.transitionDuration;
+            if (!dur || dur === "0s" || dur === "0ms") continue;
+            if (layoutPropPattern.test(tp)) {
+              layoutTransitions.push({
+                tag: el.tagName.toLowerCase(),
+                property: tp.slice(0, 30),
+              });
+            }
+          }
+
+          // Concentric border radius probe: R_outer = R_inner + padding
+          const concentricViolations = [];
+          for (const parent of document.querySelectorAll("div, section, article, aside, li, form")) {
+            const r = parent.getBoundingClientRect();
+            if (r.width < 40 || r.height < 40) continue;
+            const pComp = window.getComputedStyle(parent);
+            const rOuter = parseFloat(pComp.borderTopLeftRadius) || 0;
+            if (rOuter <= 4) continue;
+            const pTop = parseFloat(pComp.paddingTop) || 0;
+            if (pTop < 2) continue;
+            for (const child of parent.children) {
+              const cr = child.getBoundingClientRect();
+              if (cr.width === 0 || cr.height === 0) continue;
+              const cComp = window.getComputedStyle(child);
+              const rInner = parseFloat(cComp.borderTopLeftRadius) || 0;
+              if (rInner <= 0) continue;
+              const expectedOuter = rInner + pTop;
+              if (Math.abs(rOuter - rInner) < 1 || Math.abs(rOuter - expectedOuter) > 4) {
+                concentricViolations.push({
+                  parent: parent.tagName.toLowerCase(),
+                  child: child.tagName.toLowerCase(),
+                  rOuter,
+                  rInner,
+                  padding: pTop,
+                });
+                break;
+              }
+            }
+          }
+
           return {
             scrollWidth: de.scrollWidth,
             clientWidth: de.clientWidth,
@@ -915,6 +967,10 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
             nested_cards: nestedCards.slice(0, 5),
             orphan_heading_count: orphanHeadings.length,
             orphan_headings: orphanHeadings.slice(0, 5),
+            layout_transition_count: layoutTransitions.length,
+            layout_transitions: layoutTransitions.slice(0, 5),
+            concentric_radius_violation_count: concentricViolations.length,
+            concentric_radius_violations: concentricViolations.slice(0, 5),
             small_touch_targets: smallTargets.slice(0, 10),
             small_touch_target_count: smallTargets.length,
             min_touch_target_size: minTargetSize,
@@ -1199,6 +1255,7 @@ export function buildCaptureMetadata(result, options = {}) {
       ),
       horizontal_overflow: overflowFindings,
       small_touch_targets: touchFindings,
+      craft_checks: options.diagnostics_summary?.craft_checks || null,
       craft_health_index: options.diagnostics_summary?.craft_health_index || null,
       craft_gate: options.diagnostics_summary?.craft_gate || null,
       dom_metrics_coverage: Object.values(viewportMetrics).some((m) => m && m.dom_metrics === "unmeasured_cli_runner")
@@ -1371,7 +1428,9 @@ export function recordHandoffEvidence(outputDir, result, metadata, options = {})
 // `null` (unmeasured) instead of `false`/`0`/`true`. `every()` over an empty set
 // returning `true` was the specific false-clean: a CLI capture measured no
 // stylesheets and reported success.
-export function buildDiagnosticsSummary(result) {
+export function buildDiagnosticsSummary(result, options = {}) {
+  const opts = typeof options === "string" ? { surfaceMode: options } : (options || {});
+  const baseline = opts.baseline || null;
   const tier = result.runner === "system-browser-cli-concurrent" ? "cli" : "playwright";
   const entries = Object.entries(result.viewport_metrics || {});
   const domMeasured = tier === "playwright"
@@ -1542,6 +1601,8 @@ export function buildDiagnosticsSummary(result) {
   const measureViolationCount = aesthetic("measure_violation_count");
   const nestedCardCount = uniqueNestedCards;
   const orphanHeadingCount = uniqueOrphanHeadings;
+  const layoutTransitionCount = aesthetic("layout_transition_count");
+  const concentricViolationCount = aesthetic("concentric_radius_violation_count");
   const flatScaleEntries = entries.filter(([, m]) => measured(m) && m.heading_scale_flat === true);
 
   // Deterministic Craft Health Index (CHI: 0-100)
@@ -1627,6 +1688,16 @@ export function buildDiagnosticsSummary(result) {
     deductions.push({ rule: "orphan_heading", points: orphanDeduct, reason: `${orphanHeadingCount} multi-line heading(s) end in an orphaned fragment` });
     score -= orphanDeduct;
   }
+  if (layoutTransitionCount > 0) {
+    const layoutDeduct = Math.min(10, layoutTransitionCount * 5);
+    deductions.push({ rule: "layout_transition", points: layoutDeduct, reason: `${layoutTransitionCount} element(s) transition layout properties (width/height/margin/padding/all) instead of compositors` });
+    score -= layoutDeduct;
+  }
+  if (concentricViolationCount > 0) {
+    const concentricDeduct = Math.min(6, concentricViolationCount * 3);
+    deductions.push({ rule: "concentric_radius", points: concentricDeduct, reason: `${concentricViolationCount} container(s) violate concentric radius rule (R_outer = R_inner + padding)` });
+    score -= concentricDeduct;
+  }
 
   score = Math.max(0, Math.min(100, score));
   let grade = "A+";
@@ -1648,12 +1719,29 @@ export function buildDiagnosticsSummary(result) {
   // The system-browser fallback cannot read the DOM, so it can never clear the
   // gate on its own — Playwright (or a rerun) is required.
   const probeUnmeasured = !domMeasured;
-  const gatePassed = !fatalCrash && !probeUnmeasured && craft_health_index.score >= 90;
+
+  let baselineScore = null;
+  if (baseline && typeof baseline === "object") {
+    baselineScore = baseline?.verification?.metadata?.evidence?.craft_health_index?.score
+      ?? baseline?.diagnostics_summary?.craft_health_index?.score
+      ?? baseline?.craft_health_index?.score
+      ?? null;
+  }
+
+  const isBaselineMode = baselineScore !== null;
+  const isNonRegression = isBaselineMode ? (score >= baselineScore) : false;
+  const gatePassed = !fatalCrash && !probeUnmeasured && (score >= 90 || isNonRegression);
   const gateReason = fatalCrash
     ? fatalReason
     : probeUnmeasured
       ? "probe_unmeasured: no DOM metrics (system-browser CLI runner or empty capture)"
-      : (gatePassed ? `Score ${score} >= 90 (Grade ${grade})` : `Score ${score} < 90 (Grade ${grade})`);
+      : (gatePassed
+          ? (score >= 90
+              ? `Score ${score} >= 90 (Grade ${grade})`
+              : `Non-regression: Score ${score} >= baseline ${baselineScore} (Grade ${grade})`)
+          : (isBaselineMode
+              ? `Regression: Score ${score} < baseline ${baselineScore} and < 90 (Grade ${grade})`
+              : `Score ${score} < 90 (Grade ${grade})`));
 
   return {
     status: result.status,
@@ -1671,13 +1759,14 @@ export function buildDiagnosticsSummary(result) {
       autocomplete_compliant: missingAutocompleteCount === null ? null : missingAutocompleteCount === 0,
       table_headers_scoped: thWithoutScopeCount === null ? null : thWithoutScopeCount === 0,
       numeric_cells_aligned: numericCellMisalignedCount === null ? null : numericCellMisalignedCount === 0,
+      layout_transition_free: layoutTransitionCount === 0,
+      concentric_radius_compliant: concentricViolationCount === 0,
     },
     craft_health_index,
     craft_gate: {
-      // Stage 6 entry gate: CHI >= 90 (Grade A), zero fatal crashes, complete
-      // capture evidence, and DOM-measured probes. Unavailable dimensions are
-      // excluded (null), never counted as pass.
-      threshold: 90,
+      threshold: isBaselineMode ? Math.min(90, baselineScore) : 90,
+      baseline_score: baselineScore,
+      mode: isBaselineMode ? "non_regression" : "absolute",
       passed: gatePassed,
       score,
       reason: gateReason,
@@ -1812,6 +1901,7 @@ async function main() {
   let serveCmd = null;
   let portArg = null;
   let surfaceMode = "operate";
+  let baselinePath = null;
   const dependencies = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -1840,6 +1930,8 @@ async function main() {
       else if (raw) dependencies.push({ ref: raw, digest: null });
     } else if (args[i] === "--mock") {
       mockPath = args[++i] || null;
+    } else if (args[i] === "--baseline") {
+      baselinePath = args[++i] || null;
     } else if (args[i] === "--output" || args[i] === "--out" || args[i] === "-o") {
       outputDir = args[++i];
     } else if (args[i] === "--target" || args[i] === "-t") {
@@ -1971,7 +2063,15 @@ async function main() {
     };
 
     if (result) {
-      const diagnostics_summary = buildDiagnosticsSummary(result);
+      let baselineData = null;
+      if (baselinePath) {
+        try {
+          baselineData = JSON.parse(fs.readFileSync(path.resolve(baselinePath), "utf8"));
+        } catch (err) {
+          process.stderr.write(`Warning: Failed to load baseline from ${baselinePath}: ${err.message}\n`);
+        }
+      }
+      const diagnostics_summary = buildDiagnosticsSummary(result, { baseline: baselineData });
       const metadata = buildCaptureMetadata(result, { ...metadataOptions, diagnostics_summary });
       const recording = recordHandoffEvidence(outputDir, result, metadata, {
         noManifest,

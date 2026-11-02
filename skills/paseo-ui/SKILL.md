@@ -60,7 +60,7 @@ $$
 4. **Suggest + Ask 交回**：后台子 agent 执行时，把 Suggest 块（Domain / Color world / Signature / Rejecting / Direction）作为产出写入交接报告并结束本回合，由主会话用 AskUserQuestion 转人类确认后再派 Builder 落地。Lite 档不做方向选择，跳过此步。
 
 **impeccable 适配**：
-- 启动器**优先使用随包二进制**（`~/.claude/skills/paseo-ui/vendor/impeccable/scripts/bin/<os>-<arch>/impeccable`），缺失时才联网下载。启动器不可用时直接读 `vendor/impeccable/reference/craft-floor.md`，报告标注「降级：impeccable 启动器未运行」。
+- 启动器**优先使用随包启动器**（`~/.claude/skills/paseo-ui/vendor/impeccable/scripts/impeccable`），缺失时才联网下载。启动器不可用时直接读 `vendor/impeccable/reference/craft-floor.md`，报告标注「降级：impeccable 启动器未运行」。
 - **产物路径收口**：严禁在项目根产生 `.impeccable.md` 或 `.impeccable/` 等平行真源。Surface Mode 并入 `DESIGN.md` 的 `## Overview`；comp 图片可保留在 `./captures/comps/`。
 - **detect 证据统一落盘**：`impeccable detect --json` 由编排者统一执行并写入 `./captures/impeccable-detect.json`。
 - **通道 B 只读契约**：评审角色以只读模式运行，**只读取当前 worktree 内声明的证据文件（`./captures/*`、`DESIGN.md` 与代码 diff）**；**严禁读取 worktree 外部路径（如 `~/.claude/skills/`）**，**严禁自行执行任何 CLI 命令**（所需静态扫描与 a11y 报告均由编排者统一预先落盘至 `./captures/`）。
@@ -108,23 +108,25 @@ $$
 ```bash
 node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
   --viewports 390,1280 [--states default,stressed,empty,error] [--mock ./captures/mocks.json] \
-  [--serve "npm run preview"] [--port auto] [--surface-mode operate|persuade|read|experience] [--self-test]
+  [--serve "npm run preview"] [--port auto] [--surface-mode operate|persuade|read|experience] \
+  [--baseline ./captures/before/capture-manifest.json] [--self-test]
 ```
 
 - **运行器与进程组治理**：
   - 优先 Playwright（DOM 探针完整）；系统 Chrome CLI 模式探针记为 `unmeasured`，**CLI 模式永远无法通过门禁**（`craft_gate.reason = probe_unmeasured`）。
   - `--serve "<cmd>"` 与 `--port auto`：自动分配空闲端口、以独立进程组拉起预览；退出时对整个进程组先 SIGTERM、1.5s 未退则 SIGKILL，彻底消除孤儿服务。占位符只替换 `{port}` / `$PORT` / `${PORT}`；固定端口 URL 会自动重写为实际分配端口。
+  - `--baseline <path>`：非退化门禁模式。在存量遗留页面（基线分 <90）执行局部快轨时，允许 `CHI_after >= CHI_before` 且无新增本快轨违规通过门禁，解除死锁。
   - `--self-test`：一键校验 Playwright、符号链接解析、随包二进制、状态机与门禁逻辑。
 - **探针度量与 Craft Health Index (CHI: 0-100)**：
   - 由 `capture.mjs` 基于真实 DOM 计算得出，客观反映工艺水平，绝非 LLM 幻觉评分。
-  - 度量项涵盖：`horizontal_overflow`（横向溢出）、`cls_score`（累计位移）、`small_touch_target_count`（移动端 <44px，桌面端 <24px）、`unlabeled_control_count`、`th_without_scope_count`、`numeric_cell_misaligned_count`、`low_contrast_count`（Canvas CSS Color 4 解析 + 祖先 alpha 合成）、`:active` 按压反馈覆盖率、以及四大审美探针（`measure_violation_count`、`heading_scale_flat`、`nested_card_count`、`orphan_heading_count`）。
+  - 度量项涵盖：`horizontal_overflow`（横向溢出）、`cls_score`（累计位移）、`small_touch_target_count`（移动端 <44px，桌面端 <24px）、`unlabeled_control_count`、`th_without_scope_count`、`numeric_cell_misaligned_count`、`low_contrast_count`（Canvas CSS Color 4 解析 + 祖先 alpha 合成）、`:active` 按压反馈覆盖率、布局属性过渡（`layout_transition_count`：禁过渡 width/height/margin/padding/all）、同心圆角几何规律（`concentric_radius_violation_count`：`R_outer = R_inner + padding`）、以及审美探针（`measure_violation_count`、`heading_scale_flat` 中位数正文采样、`nested_card_count`、`orphan_heading_count`）。
 - **Fail-Closed 机械门禁**：
   - 以下任一情况 `capture.mjs` 强制输出 CHI 0 分（Grade F）、`craft_gate.passed = false`、**以退出码 3 坚决阻断**：
     1. 页面脚本崩溃（`pageerror`）或动作执行失败；
     2. 截图数为 0（`no_screenshots`）；
     3. 存在捕获失败或未确认状态（`capture_incomplete` / `status !== "captured"`）；
     4. 探针未测（`probe_unmeasured`，含 CLI 回退）。
-  - **`capture.mjs` 退出码 0 的充要条件是「证据完整 + 探针已测 + CHI ≥ 90」。**
+  - **`capture.mjs` 退出码 0 的充要条件是「证据完整 + 探针已测 + CHI ≥ 90（或基线模式 CHI_after >= CHI_before 非退化）」。**
 - **破坏态注入与交互动作（Break-UI & Deep Actions）**：
   - `--mock` 支持按状态声明网络路由拦截与交互动作：
     ```json
@@ -187,7 +189,7 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
    - L-1/L-2 在 `create_workspace(isolation: "worktree", branchName: "ui/<track>-<target>")` 中执行。
 5. **自动门禁闭环**：
    - `package.json` 构建与测试脚本退出码全为 0；
-   - 跑改后截图 `--out ./captures/after`：**`capture.mjs` 退出码必须为 0（证据完整 + 探针已测 + CHI ≥90，且 CHI 不得低于 before）**。
+   - 跑改后截图 `--out ./captures/after --baseline ./captures/before/capture-manifest.json`：**`capture.mjs` 退出码必须为 0（绝对模式 CHI ≥ 90，或基线模式 CHI_after ≥ CHI_before 非退化且无新增缺陷）**。解除存量低分工程中局部快轨死锁。
 6. **交付呈报**：输出 diff、before/after 截图对、探针对比与 `DESIGN.proposed.md`（如有），人类确认后合并。
 
 ---
@@ -228,8 +230,9 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
    - 遵循语义复合原语与 `:active:scale-0.96` 触感；金额/数值强制 `tabular-nums text-right`。
 4. **极端坏数据破坏自验（Break-UI）**：
    - Builder 参考 `vendor/break-ui/CATALOG.md` 编写 `./captures/mocks.json`，覆盖 `stressed`、`empty`、`error` 三大破坏态。
-5. **本地构建与静态检测**：
+5. **本地构建与静态检测（前置坚决阻断）**：
    - 编排者统一执行 `~/.claude/skills/paseo-ui/vendor/impeccable/scripts/impeccable detect --json > ./captures/impeccable-detect.json`；
+   - **静态违规前置阻断**：若 `impeccable detect` 返回退出码 2（Critical anti-pattern 违规，如 slop、未声明世界观、被禁模式），**坚决阻断**，立即打回 Builder 修复，不流入 Stage 3 浪费算力与时间；
    - `package.json` 中 `test` / `build` / `lint` 脚本退出码全为 0。
 
 ### Stage 3: 截图与交互证据采集（Capture & Probe）
