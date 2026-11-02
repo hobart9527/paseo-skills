@@ -385,6 +385,79 @@ test('isNumber', () => { assert.equal(isNumber(42), true); });
   assert.match(r.out, /merged T-01/);
 });
 
+test('accepts greenfield Red when Write scope names the exact .ts file the test imports as .js', () => {
+  // NodeNext TypeScript: the test imports `../src/a.js` while the source is `src/a.ts`,
+  // and the frozen Write scope names the exact `.ts` file. Both spellings are the same
+  // declared module, so this must still count as behavioral Red.
+  const FILE_SCOPE_RED = `import test from 'node:test';
+import assert from 'node:assert/strict';
+import { isNumber } from '../src/a.js';
+test('isNumber', () => { assert.equal(isNumber(42), true); });
+`;
+  // Stands in for tsx: resolves the NodeNext `.js` specifier to the `.ts` source.
+  const TS_HOOK = `import { registerHooks } from 'node:module';
+registerHooks({
+  resolve(spec, ctx, next) {
+    if (spec.endsWith('.js')) {
+      try { return next(spec.replace(/\\.js$/, '.ts'), ctx); } catch {}
+    }
+    return next(spec, ctx);
+  }
+});
+`;
+  const change = `c${++seq}`;
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'merge-'));
+  git(cwd, 'init', '-q', '-b', 'main');
+  write(cwd, `openspec/changes/${change}/tasks.md`, `- [ ] 1.1 T-01 task\n  - Write scope: src/a.ts,test\n  - Verify with: node --import ./test/hook.mjs --test test/a.test.mjs\n`);
+  write(cwd, `openspec/changes/${change}/proposal.md`, 'p\n');
+  write(cwd, `openspec/changes/${change}/acceptance.md`, 'a\n');
+  git(cwd, 'add', '.'); git(cwd, 'commit', '-qm', 'base');
+  git(cwd, 'switch', '-qc', `integration/${change}`);
+  const base = git(cwd, 'rev-parse', 'HEAD');
+  git(cwd, 'switch', '-qc', `task/${change}/T-01`);
+
+  write(cwd, 'test/a.test.mjs', FILE_SCOPE_RED);
+  write(cwd, 'test/hook.mjs', TS_HOOK);
+  git(cwd, 'add', '.'); git(cwd, 'commit', '-qm', `red\n\nPipeline-Role: ceshi\nPipeline-Author: ${TESTER}`);
+  write(cwd, 'src/a.ts', 'export function isNumber(n: unknown): boolean { return typeof n === "number"; }\n');
+  git(cwd, 'add', '.'); git(cwd, 'commit', '-qm', `impl\n\nPipeline-Role: gongbu\nPipeline-Author: ${WRITER}`);
+
+  const tip = git(cwd, 'rev-parse', 'HEAD'); git(cwd, 'switch', '-q', `integration/${change}`);
+  const r = invoke(cwd, [`task/${change}/T-01`, 'T-01', passTag(tip, base)]);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /merged T-01/);
+});
+
+test('still rejects greenfield Red when the file-scoped task imports an undeclared module', () => {
+  // Same file-scope shape, but the missing module is not any declared file: extension
+  // tolerance must not turn every ERR_MODULE_NOT_FOUND into an accepted Red.
+  const UNDECLARED_RED = `import test from 'node:test';
+import assert from 'node:assert/strict';
+import { helper } from '../src/helper.js';
+test('helper', () => { assert.equal(helper(), 1); });
+`;
+  const change = `c${++seq}`;
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'merge-'));
+  git(cwd, 'init', '-q', '-b', 'main');
+  write(cwd, `openspec/changes/${change}/tasks.md`, `- [ ] 1.1 T-01 task\n  - Write scope: src/a.ts,test\n  - Verify with: node --test test/a.test.mjs\n`);
+  write(cwd, `openspec/changes/${change}/proposal.md`, 'p\n');
+  write(cwd, `openspec/changes/${change}/acceptance.md`, 'a\n');
+  git(cwd, 'add', '.'); git(cwd, 'commit', '-qm', 'base');
+  git(cwd, 'switch', '-qc', `integration/${change}`);
+  const base = git(cwd, 'rev-parse', 'HEAD');
+  git(cwd, 'switch', '-qc', `task/${change}/T-01`);
+
+  write(cwd, 'test/a.test.mjs', UNDECLARED_RED);
+  git(cwd, 'add', '.'); git(cwd, 'commit', '-qm', `red\n\nPipeline-Role: ceshi\nPipeline-Author: ${TESTER}`);
+  write(cwd, 'src/a.ts', 'export const x = 1;\n');
+  git(cwd, 'add', '.'); git(cwd, 'commit', '-qm', `impl\n\nPipeline-Role: gongbu\nPipeline-Author: ${WRITER}`);
+
+  const tip = git(cwd, 'rev-parse', 'HEAD'); git(cwd, 'switch', '-q', `integration/${change}`);
+  const r = invoke(cwd, [`task/${change}/T-01`, 'T-01', passTag(tip, base)]);
+  assert.equal(r.status, 33, r.out);
+  assert.match(r.out, /without a test assertion/);
+});
+
 test('rejects greenfield Red when missing module is outside Write scope', () => {
   const OUTSIDE_RED = `import test from 'node:test';
 import assert from 'node:assert/strict';

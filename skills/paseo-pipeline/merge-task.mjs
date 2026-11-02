@@ -101,6 +101,25 @@ function pyModuleInScope(dotted, scopes, declaredFiles = []) {
   return declaredFiles.length > 0
     && files.some((file) => isFileWithinScopes(file, scopes) && declaredFiles.includes(file));
 }
+// A repo-relative missing module path matches a scope entry when it equals it or sits
+// under it. Write scopes may name a directory (`src`, `packages/server/src/services`) or
+// an exact file (`packages/server/src/services/a.ts`). Extension differs by runtime: a
+// TypeScript test imports `./a.js` (NodeNext) or `./a.ts`, while the frozen scope names
+// `.ts`. Compare with the runtime extension stripped so both spellings identify the same
+// declared file — without that, a file-scoped task's greenfield Red is rejected as a
+// collection error and `merge-task` exits 33.
+const TS_EXTENSIONS = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i;
+function declaredPathMatches(absPath, scope) {
+  const normalized = String(absPath).replace(/\\/g, '/').replace(/^\/+/, '');
+  const dir = normalized.startsWith(`${scope}/`) || normalized.includes(`/${scope}/`);
+  if (dir) return true;
+  const candidates = [normalized, absPath.replace(/\\/g, '/')];
+  const bareScope = scope.replace(TS_EXTENSIONS, '');
+  return candidates.some((candidate) => {
+    const bare = candidate.replace(TS_EXTENSIONS, '');
+    return bare.endsWith(`/${bareScope}`) || bare === bareScope;
+  });
+}
 function isGreenfieldRed(output, taskScope, declaredFiles = []) {
   const text = String(output || '');
   const paths = [...text.matchAll(MISSING_MODULE_PATH)].map((m) => m[1]);
@@ -109,10 +128,9 @@ function isGreenfieldRed(output, taskScope, declaredFiles = []) {
   const pyModules = [...text.matchAll(MISSING_PY_MODULE)].map((m) => m[1]);
   if (filePaths.length === 0 && pyModules.length === 0) return false;
   // The missing file must sit inside the task's Write scope. `Cannot find module` already
-  // carries the resolved absolute path, so check whether any scope prefix appears in it.
-  return filePaths.every((absPath) =>
-    taskScope.some((scope) => absPath.includes(`/${scope}/`) || absPath.endsWith(`/${scope}`))
-  ) && pyModules.every((mod) => pyModuleInScope(mod, taskScope, declaredFiles));
+  // carries the resolved absolute path, so check it against each scope entry.
+  return filePaths.every((absPath) => taskScope.some((scope) => declaredPathMatches(absPath, scope)))
+    && pyModules.every((mod) => pyModuleInScope(mod, taskScope, declaredFiles));
 }
 
 // A fresh linked worktree has no node_modules/.venv, so the frozen Verify can fail
