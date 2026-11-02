@@ -14,6 +14,7 @@
 // 也可用 `--install-help` 打印现成片段。
 //
 // 设计取舍：
+//   - 系统通知（<paseo-system>）、linked worktree / 功能分支不提醒（cwd 判定，不看 PASEO_AGENT_ID）。
 //   - 每条非斜杠消息都提醒（不再做关键词筛选，见 REMINDER 上方的说明）。
 //   - 同时为 Stop 核对记录本轮基线（takeSnapshot）。
 //   - 任何异常一律不输出（exit 0），但写入 errors.log。
@@ -23,7 +24,7 @@
 //   hookSpecificOutput.additionalContext 会作为额外上下文加进本轮。
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { TIER_RULES, takeSnapshot, logHookError } from '../lib/tier-gate.mjs';
+import { TIER_RULES, takeSnapshot, skipInjection, logHookError } from '../lib/tier-gate.mjs';
 
 // 为什么不再做关键词筛选（2026-11-02）：长会话里用户多半只说「好的，按方案B来」「继续」「可以，做吧」，
 // 关键词筛选全漏，而那恰恰是模型最容易直接动手的时刻。改为每条非斜杠消息都注入一行短提醒，
@@ -34,10 +35,16 @@ export const REMINDER = [
   '纯评估、纯讨论不需要声明。',
 ].join('\n');
 
+// Paseo 把子 agent 的通知当作 user 角色消息投递（<paseo-system ...> / <task-notification ...>），
+// UserPromptSubmit 会为每一条触发。它们不是用户的话：不提醒、不重置 churn 计数。
+export function isSystemNotification(prompt) {
+  return typeof prompt === 'string' && /^\s*<(?:paseo-system|task-notification)\b/i.test(prompt);
+}
+
 export function shouldRemind(prompt) {
   if (typeof prompt !== 'string') return false;
   const text = prompt.trim();
-  return text !== '' && !text.startsWith('/');
+  return text !== '' && !text.startsWith('/') && !isSystemNotification(text);
 }
 
 async function main() {
@@ -61,11 +68,16 @@ async function main() {
   }
   // 每条用户消息都给 Stop 核对留一份基线（斜杠命令也要，它们同样可能改文件）。
   try {
-    takeSnapshot({ cwd: payload?.cwd ?? process.cwd(), sessionId: payload?.session_id });
+    takeSnapshot({
+      cwd: payload?.cwd ?? process.cwd(),
+      sessionId: payload?.session_id,
+      isHumanTurn: !isSystemNotification(payload?.prompt),
+    });
   } catch (err) {
     logHookError('tier-reminder-hook/snapshot', err);
   }
   if (!shouldRemind(payload?.prompt)) return 0;
+  if (skipInjection(payload?.cwd)) return 0;
   fs.writeSync(1, `${JSON.stringify({
     hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: REMINDER },
   })}\n`);

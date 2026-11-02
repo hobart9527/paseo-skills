@@ -224,6 +224,7 @@ if (!commits.length) fail('task branch has no commits', 31);
 const authors = new Set();
 const testAuthors = new Set();
 const implementationAuthors = new Set();
+let implementationCommits = 0;
 const testFiles = new Set();
 for (const commit of commits) {
   const roles = trailers(commit, 'Pipeline-Role').map((x) => x.toLowerCase());
@@ -242,6 +243,12 @@ for (const commit of commits) {
     if (implementationCommit) implementationAuthors.add(id);
   });
   if (testCommit) changed.forEach((file) => testFiles.add(file));
+  if (implementationCommit) implementationCommits += 1;
+}
+// Same-branch rework cap (lead.md): the original implementer gets at most 2 implementation commits
+// on one branch; a third is a capability problem, not a typo. Escalate to `<T-id>-a2` + gaogong.
+if (implementationCommits > 2 && !allowAttemptOver) {
+  fail(`${branch} has ${implementationCommits} implementation commits; same-branch rework is capped at 2. Escalate to ${taskId}-a2 (cherry-pick the ceshi Red commit, dispatch gaogong) or pass --allow-attempt-over after human approval`, 37);
 }
 for (const commit of commits) {
   const roles = trailers(commit, 'Pipeline-Role').map((x) => x.toLowerCase());
@@ -288,6 +295,18 @@ if (tag.reviewer !== 'mechanical' && task.review !== 'mechanical') {
 if (base !== preMergeHead) {
   const integrationFiles = new Set(gitMaybe(['diff', '--name-only', '-z', `${base}..${preMergeHead}`]).stdout.split('\0').filter(Boolean));
   if (files.some((file) => integrationFiles.has(file))) fail('integration drift overlaps task files; re-review required', 34);
+}
+
+// The integration branch is cut from main and reviewed against it; if main moved on this task's
+// files since they diverged, the review and Verify ran on a stale picture. Fail-open when neither
+// default branch exists locally (fixtures, detached setups).
+{
+  const defaultBranch = ['main', 'master'].find((name) => gitMaybe(['rev-parse', '--verify', '--quiet', `refs/heads/${name}`]).status === 0);
+  if (defaultBranch) {
+    const mainFiles = gitMaybe(['diff', '--name-only', '-z', `HEAD...${defaultBranch}`]).stdout.split('\0').filter(Boolean);
+    const clash = mainFiles.filter((file) => isFileWithinScopes(file, task.scope) || files.includes(file));
+    if (clash.length) fail(`${defaultBranch} advanced on task scope (${clash.join(', ')}); rebase integration/${change} onto ${defaultBranch} and re-review`, 34);
+  }
 }
 
 // TDD proof: the test-author prefix (commits before the first implementation commit) must fail the frozen Verify

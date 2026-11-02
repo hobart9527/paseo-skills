@@ -328,3 +328,33 @@ Lead 未改写历史，开 `-a2` 分支，由原 ceshi 重提同字节测试、�
 
 **限制**：`git commit --no-verify` 可绕过（由 `merge-task` 兜底）；hook 在真实 Codex/Claude agent 进程里能否继承 `PASEO_AGENT_ID`
 **仅在本 shell 与临时仓库实测，未在真实 tester/implementer 中验证**——下一个任务的首个 tester 提交是验证点。
+
+## 16. 2026-11-02 根因加固：主线漂移、返工上限、提醒噪声（`expense-form-prototype-v10-alignment` 复盘）
+
+同一次 v10 运行的复盘（10 任务）。每项对应一次事故；按 §12，写明每项拦的是什么，以及刻意没加的。
+
+| 改动 | 事故 | 拦的是什么 |
+| --- | --- | --- |
+| `merge-task` exit 34：`HEAD...main` 改到任务 Write scope 或任务文件 | v10 期间 `main` 在流水线之下前进，集成分支基于旧基线评审与验证 | 合流正确性 → 阻断（失败开放：本地无 `main`/`master` 时跳过） |
+| `merge-task` exit 37：同分支实现提交 > 2 | T-10 同分支五轮评审；`lead.md` 的上限只靠 Lead 自觉 | 返工预算 → 阻断（`--allow-attempt-over` 仅人工） |
+| `freeze-check` 取**最后一条** `R0: pass(...)` | CP-1 后契约增量只能重写第一行，否则 `STALE_R0_SIGNOFF` 死锁 | 签字绑定提交 → 追加即重签，不新增语法 |
+| `freeze-check` 建议项 `CROSS_CHANGE_SCOPE_OVERLAP` | 另一 change 的 `integration/*` 已改同一批文件，到 CP-2 才撞 | 判断性信号 → **仅提示**，不改退出码 |
+| Tier 钩子：`<paseo-system>`/`<task-notification>` 只刷新快照、不提醒、不重置 `turns`/`churnReported`；linked worktree / 功能分支不注入（只看 cwd，不看 `PASEO_AGENT_ID`——人会直连 Paseo）；`assessStop` 补跨作用域核对 | Paseo 把子 agent 通知当 user 消息投递，每条都触发 `[分级提醒]`；Bash 写两个包的文件 PreToolUse 看不到 | 噪声 → 静默；跨作用域与 `assessTierGate` 同口径 |
+| `commit-msg` 头注释与 `lead.md`：Lead 代提交须 `PASEO_AGENT_ID=<子 agent 全 UUID>` | Lead 替沙箱受限的子 agent 提交，作者被盖成 Lead，`merge-task` exit 31 | 仅文档：shell 钩子无 Paseo 查询，不猜角色 |
+| `reviewer.md` ARBITER：「归下游 T-k」的 OVERRULE 必须引用冻结文件中 T-k 已有该要求的原行，否则 `ESCALATE_HUMAN` | Arbiter 口头 OVERRULE 把 payee-accounts 泄漏推给 T-04/T-05，FINAL 评审随后失败 | 契约缺口 → 走 CP-1 增量，不靠口头 |
+| 模板：`standard|strict` 任务的测试须加载并执行被测代码；`readFileSync` + 正则读生产源码只许 `mechanical` | 源码文本断言「通过」但行为未证 | R0 标契约缺陷、TASK 评审按 `SPEC_VIOLATION` 阻断；**不**进 `merge-task`（§12：文本启发式不与合流门禁同级） |
+| `lead.md`：R2 复用 R1 的同一 reviewer id | R2 另起新 reviewer，丢失 R1 上下文 | 流程约定 |
+| `SKILL.md`：CP-1 遇 `ADVISORY_LOW_SPEEDUP`/`CRITICAL_LOGICAL_EDGES` 必须并列给出 Tier 2；CP-1 后任何契约变更同步 `design.md`、重跑 `--structural`，新接口/安全边界补 `hanlin` R0 | 契约在运行中被口头改动，设计文档与 R0 失效 | 流程约定 |
+
+**一进一出**：`lead.md` 里「上限由你执行，`merge-task` 不管」一句已删，改为机制 + 提前自检；旧的「R0 取第一条」行为被取代而非并存。
+
+**刻意没加 / 已否决**：
+- `speedup < 1.5` → 强制 handoff：标准 4 任务菱形 speedup 就是 1.33，会被一律禁止；保持建议项，只要求 CP-1 并列给出选项。
+- `freeze-check` 的静态接口表门禁：判断 LLM 文本，违反 §12 判据 1。
+- `R0-delta:` 新语法：追加一行 `R0: pass(...)`、最后一条生效即可，不增加第二种格式。
+- R2「不得出现新发现」规则：曾提议，被否——它会藏住真实的账户串号缺陷；R2 仍可对修复引入或暴露的新缺陷阻断（见 §9.6）。
+- `<repo>/.worktrees` 路径方案：不能逃出 Codex 沙箱，无效。
+- 跨 change 重叠做成 `BLOCK`：另一 change 可能随后被废弃或改写，硬阻断会误伤。
+- 改 `~/.paseo/config.json`（`shangshu` 模型、Codex 可写根）：用户明确排除，不在本仓库范围。
+
+**限制**：`PASEO_AGENT_ID` 在真实 agent 进程内的取值、以及 Paseo 通知的 `<paseo-system>` 前缀形态，均按本次收到的通知样本实现，未在其他 Paseo 版本验证。

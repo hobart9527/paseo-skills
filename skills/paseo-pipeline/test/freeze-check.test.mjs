@@ -270,3 +270,48 @@ test('mechanical sink may run a non-test check', () => {
   const result = freezeOf(sinkContract('rg -c done docs/x.md', '  - Review: mechanical\n'));
   assert.equal(result.status, 0, result.stdout);
 });
+
+// ---- R0: the last sign-off line wins ----
+function signedRepo(review) {
+  const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  const sh = (...a) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8' }).trim();
+  sh('init', '-q', '-b', 'main'); sh('config', 'user.email', 't@t'); sh('config', 'user.name', 't');
+  sh('add', '.'); sh('commit', '-qm', 'draft');
+  const sha = sh('rev-parse', '--short', 'HEAD');
+  fs.writeFileSync(path.join(dir, 'review.md'), review(sha));
+  return { dir, sh, sha };
+}
+test('R0 sign-off: last line wins — a stale first line plus a valid appended one passes', () => {
+  const { dir } = signedRepo((sha) => `R0: pass(hanlin-uuid@deadbee)\n\nDelta re-review:\nR0: pass(hanlin-uuid@${sha})\n`);
+  assert.equal(run(dir).status, 0);
+});
+test('R0 sign-off: a stale LAST line is STALE_R0_SIGNOFF even when an earlier one is valid', () => {
+  const { dir } = signedRepo((sha) => `R0: pass(hanlin-uuid@${sha})\nR0: pass(hanlin-uuid@deadbee)\n`);
+  assert.match(run(dir).stdout, /STALE_R0_SIGNOFF.*deadbee.*does not exist/);
+});
+
+// ---- cross-change scope overlap is advisory only ----
+test('CROSS_CHANGE_SCOPE_OVERLAP: another integration branch touching this Write scope is advisory, exit stays 0', () => {
+  const { dir, sh, sha } = signedRepo((s) => `R0: pass(hanlin-uuid@${s})\n`);
+  const other = (name, file) => {
+    sh('switch', '-q', '-c', name); fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), 'x'); sh('add', file); sh('commit', '-qm', `touch ${file}`); sh('switch', '-q', 'main');
+  };
+  other('integration/other-change', 'src/shared/x.mjs');
+  other('integration/unrelated', 'docs/y.md');
+  other(`integration/${path.basename(dir)}`, 'src/shared/own.mjs'); // own branch is never reported
+  fs.writeFileSync(path.join(dir, 'review.md'), `R0: pass(hanlin-uuid@${sha})\n`);
+  for (const flags of [['--skip-signer-check'], ['--skip-signer-check', '--structural']]) {
+    const out = execFileSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--json', ...flags], { encoding: 'utf8' });
+    const report = JSON.parse(out);
+    assert.deepEqual(report.blocking, []);
+    const hits = report.advisories.filter((a) => a.startsWith('CROSS_CHANGE_SCOPE_OVERLAP'));
+    assert.equal(hits.length, 1, hits.join('\n'));
+    assert.match(hits[0], /^CROSS_CHANGE_SCOPE_OVERLAP T-01 vs integration\/other-change: src\/shared\/x\.mjs$/);
+  }
+});
+test('CROSS_CHANGE_SCOPE_OVERLAP: outside a git repo it is silently skipped', () => {
+  const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  const report = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--json', '--structural'], { encoding: 'utf8' }));
+  assert.ok(!report.advisories.some((a) => /CROSS_CHANGE/.test(a)));
+});

@@ -87,3 +87,14 @@ test('cherry-pick keeps the original author (the -aN handoff path)', (t) => {
   assert.equal(r.sh(['cherry-pick', sha]).status, 0);
   assert.equal(r.trailer('Pipeline-Author'), OTHER);
 });
+
+test('Lead committing for a sandbox-blocked child exports the child id; that id is stamped, not the Lead', (t) => {
+  const r = repo(t);
+  const LEAD = '22222222-2222-2222-2222-222222222222';
+  // Lead's own identity would be stamped as-is (the hook never guesses roles from ids)...
+  assert.equal(r.commit('impl\n\nPipeline-Role: gongbu', { PASEO_AGENT_ID: LEAD }).status, 0);
+  assert.equal(r.trailer('Pipeline-Author'), LEAD);
+  // ...so the documented procedure is to export the child's full uuid for that one commit.
+  assert.equal(r.commit(`impl2\n\nPipeline-Role: gongbu\nPipeline-Author: ${LEAD}`, { PASEO_AGENT_ID: OTHER }).status, 0);
+  assert.equal(r.trailer('Pipeline-Author'), OTHER);
+});

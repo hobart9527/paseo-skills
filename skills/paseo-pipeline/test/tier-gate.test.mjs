@@ -6,13 +6,20 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { assessTierGate, assessStop, takeSnapshot, logHookError, scopeKey } from '../lib/tier-gate.mjs';
-import { shouldRemind, REMINDER } from '../hooks/tier-reminder-hook.mjs';
+import { shouldRemind, isSystemNotification, REMINDER } from '../hooks/tier-reminder-hook.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const GUARD_HOOK = path.join(here, '..', 'hooks', 'tier-write-hook.mjs');
 const REMINDER_HOOK = path.join(here, '..', 'hooks', 'tier-reminder-hook.mjs');
 const SESSION_HOOK = path.join(here, '..', 'hooks', 'tier-session-hook.mjs');
 const STOP_HOOK = path.join(here, '..', 'hooks', 'tier-stop-hook.mjs');
+
+// 测试进程自己可能跑在 Paseo 里（PASEO_AGENT_ID 已设）。注入判定不看这个变量，仍主动清掉以固定前提。
+const cleanEnv = (extra = {}) => {
+  const env = { ...process.env, ...extra };
+  if (!('PASEO_AGENT_ID' in extra)) delete env.PASEO_AGENT_ID;
+  return env;
+};
 
 const sh = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
@@ -261,7 +268,7 @@ test('提醒不触发：斜杠命令、空串、非字符串', () => {
 });
 
 test('tier-reminder-hook 进程：非斜杠消息输出 additionalContext，斜杠与坏输入无输出', () => {
-  const run = (input, env = {}) => spawnSync('node', [REMINDER_HOOK], { input, encoding: 'utf8', env: { ...process.env, ...env } });
+  const run = (input, env = {}) => spawnSync('node', [REMINDER_HOOK], { input, encoding: 'utf8', env: cleanEnv(env) });
   const hit = run(JSON.stringify({ prompt: '继续' }));
   assert.equal(hit.status, 0);
   const out = JSON.parse(hit.stdout);
@@ -273,6 +280,43 @@ test('tier-reminder-hook 进程：非斜杠消息输出 additionalContext，斜�
   assert.equal(run(JSON.stringify({ prompt: '/tdd' })).stdout.trim(), '');
   assert.equal(run('garbage').stdout.trim(), '');
   assert.equal(run(JSON.stringify({ prompt: '执行' }), { PIPELINE_TIER_REMINDER: 'off' }).stdout.trim(), '');
+});
+
+const NOTIFICATION = '<paseo-system version="1" kind="agent-message" source-agent-id="a1">\n## Task\ndone\n</paseo-system>';
+
+test('系统通知：不是人的消息，不提醒', () => {
+  assert.equal(isSystemNotification(NOTIFICATION), true);
+  assert.equal(isSystemNotification('  \n<task-notification id="x">done</task-notification>'), true);
+  assert.equal(isSystemNotification('请看 <paseo-system> 这个标签'), false);
+  assert.equal(shouldRemind(NOTIFICATION), false);
+  assert.equal(shouldRemind('<task-notification>x</task-notification>'), false);
+});
+
+test('tier-reminder-hook 进程：系统通知无输出；cwd 非仓库/缺失仍注入；linked worktree 跳过', () => withState((dir) => {
+  const run = (payload, env = {}) => spawnSync('node', [REMINDER_HOOK], { input: JSON.stringify(payload), encoding: 'utf8', env: cleanEnv({ PIPELINE_TIER_GATE_STATE: dir, ...env }) });
+  const root = makeRepo();
+  const plain = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tier-nogit-')));
+  assert.equal(run({ prompt: NOTIFICATION, cwd: root, session_id: 'n1' }).stdout.trim(), '');
+  assert.match(run({ prompt: '继续', cwd: root, session_id: 'n1' }).stdout, /分级提醒/);
+  assert.match(run({ prompt: '继续', cwd: plain, session_id: 'n1' }).stdout, /分级提醒/, 'null repo context 仍注入');
+  assert.match(run({ prompt: '继续' }).stdout, /分级提醒/, '无 cwd 仍注入');
+  // 人的会话跑在 Paseo 里也带 PASEO_AGENT_ID；只看 cwd，环境变量不参与判定。
+  assert.match(run({ prompt: '继续', cwd: root, session_id: 'n1' }, { PASEO_AGENT_ID: 'abc' }).stdout, /分级提醒/, '主 checkout 上 agent 环境变量不抑制');
+  const wt = path.join(path.dirname(root), `${path.basename(root)}-wt`);
+  sh(root, 'worktree', 'add', '-q', '-b', 'feat/x', wt);
+  assert.equal(run({ prompt: '继续', cwd: wt, session_id: 'n1' }).stdout.trim(), '');
+}));
+
+test('tier-session-hook 进程：linked worktree 不注入，非仓库 cwd 与 agent 环境变量仍注入', () => {
+  const run = (payload, env = {}) => spawnSync('node', [SESSION_HOOK], { input: JSON.stringify(payload), encoding: 'utf8', env: cleanEnv(env) });
+  const root = makeRepo();
+  const plain = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tier-nogit-')));
+  assert.match(run({ cwd: root }).stdout, /分级规则/);
+  assert.match(run({ cwd: plain }).stdout, /分级规则/);
+  assert.match(run({ cwd: root }, { PASEO_AGENT_ID: 'abc' }).stdout, /分级规则/, '主 checkout 上 agent 环境变量不抑制');
+  const wt = path.join(path.dirname(root), `${path.basename(root)}-wt`);
+  sh(root, 'worktree', 'add', '-q', '-b', 'feat/y', wt);
+  assert.equal(run({ cwd: wt }).stdout.trim(), '');
 });
 
 // ---- ask 语义 ----
@@ -288,13 +332,13 @@ test('越线写入被拒绝后重试仍然 ask，不会溜过去；放行额度�
 // ---- SessionStart hook ----
 
 test('tier-session-hook 进程：输出 SessionStart additionalContext，含分级规则', () => {
-  const r = spawnSync('node', [SESSION_HOOK], { input: '{}', encoding: 'utf8' });
+  const r = spawnSync('node', [SESSION_HOOK], { input: '{}', encoding: 'utf8', env: cleanEnv() });
   assert.equal(r.status, 0);
   const out = JSON.parse(r.stdout);
   assert.equal(out.hookSpecificOutput.hookEventName, 'SessionStart');
   assert.match(out.hookSpecificOutput.additionalContext, /Tier 1/);
   assert.match(out.hookSpecificOutput.additionalContext, /Tier 3/);
-  const off = spawnSync('node', [SESSION_HOOK], { input: '{}', encoding: 'utf8', env: { ...process.env, PIPELINE_TIER_REMINDER: 'off' } });
+  const off = spawnSync('node', [SESSION_HOOK], { input: '{}', encoding: 'utf8', env: cleanEnv({ PIPELINE_TIER_REMINDER: 'off' }) });
   assert.equal(off.stdout.trim(), '');
 });
 
@@ -447,6 +491,65 @@ test('连续多轮原地改：第 3 轮 Stop 汇报一次，用户回话后重�
     bashWrite(root, ['a']);
     assert.equal(stop(root, 'churn').verdict, round === 2 ? 'ok' : 'block', `新一轮第 ${round} 轮`);
   }
+}));
+
+test('系统通知轮：刷新快照，但不重置 churn 计数', () => withState((dir) => {
+  const root = makeRepo();
+  for (let round = 1; round <= 2; round += 1) {
+    snap(root, 'sys');
+    bashWrite(root, ['a']);
+    assert.equal(stop(root, 'sys').verdict, 'ok');
+  }
+  // 第 3 轮：先有一条系统通知到达（不是用户答复），Bash 又改了文件。
+  takeSnapshot({ cwd: root, sessionId: 'sys', isHumanTurn: false });
+  const ledger = () => JSON.parse(fs.readFileSync(path.join(dir, fs.readdirSync(dir).find((f) => f === 'sys.json')), 'utf8'))[root];
+  assert.equal(ledger().turns, 2, '系统通知不清零');
+  bashWrite(root, ['a']);
+  const escalated = stop(root, 'sys');
+  assert.equal(escalated.verdict, 'block');
+  assert.match(escalated.reason, /连续 3 轮/);
+  // 汇报后又来一条系统通知：churnReported 不能被清掉，否则同一批会重复打断。
+  takeSnapshot({ cwd: root, sessionId: 'sys', isHumanTurn: false });
+  assert.equal(ledger().churnReported, true);
+  bashWrite(root, ['a']);
+  assert.equal(stop(root, 'sys').verdict, 'ok');
+  // 真正的用户消息才清零。
+  takeSnapshot({ cwd: root, sessionId: 'sys' });
+  assert.equal(ledger().turns, 0);
+  assert.equal(ledger().churnReported, false);
+}));
+
+test('系统通知轮：仍刷新快照基线，遗留脏文件不被算成下一轮的改动', () => withState(() => {
+  const root = makeRepo();
+  snap(root, 'base');
+  bashWrite(root, ['a', 'b']);
+  assert.equal(stop(root, 'base').verdict, 'ok');
+  takeSnapshot({ cwd: root, sessionId: 'base', isHumanTurn: false });
+  // 本轮没有新写入：a、b 已在基线里，不应再被当作改动。
+  const r = stop(root, 'base');
+  assert.equal(r.verdict, 'ok');
+  assert.deepEqual(r.files, []);
+}));
+
+test('Stop 核对：Bash 跨 packages/server 与 packages/web 各写 1 个文件 → block；同作用域 2 个不拦', () => withState(() => {
+  const root = makeRepo();
+  const put = (rel) => { fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true }); fs.writeFileSync(path.join(root, rel), 'x'); };
+  snap(root, 'scope');
+  put('packages/server/a.ts');
+  put('packages/web/b.ts');
+  const blocked = stop(root, 'scope');
+  assert.equal(blocked.verdict, 'block');
+  assert.match(blocked.reason, /跨 2 个作用域/);
+  assert.match(blocked.reason, /packages\/server/);
+  assert.match(blocked.reason, /packages\/web/);
+  // 同一批只汇报一次。
+  snap(root, 'scope');
+  assert.equal(stop(root, 'scope').verdict, 'ok');
+
+  snap(root, 'same');
+  put('packages/server/x.ts');
+  put('packages/server/y/z.ts');
+  assert.equal(stop(root, 'same').verdict, 'ok');
 }));
 
 // ---- fail-open 留痕 ----

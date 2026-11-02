@@ -175,7 +175,8 @@ if (!read(path.join(changeDir, 'proposal.md'))) blocking.push('MISSING_PROPOSAL:
 
 // R0 sign-off: hanlin must have reviewed the complete contract package before CP-1.
 // hanlin is read-only and returns `R0: pass(<uuid>@<sha>)` as text; the main session records it
-// as the first line of review.md. The sha is the commit hanlin reviewed, so any contract edit
+// as a line of review.md (the LAST such line counts, so a post-CP-1 contract delta is re-signed by
+// appending a new line instead of deadlocking on STALE_R0_SIGNOFF). The sha is the commit hanlin reviewed, so any contract edit
 // after it voids the sign-off. --structural skips this: it runs before the review exists.
 function gitIn(dir, gitArgs) {
   return spawnSync('git', ['-C', dir, ...gitArgs], { encoding: 'utf8' });
@@ -184,7 +185,7 @@ const nulList = (result) => (result.stdout || '').split('\0').filter(Boolean);
 const advisories = [];
 if (!structural) {
   const reviewMarkdown = read(path.join(changeDir, 'review.md'));
-  const r0Match = reviewMarkdown && reviewMarkdown.match(/^R0:\s*pass\(([^@)]+)@([a-f0-9]{7,40})\)/im);
+  const r0Match = reviewMarkdown ? [...reviewMarkdown.matchAll(/^R0:\s*pass\(([^@)]+)@([a-f0-9]{7,40})\)/gim)].at(-1) : undefined;
   if (!r0Match) {
     blocking.push('MISSING_R0_SIGNOFF: review.md must contain `R0: pass(<reviewer-uuid>@<sha>)` — run hanlin R0 review before freeze');
   } else {
@@ -217,6 +218,28 @@ if (!structural) {
       const drift = [...new Set([...nulList(diff), ...nulList(untracked)])].filter((file) => path.basename(file) !== 'review.md');
       if (diff.status !== 0) blocking.push(`STALE_R0_SIGNOFF: cannot diff contract against reviewed commit ${sha}`);
       else if (drift.length) blocking.push(`STALE_R0_SIGNOFF: contract changed after R0 reviewed ${sha}: ${drift.slice(0, 5).join(', ')} — re-run hanlin R0`);
+    }
+  }
+}
+
+// Cross-change overlap: another change's integration branch that already touches files in this
+// change's Write scope will collide at CP-2. Advisory only (LESSONS §12): never blocks, any git
+// error or non-repo is silently skipped. Runs in both modes.
+{
+  const refs = gitIn(changeDir, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/integration/']);
+  const defaultBranch = refs.status === 0
+    ? ['main', 'master'].find((name) => gitIn(changeDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`]).status === 0)
+    : undefined;
+  if (defaultBranch) {
+    const own = `integration/${path.basename(path.resolve(changeDir))}`;
+    for (const branch of refs.stdout.split('\n').map((line) => line.trim()).filter((line) => line && line !== own)) {
+      const diff = gitIn(changeDir, ['diff', '--name-only', '-z', `${defaultBranch}...${branch}`]);
+      if (diff.status !== 0) continue;
+      const changed = nulList(diff);
+      for (const task of tasks) {
+        const overlap = changed.filter((file) => isFileWithinScopes(file, task.scope));
+        if (overlap.length) advisories.push(`CROSS_CHANGE_SCOPE_OVERLAP ${task.id} vs ${branch}: ${overlap.slice(0, 5).join(', ')}`);
+      }
     }
   }
 }

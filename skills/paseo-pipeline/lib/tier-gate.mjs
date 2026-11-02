@@ -326,7 +326,25 @@ function snapFile(sessionId) {
   return stateFile(sessionId).replace(/\.json$/, '.snap.json');
 }
 
-export function takeSnapshot({ cwd, sessionId }) {
+/**
+ * 分级提醒/会话规则只对「人在主 checkout 上直接对话」的会话有意义。
+ * linked worktree / 功能分支里注入只是噪声：那里的 tier 已经由派发方决定。
+ * cwd 不在 git 仓库内（ctx 为 null）时照常注入——不能用 `!ctx?.isPrimaryOnProtected`，
+ * 否则非仓库目录的会话会丢掉规则。
+ * 不看 `PASEO_AGENT_ID`：人在 Paseo 里直连的会话同样带它，按环境变量跳过会静默吞掉提醒。
+ */
+export function skipInjection(cwd) {
+  if (typeof cwd !== 'string' || cwd === '') return false;
+  const ctx = repoContext(cwd);
+  return ctx !== null && !ctx.isPrimaryOnProtected;
+}
+
+/**
+ * 记录本轮基线。`isHumanTurn=false`（Paseo 子 agent 通知等系统消息，经 UserPromptSubmit 到达）
+ * 仍要刷新快照——否则上一轮遗留的脏文件会在 assessStop 里被当成「本轮改动」——
+ * 但不重置 turns / churnReported：系统通知不是用户看过汇报后的答复。
+ */
+export function takeSnapshot({ cwd, sessionId, isHumanTurn = true }) {
   if (process.env.PIPELINE_TIER_GATE === 'off') return;
   if (typeof sessionId !== 'string' || sessionId === '' || typeof cwd !== 'string' || cwd === '') return;
   const ctx = repoContext(cwd);
@@ -337,7 +355,7 @@ export function takeSnapshot({ cwd, sessionId }) {
   const file = stateFile(sessionId);
   const state = readState(file);
   const prev = state[ctx.root];
-  if (prev && !Array.isArray(prev)) {
+  if (isHumanTurn && prev && !Array.isArray(prev)) {
     const inspected = prev.churnReported === true
       || (Number.isInteger(prev.turns) && prev.turns >= turnsFromEnv());
     if (inspected) writeSegment(file, state, ctx.root, { ...prev, turns: 0, churnReported: false });
@@ -401,12 +419,16 @@ export function assessStop({ cwd, sessionId }) {
   // 再被同样的 block 打断；只有出现新的越界文件才重新汇报。
   const unreported = accumulated.filter((rel) => !reportedBefore.has(rel));
   const fileLimitBlock = accumulated.length > limit && unreported.length > 0;
+  // 跨作用域与 assessTierGate 同口径：已有累计文件、再触到第 2 个作用域即越出 Tier 1。
+  // Bash 写入绕过了 PreToolUse 的 ask，这里事后补上；复用 reported，同一批只汇报一次。
+  const scopes = [...new Set([...accumulated, ...seg.asked].map(scopeKey))].sort();
+  const scopeBlock = !fileLimitBlock && accumulated.length > 0 && scopes.length >= 2 && unreported.length > 0;
   // 「连续多轮原地改」在这里判：Stop 的产出是迫使模型停下来汇报，不是逐次写入的许可。
   // 汇报过一次就设 churnReported，用户回话时由 takeSnapshot 重置；否则同一段任务每轮都打断。
   const turnLimit = turnsFromEnv();
   const turnsAfter = round.length > 0 ? seg.turns + 1 : seg.turns;
   const churnBlock = turnsAfter >= turnLimit && round.length > 0 && !seg.churnReported;
-  const block = fileLimitBlock || churnBlock;
+  const block = fileLimitBlock || scopeBlock || churnBlock;
   // 只有真的在本轮改动了业务文件才算一轮；纯阅读/纯讨论不推进计数器，也不刷新段时钟，
   // 否则一段任务会被频繁的 Stop 永久保活，空闲重置永远不生效。
   if (round.length > 0) {
@@ -415,7 +437,7 @@ export function assessStop({ cwd, sessionId }) {
       asked: seg.asked,
       at: Date.now(),
       turns: turnsAfter,
-      reported: fileLimitBlock ? accumulated : seg.reported,
+      reported: fileLimitBlock || scopeBlock ? accumulated : seg.reported,
       // 保留已汇报标记：只有下一条用户消息（takeSnapshot）才重置，别在同一条消息里又允许重复打断。
       churnReported: seg.churnReported || churnBlock,
     });
@@ -429,7 +451,13 @@ export function assessStop({ cwd, sessionId }) {
     '不要再改文件，也不要回滚。先向用户汇报：这次已越出 Tier 1，是否未先分级；然后请用户决定走 Tier 2（/paseo-handoff）、Tier 3（/paseo-pipeline）或明确放行。',
     '（若其中有文件不是你改的，例如用户或其他会话同时在改，说明这一点即可。）',
   ].join('\n');
-  const reason = [fileLimitBlock ? limitReason : '', churnBlock ? churnReason(turnsAfter, turnLimit) : '']
+  const scopeReason = [
+    `[tier-gate] 本任务段在主 checkout（main）上已跨 ${scopes.length} 个作用域（${scopes.join('、')}），超出 Tier 1 的「单目录小范围」，且未经确认。`,
+    `本轮改动：${round.join('、') || '（无新增，是上一轮累计）'}`,
+    `累计：${accumulated.join('、')}`,
+    '不要再改文件，也不要回滚。先向用户汇报：这次已越出 Tier 1，是否未先分级；然后请用户决定走 Tier 2（/paseo-handoff）、Tier 3（/paseo-pipeline）或明确放行。',
+  ].join('\n');
+  const reason = [fileLimitBlock ? limitReason : '', scopeBlock ? scopeReason : '', churnBlock ? churnReason(turnsAfter, turnLimit) : '']
     .filter(Boolean).join('\n\n');
   return { verdict: 'block', files: accumulated, reason };
 }

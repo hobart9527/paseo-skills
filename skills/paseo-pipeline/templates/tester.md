@@ -8,6 +8,7 @@ Write scope: `<exact frozen test paths>`. Contract: `<spec/tasks paths>`.
 - Write behavior tests only; do not implement production behavior.
 - Read frozen task contract, SCENs, Wave 0 contract, base-branch code and existing test conventions. Do not use implementation-agent messages or implementation branch changes to derive expected behavior.
 - Follow the repository's TDD/testing guidance. Assert public behavior, not private implementation details.
+- For `Review: standard|strict` tasks, tests must load and execute (or render) the code under test. Asserting on production source text (`fs.readFileSync` + regex/string match) is not a behavioral test: task review blocks it as `SPEC_VIOLATION`. Allowed only for `Review: mechanical`.
 
 ## Steps
 1. Add tests for claimed SCENs within test paths in task Write scope.

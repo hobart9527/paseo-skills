@@ -670,3 +670,52 @@ test('attempt breaker: -a3 still merges', () => {
   git(f.cwd, 'branch', '-m', `task/${f.change}/T-01`, `task/${f.change}/T-01-a3`);
   assert.equal(invoke(f.cwd, [`task/${f.change}/T-01-a3`, 'T-01', tag(f)]).status, 0);
 });
+
+// Main drift: the integration branch is cut from main; if main later changed this task's files,
+// the review and Verify ran on a stale picture.
+function advanceMain(f, file, text) {
+  git(f.cwd, 'switch', '-q', 'main');
+  write(f.cwd, file, text); git(f.cwd, 'add', '.'); git(f.cwd, 'commit', '-qm', `main: ${file}`);
+  git(f.cwd, 'switch', '-q', `integration/${f.change}`);
+}
+test('main advanced on a task scope file → exit 34, rebase and re-review', () => {
+  const f = fixture();
+  advanceMain(f, 'src/hot.txt', 'changed on main');
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', tag(f)]);
+  assert.equal(r.status, 34, r.out);
+  assert.match(r.out, /main advanced on task scope \(src\/hot\.txt\)/);
+  assert.match(r.out, new RegExp(`rebase integration/${f.change} onto main`));
+});
+test('main advanced only outside the task scope still merges', () => {
+  const f = fixture();
+  advanceMain(f, 'docs/unrelated.md', 'x');
+  assert.equal(invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', tag(f)]).status, 0);
+});
+test('main drift falls back to master and fails open when neither exists', () => {
+  const f = fixture();
+  advanceMain(f, 'src/hot.txt', 'x');
+  git(f.cwd, 'branch', '-m', 'main', 'master');
+  assert.equal(invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', tag(f)]).status, 34);
+  git(f.cwd, 'branch', '-m', 'master', 'trunk');
+  assert.equal(invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', tag(f)]).status, 0);
+});
+
+// Same-branch rework cap: 2 implementation commits per branch (lead.md).
+const implCommits = (n) => [
+  ['test/a.test.mjs', RED_TEST, 'ceshi', TESTER],
+  ...Array.from({ length: n }, (_, i) => [`src/${i === 0 ? 'a' : `r${i}`}.txt`, `v${i}`, 'gongbu', WRITER]),
+];
+test('rework cap: 2 implementation commits on one branch merge', () => {
+  assert.equal(run3(build(implCommits(2))).status, 0);
+});
+test('rework cap: a 3rd implementation commit is exit 37 pointing at -a2', () => {
+  const r = run3(build(implCommits(3)));
+  assert.equal(r.status, 37, r.out);
+  assert.match(r.out, /3 implementation commits/);
+  assert.match(r.out, /T-01-a2/);
+});
+test('rework cap: --allow-attempt-over bypasses it', () => {
+  const f = build(implCommits(3));
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(f.tip, f.base), '--allow-attempt-over']);
+  assert.equal(r.status, 0, r.out);
+});
