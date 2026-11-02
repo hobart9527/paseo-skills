@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-// PreToolUse tier cap: on main checkout, block the 4th distinct file written by one session.
-import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
+// PreToolUse tier cap: on main checkout, the 4th distinct file written by one session needs user confirmation.
+import { logHookError } from '../lib/tier-gate.mjs';
 
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
 async function main() {
@@ -12,8 +11,9 @@ async function main() {
   if (typeof target !== 'string' || !target) return;
   const { assessTierGate } = await import('../lib/tier-gate.mjs');
   const verdict = assessTierGate({ target, sessionId: payload.session_id });
-  if (verdict.verdict === 'deny') {
-    console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `[tier-gate] ${verdict.reason}` } }));
+  // ask, not deny: deny has no release path, so the model reroutes through Bash. ask puts the user in the loop.
+  if (verdict.verdict === 'ask') {
+    console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: `[tier-gate] ${verdict.reason}` } }));
   }
 }
-try { await main(); } catch {}
+try { await main(); } catch (err) { logHookError('tier-write-hook', err); }

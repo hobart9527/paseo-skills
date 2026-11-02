@@ -11,6 +11,8 @@ test('writes PIPELINE_HOME idempotently', (context) => {
   fs.writeFileSync(path.join(home, '.claude/settings.json'), JSON.stringify({ hooks: {
     PreToolUse: [{ hooks: [{ command: `node ${path.dirname(install)}/hooks/tier-write-hook.mjs` }] }],
     UserPromptSubmit: [{ hooks: [{ command: `node ${path.dirname(install)}/hooks/tier-reminder-hook.mjs` }] }],
+    SessionStart: [{ hooks: [{ command: `node ${path.dirname(install)}/hooks/tier-session-hook.mjs` }] }],
+    Stop: [{ hooks: [{ command: `node ${path.dirname(install)}/hooks/tier-stop-hook.mjs` }] }],
   } }));
   const first = spawnSync('bash', [install], { env, encoding: 'utf8' }); assert.equal(first.status, 0, first.stderr);
   const text = fs.readFileSync(path.join(home, '.zshenv'), 'utf8'); assert.match(text, /export PIPELINE_HOME=/);

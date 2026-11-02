@@ -5,12 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { assessTierGate } from '../lib/tier-gate.mjs';
+import { assessTierGate, assessStop, takeSnapshot, logHookError } from '../lib/tier-gate.mjs';
 import { shouldRemind, REMINDER } from '../hooks/tier-reminder-hook.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const GUARD_HOOK = path.join(here, '..', 'hooks', 'tier-write-hook.mjs');
 const REMINDER_HOOK = path.join(here, '..', 'hooks', 'tier-reminder-hook.mjs');
+const SESSION_HOOK = path.join(here, '..', 'hooks', 'tier-session-hook.mjs');
+const STOP_HOOK = path.join(here, '..', 'hooks', 'tier-stop-hook.mjs');
 
 const sh = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
@@ -51,7 +53,7 @@ test('主 checkout 的 main：前 3 个不同文件放行，第 4 个拒绝并�
   const root = makeRepo();
   for (const n of ['a', 'b', 'c']) assert.equal(write(root, n).verdict, 'allow', n);
   const d = write(root, 'd');
-  assert.equal(d.verdict, 'deny');
+  assert.equal(d.verdict, 'ask');
   assert.match(d.reason, /\/paseo-handoff/);
   assert.match(d.reason, /\/paseo-pipeline/);
   assert.match(d.reason, /a、.*b、.*c|src\/a/);
@@ -61,7 +63,7 @@ test('同一文件反复写只计一次', () => withState(() => {
   const root = makeRepo();
   for (let i = 0; i < 10; i += 1) assert.equal(write(root, 'a').verdict, 'allow');
   for (const n of ['b', 'c']) assert.equal(write(root, n).verdict, 'allow');
-  assert.equal(write(root, 'd').verdict, 'deny');
+  assert.equal(write(root, 'd').verdict, 'ask');
 }));
 
 test('已有的脏文件不计入：只数本会话写过的', () => withState(() => {
@@ -74,7 +76,7 @@ test('不同会话各自独立计数', () => withState(() => {
   const root = makeRepo();
   for (const n of ['a', 'b', 'c']) write(root, n, 's1');
   assert.equal(write(root, 'x', 's2').verdict, 'allow');
-  assert.equal(write(root, 'd', 's1').verdict, 'deny');
+  assert.equal(write(root, 'd', 's1').verdict, 'ask');
 }));
 
 test('linked worktree 内不受限（Tier 2/3 写手的落点）', () => withState(() => {
@@ -120,7 +122,7 @@ test('PIPELINE_TIER_GATE=off 与自定义上限', () => withState(() => {
   const root = makeRepo();
   process.env.PIPELINE_TIER_GATE_LIMIT = '1';
   assert.equal(write(root, 'a').verdict, 'allow');
-  assert.equal(write(root, 'b').verdict, 'deny');
+  assert.equal(write(root, 'b').verdict, 'ask');
   process.env.PIPELINE_TIER_GATE = 'off';
   assert.equal(write(root, 'c').verdict, 'allow');
 }));
@@ -128,7 +130,7 @@ test('PIPELINE_TIER_GATE=off 与自定义上限', () => withState(() => {
 test('新任务段从零计数：空闲超过阈值后不再沿用上一段的写量', () => withState((dir) => {
   const root = makeRepo();
   for (const n of ['a', 'b', 'c']) write(root, n);
-  assert.equal(write(root, 'd').verdict, 'deny');
+  assert.equal(write(root, 'd').verdict, 'ask');
   // Rewind the ledger clock to simulate a finished task followed by a new request.
   for (const f of fs.readdirSync(dir)) {
     const state = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
@@ -152,13 +154,13 @@ test('空闲阈值可调，且段内不会被自己的间隔重置', () => withS
 test('legacy array ledger still counts', () => withState((dir) => {
   const root = makeRepo();
   fs.writeFileSync(path.join(dir, 's1.json'), JSON.stringify({ [fs.realpathSync(root)]: ['src/a', 'src/b', 'src/c'] }));
-  assert.equal(write(root, 'd').verdict, 'deny');
+  assert.equal(write(root, 'd').verdict, 'ask');
 }));
 
 test('新建文件（目标尚不存在）也能判定', () => withState(() => {
   const root = makeRepo();
   for (const n of ['deep/new/a', 'deep/new/b', 'deep/new/c']) assert.equal(write(root, n).verdict, 'allow', n);
-  assert.equal(write(root, 'deep/new/d').verdict, 'deny');
+  assert.equal(write(root, 'deep/new/d').verdict, 'ask');
 }));
 
 // ---- hook 进程级：从 stdin 读事件、按契约输出 ----
@@ -167,7 +169,7 @@ function runGuardHook(payload, env = {}) {
   return spawnSync('node', [GUARD_HOOK], { input: JSON.stringify(payload), encoding: 'utf8', env: { ...process.env, ...env } });
 }
 
-test('tier-write-hook 进程：第 4 个文件输出 deny JSON，其前不输出', () => withState((dir) => {
+test('tier-write-hook 进程：第 4 个文件输出 ask JSON，其前不输出', () => withState((dir) => {
   const root = makeRepo();
   const env = { PIPELINE_TIER_GATE_STATE: dir };
   const call = (n) => runGuardHook({ session_id: 'proc1', tool_name: 'Edit', tool_input: { file_path: path.join(root, 'src', n) } }, env);
@@ -180,7 +182,7 @@ test('tier-write-hook 进程：第 4 个文件输出 deny JSON，其前不输出
   assert.equal(r.status, 0);
   const out = JSON.parse(r.stdout);
   assert.equal(out.hookSpecificOutput.hookEventName, 'PreToolUse');
-  assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
+  assert.equal(out.hookSpecificOutput.permissionDecision, 'ask');
   assert.match(out.hookSpecificOutput.permissionDecisionReason, /tier-gate/);
 }));
 
@@ -193,39 +195,131 @@ test('tier-write-hook 进程：非写入工具与坏输入不干预', () => {
 
 // ---- 提醒 hook ----
 
-test('提醒触发：用户当天两句真实的"执行"指令都会命中', () => {
-  assert.equal(shouldRemind('完全没问题，执行上面的3步整体的优化。'), true);
-  assert.equal(shouldRemind('按照目前的整个方案，执行上面的所有的整个优化。'), true);
-  assert.equal(shouldRemind('fix the login bug'), true);
-  assert.equal(shouldRemind('go ahead and implement it'), true);
+test('提醒触发：续接类短句也命中（长会话里最容易直接动手的时刻）', () => {
+  for (const p of ['好的，按方案B来', '继续', '可以，做吧', 'ok go', '把第2点也改了', '执行上面的优化', 'fix the login bug']) {
+    assert.equal(shouldRemind(p), true, p);
+  }
 });
 
-test('提醒不触发：纯评估长问句、斜杠命令、空串', () => {
-  assert.equal(shouldRemind('评估一下整个的Pipeline的整个Skill，整个的DAG和Wave的整个并发策略到底是否其实真正被彻底的执行了的？'), false);
-  assert.equal(shouldRemind('对 skill 目前的整体实现进行走查，看看存在什么设计缺陷或者不足导致执行效率摩擦断裂阻塞严重等问题等'), false);
+test('提醒不触发：斜杠命令、空串、非字符串', () => {
   assert.equal(shouldRemind('/paseo-pipeline 做字典优化'), false);
+  assert.equal(shouldRemind('   '), false);
   assert.equal(shouldRemind(''), false);
   assert.equal(shouldRemind(undefined), false);
-  assert.equal(shouldRemind('你确定这14类的字典是完整的吗？'), false);
-  assert.equal(shouldRemind('复盘一下，然后分析是否需要执行这些修改？'), false);
-  assert.equal(shouldRemind('看看方案是否合理，有什么问题？'), false);
 });
 
-test('提醒触发：明确中文实施命令', () => {
-  assert.equal(shouldRemind('请直接执行上面的修复方案。'), true);
-  assert.equal(shouldRemind('按方案开始做这些修改。'), true);
-});
-
-test('tier-reminder-hook 进程：命中时输出 additionalContext，未命中与坏输入无输出', () => {
+test('tier-reminder-hook 进程：非斜杠消息输出 additionalContext，斜杠与坏输入无输出', () => {
   const run = (input, env = {}) => spawnSync('node', [REMINDER_HOOK], { input, encoding: 'utf8', env: { ...process.env, ...env } });
-  const hit = run(JSON.stringify({ prompt: '执行上面的优化' }));
+  const hit = run(JSON.stringify({ prompt: '继续' }));
   assert.equal(hit.status, 0);
   const out = JSON.parse(hit.stdout);
   assert.equal(out.hookSpecificOutput.hookEventName, 'UserPromptSubmit');
   assert.equal(out.hookSpecificOutput.additionalContext, REMINDER);
   assert.match(REMINDER, /\/paseo-handoff/);
   assert.match(REMINDER, /\/paseo-pipeline/);
-  assert.equal(run(JSON.stringify({ prompt: '你好' })).stdout.trim(), '');
+  assert.match(REMINDER, /Bash/);
+  assert.equal(run(JSON.stringify({ prompt: '/tdd' })).stdout.trim(), '');
   assert.equal(run('garbage').stdout.trim(), '');
   assert.equal(run(JSON.stringify({ prompt: '执行' }), { PIPELINE_TIER_REMINDER: 'off' }).stdout.trim(), '');
 });
+
+// ---- ask 语义 ----
+
+test('越线写入被拒绝后重试仍然 ask，不会溜过去；放行额度不被占用', () => withState(() => {
+  const root = makeRepo();
+  for (const n of ['a', 'b', 'c']) write(root, n);
+  assert.equal(write(root, 'd').verdict, 'ask');
+  assert.equal(write(root, 'd').verdict, 'ask');
+  assert.equal(write(root, 'a').verdict, 'allow');
+}));
+
+// ---- SessionStart hook ----
+
+test('tier-session-hook 进程：输出 SessionStart additionalContext，含分级规则', () => {
+  const r = spawnSync('node', [SESSION_HOOK], { input: '{}', encoding: 'utf8' });
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.hookSpecificOutput.hookEventName, 'SessionStart');
+  assert.match(out.hookSpecificOutput.additionalContext, /Tier 1/);
+  assert.match(out.hookSpecificOutput.additionalContext, /Tier 3/);
+  const off = spawnSync('node', [SESSION_HOOK], { input: '{}', encoding: 'utf8', env: { ...process.env, PIPELINE_TIER_REMINDER: 'off' } });
+  assert.equal(off.stdout.trim(), '');
+});
+
+// ---- Stop 核对（补 Bash 写入） ----
+
+const bashWrite = (root, names) => { for (const n of names) fs.writeFileSync(path.join(root, 'src', n), `bash ${Date.now()}`); };
+const snap = (root, sid = 'st1') => takeSnapshot({ cwd: root, sessionId: sid });
+const stop = (root, sid = 'st1') => assessStop({ cwd: root, sessionId: sid });
+
+test('Stop 核对：Bash 写 4 个文件（PreToolUse 看不到）被 block', () => withState(() => {
+  const root = makeRepo();
+  snap(root);
+  bashWrite(root, ['a', 'b', 'c', 'd']);
+  const v = stop(root);
+  assert.equal(v.verdict, 'block');
+  assert.match(v.reason, /src\/a/);
+  assert.match(v.reason, /汇报/);
+}));
+
+test('Stop 核对：3 个以内放行；本轮之前的脏文件不算', () => withState(() => {
+  const root = makeRepo();
+  for (let i = 0; i < 6; i += 1) fs.writeFileSync(path.join(root, `dirty${i}.txt`), 'x');
+  snap(root);
+  bashWrite(root, ['a', 'b', 'c']);
+  assert.equal(stop(root).verdict, 'ok');
+}));
+
+test('Stop 核对：本轮内提交掉的改动也算', () => withState(() => {
+  const root = makeRepo();
+  snap(root);
+  bashWrite(root, ['a', 'b', 'c', 'd']);
+  sh(root, 'add', '.'); sh(root, 'commit', '-q', '-m', 'sneaky');
+  assert.equal(stop(root).verdict, 'block');
+}));
+
+test('Stop 核对：openspec/ 不计；经 ask 流程用户确认过的文件不计', () => withState(() => {
+  const root = makeRepo();
+  snap(root);
+  fs.mkdirSync(path.join(root, 'openspec'));
+  for (const n of ['1', '2', '3', '4', '5']) fs.writeFileSync(path.join(root, 'openspec', n), 'x');
+  assert.equal(stop(root).verdict, 'ok');
+  for (const n of ['a', 'b', 'c']) write(root, n, 'st1');
+  assert.equal(write(root, 'd', 'st1').verdict, 'ask'); // 用户在确认框放行后 d 才会真的被写
+  bashWrite(root, ['a', 'b', 'c', 'd']);
+  assert.equal(stop(root).verdict, 'ok');
+}));
+
+test('Stop 核对：worktree、功能分支、无快照、gate off 都放行', () => withState(() => {
+  const root = makeRepo();
+  assert.equal(stop(root).verdict, 'ok'); // 无快照
+  sh(root, 'checkout', '-q', '-b', 'feat/x');
+  snap(root);
+  bashWrite(root, ['a', 'b', 'c', 'd', 'e']);
+  assert.equal(stop(root).verdict, 'ok');
+  sh(root, 'checkout', '-q', 'main');
+  snap(root, 'st2');
+  bashWrite(root, ['f', 'g', 'h', 'i', 'j']);
+  process.env.PIPELINE_TIER_GATE = 'off';
+  try { assert.equal(stop(root, 'st2').verdict, 'ok'); } finally { delete process.env.PIPELINE_TIER_GATE; }
+}));
+
+test('tier-reminder-hook + tier-stop-hook 进程：快照 → Bash 写 → block；stop_hook_active 时放行', () => withState((dir) => {
+  const root = makeRepo();
+  const env = { ...process.env, PIPELINE_TIER_GATE_STATE: dir };
+  const run = (hook, payload) => spawnSync('node', [hook], { input: JSON.stringify(payload), encoding: 'utf8', env });
+  assert.equal(run(REMINDER_HOOK, { prompt: '继续', session_id: 'p1', cwd: root }).status, 0);
+  bashWrite(root, ['a', 'b', 'c', 'd']);
+  const out = JSON.parse(run(STOP_HOOK, { session_id: 'p1', cwd: root }).stdout);
+  assert.equal(out.decision, 'block');
+  assert.equal(run(STOP_HOOK, { session_id: 'p1', cwd: root, stop_hook_active: true }).stdout.trim(), '');
+}));
+
+// ---- fail-open 留痕 ----
+
+test('hook 异常写入 errors.log，而不是静默吞掉', () => withState((dir) => {
+  logHookError('probe', new Error('boom'));
+  const log = fs.readFileSync(path.join(dir, 'errors.log'), 'utf8');
+  assert.match(log, /probe/);
+  assert.match(log, /boom/);
+}));
