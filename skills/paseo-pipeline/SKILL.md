@@ -18,7 +18,7 @@ Use only when the frozen DAG has `maxWidth >= 2` and `tasks >= 4`; otherwise use
 7. **Human gates.** CP-1 freezes approved contract. CP-2 confirms merge to main. No push/destructive cleanup without explicit approval.
 
 ## Roles and briefs
-Read profile notes with `list_profiles`; use live agent provider/model for independence checks. Never hardcode model names in prompts. Briefs: `templates/author.md` (SPEC/TASKS), `tester.md`, `writer.md`, `reviewer.md` (R0/TASK/FINAL/ARBITER), `lead.md`. `auditor.md` is compatibility alias only.
+Before every `create_agent`, copy the matching `list_profiles` entry exactly: `provider/model`, `modeId`, `thinkingOptionId`, `featureValues`. If none fits, verify with `list_providers`/`list_models`. Never copy model IDs from examples, tool descriptions, memory, or prior runs; if the exact pair is not returned, stop and report rather than use a default. Use live values for independence checks. Briefs: `templates/author.md` (SPEC/TASKS), `tester.md`, `writer.md`, `reviewer.md` (R0/TASK/FINAL/ARBITER), `lead.md`. `auditor.md` is compatibility alias only.
 
 - `chanpin`: writes Proposal/Spec/Codebase Digest directly to OpenSpec files and commits; does not return text for main session to re-type.
 - `gaogong`: writes Design/Tasks/Acceptance directly to OpenSpec files and commits; also handles complex implementation and confirmed-blocker fixes.
@@ -27,9 +27,9 @@ Read profile notes with `list_profiles`; use live agent provider/model for indep
 - `gongbu` / `jiangzuo`: default / UI implementation.
 - `anchasi`: task and integrated reviews. Codex offers no read-only mode: reviewers run in a separate workspace, briefed read-only; tip binding voids any review whose branch moved.
 - `shangshu`: sole Lead; schedules, reconciles, merges, reports.
-- Profile notes describe a role's scope; the frozen task's `Review:` field decides this change's process. `ceshi`'s note mentions only `Review: strict` — that is stale: every non-mechanical task needs a Red test commit, because `merge-task` exits 31 without one.
-- Cost: one behavior task is three agents in series (ceshi → implementer → reviewer). Budget that before choosing Tier 3; freeze `Review: mechanical` only for tasks with no behavior to prove.
-- `auto-review` profiles (`ceshi`, `gaogong`, `anchasi`) can stall on a permission prompt. When a child goes idle without a finish result, check pending permission requests first; never widen a read-only reviewer to `bypassPermissions`.
+- Profile notes describe a role's scope; the frozen task's `Review:` field decides process. `ceshi`'s strict-only note is stale: every non-mechanical task needs a Red test commit or `merge-task` exits 31.
+- Cost: a behavior task is three serial agents (tester → implementer → reviewer); use `Review: mechanical` only when no behavior needs proof.
+- `auto-review` profiles can stall on permission prompts. If a child idles without a finish result, check pending permissions first; never widen a read-only reviewer to `bypassPermissions`.
 
 ## Entry and CP-1
 
@@ -73,9 +73,9 @@ After context compaction or a resumed session, the first action is to re-read `t
 node "$PIPELINE_HOME"/merge-task.mjs \
   task/<change>/<T> <T> 'pass(<reviewer-uuid>@<tip>/<base>)'
 ```
-`merge-task` checks branch/task identity, dependency Done, frozen Write scope, commit trailers, test-author protection, agent/model independence, review binding, base drift, Verify, and clean worktree; then no-ff merges and records Done. After its own Verify it re-runs every already-Done task's narrow Verify on the merged tree (whole-suite legs skipped; only tasks sharing a transitive dependency or overlapping scope are replayed). It also proves Red: the test-author commits alone must make the frozen Verify fail on an assertion, not on a load/import/collection error (exit 33 if it passes, cannot run, or fails non-behaviourally). Exit codes: 2 usage; 10 conflict; 20 verify; 21 cross-task regression; 30 scope; 31 provenance; 32 review; 33 Red proof; 34 base/drift; 35 dependency; 36 unchecked-out dependencies. It is the sole Done writer.
+`merge-task` checks branch/task identity, dependency Done, frozen Write scope, commit trailers, test-author protection, agent/model independence, review binding, base drift, Verify, and clean worktree; then no-ff merges and records Done. After its own Verify it re-runs every already-Done task's narrow Verify on the merged tree (whole-suite legs skipped; only tasks sharing a transitive dependency or overlapping scope are replayed). It proves Red: test-author commits alone must fail the frozen Verify on an assertion, not a load/import/collection error (exit 33 if passing, unrunnable, or non-behavioural). Exit codes: 2 usage; 10 conflict; 20 verify; 21 cross-task regression; 30 scope; 31 provenance; 32 review; 33 Red proof; 34 base/drift; 35 dependency; 36 unchecked-out dependencies. Sole Done writer.
 
-Exit 36 means the worktree cannot resolve a package or runner (`Cannot find package 'tsx'`, `command not found`). It is an environment fault, not a task failure: a linked worktree does not inherit `node_modules`/`.venv`. Install once in that worktree (`npm ci`/`pnpm install`/`venv`, per lockfile) and retry — never edit tests or Verify to work around it.
+Exit 36: worktree cannot resolve a package or runner (`Cannot find package 'tsx'`, `command not found`). Environment fault, not task failure: a linked worktree does not inherit `node_modules`/`.venv`. Install once in that worktree (`npm ci`/`pnpm install`/`venv`, per lockfile) and retry — never edit tests or Verify to work around it.
 
 ## Recovery
 ```

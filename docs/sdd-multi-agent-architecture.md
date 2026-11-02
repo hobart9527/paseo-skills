@@ -161,7 +161,7 @@ stateDiagram-v2
 
 | 标准角色名称 | 架构职责归属 | 核心职能定义 | 权限边界与工具集 | 推荐模型特征与理由 |
 |---|---|---|---|---|
-| **Orchestrator**<br>(总控编排) | 控制面 | 任务拓扑解析、DAG 并发分发、Worktree 分配、对账推进与重试管控 | **禁止直接修改业务代码**。<br>工具：Git 状态读取、Worktree 管理、任务派发、进程等待 | 长上下文、高复杂逻辑推理（如 Claude 3.7 Sonnet / GPT-4o） |
+| **Orchestrator**<br>(总控编排) | 控制面 | 任务拓扑解析、DAG 并发分发、Worktree 分配、对账推进与重试管控 | **禁止直接修改业务代码**。<br>工具：Git 状态读取、Worktree 管理、任务派发、进程等待 | 长上下文、高复杂逻辑推理（实际模型以 `list_profiles` / `list_models` 为准） |
 | **Product Analyst**<br>(需求调研分析) | 控制面 | 现状调研、代码库既有实现探查（Codebase Digest）、Proposal 起草 | **纯只读**。<br>工具：全局搜索 (ripgrep)、代码图谱 (Codegraph)、文档读取 | 大上下文窗口，擅长长文本总结与架构感知 |
 | **System Architect**<br>(系统架构仲裁) | 控制面 | 架构与契约（Spec）设计、接口 Schema 制定、双轴审查争议终审仲裁（Arbiter） | **纯只读（仲裁期）**。<br>工具：Spec 校验工具、Diff 对比工具、测试复跑工具 | 强形式化逻辑、零幻觉倾向、高精度决策模型 |
 | **QA / Test Engineer**<br>(TDD 测试工程师) | 执行面 (写手) | 针对 `Review: strict` 任务先行编写失败断言（Red 测试）、差分对拍夹具 | 读写权限，**仅允许修改 `test/` 目录**。<br>工具：文件编辑、测试运行器 | 擅长边界条件挖掘与反例构造的模型 |
@@ -181,9 +181,9 @@ profiles:
     title: "总控编排器"
     type: "control"
     model:
-      provider: "anthropic"
-      name: "claude-3-7-sonnet"
-      thinking: { enabled: true, budget_tokens: 4096 }
+      provider: "<provider>"
+      name: "<model>"
+      thinking: { enabled: true }
     sandbox:
       write_allowed: false
       allowed_paths: [".orchestration/**", "openspec/changes/**"]
@@ -192,10 +192,10 @@ profiles:
   code_auditor:
     title: "独立代码审计员"
     type: "review"
-    # 强制异构：使用不同家族模型破除盲区
+    # 强制异构：使用不同模型破除盲区
     model:
-      provider: "openai"
-      name: "gpt-4o"
+      provider: "<provider>"
+      name: "<model>"
       temperature: 0.1
     sandbox:
       write_allowed: false
@@ -206,13 +206,15 @@ profiles:
     title: "核心实现工程师"
     type: "worker"
     model:
-      provider: "anthropic"
-      name: "claude-3-7-sonnet"
+      provider: "<provider>"
+      name: "<model>"
     sandbox:
       write_allowed: true
       require_trailers: ["Pipeline-Role", "Pipeline-Author"]
     brief_template: "templates/writer.md"
 ```
+
+> `provider` 与 `name` 是占位符，不是可移植模型清单。实际值必须从当前宿主的 `list_profiles` 读取；没有匹配 profile 时再通过 `list_providers` / `list_models` 核验。不得从示例复制模型 ID。
 
 ---
 

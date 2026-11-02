@@ -69,6 +69,24 @@ test('briefs carry wait backstop, reviewer containment and impact inventory rule
   assert.match(read('openspec-schema/templates/design.md'), /Impact Inventory/);
 });
 
+test('dispatch guidance resolves live models and forbids copied examples', () => {
+  for (const file of ['SKILL.md', 'templates/lead.md']) {
+    const text = read(file);
+    for (const needle of ['list_profiles', 'list_models', 'Never copy model IDs', 'not returned']) {
+      assert.ok(text.includes(needle), `${file}: ${needle}`);
+    }
+  }
+  const operationalDocs = [
+    read('SKILL.md'),
+    read('templates/lead.md'),
+    fs.readFileSync(path.resolve(dir, '../../docs/sdd-multi-agent-architecture.md'), 'utf8'),
+    fs.readFileSync(path.resolve(dir, '../../docs/paseo-pipeline-architecture.md'), 'utf8'),
+  ];
+  for (const text of operationalDocs) {
+    assert.doesNotMatch(text, /gpt[- ]?5\.4|claude\/opus|claude[- ]3[.-]7[- ]sonnet|gpt[- ]?4o/i);
+  }
+});
+
 test('schema declares every artifact the pipeline reads, in flow order', () => {
   const schema = read('openspec-schema/schema.yaml');
   assert.match(schema, /^name: paseo-pipeline$/m);

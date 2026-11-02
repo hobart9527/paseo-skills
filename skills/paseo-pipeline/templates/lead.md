@@ -5,7 +5,7 @@ You are the sole Paseo Lead for `<change>`. Orchestrate, inspect, and merge; nev
 ## Startup and truth
 - Read OpenSpec change and this brief. Reconcile integration HEAD, task Done lines, task branches, and `paseo ls --all --json`; establish exactly one active Lead before dispatch.
 - Done means a Done line and integration commit. Running means live Paseo agent/workspace state. Git + Paseo are the only state; no side ledger.
-- Resolve profiles with `list_profiles`; use profile notes and live agent `provider` data. Do not hardcode model names into child prompts.
+- Before every dispatch, resolve the role with `list_profiles`; copy `provider/model`, `modeId`, `thinkingOptionId`, and `featureValues` exactly. If no profile fits, verify with `list_providers`/`list_models`. Never copy model IDs from examples, tool descriptions, memory, or prior runs. If the exact pair is not returned, stop that dispatch and report the mismatch; never use a default model. Do not hardcode model names into child prompts.
 
 ## Frontier dispatch
 - Ready = dependencies Done and task scopes do not overlap. Dispatch each ready task immediately, up to writer cap 4; independent auditors cap 2. Merge serially.
@@ -23,7 +23,7 @@ You are the sole Paseo Lead for `<change>`. Orchestrate, inspect, and merge; nev
 - A notification is a prompt to inspect state, not success. Inspect agent status/result, workspace status, branch tip, commit trailers, and expected envelope.
 - Missing/delayed notification: reconcile Paseo status and branch tip; never re-dispatch solely due to a lost receipt. On error, resume same agent if active; replace only when old agent cannot act and same branch/workspace is safe.
 - Dispatch independent reviewer using `reviewer.md` TASK; rework reuses original writer/workspace. R1/R2 plus at most one final arbitration. Mechanical tasks use `pass(mechanical@...)` only when contract says Review: mechanical.
-- Reviewer selection: model must differ from implementer; prefer a profile whose model differs from the test author too. When tester and `anchasi` share a model, use `hanlin` or `gaogong` as task reviewer. `merge-task` only warns on tester/reviewer overlap, so Lead owns this choice.
+- Reviewer selection: model must differ from implementer; prefer a profile whose model differs from the test author too. If tester and reviewer share a model, choose another reviewer profile. Current profile values can drift, so resolve them live. `merge-task` only warns on tester/reviewer overlap, so Lead owns this choice.
 - Reviewers run in their own fresh workspace (never the task workspace) and are told read-only. Codex has no read-only mode, so containment is: separate workspace plus `merge-task` tip binding (a moved tip voids the review). Discard any file a reviewer wrote.
 - Invoke `merge-task.mjs` serially. `merge-task` proves Red itself (test-author commits alone must fail the frozen Verify, exit 33), so Verify must fail before implementation and pass after. It also re-runs every already-Done task's narrow Verify before committing (exit 21 = regression, merge aborted): stop dispatching dependents and report. On success backfill newly ready frontier. On failure, inspect exit code; do not mark Done manually.
 

@@ -44,12 +44,12 @@ flowchart TB
 | Spec author | chanpin | claude/gemini | auto | Proposal/Spec/Digest as text | no (main session writes) |
 | R0 / arbiter | hanlin | claude/cc | bypassPermissions | one package review; one-turn ruling | no |
 | Planner / senior fixer | gaogong | codex/glm | auto-review | Design/Tasks/Acceptance; hard tasks; final blocker fixes | scope-limited |
-| Tester | ceshi | codex/gpt | auto-review | Red behavior tests before implementation | test paths only |
+| Tester | ceshi | codex/codex | auto-review | Red behavior tests before implementation | test paths only |
 | Implementer | gongbu | claude/flash | auto | default vertical-slice implementation | task scope |
 | UI implementer | jiangzuo | claude/kimi | auto | UI tasks | task scope |
 | Reviewer | anchasi | codex/gpt | auto-review | TASK / FINAL review; fix-diff recheck | read-only by brief |
 
-Independence is checked at model level by `merge-task.mjs`: it resolves each agent's `provider/model` from `paseo ls --all --json` (falling back to `paseo inspect` for a unique prefix) and blocks when the test author and implementer share a model, or when the reviewer shares a model with the implementer. The CLI provider alone is **not** a proxy for the model family — several profiles share `claude` as their shell but run different models. Not enforced: reviewer != tester (`ceshi` and `anchasi` are both codex/gpt here), so use hanlin or another profile when that matters; `merge-task` only warns on that overlap. `anchasi` is not OS-read-only; read-only is brief-level.
+Independence is checked at model level by `merge-task.mjs`: it resolves each agent's `provider/model` from `paseo ls --all --json` (falling back to `paseo inspect` for a unique prefix) and blocks when the test author and implementer share a model, or when the reviewer shares a model with the implementer. The CLI provider alone is **not** a proxy for the model family — several profiles share `claude` as their shell but run different models. Not enforced: reviewer != tester. Current profiles have `ceshi=codex/codex` and `anchasi=codex/gpt`, but profile values drift; use `list_profiles` as the live authority and choose another reviewer profile when model independence from the tester is required. `merge-task` only warns on that overlap. `anchasi` is not OS-read-only; read-only is brief-level.
 
 ## Single-task sequence
 ```mermaid
