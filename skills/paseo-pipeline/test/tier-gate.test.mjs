@@ -14,7 +14,7 @@ const REMINDER_HOOK = path.join(here, '..', 'hooks', 'tier-reminder-hook.mjs');
 const SESSION_HOOK = path.join(here, '..', 'hooks', 'tier-session-hook.mjs');
 const STOP_HOOK = path.join(here, '..', 'hooks', 'tier-stop-hook.mjs');
 
-// 测试进程自己可能跑在 Paseo agent 里（PASEO_AGENT_ID 已设），会触发「agent 内不注入」。
+// 测试进程自己可能跑在 Paseo 里（PASEO_AGENT_ID 已设）。注入判定不看这个变量，仍主动清掉以固定前提。
 const cleanEnv = (extra = {}) => {
   const env = { ...process.env, ...extra };
   if (!('PASEO_AGENT_ID' in extra)) delete env.PASEO_AGENT_ID;
@@ -292,7 +292,7 @@ test('系统通知：不是人的消息，不提醒', () => {
   assert.equal(shouldRemind('<task-notification>x</task-notification>'), false);
 });
 
-test('tier-reminder-hook 进程：系统通知无输出；cwd 非仓库/缺失仍注入；agent 与 linked worktree 跳过', () => withState((dir) => {
+test('tier-reminder-hook 进程：系统通知无输出；cwd 非仓库/缺失仍注入；linked worktree 跳过', () => withState((dir) => {
   const run = (payload, env = {}) => spawnSync('node', [REMINDER_HOOK], { input: JSON.stringify(payload), encoding: 'utf8', env: cleanEnv({ PIPELINE_TIER_GATE_STATE: dir, ...env }) });
   const root = makeRepo();
   const plain = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tier-nogit-')));
@@ -300,19 +300,20 @@ test('tier-reminder-hook 进程：系统通知无输出；cwd 非仓库/缺失�
   assert.match(run({ prompt: '继续', cwd: root, session_id: 'n1' }).stdout, /分级提醒/);
   assert.match(run({ prompt: '继续', cwd: plain, session_id: 'n1' }).stdout, /分级提醒/, 'null repo context 仍注入');
   assert.match(run({ prompt: '继续' }).stdout, /分级提醒/, '无 cwd 仍注入');
-  assert.equal(run({ prompt: '继续', cwd: root, session_id: 'n1' }, { PASEO_AGENT_ID: 'abc' }).stdout.trim(), '');
+  // 人的会话跑在 Paseo 里也带 PASEO_AGENT_ID；只看 cwd，环境变量不参与判定。
+  assert.match(run({ prompt: '继续', cwd: root, session_id: 'n1' }, { PASEO_AGENT_ID: 'abc' }).stdout, /分级提醒/, '主 checkout 上 agent 环境变量不抑制');
   const wt = path.join(path.dirname(root), `${path.basename(root)}-wt`);
   sh(root, 'worktree', 'add', '-q', '-b', 'feat/x', wt);
   assert.equal(run({ prompt: '继续', cwd: wt, session_id: 'n1' }).stdout.trim(), '');
 }));
 
-test('tier-session-hook 进程：agent 内与 linked worktree 不注入，非仓库 cwd 仍注入', () => {
+test('tier-session-hook 进程：linked worktree 不注入，非仓库 cwd 与 agent 环境变量仍注入', () => {
   const run = (payload, env = {}) => spawnSync('node', [SESSION_HOOK], { input: JSON.stringify(payload), encoding: 'utf8', env: cleanEnv(env) });
   const root = makeRepo();
   const plain = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tier-nogit-')));
   assert.match(run({ cwd: root }).stdout, /分级规则/);
   assert.match(run({ cwd: plain }).stdout, /分级规则/);
-  assert.equal(run({ cwd: root }, { PASEO_AGENT_ID: 'abc' }).stdout.trim(), '');
+  assert.match(run({ cwd: root }, { PASEO_AGENT_ID: 'abc' }).stdout, /分级规则/, '主 checkout 上 agent 环境变量不抑制');
   const wt = path.join(path.dirname(root), `${path.basename(root)}-wt`);
   sh(root, 'worktree', 'add', '-q', '-b', 'feat/y', wt);
   assert.equal(run({ cwd: wt }).stdout.trim(), '');

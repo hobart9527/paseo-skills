@@ -25,8 +25,6 @@ schema_current() {
 # Hooks fail open, so a broken one is silent. Feed each a probe payload and require the expected reaction.
 selftest() {
   local out
-  # Inside a Paseo agent the hooks deliberately inject nothing; the self-test checks the injecting path.
-  unset PASEO_AGENT_ID
   out="$(printf '%s' '{"prompt":"ok go","session_id":"selftest","cwd":"/nonexistent"}' | PIPELINE_TIER_GATE_STATE="$(mktemp -d)" node "$PIPELINE_HOME/hooks/tier-reminder-hook.mjs" 2>/dev/null)" || return 1
   printf '%s' "$out" | grep -q 'additionalContext' || return 1
   out="$(printf '%s' '{}' | node "$PIPELINE_HOME/hooks/tier-session-hook.mjs" 2>/dev/null)" || return 1

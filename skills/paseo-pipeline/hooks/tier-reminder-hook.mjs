@@ -14,7 +14,7 @@
 // 也可用 `--install-help` 打印现成片段。
 //
 // 设计取舍：
-//   - 系统通知（<paseo-system>）、Paseo agent、非主 checkout 不提醒。
+//   - 系统通知（<paseo-system>）、linked worktree / 功能分支不提醒（cwd 判定，不看 PASEO_AGENT_ID）。
 //   - 每条非斜杠消息都提醒（不再做关键词筛选，见 REMINDER 上方的说明）。
 //   - 同时为 Stop 核对记录本轮基线（takeSnapshot）。
 //   - 任何异常一律不输出（exit 0），但写入 errors.log。

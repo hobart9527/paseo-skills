@@ -328,12 +328,12 @@ function snapFile(sessionId) {
 
 /**
  * 分级提醒/会话规则只对「人在主 checkout 上直接对话」的会话有意义。
- * 在 Paseo agent 里（PASEO_AGENT_ID）或 linked worktree / 功能分支里注入只是噪声：
- * 那里的 tier 已经由派发方决定。cwd 不在 git 仓库内（ctx 为 null）时照常注入——
- * 不能用 `!ctx?.isPrimaryOnProtected`，否则非仓库目录的会话会丢掉规则。
+ * linked worktree / 功能分支里注入只是噪声：那里的 tier 已经由派发方决定。
+ * cwd 不在 git 仓库内（ctx 为 null）时照常注入——不能用 `!ctx?.isPrimaryOnProtected`，
+ * 否则非仓库目录的会话会丢掉规则。
+ * 不看 `PASEO_AGENT_ID`：人在 Paseo 里直连的会话同样带它，按环境变量跳过会静默吞掉提醒。
  */
 export function skipInjection(cwd) {
-  if (process.env.PASEO_AGENT_ID) return true;
   if (typeof cwd !== 'string' || cwd === '') return false;
   const ctx = repoContext(cwd);
   return ctx !== null && !ctx.isPrimaryOnProtected;

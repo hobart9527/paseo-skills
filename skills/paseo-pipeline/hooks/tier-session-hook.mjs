@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // SessionStart hook（matcher: startup|resume|compact|clear）：会话开始、恢复、上下文压缩后重新注入分级规则。
 // 为什么：压缩后规则可能只剩一句摘要，长会话的“丢规则”多发生在这里。
+// linked worktree / 功能分支不注入（cwd 判定）；不按 PASEO_AGENT_ID 跳过，人会直连 Paseo 会话。
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { TIER_RULES, skipInjection, logHookError } from '../lib/tier-gate.mjs';
