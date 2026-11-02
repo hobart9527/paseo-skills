@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseTasks, parseTaskLine, parseReviewTag, isFileWithinScopes, graphErrors, isTestPath, verifyLegs } from './lib/tasks.mjs';
 import { missingDependency, dependencyMessage } from './lib/toolchain.mjs';
-import { listAgents, inspectAgent, modelOf, findAgents } from './lib/paseo-agents.mjs';
+import { listAgents, inspectAgent, modelOf, findAgents, nameOf } from './lib/paseo-agents.mjs';
 
 const WRITER_ROLES = new Set(['gongbu', 'gaogong', 'ceshi', 'jiangzuo']);
 const TEST_ROLES = new Set(['ceshi']);
@@ -81,20 +81,30 @@ function isBehavioralRed(output) {
 // non-behavior list. This function re-evaluates: if every missing-module path
 // resolves to a file inside the task's Write scope, the Red is legitimate.
 const MISSING_MODULE_PATH = /Cannot find module '([^']+)'/g;
+// Python: `ModuleNotFoundError: No module named 'app.feature'`. Greenfield only when the
+// top-level package already exists under a source root (same first-party rule as
+// toolchain.mjs, so an uninstalled `pytest` stays exit 36) and the new file lands in Write scope.
+const MISSING_PY_MODULE = /No module named ['"]?([\w.]+)['"]?/g;
+const PY_ROOTS = ['', 'src/', 'lib/', 'app/'];
+function pyModuleInScope(dotted, scopes) {
+  const top = dotted.split('.')[0];
+  const mod = dotted.replaceAll('.', '/');
+  return PY_ROOTS
+    .filter((root) => fs.existsSync(`${root}${top}`) || fs.existsSync(`${root}${top}.py`))
+    .some((root) => [`${root}${mod}.py`, `${root}${mod}/__init__.py`].some((file) => isFileWithinScopes(file, scopes)));
+}
 function isGreenfieldRed(output, taskScope) {
   const text = String(output || '');
   const paths = [...text.matchAll(MISSING_MODULE_PATH)].map((m) => m[1]);
-  if (!paths.length) return false;
   // Only file paths (starting with . or /) qualify; bare package names do not.
   const filePaths = paths.filter((p) => /^[./]/.test(p));
-  if (filePaths.length === 0) return false;
-  // The missing file must sit inside the task's Write scope. Use the URL form
-  // that Node prints (`file:///abs/path`) → strip to repo-relative later; but
-  // `Cannot find module` already carries the resolved absolute path, so we
-  // check whether any scope prefix appears in it.
+  const pyModules = [...text.matchAll(MISSING_PY_MODULE)].map((m) => m[1]);
+  if (filePaths.length === 0 && pyModules.length === 0) return false;
+  // The missing file must sit inside the task's Write scope. `Cannot find module` already
+  // carries the resolved absolute path, so check whether any scope prefix appears in it.
   return filePaths.every((absPath) =>
     taskScope.some((scope) => absPath.includes(`/${scope}/`) || absPath.endsWith(`/${scope}`))
-  );
+  ) && pyModules.every((mod) => pyModuleInScope(mod, taskScope));
 }
 
 // A fresh linked worktree has no node_modules/.venv, so the frozen Verify can fail
@@ -129,16 +139,20 @@ function run(command, timeoutMs, { capture = false } = {}) {
 // section, so these numbers decide whether it is worth optimising before anyone guesses.
 const timing = {};
 const startedAt = Date.now();
-const args = process.argv.slice(2).filter((arg) => !arg.startsWith('--timeout'));
+// --allow-attempt-over: a human approved attempts beyond the -a3 circuit breaker.
+const allowAttemptOver = process.argv.includes('--allow-attempt-over');
+const args = process.argv.slice(2).filter((arg) => !arg.startsWith('--timeout') && arg !== '--allow-attempt-over');
 const timeoutArg = process.argv.find((arg) => arg.startsWith('--timeout'));
 const timeout = Number(timeoutArg?.split('=')[1] ?? 30 * 60 * 1000);
 const [branch, taskId, reviewTag] = args;
 if (!branch || !taskId || !reviewTag || args.length !== 3) fail(usage, 2);
 
-const match = branch.match(/^task\/([^/]+)\/([A-Za-z][A-Za-z0-9]*-\d+)(?:-a\d+)?$/);
+const match = branch.match(/^task\/([^/]+)\/([A-Za-z][A-Za-z0-9]*-\d+)(?:-a(\d+))?$/);
 if (!match) fail(`branch must be task/<change>/<task-id>[-aN]: ${branch}`);
 const change = match[1];
 if (match[2] !== taskId) fail(`branch task ID ${match[2]} does not match requested ${taskId}`);
+// Circuit breaker (lead.md): T-xx, -a2, -a3. A 4th attempt needs explicit human approval.
+if (Number(match[3] ?? 1) > 3 && !allowAttemptOver) fail(`${branch} is attempt ${match[3]}; breaker allows 3 without human approval (pass --allow-attempt-over)`, 37);
 
 if (git(['branch', '--show-current']) !== `integration/${change}`) fail(`current branch must be integration/${change}`);
 if (git(['status', '--porcelain']) !== '') fail('integration worktree must be clean');
@@ -212,6 +226,13 @@ const testModels = [...testAuthors].map((id) => modelFor(id, agents));
 const implementationModels = [...implementationAuthors].map((id) => modelFor(id, agents));
 if (needsAgentModels && [...testModels, ...implementationModels].some((model) => !model)) fail('cannot resolve test-author/implementer model from Paseo; refusing merge', 32);
 if (needsAgentModels && testModels.some((model) => implementationModels.includes(model))) fail('test author and implementer must use different models', 32);
+// The Lead schedules and merges; a commit authored under its identity is the Lead writing code.
+if (needsAgentModels) {
+  for (const id of authors) {
+    const hits = findAgents(id, agents);
+    if (hits.length === 1 && /shangshu/i.test(nameOf(hits[0]))) fail(`${id} is the Lead (shangshu); the Lead must not author task commits`, 31);
+  }
+}
 // Authors are recorded as full UUIDs and the tag may carry a shortId prefix; compare
 // identities as well as spellings. The literal check stays as a fallback for when the
 // live agent list cannot resolve either side.

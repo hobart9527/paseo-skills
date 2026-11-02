@@ -249,3 +249,19 @@ test('low speedup advisory fires on a near-serial DAG and stays silent on a wide
   assert.equal(chain.speedup, 1.33);
   assert.match(chain.advisories.join('\n'), /ADVISORY_LOW_SPEEDUP/);
 });
+
+function sinkContract(verify, extra = '') {
+  return contract.replace('Verify with: npm test', `Verify with: ${verify}`).replace('  - Scen: SCEN-1\n', '  - Scen: SCEN-1\n').replace(/(1\.4 T-04 sink\n)/, `$1${extra}`);
+}
+function freezeOf(tasks) {
+  return run(change({ 'tasks.md': tasks, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-04 | node -e "0" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW }));
+}
+test('sink without a full-suite leg must still have a narrow Verify', () => {
+  const result = freezeOf(sinkContract('echo ok'));
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /VERIFY_NOT_NARROW T-04/);
+});
+test('mechanical sink may run a non-test check', () => {
+  const result = freezeOf(sinkContract('rg -c done docs/x.md', '  - Review: mechanical\n'));
+  assert.equal(result.status, 0, result.stdout);
+});

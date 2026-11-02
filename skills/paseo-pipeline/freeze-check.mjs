@@ -110,7 +110,9 @@ for (const task of tasks) {
   if (broadLegs && !sinkIds.has(task.id)) {
     blocking.push(`VERIFY_FULL_SUITE_NON_SINK ${task.id}: full-suite command is reserved for the sole sink`);
   }
-  if (!sinkIds.has(task.id) && (legs.length === 0 || unscoped.length > 0 || broadLegs > 0)) {
+  // A sink with no full-suite leg is just a task: its Verify must be narrow too (mechanical tasks may run any check).
+  const mustBeNarrow = !sinkIds.has(task.id) || (broadLegs === 0 && task.review !== 'mechanical');
+  if (mustBeNarrow && (legs.length === 0 || unscoped.length > 0 || broadLegs > 0)) {
     blocking.push(`VERIFY_NOT_NARROW ${task.id}: every Verify leg must name a test/spec path inside Write scope${unscoped.length ? ` (outside: ${unscoped.map((leg) => leg.command).join(', ')})` : ''}`);
   }
   if (sinkIds.has(task.id) && broadLegs > 1) {
