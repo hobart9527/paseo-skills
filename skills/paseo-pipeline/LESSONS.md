@@ -291,3 +291,40 @@ macOS 的 `/tmp` → `/private/tmp` 符号链接会让路径比较全部落空�
 
 **统一口径**：采不到写「未采集」并说明原因，不估算、不用候选名冒充实测值（§6 的既有纪律，
 本轮所有新增报告字段都遵守）。
+
+## 15. 2026-11-02 Lead 被客户端 Archive 导致流水线「看似中断」（`expense-form-prototype-v10-alignment`）
+
+**现象**：Lead 空等 T-02 通知时，UI 里整条流水线像死了。实际 git 与子 agent 状态完整，无工作丢失。
+
+**根因（日志实证）**：同一 relay 客户端（`cid_8f3e768f…`）在 12:53:59 与 12:58:36 两次发出 `archive_agent_request`，
+daemon 日志为 `Archiving agent <lead-id>`；13:01:01 日志为 `Agent resumed from persistence`。
+Archive 杀掉 Lead 的 Claude 进程及其后台 `paseo wait`。**为什么发出请求（误触或程序触发）日志未记录，未确认。**
+
+**识别**：`rg 'Archiving agent <id>' ~/.paseo/daemon.log`，对照 `clientId`；`~/.paseo/agents/*/<id>.json` 的 `archivedAt`。
+
+**已知噪声，非根因**：`Unsupported protocol version`、`[claude-code:unrecognized_model] {"model":"flash"}`，
+其后 MCP 调用均正常。
+
+**源码侧事实（Paseo 0.14.0 打包源码静态阅读，未运行时实测）**：
+- Archive 父 agent 会级联归档带 `paseo.parent-agent-id` 的子 agent；子 agent 与父不同 workspace，或带 `paseo.open-agent-tab.*` 标签时改为自动 detach。本流水线子 agent 在独立 worktree，因此未被连带归档。
+- `heartbeat` 的目标被归档后，触发抛 `ScheduleTargetGoneError`，守护进程重启扫描也会将其置为 completed，**不能用来防 Archive**。
+
+**处置**：不加 watchdog / schedule / heartbeat（成本高于收益）。采用操作约定与固定恢复步骤，已写入 `SKILL.md` Recovery 与 `templates/lead.md`：
+CP-2 前不 Archive 带 `pipeline.change` 的 agent；中断后 resume 同一 Lead ID，恢复后重新建立 `paseo wait`，按 git + Paseo 去重。
+
+**局限**：这只降低误操作与恢复出错概率，**不能技术上阻止其他客户端 Archive**。若复发，再评估 daemon 侧保护（拒绝对未完成 pipeline Lead 的普通 Archive），需要 Paseo 源码。
+
+
+### 15.1 追加：`Pipeline-Author` 由机制注入，不由模型书写（`expense-form-prototype-v10-alignment` T-02）
+
+**事故**：ceshi 把 `Pipeline-Author` 写成 shell `uuidgen` 的输出，格式合法但 Paseo 无此 agent，`merge-task` exit 32。
+Lead 未改写历史，开 `-a2` 分支，由原 ceshi 重提同字节测试、原 gaogong cherry-pick 保留原作者；处置正确，但消耗一次分支预算与两次返工。
+
+**为何旧防线失效**：`tester.md`/`writer.md` 只要求自检「打印完整 UUID」，该检查只能验证格式，验证不了真实性；错误到合流才暴露。
+
+**根治**：`hooks/git/commit-msg` 对写手角色（ceshi/gongbu/gaogong/jiangzuo）提交强制 `Pipeline-Author = $PASEO_AGENT_ID`；
+拆断的 trailer 块直接拒绝（即 exit 31 陷阱）；merge/reviewer/无 trailer 提交与 cherry-pick 不受影响。`lead.md` 要求建 workspace 后设置 `core.hooksPath`。
+`merge-task` 的身份校验保留，作为第二道防线。
+
+**限制**：`git commit --no-verify` 可绕过（由 `merge-task` 兜底）；hook 在真实 Codex/Claude agent 进程里能否继承 `PASEO_AGENT_ID`
+**仅在本 shell 与临时仓库实测，未在真实 tester/implementer 中验证**——下一个任务的首个 tester 提交是验证点。

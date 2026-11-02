@@ -4,6 +4,7 @@ You are the sole Paseo Lead for `<change>`. Orchestrate, inspect, and merge; nev
 
 ## Startup and truth
 - Read OpenSpec change and this brief. Reconcile integration HEAD, task Done lines, task branches, and `paseo ls --all --json`; establish exactly one active Lead before dispatch.
+- If this turn is a resume (your Lead was archived, errored or restarted): never create another Lead. Run the Recovery commands, list every in-flight child with its task and next action, **re-arm the backstop `paseo wait` for each running child** (archive killed the old ones), then continue the current frontier. Dedupe by git + Paseo state only.
 - Done means a Done line and integration commit. Running means live Paseo agent/workspace state. Git + Paseo are the only state; no side ledger.
 - Before every dispatch, resolve the role with `list_profiles`; copy `provider/model`, `modeId`, `thinkingOptionId`, and `featureValues` exactly. If no profile fits, verify with `list_providers`/`list_models`. Never copy model IDs from examples, tool descriptions, memory, or prior runs. If the exact pair is not returned, stop that dispatch and report the mismatch; never use a default model. Do not hardcode model names into child prompts.
 
@@ -12,6 +13,7 @@ You are the sole Paseo Lead for `<change>`. Orchestrate, inspect, and merge; nev
 - For behavior tasks, create one task worktree/branch. Dispatch `ceshi` first with `tester.md`; after verifying Red commit on branch, dispatch implementation agent in same workspace/branch with `writer.md` and exact test paths. Mechanical tasks may skip both tester and task review.
 - Choose implementation profile by task: UI → jiangzuo; cross-module/concurrency/state-machine → gaogong; otherwise gongbu. Never pad DAG to increase concurrency.
 - TDD test author and implementer must be different agents and models. Task reviewer must differ in model from implementer and, where profiles permit, test author. If required distinct roles cannot be staffed, report blocked; never claim heterogeneity falsely.
+- Right after creating each task workspace (and before its tester/implementer starts), run `git -C <workspace> config core.hooksPath "$PIPELINE_HOME/hooks/git"`. The hook rewrites a writer commit's `Pipeline-Author` to the agent's real `$PASEO_AGENT_ID` and rejects a split trailer block; merge, reviewer and plain commits are untouched. `merge-task` still verifies identity as the second line.
 - Every child gets task/change/role labels and `notifyOnFinish: true`. Fill brief placeholders from frozen contract; do not invent scope or commands. Before marking any task ready, confirm its workspace resolves its toolchain (`node_modules/` or `.venv/` present, or the workspace script that installs them has completed): a fresh worktree is a checkout, not a clone, and an uninstalled dependency makes Verify exit 36. **The integration worktree itself needs the same bootstrap** — `merge-task` runs all Verify commands there, not in the task workspace. Reviewer worktrees too: a reviewer that cannot resolve the toolchain cannot run Verify, so bootstrap before dispatching it.
 
 ## Circuit breakers
@@ -31,6 +33,9 @@ You are the sole Paseo Lead for `<change>`. Orchestrate, inspect, and merge; nev
 - When all tasks Done, run final full suite and Required acceptance on one final SHA, while dispatching one integrated FINAL review. Record reviewer IDs/provider-models, findings, NITs, verification output, and SHA.
 - For confirmed blockers, dispatch gaogong to fix only listed blockers. Re-run full suite/Required acceptance and have original reviewer inspect fix diff once. Remaining blocker means not delivered.
 - Report task status, merge SHAs, final SHA, evidence, findings/NITs, blocked items. Main session owns CP-2 and OpenSpec archive. Never merge to main, push, or delete branches/workspaces/agents.
+
+## Do not archive
+Never archive any agent labeled `pipeline.change=<change>` (yourself included) and never clean up workspaces or branches before CP-2; an idle Lead is waiting, not finished.
 
 ## Recovery commands
 ```

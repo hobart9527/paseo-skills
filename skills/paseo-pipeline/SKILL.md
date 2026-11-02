@@ -58,7 +58,7 @@ CP-1 approval is not the start of implementation; it is the start of handoff. `m
 After context compaction or a resumed session, the first action is to re-read `tasks.md` Done lines, `git log --first-parent integration/<change>`, and `paseo ls --label pipeline.change=<change> --json` before any dispatch. Summaries are not state.
 
 ## Runtime
-- Create one Lead with `templates/lead.md`. Lead reconciles integration HEAD, Done lines, task branches, and Paseo agent state before dispatch.
+- Create one Lead with `templates/lead.md`; it reconciles git and Paseo state before dispatch.
 - Ready frontier = dependencies Done + disjoint scopes. Writer cap 4; auditor cap 2; merge serially.
 - Behavior task sequence: `ceshi` Red commit → verify Red on base → implementer in same task workspace/branch → narrow Verify green → independent task audit → `merge-task.mjs`. Mechanical exemption only when frozen task says `Review: mechanical`.
 - Test author and implementer must be different agents and models. Reviewer model must differ from implementer and should differ from tester where available (`merge-task` warns on overlap; Lead picks another profile). If unavailable, block and report; do not claim heterogeneity.
@@ -83,7 +83,7 @@ grep -n 'Done:' openspec/changes/<change>/tasks.md
 paseo ls --label pipeline.change=<change> --json
 ```
 
-Use live Paseo state, branch tips and Done lines. Never re-dispatch on a delayed notification alone. One active Lead; replacing it needs human confirmation and archiving the old one first.
+Use live Paseo state, branch tips and Done lines. Never re-dispatch on a delayed notification alone. One Lead; if archived, resume that ID with `templates/lead-resume.md`; never archive `pipeline.change=<change>` agents before CP-2.
 
 ## Finish
 1. Require all tasks Done, no blocked/failed tasks, clean integration worktree.

@@ -102,3 +102,21 @@ test('schema declares every artifact the pipeline reads, in flow order', () => {
 test('route=handoff at the structural check skips R0', () => {
   assert.match(read('SKILL.md'), /`\[ROUTE\] handoff` here: skip R0/);
 });
+
+test('lead interruption: resume same Lead, re-arm waits, never archive pipeline agents', () => {
+  const lead = read('templates/lead.md');
+  const resume = read('templates/lead-resume.md');
+  assert.match(lead, /never create another Lead/);
+  assert.match(lead, /re-arm the backstop/);
+  assert.match(lead, /Never archive any agent labeled `pipeline\.change=<change>`/);
+  assert.match(resume, /SAME Lead ID/);
+  assert.match(resume, /Re-arm the backstop `paseo wait`/);
+  assert.match(read('SKILL.md'), /resume that ID with `templates\/lead-resume\.md`/);
+  for (const stale of ['run-state.mjs', 'reconcile.mjs', 'task-runner.mjs', 'replan.mjs']) assert.ok(!resume.includes(stale), stale);
+});
+
+test('lead installs the author hook per workspace; writers never type their identity', () => {
+  assert.match(read('templates/lead.md'), /core\.hooksPath "\$PIPELINE_HOME\/hooks\/git"/);
+  for (const f of ['tester.md', 'writer.md']) assert.match(read(`templates/${f}`), /\$PASEO_AGENT_ID.*never `uuidgen`/s, f);
+  assert.ok(fs.statSync(path.join(dir, 'hooks', 'git', 'commit-msg')).mode & 0o111, 'hook must be executable');
+});

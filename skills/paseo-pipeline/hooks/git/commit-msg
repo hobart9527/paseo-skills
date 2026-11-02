@@ -1,0 +1,22 @@
+#!/bin/sh
+# git commit-msg hook: writer commits get Pipeline-Author = $PASEO_AGENT_ID, never agent-typed.
+# Scope: only commits whose Pipeline-Role trailers are all writer roles. merge/reviewer/plain
+# commits (including merge-task's multi-author merge commit) pass untouched.
+# Install per workspace:  git config core.hooksPath "$PIPELINE_HOME/hooks/git"
+f="$1"
+roles=$(git interpret-trailers --parse "$f" | sed -n 's/^Pipeline-Role:[[:space:]]*//p' | tr 'A-Z' 'a-z')
+if [ -z "$roles" ]; then
+  if grep -q '^Pipeline-\(Role\|Author\):' "$f"; then
+    echo "pipeline: Pipeline-* trailers must be one contiguous block at the end of the message (no blank line between them or before Co-Authored-By)" >&2
+    exit 1
+  fi
+  exit 0
+fi
+for r in $roles; do
+  case "$r" in ceshi|gongbu|gaogong|jiangzuo) ;; *) exit 0 ;; esac
+done
+if [ -z "$PASEO_AGENT_ID" ]; then
+  echo "pipeline: PASEO_AGENT_ID is unset; refusing to author a writer commit with a guessed identity" >&2
+  exit 1
+fi
+git interpret-trailers --in-place --if-exists replace --trailer "Pipeline-Author: $PASEO_AGENT_ID" "$f"

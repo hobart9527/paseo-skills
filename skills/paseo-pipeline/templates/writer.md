@@ -13,7 +13,7 @@ Role trailer value: `<Lead-selected role>`.
 - If required files fall outside scope or conflict with another task, stop with `BLOCKED_ON_CONFLICT` and paths. Do not silently amend scope.
 - Commit with `Pipeline-Role: <provided role>` and `Pipeline-Author: <agent-id>` trailers.
 - After committing, verify the trailer survived:
-  `git log -1 --format='%(trailers:key=Pipeline-Author,valueonly)'` must print the full UUID.
+  `git log -1 --format='%(trailers:key=Pipeline-Author,valueonly)'` must print your `$PASEO_AGENT_ID` (never `uuidgen` or a typed ID; a commit hook enforces it).
   Trailers must be the last block of the message, separated from the body by exactly one blank
   line. A blank line after the trailer block, another body line, or a blank line inside the
   block makes git drop them — and Claude Code appends `Co-Authored-By:` after a blank line,

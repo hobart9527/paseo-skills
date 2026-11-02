@@ -13,7 +13,7 @@ Write scope: `<exact frozen test paths>`. Contract: `<spec/tasks paths>`.
 1. Add tests for claimed SCENs within test paths in task Write scope.
 2. Run them against task base before implementation. Red must be an expected behavior assertion failure, not import/syntax/environment failure.
 3. Commit with `Pipeline-Role: ceshi` and `Pipeline-Author: <agent-id>` trailers, then verify them:
-   `git log -1 --format='%(trailers:key=Pipeline-Author,valueonly)'` must print the full UUID.
+   `git log -1 --format='%(trailers:key=Pipeline-Author,valueonly)'` must print your `$PASEO_AGENT_ID` (never `uuidgen` or a typed ID; a commit hook enforces it).
    Trailers are the last block, one blank line after the body. A blank line after the block,
    another body line, or a blank line inside it drops them — Claude Code appends
    `Co-Authored-By:` after a blank line, which nulls the trailers above it. Empty output means
