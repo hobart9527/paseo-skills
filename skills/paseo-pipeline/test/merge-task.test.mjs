@@ -53,13 +53,14 @@ test('behavior', () => { assert.equal(fs.existsSync('src/a.txt'), true); });
 const GREEN = 'node --test test/a.test.mjs';
 let seq = 0;
 
-function fixture({ outside = false, verify = GREEN } = {}) {
+function fixture({ outside = false, verify = GREEN, baseFiles = {} } = {}) {
   const change = `c${++seq}`;
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'merge-'));
   git(cwd, 'init', '-q', '-b', 'main');
   write(cwd, `openspec/changes/${change}/tasks.md`, `- [ ] 1.1 T-01 task\n  - Write scope: src,test\n  - Verify with: ${verify}\n`);
   write(cwd, `openspec/changes/${change}/proposal.md`, 'p\n');
   write(cwd, `openspec/changes/${change}/acceptance.md`, 'a\n');
+  for (const [file, text] of Object.entries(baseFiles)) write(cwd, file, text);
   git(cwd, 'add', '.'); git(cwd, 'commit', '-qm', 'base'); git(cwd, 'switch', '-qc', `integration/${change}`);
   const base = git(cwd, 'rev-parse', 'HEAD'); git(cwd, 'switch', '-qc', `task/${change}/T-01`);
   write(cwd, 'test/a.test.mjs', RED_TEST); git(cwd, 'add', '.');
@@ -473,4 +474,49 @@ test('rejects when implementation commit precedes test-author commit', () => {
   const f = build([['src/a.txt', 'a', 'gongbu', WRITER], ['test/a.test.mjs', RED_TEST, 'ceshi', TESTER]]);
 
   const r = run3(f); assert.equal(r.status, 31, r.out); assert.match(r.out, /must precede/);
+});
+
+// Python greenfield Red: pytest reports the not-yet-created module as ModuleNotFoundError.
+const PY_VERIFY = `sh -c 'test -f src/a.txt || { echo "FAILED tests - ModuleNotFoundError: No module named src.a"; exit 1; }'`;
+test('accepts Python greenfield Red: missing dotted module inside Write scope', () => {
+  const f = fixture({ verify: PY_VERIFY, baseFiles: { 'src/keep.py': '' } }); // package exists on base, module is new
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', tag(f)]);
+  assert.equal(r.status, 0, r.out);
+});
+test('rejects Python Red when the missing first-party module is outside Write scope (exit 33)', () => {
+  // `openspec` exists on base but is not in Write scope (src,test).
+  const f = fixture({ verify: PY_VERIFY.replace('src.a', 'openspec.x') });
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', tag(f)]);
+  assert.equal(r.status, 33, r.out);
+});
+test('an uninstalled Python package stays exit 36, never a greenfield Red', () => {
+  const f = fixture({ verify: PY_VERIFY.replace('src.a', 'pytest') });
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', tag(f)]);
+  assert.equal(r.status, 36, r.out);
+});
+
+test('rejects commits authored by the Lead (shangshu)', () => {
+  const f = fixture();
+  const agents = [
+    { id: TESTER, shortId: '9b2f4c1', provider: 'codex/gpt' },
+    { id: WRITER, shortId: '9b2f4c2', provider: 'claude/flash', name: '[Pipeline] shangshu c lead' },
+    { id: REVIEWER, shortId: REVIEWER_SHORT, provider: 'claude/cc' },
+  ];
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', tag(f)], agents);
+  assert.equal(r.status, 31, r.out);
+  assert.match(r.out, /Lead/);
+});
+
+test('attempt breaker: -a4 is exit 37 unless a human approved it', () => {
+  const f = fixture();
+  git(f.cwd, 'branch', '-m', `task/${f.change}/T-01`, `task/${f.change}/T-01-a4`);
+  const blocked = invoke(f.cwd, [`task/${f.change}/T-01-a4`, 'T-01', tag(f)]);
+  assert.equal(blocked.status, 37, blocked.out);
+  const allowed = invoke(f.cwd, [`task/${f.change}/T-01-a4`, 'T-01', tag(f), '--allow-attempt-over']);
+  assert.equal(allowed.status, 0, allowed.out);
+});
+test('attempt breaker: -a3 still merges', () => {
+  const f = fixture();
+  git(f.cwd, 'branch', '-m', `task/${f.change}/T-01`, `task/${f.change}/T-01-a3`);
+  assert.equal(invoke(f.cwd, [`task/${f.change}/T-01-a3`, 'T-01', tag(f)]).status, 0);
 });
