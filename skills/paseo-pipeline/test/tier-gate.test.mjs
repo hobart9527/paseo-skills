@@ -315,6 +315,88 @@ test('tier-reminder-hook + tier-stop-hook 进程：快照 → Bash 写 → block
   assert.equal(run(STOP_HOOK, { session_id: 'p1', cwd: root, stop_hook_active: true }).stdout.trim(), '');
 }));
 
+test('Stop 核对：CP-2 合流（--no-ff）不算主 checkout 原地写', () => withState(() => {
+  const root = makeRepo();
+  sh(root, 'checkout', '-q', '-b', 'integration/x');
+  for (const n of ['a', 'b', 'c', 'd']) fs.writeFileSync(path.join(root, 'src', n), n);
+  sh(root, 'add', '.'); sh(root, 'commit', '-q', '-m', 'branch work');
+  sh(root, 'checkout', '-q', 'main');
+  snap(root);
+  sh(root, 'merge', '-q', '--no-ff', 'integration/x', '-m', 'merge');
+  assert.equal(stop(root).verdict, 'ok');
+}));
+
+test('Stop 核对：fast-forward 拉取远端提交不算主 checkout 原地写', () => withState(() => {
+  const root = makeRepo();
+  snap(root);
+  // A second worktree stands in for "work that arrived from the remote".
+  const wt = path.join(path.dirname(root), `${path.basename(root)}-pull`);
+  sh(root, 'worktree', 'add', '-q', '-b', 'incoming', wt);
+  for (const n of ['a', 'b', 'c', 'd']) fs.writeFileSync(path.join(fs.realpathSync(wt), 'src', n), n);
+  sh(fs.realpathSync(wt), 'add', '.'); sh(fs.realpathSync(wt), 'commit', '-q', '-m', 'remote');
+  sh(root, 'update-ref', 'refs/remotes/origin/main', 'incoming');
+  sh(root, 'merge', '-q', '--ff-only', 'incoming');
+  assert.equal(stop(root).verdict, 'ok');
+}));
+
+test('Stop 核对：stash 还原本轮前的脏文件不算改动', () => withState(() => {
+  const root = makeRepo();
+  // Tracked files that are dirty before the snapshot (the old false positive).
+  for (const n of ['a', 'b', 'c', 'd']) {
+    fs.writeFileSync(path.join(root, 'src', n), 'before');
+    sh(root, 'add', '.');
+  }
+  sh(root, 'commit', '-q', '-m', 'track');
+  for (const n of ['a', 'b', 'c', 'd']) fs.writeFileSync(path.join(root, 'src', n), 'dirty');
+  snap(root);
+  sh(root, 'stash', '-q');
+  assert.equal(stop(root).verdict, 'ok');
+}));
+
+test('Stop 核对：跨轮次用 Bash 小步写入，累计超限仍被 block', () => withState(() => {
+  const root = makeRepo();
+  snap(root, 'multi');
+  bashWrite(root, ['a', 'b']);
+  assert.equal(stop(root, 'multi').verdict, 'ok');
+  snap(root, 'multi');
+  bashWrite(root, ['c', 'd']);
+  const blocked = stop(root, 'multi');
+  assert.equal(blocked.verdict, 'block');
+  assert.match(blocked.reason, /累计/);
+  assert.match(blocked.reason, /src\/a/);
+  // 用户答复后没有新改动：同一批文件不再重复打断。
+  snap(root, 'multi');
+  assert.equal(stop(root, 'multi').verdict, 'ok');
+}));
+
+test('连续多轮原地改：第 3 轮 Stop 汇报一次，用户回话后重新观察', () => withState(() => {
+  const root = makeRepo();
+  // 真实时序：每条用户消息到达先快照，再动手，再 Stop。
+  for (let round = 1; round <= 2; round += 1) {
+    snap(root, 'churn');
+    bashWrite(root, ['a']);
+    assert.equal(stop(root, 'churn').verdict, 'ok', `第 ${round} 轮不该打断`);
+  }
+  snap(root, 'churn');
+  bashWrite(root, ['a']);
+  const escalated = stop(root, 'churn');
+  assert.equal(escalated.verdict, 'block');
+  assert.match(escalated.reason, /连续 3 轮/);
+  assert.match(escalated.reason, /diagnosing-bugs/);
+  assert.match(escalated.reason, /paseo-handoff/);
+  // 逐次写入不再因 churn 弹窗：拦的是「停下来汇报」，不是每次 Edit 的许可。
+  assert.equal(write(root, 'b', 'churn').verdict, 'allow');
+  // 用户回话 = 报告已看过，轮次清零；但文件账本不清（1 个文件不越界，继续按文件数管）。
+  snap(root, 'churn');
+  bashWrite(root, ['a']);
+  assert.equal(stop(root, 'churn').verdict, 'ok');
+  for (let round = 2; round <= 3; round += 1) {
+    snap(root, 'churn');
+    bashWrite(root, ['a']);
+    assert.equal(stop(root, 'churn').verdict, round === 2 ? 'ok' : 'block', `新一轮第 ${round} 轮`);
+  }
+}));
+
 // ---- fail-open 留痕 ----
 
 test('hook 异常写入 errors.log，而不是静默吞掉', () => withState((dir) => {

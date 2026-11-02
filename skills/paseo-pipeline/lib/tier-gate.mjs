@@ -27,6 +27,17 @@
 // 「本次改动规模」，却记成了「会话总写量」。现在遇到探针命中即结算：账本超过
 // DEFAULT_IDLE_MS 没被写过，就视为新任务段，从空账本重新计数。阈值可调
 // （PIPELINE_TIER_GATE_IDLE_MS），取舍见该常量的说明（宁可少拦，与旧行为一致）。
+//
+// 2026-11-02（二）：补两类真实缺口。
+//   1) Stop 核对曾把 `git pull`、CP-2 的 --no-ff 合流、以及被 `git restore`/`stash` 还原的
+//      旧脏文件都算成本轮违规。现在只在 HEAD 移动时读「本机新增、未进远端」的提交
+//      （--first-parent --no-merges --not --remotes），合流与拉取不再误拦。
+//   2) 每轮 Stop 把本轮实际改动的业务文件并回段账本并计一轮。此前每轮只看增量，
+//      每轮 Bash 改 2 个文件可以永远不触发上限；现在累计到第 4 个文件即 ask。
+//   另外，同一任务段连续 DEFAULT_TURNS 轮都在改业务文件时，Stop 汇报一次「原地反复试错」。
+//   这条汇报放在 Stop 而不是 PreToolUse：它要的是「先停下来汇报试过什么」，不是逐次写入的
+//   许可弹窗。用户看到后，下一条消息到达时轮次清零、重新观察，每 DEFAULT_TURNS 轮最多打断一次。
+//   按轮次而非 Edit 次数计数（LESSONS §9.4）。
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -38,6 +49,11 @@ export const DEFAULT_LIMIT = 3;
 // normal "read, think, edit" gap inside one task never resets the count, while a
 // finished task followed by a fresh request does.
 export const DEFAULT_IDLE_MS = 30 * 60 * 1000;
+// 同一任务段里连续这么多轮用户消息都在主 checkout 改业务文件，就不再只是「多写了几笔」：
+// 模型在原地反复试错。达到阈值时由 Stop 汇报一次（不是逐次写入的许可弹窗），用户看到后
+// 由 takeSnapshot 清零轮次、重新观察。按「轮次」而不是「Edit 次数」计数，因为一次正常的
+// 小改动分 4-5 次 Edit 很常见，按次数拦会制造弹窗疲劳（LESSONS §9.4）。
+export const DEFAULT_TURNS = 3;
 const PROTECTED_BRANCHES = new Set(['main', 'master']);
 
 export const TIER_RULES = [
@@ -150,15 +166,67 @@ function idleFromEnv() {
   return Number.isInteger(raw) && raw >= 0 ? raw : DEFAULT_IDLE_MS;
 }
 
+function turnsFromEnv() {
+  const raw = Number.parseInt(process.env.PIPELINE_TIER_GATE_TURNS ?? '', 10);
+  return Number.isInteger(raw) && raw >= 1 ? raw : DEFAULT_TURNS;
+}
+
+const EXEMPT = (rel) => rel === 'openspec' || rel.startsWith('openspec/')
+  || rel === '.superpowers' || rel.startsWith('.superpowers/');
+
+/**
+ * 段账本归一化：legacy 数组形态、损坏字段、跨段旧值都在这里收敛成同一种形状。
+ * `fresh` 为真表示上一笔写入已超过空闲阈值，本笔开启新任务段。
+ */
+function segment(entry, now = Date.now()) {
+  const legacy = Array.isArray(entry);
+  const strings = (value) => (Array.isArray(value) ? value : []).filter((v) => typeof v === 'string');
+  const at = !legacy && typeof entry?.at === 'number' ? entry.at : 0;
+  const fresh = !legacy && at > 0 && now - at >= idleFromEnv();
+  return {
+    legacy,
+    at,
+    fresh,
+    files: fresh ? [] : strings(legacy ? entry : entry?.files),
+    // 用户确认过的文件只在同一任务段内豁免；新任务段的改动要重新计数。
+    asked: fresh ? [] : strings(legacy ? [] : entry?.asked),
+    // 已经因为超过上限向用户汇报过的文件。同一批文件不重复 block，否则用户回复后
+    // 没有任何新改动也会被反复打断；只有累计集合里出现新文件才再次汇报。
+    reported: fresh ? [] : strings(legacy ? [] : entry?.reported),
+    turns: fresh ? 0 : (!legacy && Number.isInteger(entry?.turns) ? entry.turns : 0),
+    // Stop 已汇报过「连续多轮原地改」。用户看到后的下一条消息才重置，避免每轮重复打断。
+    churnReported: fresh ? false : (!legacy && entry?.churnReported === true),
+  };
+}
+
+function writeSegment(file, state, root, next) {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ ...state, [root]: next }));
+  } catch {
+    // 记账失败不能锁死写入：放行，只是这一笔不计数。
+  }
+}
+
 function denyReason(count, limit, files) {
   return [
-    `本会话已在主 checkout（main）写了 ${count} 个不同文件，达到 Tier 1 上限 ${limit}；再写会超出 Tier 1。`,
+    `本任务段已在主 checkout（main）写了 ${count} 个不同业务文件，达到 Tier 1 上限 ${limit}；再写会超出 Tier 1。`,
     `已写：${files.join('、')}`,
     '先停手，按范围改走对应通道（不要继续原地写）：',
     '- Tier 2（单模块、不涉及持久化/并发/不可逆）：用 /paseo-handoff 交给 worktree 里的 Agent，交接内容写明验收命令与「越级即停」。',
     '- Tier 3（冻结后的 DAG 有 maxWidth≥2 且任务≥4；跨模块共享契约、持久化、并发、不可逆变更通常是这类迹象）：用 /paseo-pipeline。不要为了够格而拆分 DAG。',
     '已写的改动保留在工作区，不要回滚；把它们列进交接内容的「当前状态」。',
     '这是需要用户确认的越级写入：用户若在确认框放行才继续；不要改用 Bash 等方式绕过。',
+  ].join('\n');
+}
+
+function churnReason(turns, threshold) {
+  return [
+    `[tier-gate] 本任务段已连续 ${turns} 轮在主 checkout（main）上改业务文件，达到阈值 ${threshold} 轮：这不是「一次小范围改动」，是原地反复试错。`,
+    '先不要再改文件。向用户汇报：反复了几轮、每轮改了什么、卡在哪里。然后二选一：',
+    '- 疑难 Bug：用 /diagnosing-bugs 建最小复现，不要继续盲改。',
+    '- 复杂度超预期：用 /paseo-handoff 交给 worktree 里的 Agent，交接内容必写「## What was tried」，避免下游重走同一条死路。',
+    '用户明确要求继续时，才在本任务段里继续改；不要改用 Bash 等方式绕过这次汇报。',
   ].join('\n');
 }
 
@@ -187,34 +255,22 @@ export function assessTierGate({ target, sessionId }) {
   const file = stateFile(sessionId);
   const state = readState(file);
   const now = Date.now();
-  const entry = state[ctx.root];
-  // Legacy shape (`["src/a", ...]`, no clock) still counts; it just has no timestamp.
-  const legacy = Array.isArray(entry);
-  const files = (legacy ? entry : Array.isArray(entry?.files) ? entry.files : []).filter((v) => typeof v === 'string');
-  // asked = 越线后交给用户确认的文件；Stop 核对时不再算作逃逸。被拒绝的文件不会真的变化，所以无需区分。
-  const asked = (!legacy && Array.isArray(entry?.asked) ? entry.asked : []).filter((v) => typeof v === 'string');
-  const lastWrite = !legacy && typeof entry?.at === 'number' ? entry.at : now;
-  // A finished task followed by a fresh request is a new segment; see the header note.
-  const fresh = !legacy && now - lastWrite >= idleFromEnv();
-  const counted = fresh ? [] : files;
+  const seg = segment(state[ctx.root], now);
+  const counted = seg.files;
+  const asked = seg.asked;
+  // 越线写入要用户确认的文件。churn 不在这里判：那是「停下来汇报试过什么」，
+  // 归 Stop 事后核对（assessStop），逐次写入只做文件数上限这一件事。
+  const keep = { turns: seg.turns, reported: seg.reported, churnReported: seg.churnReported };
   if (counted.includes(rel)) return { verdict: 'allow', note: 'already counted' };
 
   const limit = limitFromEnv();
-  const save = (next) => {
-    try {
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, JSON.stringify({ ...state, [ctx.root]: next }));
-    } catch {
-      // 记账失败不能锁死写入：放行，只是这一笔不计数。
-    }
-  };
   if (counted.length >= limit) {
     // 不计入 files：每次越线写入都要重新确认，被拒绝后不能靠重试溜过去。
-    save({ files: counted, at: now, asked: asked.includes(rel) ? asked : [...asked, rel] });
+    writeSegment(file, state, ctx.root, { ...keep, files: counted, at: now, asked: asked.includes(rel) ? asked : [...asked, rel] });
     return { verdict: 'ask', reason: denyReason(counted.length, limit, counted) };
   }
 
-  save({ files: [...counted, rel], at: now, asked });
+  writeSegment(file, state, ctx.root, { ...keep, files: [...counted, rel], at: now, asked });
   return { verdict: 'allow' };
 }
 
@@ -248,17 +304,41 @@ export function takeSnapshot({ cwd, sessionId }) {
   if (typeof sessionId !== 'string' || sessionId === '' || typeof cwd !== 'string' || cwd === '') return;
   const ctx = repoContext(cwd);
   if (ctx === null || !ctx.isPrimaryOnProtected) return;
+  // 新一条用户消息到达 = 用户已经看到上一次汇报（文件名或「原地反复改」）并选择继续。
+  // 只在这里重置观察窗：越线后同一轮里不会每写一次都弹窗，用户答复后也不会被同一批文件
+  // 反复打断。files / asked 不动——否则越线的写入就真的被忘掉了。
+  const file = stateFile(sessionId);
+  const state = readState(file);
+  const prev = state[ctx.root];
+  if (prev && !Array.isArray(prev)) {
+    const inspected = prev.churnReported === true
+      || (Number.isInteger(prev.turns) && prev.turns >= turnsFromEnv());
+    if (inspected) writeSegment(file, state, ctx.root, { ...prev, turns: 0, churnReported: false });
+  }
   const snap = { root: ctx.root, head: git(ctx.root, ['rev-parse', 'HEAD']), sig: dirtySignatures(ctx.root) };
   fs.mkdirSync(stateDir(), { recursive: true });
   fs.writeFileSync(snapFile(sessionId), JSON.stringify(snap));
 }
 
-const EXEMPT = (rel) => rel === 'openspec' || rel.startsWith('openspec/')
-  || rel === '.superpowers' || rel.startsWith('.superpowers/');
+/**
+ * 本轮由本机新增、尚未推送的提交改到的文件。这是 `git pull` 与 CP-2 合流不误拦的关键：
+ *   --first-parent  合流只算主干这一条线，`integration/<change>` 子分支上的 4 个文件不算「主 checkout 原地写」；
+ *   --no-merges     跳过合流提交本身；
+ *   --not --remotes 远端已有的提交是拉取来的，不属于本会话。
+ * 本机直连 `main` 的普通提交仍会出现在这里——那正是「Bash 写完直接提交」要补的洞。
+ */
+function localCommitFiles(root, from, to) {
+  return git(root, ['log', '--first-parent', '--no-merges', '--pretty=format:', '--name-only', `${from}..${to}`, '--not', '--remotes'])
+    .split('\n').map((line) => line.trim()).filter(Boolean);
+}
 
 /**
  * Stop 时核对：自本轮快照以来主 checkout 上变化的业务文件（含 Bash 造成的、含已提交的）是否超过 Tier 1 上限。
  * 经 ask 流程由用户确认过的文件不计入。
+ *
+ * 每轮结束都把本轮实际改动的业务文件并回段账本并记一轮，这样「每轮 Bash 改 2 个文件」会累计
+ * 到上限，而不是被一次快照重置掉。同一段里连续 DEFAULT_TURNS 轮都在改业务文件，也在这里
+ * 汇报一次「原地反复试错」——事后迫使模型停下来讲清楚，而不是逐次写入弹许可框。
  *
  * @returns {{verdict: 'ok'|'block', reason?: string, files?: string[]}}
  */
@@ -273,25 +353,56 @@ export function assessStop({ cwd, sessionId }) {
   const changed = new Set();
   const current = dirtySignatures(ctx.root);
   for (const [rel, sig] of Object.entries(current)) if (snap.sig[rel] !== sig) changed.add(rel);
-  for (const rel of Object.keys(snap.sig)) if (!(rel in current)) changed.add(rel); // 本轮被还原/提交
+  // 快照里有、现在没了，且 HEAD 没动：只可能是 stash/restore/checkout 把旧脏文件还原了，
+  // 不是本轮写的新内容。HEAD 动了的交给下面按提交补（合流与拉取已被排除）。
   const head = git(ctx.root, ['rev-parse', 'HEAD']);
   if (head !== snap.head) {
-    for (const rel of git(ctx.root, ['diff', '--name-only', snap.head, head]).split('\n').filter(Boolean)) changed.add(rel);
+    for (const rel of localCommitFiles(ctx.root, snap.head, head)) changed.add(rel);
   }
 
-  const askedList = readState(stateFile(sessionId))[ctx.root]?.asked;
-  const asked = new Set(Array.isArray(askedList) ? askedList : []);
-  const files = [...changed].filter((rel) => !EXEMPT(rel) && !asked.has(rel)).sort();
+  const file = stateFile(sessionId);
+  const state = readState(file);
+  const seg = segment(state[ctx.root]);
+  const asked = new Set(seg.asked);
+  const business = (rel) => !EXEMPT(rel) && !asked.has(rel);
+  const round = [...changed].filter(business).sort();
+  // 上一轮已计入的文件也要参与上限判定：每轮 2 个、累计 4 个必须拦住。
+  const accumulated = [...new Set([...seg.files, ...round])].filter(business).sort();
   const limit = limitFromEnv();
-  if (files.length <= limit) return { verdict: 'ok', files };
-  return {
-    verdict: 'block',
-    files,
-    reason: [
-      `[tier-gate] 本轮在主 checkout（main）上实际改动了 ${files.length} 个文件，超过 Tier 1 上限 ${limit}，且未经确认。`,
-      `改动：${files.join('、')}`,
-      '不要再改文件，也不要回滚。先向用户汇报：这次已越出 Tier 1，是否未先分级；然后请用户决定走 Tier 2（/paseo-handoff）、Tier 3（/paseo-pipeline）或明确放行。',
-      '（若其中有文件不是你改的，例如用户或其他会话同时在改，说明这一点即可。）',
-    ].join('\n'),
-  };
+  const reportedBefore = new Set(seg.reported);
+  // 同一批累计文件只汇报一次：用户看到 block 后回一句「知道了」，不应在没有任何新改动时
+  // 再被同样的 block 打断；只有出现新的越界文件才重新汇报。
+  const unreported = accumulated.filter((rel) => !reportedBefore.has(rel));
+  const fileLimitBlock = accumulated.length > limit && unreported.length > 0;
+  // 「连续多轮原地改」在这里判：Stop 的产出是迫使模型停下来汇报，不是逐次写入的许可。
+  // 汇报过一次就设 churnReported，用户回话时由 takeSnapshot 重置；否则同一段任务每轮都打断。
+  const turnLimit = turnsFromEnv();
+  const turnsAfter = round.length > 0 ? seg.turns + 1 : seg.turns;
+  const churnBlock = turnsAfter >= turnLimit && round.length > 0 && !seg.churnReported;
+  const block = fileLimitBlock || churnBlock;
+  // 只有真的在本轮改动了业务文件才算一轮；纯阅读/纯讨论不推进计数器，也不刷新段时钟，
+  // 否则一段任务会被频繁的 Stop 永久保活，空闲重置永远不生效。
+  if (round.length > 0) {
+    writeSegment(file, state, ctx.root, {
+      files: accumulated,
+      asked: seg.asked,
+      at: Date.now(),
+      turns: turnsAfter,
+      reported: fileLimitBlock ? accumulated : seg.reported,
+      // 保留已汇报标记：只有下一条用户消息（takeSnapshot）才重置，别在同一条消息里又允许重复打断。
+      churnReported: seg.churnReported || churnBlock,
+    });
+  }
+
+  if (!block) return { verdict: 'ok', files: round };
+  const limitReason = [
+    `[tier-gate] 本任务段在主 checkout（main）上已改动 ${accumulated.length} 个业务文件，超过 Tier 1 上限 ${limit}，且未经确认。`,
+    `本轮改动：${round.join('、') || '（无新增，是上一轮累计）'}`,
+    `累计：${accumulated.join('、')}`,
+    '不要再改文件，也不要回滚。先向用户汇报：这次已越出 Tier 1，是否未先分级；然后请用户决定走 Tier 2（/paseo-handoff）、Tier 3（/paseo-pipeline）或明确放行。',
+    '（若其中有文件不是你改的，例如用户或其他会话同时在改，说明这一点即可。）',
+  ].join('\n');
+  const reason = [fileLimitBlock ? limitReason : '', churnBlock ? churnReason(turnsAfter, turnLimit) : '']
+    .filter(Boolean).join('\n\n');
+  return { verdict: 'block', files: accumulated, reason };
 }

@@ -98,8 +98,13 @@ function pyModuleInScope(dotted, scopes, declaredFiles = []) {
   if (roots.length > 0) {
     return roots.some((root) => files.some((file) => isFileWithinScopes(`${root}${file}`, scopes)));
   }
+  // 全新顶层包：`src/billing/core.py` 与 `billing/core.py` 两种布局都要认。此前只比对无前缀
+  // 路径，`src/`/`lib/`/`app/` 布局的新包会被误报成 collection error（exit 33/36）。
   return declaredFiles.length > 0
-    && files.some((file) => isFileWithinScopes(file, scopes) && declaredFiles.includes(file));
+    && PY_ROOTS.some((root) => files.some((file) => {
+      const declared = `${root}${file}`;
+      return isFileWithinScopes(declared, scopes) && declaredFiles.includes(declared);
+    }));
 }
 // A repo-relative missing module path matches a scope entry when it equals it or sits
 // under it. Write scopes may name a directory (`src`, `packages/server/src/services`) or

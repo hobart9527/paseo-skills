@@ -116,7 +116,18 @@ test('lead interruption: resume same Lead, re-arm waits, never archive pipeline 
 });
 
 test('lead installs the author hook per workspace; writers never type their identity', () => {
-  assert.match(read('templates/lead.md'), /core\.hooksPath "\$PIPELINE_HOME\/hooks\/git"/);
+  const lead = read('templates/lead.md');
+  // `--worktree` keeps the hook inside the linked worktree: without it the shared .git/config
+  // is mutated and the hook outlives CP-2 on the primary checkout.
+  assert.match(lead, /config --worktree core\.hooksPath "\$PIPELINE_HOME\/hooks\/git"/);
+  assert.match(lead, /extensions\.worktreeConfig true/);
   for (const f of ['tester.md', 'writer.md']) assert.match(read(`templates/${f}`), /\$PASEO_AGENT_ID.*never `uuidgen`/s, f);
   assert.ok(fs.statSync(path.join(dir, 'hooks', 'git', 'commit-msg')).mode & 0o111, 'hook must be executable');
+});
+
+test('lead escalates capability on repeated rework, not the same profile', () => {
+  const lead = read('templates/lead.md');
+  assert.match(lead, /gaogong.*never the light profile/);
+  assert.match(lead, /ARBITER/);
+  assert.match(lead, /--allow-attempt-over/);
 });

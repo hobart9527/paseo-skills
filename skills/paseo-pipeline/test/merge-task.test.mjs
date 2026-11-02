@@ -600,6 +600,18 @@ test('accepts Python greenfield Red for a brand-new top-level package the task c
   const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(f.tip, f.base)]);
   assert.equal(r.status, 0, r.out);
 });
+test('accepts a new top-level package under a src/ layout (import billing.core from src/billing/core.py)', () => {
+  const verify = `sh -c 'test -f src/billing/core.py || { echo "FAILED tests - ModuleNotFoundError: No module named billing.core"; exit 1; }'`;
+  const f = pyPackageFixture({ verify, implFile: 'src/billing/core.py', writeScope: 'src/billing,test' });
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(f.tip, f.base)]);
+  assert.equal(r.status, 0, r.out);
+});
+test('a src/ layout new package outside Write scope still fails', () => {
+  const verify = `sh -c 'test -f src/acme/core.py || { echo "FAILED tests - ModuleNotFoundError: No module named acme.core"; exit 1; }'`;
+  const f = pyPackageFixture({ verify, implFile: 'src/billing/core.py', writeScope: 'src/billing,test' });
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(f.tip, f.base)]);
+  assert.notEqual(r.status, 0, r.out);
+});
 test('a brand-new top-level Python module outside Write scope stays exit 36', () => {
   const f = pyPackageFixture({ verify: pyVerify('acme.core'), implFile: 'billing/core.py' });
   const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(f.tip, f.base)]);
