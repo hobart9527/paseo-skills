@@ -8,7 +8,7 @@ import { TIER_RULES, logHookError } from '../lib/tier-gate.mjs';
 export const SESSION_CONTEXT = [
   '[分级规则·会话级] 本会话改文件前必须先分级并声明，不经用户允许不得越级。',
   TIER_RULES,
-  '主 checkout 上同一会话写到第 4 个业务文件会弹出确认；Stop 时还会核对实际改动。',
+  '主 checkout 上同一会话写到第 4 个业务文件，或跨到第 2 个作用域（packages/web、apps/api 等包根或顶层目录）时，会弹出确认；Stop 时还会核对实际改动。',
 ].join('\n');
 
 async function main() {

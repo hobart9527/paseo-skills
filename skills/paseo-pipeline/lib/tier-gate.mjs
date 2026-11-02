@@ -38,6 +38,12 @@
 //   这条汇报放在 Stop 而不是 PreToolUse：它要的是「先停下来汇报试过什么」，不是逐次写入的
 //   许可弹窗。用户看到后，下一条消息到达时轮次清零、重新观察，每 DEFAULT_TURNS 轮最多打断一次。
 //   按轮次而非 Edit 次数计数（LESSONS §9.4）。
+//
+// 2026-11-02（三）：补上「单目录」这一维。此前闸门只数文件数，跨包的第一个文件（如已在
+// packages/server 写了 1 个，再写 packages/web 的第 2 个）完全不拦——规则里的「超出单目录
+// 即 Tier 2」在实现里没有对应项。现按工作区根判 scopeKey（packages/web、apps/api、skills/x
+// 取前两段，其余取顶层目录），已触碰其他 scope 时该文件也要 ask。ask 仍不进 files、只进 asked，
+// 「拒绝后重试仍 ask」与 Stop 对 asked 的豁免都保持不变。
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -174,6 +180,15 @@ function turnsFromEnv() {
 const EXEMPT = (rel) => rel === 'openspec' || rel.startsWith('openspec/')
   || rel === '.superpowers' || rel.startsWith('.superpowers/');
 
+// 工作区根：monorepo 的 packages/x、apps/x、services/x、crates/x、skills/x 算一个作用域，
+// 其余取顶层目录。Tier 1 的「单目录」按这里判，而不是按文件的完整路径。
+const WORKSPACE_ROOTS = new Set(['packages', 'apps', 'services', 'crates', 'skills']);
+export function scopeKey(rel) {
+  const parts = String(rel).split('/');
+  if (parts.length > 2 && WORKSPACE_ROOTS.has(parts[0])) return `${parts[0]}/${parts[1]}`;
+  return parts.length > 1 ? parts[0] : '.';
+}
+
 /**
  * 段账本归一化：legacy 数组形态、损坏字段、跨段旧值都在这里收敛成同一种形状。
  * `fresh` 为真表示上一笔写入已超过空闲阈值，本笔开启新任务段。
@@ -208,9 +223,12 @@ function writeSegment(file, state, root, next) {
   }
 }
 
-function denyReason(count, limit, files) {
+function denyReason(count, limit, files, scopes = []) {
+  const scopeLine = scopes.length >= 2
+    ? `本任务段已跨 ${scopes.length} 个作用域（${scopes.join('、')}），超出 Tier 1 的「单目录小范围」。`
+    : `本任务段已在主 checkout（main）写了 ${count} 个不同业务文件，达到 Tier 1 上限 ${limit}；再写会超出 Tier 1。`;
   return [
-    `本任务段已在主 checkout（main）写了 ${count} 个不同业务文件，达到 Tier 1 上限 ${limit}；再写会超出 Tier 1。`,
+    scopeLine,
     `已写：${files.join('、')}`,
     '先停手，按范围改走对应通道（不要继续原地写）：',
     '- Tier 2（单模块、不涉及持久化/并发/不可逆）：用 /paseo-handoff 交给 worktree 里的 Agent，交接内容写明验收命令与「越级即停」。',
@@ -264,6 +282,15 @@ export function assessTierGate({ target, sessionId }) {
   if (counted.includes(rel)) return { verdict: 'allow', note: 'already counted' };
 
   const limit = limitFromEnv();
+  // 已触碰的作用域（含用户确认过的越线文件——它们同样在本任务段的范围内）。
+  const known = [...new Set([...counted, ...asked])];
+  const scopes = [...new Set([...known.map(scopeKey), scopeKey(rel)])].sort();
+  if (known.length > 0 && scopes.length >= 2) {
+    // 跨作用域一律 ask：哪怕这是第 2 个文件，也已经是 Tier 2。
+    // 同样不进 files、只进 asked，保住「拒绝后重试仍 ask」这条不变式。
+    writeSegment(file, state, ctx.root, { ...keep, files: counted, at: now, asked: asked.includes(rel) ? asked : [...asked, rel] });
+    return { verdict: 'ask', reason: denyReason(known.length, limit, known, scopes) };
+  }
   if (counted.length >= limit) {
     // 不计入 files：每次越线写入都要重新确认，被拒绝后不能靠重试溜过去。
     writeSegment(file, state, ctx.root, { ...keep, files: counted, at: now, asked: asked.includes(rel) ? asked : [...asked, rel] });

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { assessTierGate, assessStop, takeSnapshot, logHookError } from '../lib/tier-gate.mjs';
+import { assessTierGate, assessStop, takeSnapshot, logHookError, scopeKey } from '../lib/tier-gate.mjs';
 import { shouldRemind, REMINDER } from '../hooks/tier-reminder-hook.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -54,6 +54,7 @@ test('主 checkout 的 main：前 3 个不同文件放行，第 4 个拒绝并�
   for (const n of ['a', 'b', 'c']) assert.equal(write(root, n).verdict, 'allow', n);
   const d = write(root, 'd');
   assert.equal(d.verdict, 'ask');
+  assert.match(d.reason, /Tier 1 上限/);
   assert.match(d.reason, /\/paseo-handoff/);
   assert.match(d.reason, /\/paseo-pipeline/);
   assert.match(d.reason, /a、.*b、.*c|src\/a/);
@@ -161,6 +162,57 @@ test('新建文件（目标尚不存在）也能判定', () => withState(() => {
   const root = makeRepo();
   for (const n of ['deep/new/a', 'deep/new/b', 'deep/new/c']) assert.equal(write(root, n).verdict, 'allow', n);
   assert.equal(write(root, 'deep/new/d').verdict, 'ask');
+}));
+
+// ---- 跨作用域（「单目录」维度） ----
+
+test('跨包：第 2 个文件就 ask，而不是等到第 4 个', () => withState(() => {
+  const root = makeRepo();
+  assert.equal(assessTierGate({ target: path.join(root, 'packages', 'server', 'a.ts'), sessionId: 's1' }).verdict, 'allow');
+  const web = assessTierGate({ target: path.join(root, 'packages', 'web', 'b.tsx'), sessionId: 's1' });
+  assert.equal(web.verdict, 'ask');
+  assert.match(web.reason, /2 个作用域/);
+  assert.match(web.reason, /packages\/server/);
+  assert.match(web.reason, /packages\/web/);
+}));
+
+test('跨作用域不产生豁免：被拒绝后重试仍 ask，第三个包仍 ask', () => withState(() => {
+  const root = makeRepo();
+  const at = (p) => assessTierGate({ target: path.join(root, p), sessionId: 's1' });
+  assert.equal(at('packages/server/a.ts').verdict, 'allow');
+  assert.equal(at('packages/web/b.tsx').verdict, 'ask');
+  assert.equal(at('packages/web/b.tsx').verdict, 'ask');
+  // 若 ask 被当成豁免，跨到第三个包会退回「文件数未满」而 allow。
+  assert.equal(at('packages/shared/c.ts').verdict, 'ask');
+}));
+
+test('同包不同目录不算跨作用域（单目录仍按包根判定）', () => withState(() => {
+  const root = makeRepo();
+  const at = (p) => assessTierGate({ target: path.join(root, p), sessionId: 's1' });
+  assert.equal(at('packages/server/src/routes/a.ts').verdict, 'allow');
+  assert.equal(at('packages/server/src/services/b.ts').verdict, 'allow');
+  assert.equal(at('packages/server/test/c.test.ts').verdict, 'allow');
+}));
+
+test('非工作区布局退化为顶层目录；根目录文件算 "."', () => withState(() => {
+  const root = makeRepo();
+  assert.equal(write(root, 'a').verdict, 'allow'); // src/a
+  assert.equal(assessTierGate({ target: path.join(root, 'README.md'), sessionId: 's1' }).verdict, 'ask');
+}));
+
+test('scopeKey：工作区根取前两段，其余取顶层目录', () => {
+  assert.equal(scopeKey('packages/web/src/app.tsx'), 'packages/web');
+  assert.equal(scopeKey('skills/paseo-ui/SKILL.md'), 'skills/paseo-ui');
+  assert.equal(scopeKey('docs/design.md'), 'docs');
+  assert.equal(scopeKey('README.md'), '.');
+});
+
+test('custom limit 仍生效，且跨作用域判定优先于文件数', () => withState(() => {
+  const root = makeRepo();
+  process.env.PIPELINE_TIER_GATE_LIMIT = '5';
+  assert.equal(assessTierGate({ target: path.join(root, 'packages', 'a', 'x.ts'), sessionId: 's1' }).verdict, 'allow');
+  const cross = assessTierGate({ target: path.join(root, 'packages', 'b', 'y.ts'), sessionId: 's1' });
+  assert.equal(cross.verdict, 'ask');
 }));
 
 // ---- hook 进程级：从 stdin 读事件、按契约输出 ----
