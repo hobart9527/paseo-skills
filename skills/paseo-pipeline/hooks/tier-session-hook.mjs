@@ -3,7 +3,7 @@
 // 为什么：压缩后规则可能只剩一句摘要，长会话的“丢规则”多发生在这里。
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { TIER_RULES, logHookError } from '../lib/tier-gate.mjs';
+import { TIER_RULES, skipInjection, logHookError } from '../lib/tier-gate.mjs';
 
 export const SESSION_CONTEXT = [
   '[分级规则·会话级] 本会话改文件前必须先分级并声明，不经用户允许不得越级。',
@@ -13,7 +13,11 @@ export const SESSION_CONTEXT = [
 
 async function main() {
   if (process.env.PIPELINE_TIER_REMINDER === 'off') return;
-  for await (const _ of process.stdin); // 排空 stdin
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  let cwd;
+  try { cwd = JSON.parse(Buffer.concat(chunks).toString('utf8'))?.cwd; } catch { cwd = undefined; }
+  if (skipInjection(cwd)) return;
   fs.writeSync(1, `${JSON.stringify({
     hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: SESSION_CONTEXT },
   })}\n`);
