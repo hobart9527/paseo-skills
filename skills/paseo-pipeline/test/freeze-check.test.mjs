@@ -248,6 +248,11 @@ test('low speedup advisory fires on a near-serial DAG and stays silent on a wide
   const chain = adv(`- [ ] 1.1 T-01 a\n  - Write scope: src/a.mjs,test/a.test.mjs\n  - Verify with: node --test test/a.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.2 T-02 b\n  - Depends on: T-01\n  - Write scope: src/b.mjs,test/b.test.mjs\n  - Verify with: node --test test/b.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.3 T-03 c\n  - Depends on: T-01\n  - Write scope: src/c.mjs,test/c.test.mjs\n  - Verify with: node --test test/c.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.4 T-04 d\n  - Depends on: T-02,T-03\n  - Write scope: src/d.mjs,test/d.test.mjs\n  - Verify with: node --test test/d.test.mjs\n  - Scen: SCEN-1`);
   assert.equal(chain.speedup, 1.33);
   assert.match(chain.advisories.join('\n'), /ADVISORY_LOW_SPEEDUP/);
+  // Disjoint scopes: every critical edge is an author choice, so all are removable candidates.
+  assert.deepEqual(chain.criticalChain.map((step) => [step.id, step.via]), [['T-01', null], ['T-02', 'logical'], ['T-04', 'logical']]);
+  // Shared file forces the edge: tag it `scope`, not `logical`.
+  const shared = adv(`- [ ] 1.1 T-01 a\n  - Write scope: src/a.mjs,test/a.test.mjs\n  - Verify with: node --test test/a.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.2 T-02 b\n  - Depends on: T-01\n  - Write scope: src/a.mjs,test/b.test.mjs\n  - Verify with: node --test test/b.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.3 T-03 c\n  - Write scope: src/c.mjs,test/c.test.mjs\n  - Verify with: node --test test/c.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.4 T-04 d\n  - Depends on: T-02,T-03\n  - Write scope: src/d.mjs,test/d.test.mjs\n  - Verify with: node --test test/d.test.mjs\n  - Scen: SCEN-1`);
+  assert.deepEqual(shared.criticalChain.map((step) => [step.id, step.via]), [['T-01', null], ['T-02', 'scope'], ['T-04', 'logical']]);
 });
 
 function sinkContract(verify, extra = '') {
