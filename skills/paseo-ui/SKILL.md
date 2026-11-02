@@ -115,7 +115,7 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
 - **运行器与进程组治理**：
   - 优先 Playwright（DOM 探针完整）；系统 Chrome CLI 模式探针记为 `unmeasured`，**CLI 模式永远无法通过门禁**（`craft_gate.reason = probe_unmeasured`）。
   - `--serve "<cmd>"` 与 `--port auto`：自动分配空闲端口、以独立进程组拉起预览；退出时对整个进程组先 SIGTERM、1.5s 未退则 SIGKILL，彻底消除孤儿服务。占位符只替换 `{port}` / `$PORT` / `${PORT}`；固定端口 URL 会自动重写为实际分配端口。
-  - `--baseline <path>`：非退化门禁模式。在存量遗留页面（基线分 <90）执行局部快轨时，允许 `CHI_after >= CHI_before` 且无新增本快轨违规通过门禁，解除死锁。
+  - `--baseline <path>`：非退化门禁模式。在存量遗留页面（基线分 <90）执行局部快轨时，要求 `CHI_after >= CHI_before` **且逐条扣分规则均未新增或加重**（对比基线 manifest 的 `craft_health_index.deductions`；旧版基线无 deductions 时退回仅比总分），解除死锁但不许「修旧伤掩盖新违规」。
   - `--self-test`：一键校验 Playwright、符号链接解析、随包二进制、状态机与门禁逻辑。
 - **探针度量与 Craft Health Index (CHI: 0-100)**：
   - 由 `capture.mjs` 基于真实 DOM 计算得出，客观反映工艺水平，绝非 LLM 幻觉评分。
@@ -183,7 +183,7 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
 **Lite 6 步执行流**：
 1. **基线确认**：目标文件有未提交改动时，原地执行先将改动存为 `./captures/baseline.patch`；若写入文件数预计超 3 个，必须建 worktree（L-1）。
 2. **表面模式判定**：按规则判定 `--surface-mode`，写入 brief 与采集参数。
-3. **改前截图**：`capture.mjs --serve '<预览命令> {port}' --port auto --out ./captures/before`。
+3. **改前截图**：`capture.mjs --serve '<预览命令> {port}' --port auto --out ./captures/before`。存量低分页面此步会以**退出码 3** 结束，属预期采集结果；以生成 `captures/before/capture-manifest.json` 为准，不要重试。
 4. **组装 Brief 并执行**：
    - 编码 Brief 极简三段式：**Surface Mode 声明** + **第一层胶囊 `brief-rules.md` 全文** + **路由表第二层切片绝对路径**。
    - L-1/L-2 在 `create_workspace(isolation: "worktree", branchName: "ui/<track>-<target>")` 中执行。

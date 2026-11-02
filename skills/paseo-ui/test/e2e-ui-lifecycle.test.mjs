@@ -48,6 +48,8 @@ async function runCapture(url, outDir, options = {}) {
   if (options.states) args.push('--states', options.states);
   if (options.mock) args.push('--mock', options.mock);
   if (options.baseline) args.push('--baseline', options.baseline);
+  if (options.serve) args.push('--serve', options.serve);
+  if (options.port) args.push('--port', options.port);
 
   const { status, stdout, stderr } = await new Promise((resolve) => {
     const p = spawn(process.execPath, args);
@@ -842,6 +844,84 @@ test('Optimization 2: P9 DOM probes detect layout property transitions and conce
   assert.ok(concentricDeduct, 'Must deduct points for concentric border radius violation');
   assert.strictEqual(captureRes.evidence.craft_checks.layout_transition_free, false);
   assert.strictEqual(captureRes.evidence.craft_checks.concentric_radius_compliant, false);
+});
+
+test('Optimization 2b: concentric radius probe ignores separate surfaces, pills and off-corner children', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paseo-p9-exempt-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  // Every container below is geometrically "non-concentric" but legitimate:
+  // 1. padding 32px > 24px → a separate surface per vendor/better-ui.
+  // 2. a pill (border-radius 9999px) child has no concentric corner.
+  // 3. a child offset from the padded corner does not share it.
+  const page = `<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8"><title>Concentric exemptions</title>
+<style>
+  body { font-family: sans-serif; margin: 24px; background: #fff; }
+  p { font-size: 16px; line-height: 1.6; color: #1e293b; }
+  .separate { width: 260px; padding: 32px; border-radius: 16px; background: #f1f5f9; box-sizing: border-box; }
+  .surface-a { border-radius: 16px; background: #e2e8f0; height: 120px; box-sizing: border-box; }
+  .pill-host { width: 260px; padding: 8px; border-radius: 12px; background: #f8fafc; box-sizing: border-box; }
+  .pill { border-radius: 9999px; padding: 10px 20px; border: 0; background: #0284c7; color: #fff; }
+  .offcorner { width: 260px; padding: 8px; border-radius: 12px; background: #f8fafc; box-sizing: border-box; }
+  .inner-offset { width: 120px; height: 90px; margin: 24px auto; border-radius: 4px; background: #cbd5e1; }
+</style></head>
+<body><main>
+  <h1>同心圆角豁免</h1>
+  <p>以下结构不应被判为同心圆角违规。</p>
+  <div class="separate"><div class="surface-a"></div></div>
+  <div class="pill-host"><button class="pill" type="button">胶囊按钮</button></div>
+  <div class="offcorner"><div class="inner-offset"></div></div>
+</main></body></html>`;
+
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(page);
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => server.close());
+
+  const outDir = path.join(tmpDir, 'out');
+  const res = await runCapture(`http://127.0.0.1:${server.address().port}/`, outDir, {
+    viewports: '1280', surfaceMode: 'operate'
+  });
+
+  const concentric = res.craft_health_index.deductions.find((d) => d.rule === 'concentric_radius');
+  assert.strictEqual(concentric, undefined, 'Legitimate surfaces must not be flagged as concentric violations');
+  assert.strictEqual(res.evidence.craft_checks.concentric_radius_compliant, true);
+});
+
+test('Optimization 2c: --serve tears down its detached process group even on gate exit 3', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paseo-serve-cleanup-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const pidFile = path.join(tmpDir, 'server.pid');
+  const serverScript = path.join(tmpDir, 'serve.mjs');
+  fs.writeFileSync(serverScript, `import http from 'node:http';
+import fs from 'node:fs';
+const server = http.createServer((q, r) => {
+  r.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  r.end('<!DOCTYPE html><html lang="zh"><body><h1>ok</h1><div style="width:2000px">overflow</div></body></html>');
+});
+server.listen(process.env.PORT, '127.0.0.1', () => fs.writeFileSync(process.env.PIDFILE, String(process.pid)));
+`);
+
+  // A bare page scores below 90, so this run exits 3 through the gate path — the
+  // exact path that used to call process.exit() and skip `finally` cleanup.
+  const res = await runCapture('http://127.0.0.1:{port}/', path.join(tmpDir, 'out'), {
+    serve: `PIDFILE=${pidFile} node ${serverScript}`,
+    port: 'auto',
+  });
+  assert.strictEqual(res.exitCode, 3, res.stderr);
+  assert.ok(fs.existsSync(pidFile), 'serve process must have started');
+
+  const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+  let alive = true;
+  for (let i = 0; i < 50 && alive; i++) {
+    try { process.kill(pid, 0); await new Promise((r) => setTimeout(r, 100)); }
+    catch { alive = false; }
+  }
+  assert.strictEqual(alive, false, `orphan dev server survived capture exit (pid ${pid})`);
 });
 
 test('Optimization 3: Stage 2 front-loaded blocking on critical static anti-patterns', () => {

@@ -902,8 +902,13 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
             }
           }
 
-          // Concentric border radius probe: R_outer = R_inner + padding
+          // Concentric border radius probe: R_outer = R_inner + padding.
+          // Only a child that shares the parent's rounded corner counts. A padding
+          // above 24px is a separate surface (vendor/better-ui/SKILL.md), interactive
+          // controls and pills have no concentric corner, and a child offset from the
+          // padded content box does not share the corner at all.
           const concentricViolations = [];
+          const CONCENTRIC_SKIP_TAGS = new Set(["button", "input", "select", "textarea", "a", "img", "svg", "video", "canvas"]);
           for (const parent of document.querySelectorAll("div, section, article, aside, li, form")) {
             const r = parent.getBoundingClientRect();
             if (r.width < 40 || r.height < 40) continue;
@@ -911,18 +916,30 @@ async function captureWithPlaywright(baseUrl, outputDir, viewports, states, sche
             const rOuter = parseFloat(pComp.borderTopLeftRadius) || 0;
             if (rOuter <= 4) continue;
             const pTop = parseFloat(pComp.paddingTop) || 0;
-            if (pTop < 2) continue;
+            const pLeft = parseFloat(pComp.paddingLeft) || 0;
+            if (pTop < 2 || pTop > 24) continue;
+            const bTop = parseFloat(pComp.borderTopWidth) || 0;
+            const bLeft = parseFloat(pComp.borderLeftWidth) || 0;
+            const contentLeft = r.left + bLeft + pLeft;
+            const contentTop = r.top + bTop + pTop;
             for (const child of parent.children) {
+              const tag = child.tagName.toLowerCase();
+              if (CONCENTRIC_SKIP_TAGS.has(tag)) continue;
               const cr = child.getBoundingClientRect();
-              if (cr.width === 0 || cr.height === 0) continue;
+              if (cr.width < 24 || cr.height < 24) continue;
+              // The rule applies only where the child's corner sits at the parent's
+              // inner corner; a centred card or a later sibling does not share it.
+              if (Math.abs(cr.left - contentLeft) > 2 || Math.abs(cr.top - contentTop) > 2) continue;
               const cComp = window.getComputedStyle(child);
               const rInner = parseFloat(cComp.borderTopLeftRadius) || 0;
               if (rInner <= 0) continue;
-              const expectedOuter = rInner + pTop;
+              // Pills and circles have no "concentric" corner to match.
+              if (rInner >= 999 || rInner >= Math.min(cr.width, cr.height) / 2) continue;
+              const expectedOuter = rInner + pTop + bTop;
               if (Math.abs(rOuter - rInner) < 1 || Math.abs(rOuter - expectedOuter) > 4) {
                 concentricViolations.push({
                   parent: parent.tagName.toLowerCase(),
-                  child: child.tagName.toLowerCase(),
+                  child: tag,
                   rOuter,
                   rInner,
                   padding: pTop,
@@ -1721,15 +1738,27 @@ export function buildDiagnosticsSummary(result, options = {}) {
   const probeUnmeasured = !domMeasured;
 
   let baselineScore = null;
+  let baselineDeductions = null;
   if (baseline && typeof baseline === "object") {
-    baselineScore = baseline?.verification?.metadata?.evidence?.craft_health_index?.score
-      ?? baseline?.diagnostics_summary?.craft_health_index?.score
-      ?? baseline?.craft_health_index?.score
+    const baselineChi = baseline?.verification?.metadata?.evidence?.craft_health_index
+      ?? baseline?.diagnostics_summary?.craft_health_index
+      ?? baseline?.craft_health_index
       ?? null;
+    baselineScore = typeof baselineChi?.score === "number" ? baselineChi.score : null;
+    baselineDeductions = Array.isArray(baselineChi?.deductions) ? baselineChi.deductions : null;
   }
 
   const isBaselineMode = baselineScore !== null;
-  const isNonRegression = isBaselineMode ? (score >= baselineScore) : false;
+  // Non-regression means the aggregate did not drop AND no single rule got worse:
+  // fixing a large defect must not pay for introducing a new one. A legacy baseline
+  // without deductions cannot be compared per rule, so it falls back to score-only.
+  let worsenedRules = [];
+  const baselineRulesAvailable = isBaselineMode && baselineDeductions !== null;
+  if (baselineRulesAvailable) {
+    const previous = new Map(baselineDeductions.map((d) => [d.rule, Number(d.points) || 0]));
+    worsenedRules = deductions.filter((d) => (Number(d.points) || 0) > (previous.get(d.rule) ?? 0));
+  }
+  const isNonRegression = isBaselineMode ? (score >= baselineScore && worsenedRules.length === 0) : false;
   const gatePassed = !fatalCrash && !probeUnmeasured && (score >= 90 || isNonRegression);
   const gateReason = fatalCrash
     ? fatalReason
@@ -1740,7 +1769,9 @@ export function buildDiagnosticsSummary(result, options = {}) {
               ? `Score ${score} >= 90 (Grade ${grade})`
               : `Non-regression: Score ${score} >= baseline ${baselineScore} (Grade ${grade})`)
           : (isBaselineMode
-              ? `Regression: Score ${score} < baseline ${baselineScore} and < 90 (Grade ${grade})`
+              ? (worsenedRules.length > 0
+                  ? `Regression: new/worsened rule(s) ${worsenedRules.map((d) => d.rule).join(", ")} (Grade ${grade})`
+                  : `Regression: Score ${score} < baseline ${baselineScore} and < 90 (Grade ${grade})`)
               : `Score ${score} < 90 (Grade ${grade})`));
 
   return {
@@ -1770,6 +1801,8 @@ export function buildDiagnosticsSummary(result, options = {}) {
       passed: gatePassed,
       score,
       reason: gateReason,
+      baseline_rules_available: baselineRulesAvailable,
+      worsened_rules: worsenedRules.map((d) => d.rule),
       evidence_complete: !captureIncomplete,
       probe_measured: domMeasured,
       screenshots: screenshotCount,
@@ -2019,6 +2052,9 @@ async function main() {
     }
   }
 
+  // Exit codes are recorded and returned rather than forced with `process.exit()`:
+  // exit() skips the `finally` above, so a detached `--serve` tree would survive
+  // every run and hold its port. Setting `process.exitCode` lets teardown finish.
   try {
     let mocks = null;
     if (mockPath) {
@@ -2026,7 +2062,8 @@ async function main() {
         mocks = loadMocks(mockPath);
       } catch (error) {
         process.stderr.write(`--mock: ${error instanceof Error ? error.message : String(error)}\n`);
-        process.exit(2);
+        process.exitCode = 2;
+        return;
       }
     }
 
@@ -2043,7 +2080,8 @@ async function main() {
         status: "browser_unavailable",
         reason: "--mock requires Playwright; system browser CLI cannot intercept requests",
       }, null, 2) + "\n");
-      process.exit(2);
+      process.exitCode = 2;
+      return;
     }
     if (!result) {
       const browserBin = findSystemBrowser();
@@ -2083,9 +2121,11 @@ async function main() {
       // DOM probe ran. Exit 0 therefore always means "measured and passing".
       const chiGate = diagnostics_summary?.craft_gate;
       if (chiGate && chiGate.passed === false) {
-        process.exit(3);
+        process.exitCode = 3;
+        return;
       }
-      process.exit(0);
+      process.exitCode = 0;
+      return;
     } else {
       const failure = {
         status: "browser_unavailable",
@@ -2093,7 +2133,8 @@ async function main() {
         metadata: buildCaptureMetadata({ status: "browser_unavailable" }, metadataOptions),
       };
       process.stdout.write(JSON.stringify(failure, null, 2) + "\n");
-      process.exit(2);
+      process.exitCode = 2;
+      return;
     }
   } finally {
     await stopServerTree(serverProcess);
