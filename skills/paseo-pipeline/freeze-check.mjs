@@ -69,6 +69,12 @@ const sinkIds = new Set(tasks.filter((task) => !tasks.some((other) => other.depe
 const waveList = [...waves.entries()].sort((a, b) => a[0] - b[0]).map(([wave, ids]) => ({ wave, ids }));
 const maxWidth = waveList.reduce((max, item) => Math.max(max, item.ids.length), 0);
 
+const scopesClash = (left, right) => left.scope.some((scope) => right.scope.some((other) => {
+  const a = normalizeScope(scope);
+  const b = normalizeScope(other);
+  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}));
+
 // Frontier scheduling runs any two tasks concurrently unless one transitively depends on the other,
 // so scope overlap is checked on every unordered pair, not only within a wave.
 const byId = new Map(tasks.map((task) => [task.id, task]));
@@ -88,12 +94,7 @@ for (let i = 0; i < tasks.length; i += 1) {
     const left = tasks[i];
     const right = tasks[j];
     if (ancestorsOf(left.id).has(right.id) || ancestorsOf(right.id).has(left.id)) continue;
-    const clash = left.scope.some((scope) => right.scope.some((other) => {
-      const a = normalizeScope(scope);
-      const b = normalizeScope(other);
-      return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
-    }));
-    if (clash) blocking.push(`SCOPE_CONFLICT ${left.id} and ${right.id}: scopes overlap and neither depends on the other; add Depends on or split scope`);
+    if (scopesClash(left, right)) blocking.push(`SCOPE_CONFLICT ${left.id} and ${right.id}: scopes overlap and neither depends on the other; add Depends on or split scope`);
   }
 }
 
@@ -227,6 +228,19 @@ const speedup = waveList.length ? Number((tasks.length / waveList.length).toFixe
 if (tasks.length >= 4 && maxWidth >= 2 && speedup < 1.5) {
   advisories.push(`ADVISORY_LOW_SPEEDUP: ${tasks.length} tasks over critical path ${waveList.length} = ${speedup}x; compare with Tier 2 handoff before CP-1`);
 }
+// Critical chain: one longest dependency path, each edge tagged by why it exists. `scope` edges are
+// forced (shared files); `logical` edges are author choices and the only candidates for removal
+// (freeze a shared interface in design.md, then depend on the contract instead of the implementation).
+const waveOf = new Map(waveList.flatMap((item) => item.ids.map((id) => [id, item.wave])));
+const criticalChain = [];
+{
+  let cur = tasks.find((task) => waveOf.get(task.id) === waveList.length);
+  while (cur) {
+    const prev = byId.get(cur.depends.find((id) => waveOf.get(id) === waveOf.get(cur.id) - 1));
+    criticalChain.unshift({ id: cur.id, via: prev ? (scopesClash(prev, cur) ? 'scope' : 'logical') : null });
+    cur = prev;
+  }
+}
 const route = maxWidth >= 2 && tasks.length >= 4 ? 'pipeline' : 'handoff';
 const summary = {
   change: path.resolve(changeDir),
@@ -234,6 +248,7 @@ const summary = {
   waves: waveList,
   maxWidth,
   criticalPath: waveList.length,
+  criticalChain,
   speedup,
   route,
   blocking: [...new Set(blocking)],
@@ -245,6 +260,9 @@ else {
   console.log(`tasks=${tasks.length} waves=${waveList.length} maxWidth=${maxWidth} criticalPath=${waveList.length}`);
   console.log(`[ROUTE] ${route}${route === 'pipeline' ? ': DAG has real concurrency' : ': no concurrency benefit; use Tier 2 handoff'}`);
   for (const wave of waveList) console.log(`WAVE ${wave.wave}: ${wave.ids.join(', ')}`);
+  console.log(`CRITICAL ${criticalChain.map((step) => (step.via ? `-${step.via}-> ` : '') + step.id).join(' ')}`);
+  const removable = criticalChain.filter((step) => step.via === 'logical').map((step) => step.id);
+  if (removable.length) console.log(`CRITICAL_LOGICAL_EDGES into ${removable.join(', ')}: author-chosen; drop if a frozen interface in design.md lets them run in parallel`);
   for (const item of summary.advisories) console.log(`ADVISE ${item}`);
   for (const item of summary.blocking) console.error(`BLOCK ${item}`);
   console.log(summary.blocking.length ? `RESULT freeze rejected (${summary.blocking.length})` : 'RESULT freeze ok');
