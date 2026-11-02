@@ -161,9 +161,13 @@ export function taskErrorsFor(errors, taskId) {
 // pytest's `test_*.py` / `*_test.py`, Go's `*_test.go`, e2e specs, fixtures,
 // `testdata/` (Go) and `__snapshots__/`. Missing these made `ceshi` commits of
 // legitimate test assets fail the provenance gate (exit 30).
+// Repos may also keep assertion scripts under `scripts/specs/` (plural); match
+// that exact prefix only, so contract files under `openspec/**/specs/*.md`
+// stay outside the test-author allowance.
 export function isTestPath(file) {
   const value = String(file || '');
   return /(^|\/)(test|tests|__tests__|spec|e2e|fixtures?|testdata|__snapshots__)(\/|$)/i.test(value)
+    || /(?:^|\/)scripts\/specs\//i.test(value)
     || /(?:^|\/)test_[^/]*\.py$/i.test(value)
     || /(?:\.|_)(test|spec|e2e)\.[^.]+$/i.test(value);
 }

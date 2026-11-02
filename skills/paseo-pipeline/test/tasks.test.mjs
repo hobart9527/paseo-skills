@@ -55,6 +55,15 @@ test('test paths cover pytest, Go, e2e and fixture layouts', () => {
   }
 });
 
+test('scripts/specs assertion scripts count as tests, contract specs do not', () => {
+  for (const file of ['scripts/specs/payee-local-directory-removed.mjs', 'scripts/specs/expense-form-v10.mjs']) {
+    assert.equal(isTestPath(file), true, file);
+  }
+  for (const file of ['openspec/changes/x/specs/a/spec.md', 'openspec/specs/a/spec.md', 'docs/specs/a.md', 'scripts/specs-fixture/a.mjs']) {
+    assert.equal(isTestPath(file), false, file);
+  }
+});
+
 test('verify legs: paths decide narrowness, not runner names', () => {
   const narrow = [
     'node --test test/a.test.mjs',
