@@ -86,14 +86,22 @@ const MISSING_MODULE_PATH = /Cannot find module '([^']+)'/g;
 // toolchain.mjs, so an uninstalled `pytest` stays exit 36) and the new file lands in Write scope.
 const MISSING_PY_MODULE = /No module named ['"]?([\w.]+)['"]?/g;
 const PY_ROOTS = ['', 'src/', 'lib/', 'app/'];
-function pyModuleInScope(dotted, scopes) {
+// A brand-new top-level package (`billing.core` where nothing named `billing` exists
+// yet) has no root to look up, so the first-party test cannot fire. Accept it only
+// when the task itself declares the module file inside Write scope; an uninstalled
+// `pytest` is never in the task's diff and still reports as a missing dependency.
+function pyModuleInScope(dotted, scopes, declaredFiles = []) {
   const top = dotted.split('.')[0];
   const mod = dotted.replaceAll('.', '/');
-  return PY_ROOTS
-    .filter((root) => fs.existsSync(`${root}${top}`) || fs.existsSync(`${root}${top}.py`))
-    .some((root) => [`${root}${mod}.py`, `${root}${mod}/__init__.py`].some((file) => isFileWithinScopes(file, scopes)));
+  const files = [`${mod}.py`, `${mod}/__init__.py`];
+  const roots = PY_ROOTS.filter((root) => fs.existsSync(`${root}${top}`) || fs.existsSync(`${root}${top}.py`));
+  if (roots.length > 0) {
+    return roots.some((root) => files.some((file) => isFileWithinScopes(`${root}${file}`, scopes)));
+  }
+  return declaredFiles.length > 0
+    && files.some((file) => isFileWithinScopes(file, scopes) && declaredFiles.includes(file));
 }
-function isGreenfieldRed(output, taskScope) {
+function isGreenfieldRed(output, taskScope, declaredFiles = []) {
   const text = String(output || '');
   const paths = [...text.matchAll(MISSING_MODULE_PATH)].map((m) => m[1]);
   // Only file paths (starting with . or /) qualify; bare package names do not.
@@ -104,7 +112,7 @@ function isGreenfieldRed(output, taskScope) {
   // carries the resolved absolute path, so check whether any scope prefix appears in it.
   return filePaths.every((absPath) =>
     taskScope.some((scope) => absPath.includes(`/${scope}/`) || absPath.endsWith(`/${scope}`))
-  ) && pyModules.every((mod) => pyModuleInScope(mod, taskScope));
+  ) && pyModules.every((mod) => pyModuleInScope(mod, taskScope, declaredFiles));
 }
 
 // A fresh linked worktree has no node_modules/.venv, so the frozen Verify can fail
@@ -227,10 +235,13 @@ const implementationModels = [...implementationAuthors].map((id) => modelFor(id,
 if (needsAgentModels && [...testModels, ...implementationModels].some((model) => !model)) fail('cannot resolve test-author/implementer model from Paseo; refusing merge', 32);
 if (needsAgentModels && testModels.some((model) => implementationModels.includes(model))) fail('test author and implementer must use different models', 32);
 // The Lead schedules and merges; a commit authored under its identity is the Lead writing code.
+// `ls` hides some archived agents, so an unresolved id is asked of Paseo directly
+// before the check gives up (same fallback as `modelFor`).
 if (needsAgentModels) {
   for (const id of authors) {
     const hits = findAgents(id, agents);
-    if (hits.length === 1 && /shangshu/i.test(nameOf(hits[0]))) fail(`${id} is the Lead (shangshu); the Lead must not author task commits`, 31);
+    const resolved = hits.length === 1 ? hits[0] : hits.length === 0 ? inspectAgent(id) : null;
+    if (resolved && /shangshu/i.test(nameOf(resolved))) fail(`${id} is the Lead (shangshu); the Lead must not author task commits`, 31);
   }
 }
 // Authors are recorded as full UUIDs and the tag may carry a shortId prefix; compare
@@ -274,12 +285,15 @@ if (task.review !== 'mechanical') {
   gitMaybe(['merge', '--abort']);
   if (git(['status', '--porcelain=v1', '--untracked-files=all']) !== '') fail('Red check left files in the integration worktree; clean them and retry', 33);
   // A real assertion failure wins over the dependency hint: a test may legitimately
-  // quote "Cannot find package" in its own failure message.
-  const redMissing = isBehavioralRed(red.output) ? null : missingDependency(red.output);
+  // quote "Cannot find package" in its own failure message. A greenfield Red does too:
+  // the module it names is declared by this task, not a missing install.
+  const redBehavioral = isBehavioralRed(red.output);
+  const redGreenfield = !redBehavioral && isGreenfieldRed(red.output, task.scope, files);
+  const redMissing = (redBehavioral || redGreenfield) ? null : missingDependency(red.output);
   if (redMissing) fail(`Red check: ${dependencyMessage(redMissing)}`, 36);
   if (red.error || red.timedOut || red.signal || [126, 127].includes(red.status)) fail(`Red check could not run Verify (exit ${red.status ?? 'n/a'}): ${task.verify}`, 33);
   if (red.status === 0) fail(`Red check: frozen Verify already passes on the test-author commit ${redTip.slice(0, 7)}; tests do not prove new behavior`, 33);
-  if (!isBehavioralRed(red.output) && !isGreenfieldRed(red.output, task.scope)) fail(`Red check: Verify failed without a test assertion (collection/import/syntax error) on ${redTip.slice(0, 7)}; name a runnable test path: ${task.verify}`, 33);
+  if (!redBehavioral && !redGreenfield) fail(`Red check: Verify failed without a test assertion (collection/import/syntax error) on ${redTip.slice(0, 7)}; name a runnable test path: ${task.verify}`, 33);
 }
 
 const merge = gitMaybe(['merge', '--no-ff', '--no-commit', tip]);

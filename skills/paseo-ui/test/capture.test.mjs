@@ -187,6 +187,59 @@ test("buildDiagnosticsSummary: P2 deduplicates same controls across multiple sta
   assert.strictEqual(res.craft_health_index.score, 94);
 });
 
+test("buildDiagnosticsSummary: P2 baseline requires per-rule non-regression, not just aggregate", () => {
+  const vp = {
+    scrollWidth: 1280, clientWidth: 1280, horizontal_overflow: false,
+    stylesheets_applied: true, has_active_feedback: true,
+    active_feedback_coverage: { covered: 5, total: 5 }, has_tabular_nums: true,
+    button_text_wrap_count: 0, low_contrast_count: 5, cls_score: 0,
+    unlabeled_control_count: 3, missing_autocomplete_count: 0,
+    th_without_scope_count: 0, numeric_cell_misaligned_count: 0,
+    small_touch_target_count: 2,
+    small_touch_targets: [
+      { tag: "button", label: "a", width: 20, height: 20 },
+      { tag: "button", label: "b", width: 20, height: 20 },
+    ],
+    dom_metrics: "full",
+  };
+  const result = {
+    runner: "playwright-concurrent", status: "captured",
+    captures: { "default-1280": "default-1280.png" },
+    viewport_metrics: { "default-1280": vp }, runtime_errors: [], failures: [],
+  };
+  // Aggregate improves (69 >= 60) but two rules appear that the baseline never had.
+  const legacy = { diagnostics_summary: { craft_health_index: { score: 60, deductions: [{ rule: "text_contrast", points: 40 }] } } };
+  const res = buildDiagnosticsSummary(result, { baseline: legacy });
+  assert.ok(res.craft_health_index.score >= 60);
+  assert.strictEqual(res.craft_gate.mode, "non_regression");
+  assert.strictEqual(res.craft_gate.passed, false);
+  assert.match(res.craft_gate.reason, /worsened rule/);
+  assert.ok(res.craft_gate.worsened_rules.includes("form_a11y_labels"));
+  assert.ok(res.craft_gate.worsened_rules.includes("touch_target_size"));
+});
+
+test("buildDiagnosticsSummary: P2 baseline without deductions falls back to aggregate comparison", () => {
+  const vp = {
+    scrollWidth: 1280, clientWidth: 1280, horizontal_overflow: false,
+    stylesheets_applied: true, has_active_feedback: true,
+    active_feedback_coverage: { covered: 5, total: 5 }, has_tabular_nums: true,
+    button_text_wrap_count: 0, low_contrast_count: 5, cls_score: 0,
+    unlabeled_control_count: 0, missing_autocomplete_count: 0,
+    th_without_scope_count: 0, numeric_cell_misaligned_count: 0,
+    small_touch_target_count: 0, small_touch_targets: [], dom_metrics: "full",
+  };
+  const result = {
+    runner: "playwright-concurrent", status: "captured",
+    captures: { "default-1280": "default-1280.png" },
+    viewport_metrics: { "default-1280": vp }, runtime_errors: [], failures: [],
+  };
+  const legacy = { craft_health_index: { score: 60 } };
+  const res = buildDiagnosticsSummary(result, { baseline: legacy });
+  assert.strictEqual(res.craft_gate.baseline_rules_available, false);
+  assert.deepStrictEqual(res.craft_gate.worsened_rules, []);
+  assert.strictEqual(res.craft_gate.passed, true);
+});
+
 test("buildCaptureMetadata: P1 craft_gate persisted into manifest evidence and validation", () => {
   const result = {
     runner: "playwright-concurrent",
