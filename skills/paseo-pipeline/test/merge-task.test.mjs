@@ -22,14 +22,18 @@ const AGENTS = JSON.stringify([
   { id: WRITER, shortId: '9b2f4c2', provider: 'claude/flash' },
   { id: REVIEWER, shortId: REVIEWER_SHORT, provider: 'claude/cc' },
 ]);
-function installPaseo(cwd, agents = AGENTS) {
+function installPaseo(cwd, agents = AGENTS, inspect = null) {
   const bin = path.join(os.tmpdir(), `merge-bin-${path.basename(cwd)}`);
   fs.mkdirSync(bin, { recursive: true });
   const payload = Buffer.from(typeof agents === 'string' ? agents : JSON.stringify(agents)).toString('base64');
   // `ls` replays the recorded sample; `inspect <id>` covers agents that `ls` omits
-  // (it caps at 100 entries and hides some archived ones).
+  // (it caps at 100 entries and hides some archived ones). `inspect` may be pinned to
+  // a fixed payload to exercise archived-agent identity checks.
+  const inspectCmd = inspect
+    ? `printf '%s' '${JSON.stringify(inspect)}'`
+    : `printf '{"Id":"%s","Provider":"codex","Model":"gpt"}' "$2"`;
   const exe = path.join(bin, 'paseo');
-  fs.writeFileSync(exe, `#!/bin/sh\nif [ "$1" = inspect ]; then printf '{"Id":"%s","Provider":"codex","Model":"gpt"}' "$2"; else printf '%s' '${payload}' | base64 -d; fi\nprintf '\\n'\n`);
+  fs.writeFileSync(exe, `#!/bin/sh\nif [ "$1" = inspect ]; then ${inspectCmd}; else printf '%s' '${payload}' | base64 -d; fi\nprintf '\\n'\n`);
   fs.chmodSync(exe, 0o755);
   return { ...env, PATH: `${bin}:${process.env.PATH}` };
 }
@@ -71,8 +75,8 @@ function fixture({ outside = false, verify = GREEN, baseFiles = {} } = {}) {
   installPaseo(cwd);
   return { cwd, change, base, tip };
 }
-function invoke(cwd, args, agents) {
-  const r = spawnSync('node', [script, ...args], { cwd, env: installPaseo(cwd, agents), encoding: 'utf8' });
+function invoke(cwd, args, agents, inspect = null) {
+  const r = spawnSync('node', [script, ...args], { cwd, env: installPaseo(cwd, agents, inspect), encoding: 'utf8' });
   return { status: r.status, out: `${r.stdout}${r.stderr}` };
 }
 const passTag = (tip, base, reviewer = REVIEWER) => `pass(${reviewer}@${tip.slice(0, 7)}/${base.slice(0, 7)})`;
@@ -493,6 +497,67 @@ test('an uninstalled Python package stays exit 36, never a greenfield Red', () =
   const f = fixture({ verify: PY_VERIFY.replace('src.a', 'pytest') });
   const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', tag(f)]);
   assert.equal(r.status, 36, r.out);
+});
+
+// A task may create a brand-new top-level Python package. Nothing named `billing`
+// exists on base, so the first-party root lookup cannot fire; only the task's own
+// diff proves the module is its work rather than an uninstalled dependency.
+function pyPackageFixture({ verify, implFile, writeScope = 'billing,test' }) {
+  const change = `c${++seq}`;
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'merge-'));
+  git(cwd, 'init', '-q', '-b', 'main');
+  write(cwd, `openspec/changes/${change}/tasks.md`, `- [ ] 1.1 T-01 task\n  - Write scope: ${writeScope}\n  - Verify with: ${verify}\n`);
+  write(cwd, `openspec/changes/${change}/proposal.md`, 'p\n');
+  write(cwd, `openspec/changes/${change}/acceptance.md`, 'a\n');
+  git(cwd, 'add', '.'); git(cwd, 'commit', '-qm', 'base');
+  git(cwd, 'switch', '-qc', `integration/${change}`);
+  const base = git(cwd, 'rev-parse', 'HEAD');
+  git(cwd, 'switch', '-qc', `task/${change}/T-01`);
+  write(cwd, 'test/a.txt', 'x'); git(cwd, 'add', '.');
+  git(cwd, 'commit', '-qm', `red\n\nPipeline-Role: ceshi\nPipeline-Author: ${TESTER}`);
+  write(cwd, implFile, ''); git(cwd, 'add', '.');
+  git(cwd, 'commit', '-qm', `impl\n\nPipeline-Role: gongbu\nPipeline-Author: ${WRITER}`);
+  const tip = git(cwd, 'rev-parse', 'HEAD'); git(cwd, 'switch', '-q', `integration/${change}`);
+  return { cwd, change, tip, base };
+}
+const pyVerify = (mod) => `sh -c 'test -f ${mod.replaceAll('.', '/')}.py || { echo "FAILED tests - ModuleNotFoundError: No module named ${mod}"; exit 1; }'`;
+
+test('accepts Python greenfield Red for a brand-new top-level package the task creates', () => {
+  const f = pyPackageFixture({ verify: pyVerify('billing.core'), implFile: 'billing/core.py' });
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(f.tip, f.base)]);
+  assert.equal(r.status, 0, r.out);
+});
+test('a brand-new top-level Python module outside Write scope stays exit 36', () => {
+  const f = pyPackageFixture({ verify: pyVerify('acme.core'), implFile: 'billing/core.py' });
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(f.tip, f.base)]);
+  assert.equal(r.status, 36, r.out);
+});
+test('an uninstalled Python package is never excused by a task that writes Python files', () => {
+  const f = pyPackageFixture({ verify: pyVerify('pytest'), implFile: 'billing/core.py' });
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(f.tip, f.base)]);
+  assert.equal(r.status, 36, r.out);
+});
+
+test('rejects a Lead author that `paseo ls` omits but `paseo inspect` resolves', () => {
+  const f = fixture();
+  const partial = JSON.stringify([
+    { id: TESTER, shortId: '9b2f4c1', provider: 'codex/gpt' },
+    { id: REVIEWER, shortId: REVIEWER_SHORT, provider: 'claude/cc' },
+  ]);
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', tag(f)], partial,
+    { Id: WRITER, Name: '[Pipeline] shangshu z lead', Provider: 'claude', Model: 'flash' });
+  assert.equal(r.status, 31, r.out);
+  assert.match(r.out, /Lead/);
+});
+test('an archived non-Lead author resolved by `paseo inspect` still merges', () => {
+  const f = fixture();
+  const partial = JSON.stringify([
+    { id: TESTER, shortId: '9b2f4c1', provider: 'codex/gpt' },
+    { id: REVIEWER, shortId: REVIEWER_SHORT, provider: 'claude/cc' },
+  ]);
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', tag(f)], partial,
+    { Id: WRITER, Name: 'gongbu z', Provider: 'claude', Model: 'flash' });
+  assert.equal(r.status, 0, r.out);
 });
 
 test('rejects commits authored by the Lead (shangshu)', () => {
