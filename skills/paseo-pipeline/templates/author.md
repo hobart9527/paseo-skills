@@ -8,11 +8,22 @@ Mode: `SPEC` or `TASKS`. Change: `<change>`. Output location: `openspec/changes/
 - Report changed files, evidence, unresolved decisions, and acceptance commands. Do not invent provider/model requirements.
 - `TASKS` fast path (`gongbu`): when a human-approved design document already exists, skip `chanpin` and write `design.md`, `tasks.md`, `acceptance.md` directly from it. Cite the design section per task instead of re-deriving the DAG; no proposal/spec rewrite. If the design lacks SCEN ids, stop and request them — `freeze-check` reconciles scenarios against the spec.
 
+## Baseline alignment (both modes; R0 checks it first)
+- The request and the design document are inputs, not evidence. Before writing a rule they imply, read what the rule collides with: the capability specs it touches (`openspec/specs/<cap>/spec.md`), the enum/`CHECK`/migration it would store into, and the existing tests and fixtures for every file in scope. `rg` the identifiers the rule names (statuses, error codes, fields). A rule that contradicts a `CHECK` constraint, an existing scenario, or a passing test is a contract defect the author must fix now — review is for defects the author could not see.
+- `SPEC` records the baseline evidence in `digest.md` (`## Baseline Alignment`); `TASKS` turns it into one verdict row per rule in `design.md` (`## Baseline Alignment`) and picks exactly one resolution:
+  - `reuse` — the existing state/enum/behaviour already covers it; cite the line that proves it.
+  - `delta` — behaviour changes: add `specs/<capability>/spec.md` in the change with a `## MODIFIED Requirements` section naming the baseline Requirement **verbatim**, plus every baseline test whose assertions change and the task that owns it. Only the owning task edits that test later; this authoring commit records the change, it does not perform it.
+  - `additive` — a new sibling symbol/path; the existing symbol, its callers and its tests stay byte-identical. Add a delta spec for the new requirement and say so.
+- Walk the baseline, not only your new rules: for each touched capability spec list every Requirement the change keeps, changes or drops. A dropped control, view or field needs a `delta` naming that Requirement verbatim — `additive` only when the baseline path stays byte-identical. When a rule generalises an existing predicate, name every existing test assertion that flips, including empty and zero inputs.
+- Every verdict row carries `path:line` evidence. The digest names the baseline specs and tests read and the `rg` command used, or `none` with that command. An empty or assertion-free section is not alignment; `freeze-check` warns on it and R0 blocks on it.
+- One rule has one wording. If the same rule appears in an ADR, `GLOSSARY.md`, proposal, spec, design or tasks, quote it identically; when it changes, `rg` the phrase and update every copy in the same commit.
+- If you cannot verify a claim, mark it `UNVERIFIED` and name the command that would settle it. Never present a guessed enum value or status as existing.
+
 ## Mode SPEC — Product/spec author (`chanpin`)
 - Input: user-approved request and repository context. **Write output directly to OpenSpec files** (`openspec/changes/<change>/proposal.md`, `specs/<capability>/spec.md`, `digest.md`) — do not return text for the main session to re-type. Commit to the draft branch when done.
 - Define user-visible behavior and constraints, not implementation task ownership or DAG.
 - Each `SCEN-*` must state observable behavior and a falsifiable verification approach. Identify edge cases and compatibility assumptions.
-- Digest: relevant modules, exported symbols, call sites, existing tests/fixtures, and baseline known failures with `path:line` evidence.
+- Digest: the baseline surfaces the rules touch — capability specs, `CHECK`/enums, cited test files — with `path:line` evidence and the commands used. Do not inventory unrelated modules, do not run the suite or probe runners (the TASKS author records baseline reds), and do not mine other changes for format: the schema templates are the format.
 
 ## Mode TASKS — Design/DAG author (`gaogong`)
 - Input: approved Proposal/Spec and Codebase Digest. **Write output directly to OpenSpec files** (`design.md`, `tasks.md`, `acceptance.md`) — do not return text for the main session to re-type. Commit to the draft branch when done.

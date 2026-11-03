@@ -74,15 +74,13 @@ for (const ref of refs) {
   const id = ref.slice(`task/${change}/`.length).replace(/-a\d+$/, '');
   if (!tasks.some((task) => task.id === id)) continue;
   const entry = branches[id] ?? { attempts: 0, implementationCommits: 0 };
-  entry.attempts += 1;
-  // Only this attempt's own commits count. Branching from the integration tip carries
-  // every earlier merge commit, and those trailers are not this task's work: counting
-  // them made a fresh Red-only branch look implemented, so the Lead dispatched a
-  // reviewer before the writer and the merge died at exit 31.
   const base = integrationSha ? gitMaybe(['merge-base', integrationSha, `refs/heads/${ref}`]) : null;
   const range = base ? `${base}..refs/heads/${ref}` : `refs/heads/${ref}`;
   const commits = git(['log', '--format=%H%x00%(trailers:key=Pipeline-Role,valueonly)', '--no-merges', range])
     .split('\n').filter(Boolean);
+  if (commits.length > 0) {
+    entry.attempts += 1;
+  }
   for (const line of commits) {
     const [, role = ''] = line.split('\0');
     if (role.trim() && role.trim() !== 'ceshi') entry.implementationCommits += 1;
@@ -125,7 +123,7 @@ const report = { change, integrationHead: integrationSha, ...result };
 
 if (json) console.log(JSON.stringify(report, null, 2));
 else {
-  console.log(`[next-actions] ${change}${integrationHead ? ` @ ${integrationHead.slice(0, 7)}` : ''}`);
+  console.log(`[next-actions] ${change}${report.integrationHead ? ` @ ${report.integrationHead.slice(0, 7)}` : ''}`);
   console.log(`capacity: writers ${report.capacity.writers.used}/${report.capacity.writers.cap}, reviewers ${report.capacity.reviewers.used}/${report.capacity.reviewers.cap}`);
   for (const item of report.dispatch) console.log(`DISPATCH ${item.task}: ${item.action} — ${item.reason}`);
   for (const item of report.waiting) console.log(`WAIT ${item.task}: on ${item.on.join(', ')}`);

@@ -271,6 +271,25 @@ if (!designMarkdown || !/^#{2,3}\s*Impact/im.test(designMarkdown)) {
   }
 }
 
+// Baseline alignment: the author, not the R0 reviewer, must be the first reader of every
+// existing rule the package collides with. The check is advisory on purpose: whether a
+// verdict is right is semantic, so freeze-check only requires that the package records the
+// reconciliation at all. SKILL.md gates R0 on it; R0 checks the content.
+// A section runs to the next heading of the same or a shallower level: its own `###` subsections
+// are part of the body, so an alignment section written as three subsections still counts.
+const sectionBody = (markdown, heading) => {
+  if (!markdown) return null;
+  const start = markdown.match(new RegExp(`^(#{2,3})\\s*${heading}`, 'im'));
+  if (!start) return null;
+  const rest = markdown.slice(start.index + start[0].length);
+  const next = rest.search(new RegExp(`^#{1,${start[1].length}}\\s`, 'm'));
+  return (next === -1 ? rest : rest.slice(0, next)).replace(/<!--[\s\S]*?-->/g, '').trim();
+};
+for (const [file, markdown] of [['design.md', designMarkdown], ['digest.md', read(path.join(changeDir, 'digest.md'))]]) {
+  const body = sectionBody(markdown, 'Baseline Alignment');
+  if (!body) advisories.push(`ADVISORY_BASELINE_ALIGNMENT: ${file} has no non-empty "Baseline Alignment" section; record the baseline specs/tests read, the verdict per rule (reuse / delta / additive) and the command or path:line that proves it before R0`);
+}
+
 const fullSuiteSinks = tasks.filter((task) => verifyLegs(task.verify).some((leg) => leg.broad));
 if (fullSuiteSinks.length > 1) blocking.push(`TOO_MANY_FULL_SUITE_SINKS: ${fullSuiteSinks.map((task) => task.id).join(', ')}`);
 

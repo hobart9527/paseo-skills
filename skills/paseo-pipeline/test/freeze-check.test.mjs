@@ -244,7 +244,8 @@ test('low speedup advisory fires on a near-serial DAG and stays silent on a wide
   const adv = (tasks) => JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change({ ...files, 'tasks.md': tasks }), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
   const wide = adv(diamond(6)); // T-01 then 5 parallel: 6 tasks / 2 waves = 3x
   assert.equal(wide.route, 'pipeline');
-  assert.deepEqual(wide.advisories, []);
+  // Baseline Alignment is an unrelated advisory (its content is the author's job, not the DAG's).
+  assert.deepEqual(wide.advisories.filter((item) => !item.startsWith('ADVISORY_BASELINE_ALIGNMENT')), []);
   const chain = adv(`- [ ] 1.1 T-01 a\n  - Write scope: src/a.mjs,test/a.test.mjs\n  - Verify with: node --test test/a.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.2 T-02 b\n  - Depends on: T-01\n  - Write scope: src/b.mjs,test/b.test.mjs\n  - Verify with: node --test test/b.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.3 T-03 c\n  - Depends on: T-01\n  - Write scope: src/c.mjs,test/c.test.mjs\n  - Verify with: node --test test/c.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.4 T-04 d\n  - Depends on: T-02,T-03\n  - Write scope: src/d.mjs,test/d.test.mjs\n  - Verify with: node --test test/d.test.mjs\n  - Scen: SCEN-1`);
   assert.equal(chain.speedup, 1.33);
   assert.match(chain.advisories.join('\n'), /ADVISORY_LOW_SPEEDUP/);
@@ -634,4 +635,18 @@ test('Reads may forward-reference a path another task writes, but not a typo', (
   const typo = change({ 'tasks.md': forward.replace('Reads: src/poison.txt', 'Reads: src/posion.txt'), 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
   execFileSync('git', ['init', '-q'], { cwd: typo });
   assert.match(run(typo, ['--structural', '--skip-signer-check']).stdout, /MISSING_READS_PATH T-01/);
+});
+
+test('baseline alignment is an advisory that names the missing section, never a block', () => {
+  const files = { 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'tasks.md': contract, 'review.md': REVIEW };
+  const missing = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change(files), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
+  assert.equal(missing.route, 'pipeline');
+  assert.ok(missing.advisories.some((item) => item.startsWith('ADVISORY_BASELINE_ALIGNMENT: design.md')));
+  const aligned = { ...files, 'design.md': '## Baseline Alignment\n| Rule | Baseline | Verdict | Evidence |\n| --- | --- | --- | --- |\n| none | n/a | reuse | `rg status src/` |\n\n## Impact Inventory\nnone\n', 'digest.md': '## Baseline Alignment\nnone: `rg status src/`\n' };
+  const ok = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change(aligned), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
+  assert.deepEqual(ok.advisories.filter((item) => item.startsWith('ADVISORY_BASELINE_ALIGNMENT')), []);
+  // A section written as `###` subsections is still a section: they must not truncate the body.
+  const subsectioned = { ...files, 'design.md': `${design}\n## Baseline Alignment\n\n### Read\n- specs/a/spec.md:12 (reuse)\n\n### Command\n\`rg status src/\`\n`, 'digest.md': '## Baseline Alignment\n\n### Read\n- `rg status src/`\n' };
+  const sub = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change(subsectioned), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
+  assert.deepEqual(sub.advisories.filter((item) => item.startsWith('ADVISORY_BASELINE_ALIGNMENT')), []);
 });
