@@ -102,8 +102,8 @@ ten-scenario suite is built to show that spread rather than to maximise the head
 **Why execution-only cannot reach 50% on these shapes.** A schedule cannot beat its
 own critical path. On the converged DAGs the weighted critical path sums to 1,209
 minutes against a legacy makespan of 2,614, so the best any scheduler could do is
-**53.7%** execution — and three shapes (`ui-form-validation` 48.8%,
-`search-index` 46.3%, `perf-profiler` 48.8%) have a critical-path ceiling below 50%.
+**53.7%** execution — and three shapes (`ui-form-validation` 49.6%,
+`search-index` 46.7%, `perf-profiler` 49.3%) have a critical-path ceiling below 50%.
 The remaining 419 minutes from the floor to the simulated 1,628 is the serial merge
 queue (`merge-task` is the sole Done writer, by design) plus the FINAL review tail.
 That is architecture, not slack: removing it would be the over-design this work was
