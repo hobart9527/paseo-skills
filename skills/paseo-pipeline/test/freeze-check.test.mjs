@@ -550,6 +550,16 @@ test('DEFERRED_NOT_STANDARD blocks the sink and persistence/security surfaces, b
   assert.equal(freezeStructural(publicApi).status, 0, freezeStructural(publicApi).stdout);
 });
 
+test('skeleton Write-scope overlap is exempt against transitive dependents', () => {
+  // T-03 depends on T-01, which Uses the skeleton: it cannot start before the skeleton merged.
+  const transitive = scheduleContract
+    .replace('  - Depends on: T-00,T-01,T-02\n  - Write scope: test/sink.test.mjs', '  - Depends on: T-01,T-02\n  - Write scope: src/iface/sink.ts,test/sink.test.mjs');
+  assert.equal(freezeStructural(transitive).status, 0, freezeStructural(transitive).stdout);
+  // An independent task with no path to the skeleton is a real writer race.
+  const race = scheduleContract.replace('  - Scen: SCEN-1', '  - Scen: SCEN-1\n- [ ] 1.5 T-04 race\n  - Write scope: src/iface/race.ts,test/race.test.mjs\n  - Verify with: node --test test/race.test.mjs\n  - Scen: SCEN-1');
+  assert.match(freezeStructural(race).stdout, /SCOPE_CONFLICT T-00 and T-04/);
+});
+
 test('Reads anchors a narrow Verify without joining scope conflicts', () => {
   const anchored = scheduleContract
     .replace('Write scope: src/alpha,test/alpha.test.mjs', 'Write scope: src/alpha')

@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo-agents.mjs';
 import { parseTasks, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
-import { weightedSpeedup, weightedCriticalPath, verifyScope, dispatchDeps, readsOnlyEdges, pathWithin, resolveModel } from './lib/schedule.mjs';
+import { weightedSpeedup, weightedCriticalPath, verifyScope, readsOnlyEdges, pathWithin, resolveModel } from './lib/schedule.mjs';
 import { runGit } from './lib/git.mjs';
 
 const args = process.argv.slice(2);
@@ -121,8 +121,23 @@ const ancestorsOf = (id, trail = new Set()) => {
 // like Depends on does — including the skeleton exemption below.
 const orderedPair = (left, right) => ancestorsOf(left.id).has(right.id) || ancestorsOf(right.id).has(left.id)
   || left.uses?.includes(right.id) || right.uses?.includes(left.id);
+// Walking the whole edge set matters: a task that depends on a skeleton consumer still cannot
+// start before the skeleton merged, so only a task with no path at all is a real writer race.
+const reaches = (from, target) => {
+  const stack = [...(byId.get(from)?.depends || []), ...(byId.get(from)?.uses || [])];
+  const seen = new Set();
+  while (stack.length) {
+    const id = stack.pop();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (id === target) return true;
+    const node = byId.get(id);
+    if (node) stack.push(...(node.depends || []), ...(node.uses || []));
+  }
+  return false;
+};
 const skeletonCovers = (skeleton, other) => skeleton.kind === 'skeleton' && other.id !== skeleton.id
-  && (dispatchDeps(other, tasks).includes(skeleton.id) || other.uses?.includes(skeleton.id));
+  && reaches(other.id, skeleton.id);
 for (let i = 0; i < tasks.length; i += 1) {
   for (let j = i + 1; j < tasks.length; j += 1) {
     const left = tasks[i];
