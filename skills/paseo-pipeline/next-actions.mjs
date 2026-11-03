@@ -56,11 +56,21 @@ function git(gitArgs, cwd = changeDir) {
   }
   return result.stdout;
 }
+function gitMaybe(gitArgs) {
+  const result = spawnSync('git', gitArgs, { cwd: changeDir, encoding: 'utf8' });
+  return result.status === 0 ? result.stdout.trim() : null;
+}
 git(['rev-parse', '--is-inside-work-tree']);
 
 // Branch state per task: attempts are `task/<change>/<T-id>` and `<T-id>-aN`; an
 // implementation commit carries Pipeline-Role: ceshi|gongbu|gaogong|jiangzuo.
 const branches = {};
+// The integration branch is the base every task branch starts from: only commits after
+// the merge base are this task's own work.
+const integrationSha = (() => {
+  const head = spawnSync('git', ['rev-parse', '--verify', '--quiet', `refs/heads/integration/${change}`], { cwd: changeDir, encoding: 'utf8' });
+  return head.status === 0 ? head.stdout.trim() : null;
+})();
 const refs = git(['for-each-ref', '--format=%(refname:short)', `refs/heads/task/${change}/`])
   .split('\n').map((line) => line.trim()).filter(Boolean);
 for (const ref of refs) {
@@ -68,7 +78,13 @@ for (const ref of refs) {
   if (!tasks.some((task) => task.id === id)) continue;
   const entry = branches[id] ?? { attempts: 0, implementationCommits: 0 };
   entry.attempts += 1;
-  const commits = git(['log', '--format=%H%x00%(trailers:key=Pipeline-Role,valueonly)', `refs/heads/${ref}`])
+  // Only this attempt's own commits count. Branching from the integration tip carries
+  // every earlier merge commit, and those trailers are not this task's work: counting
+  // them made a fresh Red-only branch look implemented, so the Lead dispatched a
+  // reviewer before the writer and the merge died at exit 31.
+  const base = integrationSha ? gitMaybe(['merge-base', integrationSha, `refs/heads/${ref}`]) : null;
+  const range = base ? `${base}..refs/heads/${ref}` : `refs/heads/${ref}`;
+  const commits = git(['log', '--format=%H%x00%(trailers:key=Pipeline-Role,valueonly)', '--no-merges', range])
     .split('\n').filter(Boolean);
   for (const line of commits) {
     const [, role = ''] = line.split('\0');
