@@ -18,7 +18,7 @@ Use only when the frozen DAG has `maxWidth >= 2` and `tasks >= 4`; otherwise Tie
 7. **Human gates.** CP-1 freezes approved contract. CP-2 confirms merge to main. No push/destructive cleanup without explicit approval.
 
 ## Roles and briefs
-Before every `create_agent`, copy the matching `list_profiles` entry exactly: `provider/model`, `modeId`, `thinkingOptionId`, `featureValues`. If none fits, verify with `list_providers`/`list_models`. Never copy model IDs from examples, tool descriptions, memory, or prior runs; if the exact pair is not returned, stop and report. Use live values for independence checks. Briefs: `templates/author.md` (SPEC/TASKS), `tester.md`, `writer.md`, `reviewer.md` (R0/TASK/FINAL/ARBITER), `lead.md`. `auditor.md` is an alias.
+Before every `create_agent`, copy the matching `list_profiles` entry exactly: `provider/model`, `modeId`, `thinkingOptionId`, `featureValues`. If none fits, verify with `list_providers`/`list_models`. Never copy model IDs from examples, tool descriptions, memory, or prior runs; if the exact pair is not returned, stop and report. Briefs: `templates/author.md` (SPEC/TASKS), `tester.md`, `writer.md`, `reviewer.md` (R0/TASK/FINAL/ARBITER), `lead.md`. `auditor.md` is an alias.
 
 - `chanpin`: writes Proposal/Spec/Codebase Digest directly to OpenSpec files and commits; does not return text for main session to re-type.
 - `gaogong`: writes Design/Tasks/Acceptance directly to OpenSpec files and commits; also handles complex implementation and confirmed-blocker fixes.
@@ -28,18 +28,19 @@ Before every `create_agent`, copy the matching `list_profiles` entry exactly: `p
 - `anchasi`: task and integrated reviews. Reviewers run in a separate workspace, briefed read-only; tip binding voids a review if the branch moved.
 - `shangshu`: sole Lead; schedules, reconciles, merges, reports.
 - Profile notes describe a role's scope; the frozen task's `Review:` field decides process. `ceshi`'s strict-only note is stale: every non-mechanical task needs a Red test commit or `merge-task` exits 31.
-- Cost: a behavior task is three serial agents (tester → implementer → reviewer); use `Review: mechanical` only when no behavior needs proof.
+- A behavior task costs three serial agents; use `Review: mechanical` only when no behavior needs proof.
 - `auto-review` profiles can stall on permission prompts: if a child idles without a finish result, check pending permissions first; never widen a reviewer to `bypassPermissions`.
 
 ## Entry and CP-1
 
-制宪阶段是一条有序的 agent 串联管道，每步 blocking。主会话按以下顺序调度，不得跳过或乱序：
+制宪阶段按序调度，每步 blocking，不得跳过或乱序：
 
+0. **Preflight** (read-only): `node "$PIPELINE_HOME"/preflight.mjs <repo>` reports each package's test runner and whether a UI package can run DOM tests. A missing DOM environment after Wave 0 is the expensive late failure: fix it before authoring.
 1. Run `openspec new change <name> --schema paseo-pipeline`. The schema resolves from the global OpenSpec schema link installed by `install.sh`; do not keep stale project-local copies that shadow it.
-2. **Dispatch `chanpin`** (`templates/author.md` Mode SPEC). It writes `proposal.md`, `specs/<capability>/spec.md`, `digest.md` into `openspec/changes/<name>/` and commits to the draft branch; main session does not re-type.
-3. **Dispatch `gaogong`** (`templates/author.md` Mode TASKS) after `chanpin` commits. It reads the committed spec, writes `design.md`, `tasks.md`, `acceptance.md`, and commits.
-4. Run `node "$PIPELINE_HOME"/freeze-check.mjs openspec/changes/<name> --structural` (Impact Inventory, SCEN per task, no test-only tasks; skips the R0 check, which cannot exist yet). Read its `ADVISE` lines (`ADVISORY_LOW_SPEEDUP`: compare with Tier 2). If it blocks, dispatch the relevant author to fix and re-run. Do not proceed past a block. `[ROUTE] handoff` here: skip R0; run Tier 2 `/paseo-handoff` on the committed spec and tasks.
-5. **Dispatch `hanlin`** (`templates/reviewer.md` Mode R0) in a read-only workspace once the structural check passes and the contract is committed. `hanlin` writes nothing: it returns findings, or `R0: pass(<its-agent-uuid>@<reviewed-HEAD-sha>)`. On pass, main session writes that line first in `openspec/changes/<name>/review.md` (uuid = the agent it dispatched, sha = the commit it reviewed; `freeze-check` verifies the uuid is a live Paseo agent, offline use `--skip-signer-check`). On blockers, dispatch the author to revise once, re-run freeze-check, re-dispatch `hanlin`. A second R0 is final.
+2. **Fast path (`gongbu`, TASKS only).** When the input is a human-approved design document (e.g. `docs/specs/<change>-design.md`) that declares SCEN ids, skip `chanpin`: dispatch `gongbu` with `templates/author.md` Mode TASKS. It cites the design section per task and writes `design.md`/`tasks.md`/`acceptance.md`, and commits; do not rewrite the spec or re-derive the DAG. If the design lacks SCEN ids, stop and ask.
+3. **Full path otherwise.** Dispatch `chanpin` (Mode SPEC) to write `proposal.md`, `specs/<capability>/spec.md`, `digest.md` and commit; then `gaogong` (Mode TASKS) to write `design.md`, `tasks.md`, `acceptance.md` and commit. Main session does not re-type.
+4. Run `node "$PIPELINE_HOME"/freeze-check.mjs openspec/changes/<name> --structural` (Impact Inventory, SCEN per task, no test-only tasks; skips the R0 check, which cannot exist yet). Read its `ADVISE` lines (`ADVISORY_LOW_SPEEDUP`: compare with Tier 2). If it blocks, the relevant author fixes and you re-run. Do not proceed past a block. `[ROUTE] handoff` here: skip R0; run Tier 2 `/paseo-handoff` on the committed spec and tasks.
+5. **Dispatch `hanlin` once** (`templates/reviewer.md` Mode R0) in a read-only workspace once the structural check passes and the contract is committed. `hanlin` writes nothing: it returns findings, or `R0: pass(<its-agent-uuid>@<reviewed-HEAD-sha>)`. On pass, main session writes that line first in `review.md` (uuid = dispatched agent, sha = reviewed commit; `freeze-check` verifies the signer; offline `--skip-signer-check`). On blockers, the author revises once, then re-run freeze-check and re-dispatch `hanlin`. A second R0 is final. Accepted rulings go in `rulings.md`; `freeze-check` exempts it and `review.md` from R0 drift.
 6. Re-run `freeze-check` without `--structural`. It rejects a missing sign-off, and `STALE_R0_SIGNOFF` when the sha is unknown or any contract file changed after it. This is the mechanical gate.
 7. Present final contract, R0 findings/responses, DAG/scopes/Verify/acceptance. On `ADVISORY_LOW_SPEEDUP` or `CRITICAL_LOGICAL_EDGES`, the CP-1 prompt also offers "switch to Tier 2 /paseo-handoff". Freeze only after human confirms CP-1. The CP-1 prompt names the executor ("确认冻结并交给 shangshu 执行"), never just "确认冻结并启动实施".
 
@@ -48,9 +49,9 @@ Before every `create_agent`, copy the matching `list_profiles` entry exactly: `p
 CP-1 approval is not the start of implementation; it is the start of handoff. `merge-task.mjs` only runs on `integration/<change>` with a clean worktree and `tasks.md` already present there, so this sequence is mandatory and belongs to the main session:
 
 1. Commit the frozen contract (`openspec/changes/<change>/`) on the default branch. This commit is the review `base`.
-2. Create the integration branch from that commit in a separate worktree: `create_workspace(isolation, branchName: "integration/<change>")` (not a main-checkout switch: Tier hook guards `main`). The Lead runs there.
+2. Create the integration branch from that commit in a separate worktree: `create_workspace(isolation, branchName: "integration/<change>")`. The Lead runs there.
 3. Create one task branch per ready frontier task from the integration tip: `task/<change>/<T-id>`. Replacement attempts take `<T-id>-aN`.
-4. Bootstrap dependencies in each new workspace — **including the integration worktree itself** — **before** any Verify runs: `merge-task` runs Verify in the integration worktree. A worktree is a checkout, not a clone, so ignored paths stay behind and the first `Verify with` dies with exit 36. Install per lockfile (`npm ci`, `pnpm install --frozen-lockfile`, `python3 -m venv .venv`) or a workspace bootstrap script; once per workspace, not per task.
+4. Bootstrap dependencies per lockfile in every new workspace — **including the integration worktree**, where `merge-task` runs Verify — **before** any Verify. A worktree is a checkout, not a clone; an uninstalled package exits 36. Install once per workspace, not per task.
 5. Draft the Lead brief from `templates/lead.md`, filling `<change>`, integration worktree path, integration branch, `base` SHA, and the frozen contract paths.
 6. Create exactly one Lead (`shangshu`, see `list_profiles`). Main session then stops: no business-code edits, no further dispatch.
 7. If the frozen DAG's `[ROUTE]` is `handoff`, create no Lead; run Tier 2 `/paseo-handoff` and say so at CP-1.
@@ -58,23 +59,22 @@ CP-1 approval is not the start of implementation; it is the start of handoff. `m
 After compaction or resume, first re-read `tasks.md` Done lines, `git log --first-parent integration/<change>`, and `paseo ls --label pipeline.change=<change> --json` before any dispatch. Summaries are not state.
 
 ## Runtime
-- Create one Lead with `templates/lead.md`; it reconciles git and Paseo state before dispatch.
-- Ready frontier = dispatch deps Done + disjoint scopes, longest remaining first. Writer cap 6; reviewer cap 4; merge serially, skeleton before consumers. `Uses` is dispatch-only, `Reads` never joins scope conflicts.
+- One Lead (`templates/lead.md`) reconciles git and Paseo state before dispatch, then runs `next-actions.mjs <change-dir>` each round: it prints `DISPATCH`/`WAIT`/`ATTENTION` (writer cap 6, reviewer cap 4, critical path first). Execute its list; never recompute the frontier by hand. Before merging, `merge-queue.mjs <change-dir>` predicts order and conflicts read-only; `merge-task` still merges serially. `Uses` is dispatch-only, `Reads` never joins scope conflicts.
 - Behavior task sequence: `ceshi` Red commit → verify Red on base → implementer in same workspace/branch → narrow Verify green → independent task audit → `merge-task.mjs`. Mechanical exemption only for frozen `Review: mechanical`.
-- Test author and implementer must be different agents and models. Reviewer model must differ from implementer and should differ from tester (`merge-task` warns on overlap). If unavailable, block and report; do not claim heterogeneity.
-- Agent identity: every trailer and review tag uses the full UUID (`$PASEO_AGENT_ID`). A 7-char `shortId` resolves by prefix in a review tag only, not in a trailer.
-- Every dispatch uses Paseo native workspaces, labels, finish notifications, plus a background `paseo wait` backstop (`lead.md`). A returned or timed-out wait means "inspect now", not success. Lost notifications trigger reconciliation, not duplicate dispatch. Review fixes reuse the original agent.
-- Circuit breaker (`lead.md`): at most 3 attempts per task; on breach the Lead stops dispatching that task and escalates to the human.
-- Contract amendments after CP-1: main session updates tasks, human confirms delta, commit, Lead reloads. Any post-CP-1 change (new/split task, Write scope, interface) also updates `design.md` and re-runs `freeze-check --structural`; a new interface or security boundary needs `hanlin` R0, its `R0: pass(...)` line APPENDED to `review.md` (last line wins).
+- Test author and implementer must differ in agent and model; reviewer model must differ from implementer and should differ from tester (`merge-task` warns on overlap). If unavailable, block; never claim heterogeneity.
+- Agent identity: trailers and review tags use the full UUID (`$PASEO_AGENT_ID`); a `shortId` resolves only as a review-tag prefix, never in a trailer.
+- Every dispatch uses native workspaces, labels, finish notifications, and a background `paseo wait` backstop (`lead.md`). A returned or timed-out wait means inspect now, not success; a lost notification triggers reconciliation, never duplicate dispatch. Review fixes reuse the original agent.
+- Circuit breaker (`lead.md`): at most 3 attempts per task; on breach the Lead stops dispatching it and escalates.
+- Contract amendments after CP-1: main session updates tasks, human confirms, commit, Lead reloads; update `design.md` and re-run `freeze-check --structural`. A new interface or security boundary needs `hanlin` R0, its `R0: pass(...)` line APPENDED to `review.md` (last line wins).
 
 ## Merge gate
 ```
 node "$PIPELINE_HOME"/merge-task.mjs \
   task/<change>/<T> <T> 'pass(<reviewer-uuid>@<tip>/<base>)'
 ```
-`merge-task` checks branch/task identity, dependency Done, frozen Write scope, commit trailers, test-author protection, agent/model independence, review binding, base drift, Verify, and clean worktree; then no-ff merges and records Done. After its own Verify it re-runs every already-Done task's narrow Verify on the merged tree (whole-suite legs skipped; only dependency-sharing or scope-overlapping tasks). It proves Red: test-author commits alone must fail frozen Verify on an assertion, not a load/import error (else 33). Exit codes: 2 usage; 10 conflict; 20 verify; 21 cross-task regression; 30 scope; 31 provenance; 32 review; 33 Red proof; 34 base/drift (incl. main advanced on task scope: rebase integration, re-review); 35 dependency; 36 unchecked-out dependencies; 37 attempt breaker (`-aN`, N>3) or >2 implementation commits on one branch (escalate to `-a2`); `--allow-attempt-over`: human only. Sole Done writer.
+`merge-task` checks identity, dependencies Done, Write scope, trailers, test-author protection, agent/model independence, review binding, base drift, Verify and a clean worktree, then no-ff merges and records Done. It proves Red itself (test-author commits alone must fail Verify on an assertion, else 33) and re-runs already-Done tasks' narrow Verify on the merged tree (whole-suite legs skipped). Exit codes: 2 usage; 10 conflict; 20 verify; 21 regression; 30 scope; 31 provenance; 32 review; 33 Red proof; 34 base/drift; 35 dependency; 36 unchecked-out dependencies; 37 attempt breaker; `--allow-attempt-over`: human only. Sole Done writer.
 
-Exit 36: worktree cannot resolve a package or runner (`Cannot find package 'tsx'`, `command not found`). Environment fault: a linked worktree does not inherit `node_modules`/`.venv`. Install per lockfile and retry; never edit tests or Verify to work around it.
+Exit 36: worktree cannot resolve a package or runner (`Cannot find package 'tsx'`, `command not found`). A linked worktree does not inherit `node_modules`/`.venv`. Install per lockfile and retry; never edit tests or Verify.
 
 ## Recovery
 ```
@@ -88,9 +88,9 @@ Use live Paseo state, branch tips and Done lines. Never re-dispatch on a delayed
 ## Finish
 1. Require all tasks Done, no blocked/failed tasks, clean integration worktree.
 2. On same final SHA, run full suite and all `Required=yes` acceptance commands; record evidence/SHA. In parallel, run one integrated Spec+Standards review via explicit Paseo profiles.
-3. Confirmed blockers only: `gaogong` fixes listed items; rerun full suite/acceptance; original reviewer rechecks fix diff once. Remaining blockers mean not delivered.
-4. Report final SHA, test/acceptance result, review findings/NITs, task SHAs. CP-2 remains human confirmation. If main moved, revalidate at new SHA.
-5. After CP-2, present cleanup list. Delete/archive only after human confirmation; push requires separate confirmation.
+3. Confirmed blockers only: `gaogong` fixes them, then rerun suite/acceptance and have the original reviewer recheck the fix diff once. Remaining blockers mean not delivered.
+4. Report final SHA, test/acceptance result, findings/NITs, task SHAs. CP-2 stays human. If main moved, revalidate at the new SHA.
+5. After CP-2, present the cleanup list; delete/archive only after human confirmation. Push needs separate confirmation.
 
 ## Hard lines
 - Lead/main session never edits business code; `chanpin` and `gaogong` write contract files only, never business code; `hanlin` writes nothing.
