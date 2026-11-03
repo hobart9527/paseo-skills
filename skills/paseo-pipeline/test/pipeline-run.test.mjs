@@ -115,6 +115,25 @@ test('status reports done and open tasks with the integration head', () => {
   assert.match(report.integrationHead, /^[0-9a-f]{40}$/);
 });
 
+test('install-hook enables worktree config and points hooksPath at the skill hooks', () => {
+  const f = fixture();
+  const r = run(f.cwd, f.localEnv, ['install-hook', f.cwd]);
+  assert.equal(r.status, 0, r.out);
+  assert.match(git(f.cwd, 'config', '--worktree', '--get', 'core.hooksPath'), /paseo-pipeline\/hooks\/git$/);
+});
+
+test('plan warns when a change worktree is missing the author hook', () => {
+  const f = fixture();
+  const changeDir = path.join(f.cwd, 'openspec/changes/chg');
+  const before = run(f.cwd, f.localEnv, ['plan', changeDir]);
+  assert.equal(before.status, 0, before.out);
+  assert.match(before.stderr, /has no author hook/);
+  assert.match(before.stderr, /install-hook/);
+  assert.equal(run(f.cwd, f.localEnv, ['install-hook', f.cwd]).status, 0);
+  const after = run(f.cwd, f.localEnv, ['plan', changeDir]);
+  assert.doesNotMatch(after.stderr, /has no author hook/);
+});
+
 test('a change directory without tasks.md is unreadable state (exit 3)', () => {
   const f = fixture();
   const r = run(f.cwd, f.localEnv, ['status', path.join(f.cwd, 'openspec/changes/nope')]);

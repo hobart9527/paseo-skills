@@ -46,7 +46,7 @@ The contract stage is sequential; every step blocks the next.
 1. Commit the frozen contract (`openspec/changes/<change>/`) on the default branch.
 2. Create the integration worktree and branch from that commit: `create_workspace(isolation, branchName: "integration/<change>")`.
 3. Create one task worktree + branch per currently-ready task from the integration tip: `task/<change>/<T-id>`. Replacement attempts take `<T-id>-aN`.
-4. Install the author hook in every task worktree: `git config extensions.worktreeConfig true`, then `git config --worktree core.hooksPath "$PIPELINE_HOME/hooks/git"`. Without it a worker cannot stamp its own `Pipeline-Author`, and the merge gate exits 31.
+4. Install the author hook in every task worktree: `node "$PIPELINE_HOME"/pipeline-run.mjs install-hook <worktree> [...]`. Without it a worker cannot stamp its own `Pipeline-Author`, and the merge gate exits 31. `plan` warns about any `task/<change>/` or `integration/<change>` worktree that is missing it.
 5. Bootstrap dependencies per lockfile in every workspace — **including the integration worktree**, where `merge-task` runs Verify — before any Verify. A worktree is a checkout, not a clone; an uninstalled package exits 36. Install once per workspace, not per task.
 6. Run `node "$PIPELINE_HOME"/pipeline-run.mjs plan openspec/changes/<change>` and dispatch exactly the workers it lists. The main session is an event router from here: it does not edit business code and does not schedule by reasoning.
 
@@ -68,6 +68,7 @@ node "$PIPELINE_HOME"/pipeline-run.mjs merge <change-dir> <task-id>
 `pipeline-run` resolves the newest attempt branch and runs `merge-task.mjs`. The gate checks dependencies Done, Write scope, commit trailers ("Pipeline-Author"/"Pipeline-Role"), cherry-pick provenance, base drift, the frozen Verify, and regression of already-Done tasks, then no-ff merges and records Done. It proves nothing about tests beyond the frozen Verify: test quality is the FINAL review's job. Exit codes: 2 usage; 10 conflict; 20 Verify; 21 regression; 30 scope; 31 provenance; 34 base/drift; 35 dependency; 36 unchecked-out dependencies; 37 attempt/rework breaker; `--allow-attempt-over`: human only.
 
 Exit 36: the worktree cannot resolve a package or runner (`Cannot find package 'tsx'`, `command not found`). Install per lockfile and retry; never edit tests or Verify.
+Exit 21: a replayed already-Done Verify failed. If the cause is a missing service, port, package or env var rather than a real regression, fix the environment and re-run merge; never edit the Verify command or the tests.
 
 ## Finish
 1. Require all tasks Done, no blocked tasks, clean integration worktree.

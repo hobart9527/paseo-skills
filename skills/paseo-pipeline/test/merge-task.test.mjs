@@ -276,6 +276,9 @@ test('a merge that regresses an already-Done task is exit 21 and leaves the tree
   const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
   assert.equal(r.status, 21, r.out);
   assert.match(r.out, /regress already-Done T-00/);
+  // The gate cannot tell a real regression from an absent environment; the message must say so.
+  assert.match(r.out, /environment it needs is absent/);
+  assert.match(r.out, /Do not edit the Verify command or the tests/);
   assert.equal(git(f.cwd, 'status', '--porcelain'), '');
 });
 

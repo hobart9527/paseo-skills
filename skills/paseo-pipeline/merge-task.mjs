@@ -244,7 +244,12 @@ for (const prior of parsed.tasks.filter((item) => item.done && item.id !== taskI
   const regression = await run(legs.map((leg) => leg.command).join(' && '), timeout);
   if (regression.error || regression.status !== 0 || regression.signal || regression.timedOut) {
     gitMaybe(['merge', '--abort']);
-    fail(`merge would regress already-Done ${prior.id}: ${legs.map((leg) => leg.command).join(' && ')}`, 21);
+    // A replay failure has two causes and the gate cannot tell them apart: a real regression from
+    // this merge, or an environment the Verify needed (a service, a port, a package) that is not
+    // present here. Naming both stops the operator from "fixing" a test that is not broken.
+    fail(`merge would regress already-Done ${prior.id}: ${legs.map((leg) => leg.command).join(' && ')}\n`
+      + '  If the replay failed because the environment it needs is absent (service, port, package, env var),\n'
+      + '  fix the environment and re-run merge. Do not edit the Verify command or the tests.', 21);
   }
 }
 if (git(['status', '--porcelain=v1', '--untracked-files=all']) !== before) {

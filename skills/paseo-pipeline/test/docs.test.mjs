@@ -109,12 +109,19 @@ test('the main session reconciles by state, never by re-dispatch', () => {
 
 test('the author hook is installed per workspace; workers never type their identity', () => {
   const skill = read('SKILL.md');
-  // `--worktree` keeps the hook inside the linked worktree: without it the shared .git/config
-  // is mutated and the hook outlives CP-2 on the primary checkout.
-  assert.match(skill, /config --worktree core\.hooksPath "\$PIPELINE_HOME\/hooks\/git"/);
-  assert.match(skill, /extensions\.worktreeConfig true/);
+  // One command per workspace: the raw `--worktree` git invocation lives in pipeline-run, so the
+  // operator cannot half-install it (worktreeConfig on, hooksPath missing).
+  assert.match(skill, /pipeline-run\.mjs install-hook/);
+  assert.match(skill, /plan.*warns about any `task\/<change>\/` or `integration\/<change>` worktree/, 'plan must surface a missing hook');
   assert.match(read('templates/worker.md'), /\$PASEO_AGENT_ID.*never `uuidgen`/s);
   assert.ok(fs.statSync(path.join(dir, 'hooks', 'git', 'commit-msg')).mode & 0o111, 'hook must be executable');
+});
+
+test('exit 21 names the environment cause, not only the regression', () => {
+  const skill = read('SKILL.md');
+  assert.match(skill, /Exit 21: a replayed already-Done Verify failed/);
+  assert.match(skill, /fix the environment and re-run merge/);
+  assert.match(skill, /never edit the Verify command or the tests/);
 });
 
 test('the worker brief escalates instead of widening scope or guessing', () => {
