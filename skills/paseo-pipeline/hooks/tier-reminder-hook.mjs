@@ -30,7 +30,9 @@ import { TIER_RULES, takeSnapshot, skipInjection, logHookError } from '../lib/ti
 // 关键词筛选全漏，而那恰恰是模型最容易直接动手的时刻。改为每条非斜杠消息都注入一行短提醒，
 // 评估类消息多看一行，代价远小于漏掉一次。
 export const REMINDER = [
-  '[分级提醒] 动手改任何文件（含 Bash 里的 sed -i、重定向、patch）之前，第一句话先输出分级声明：计划改哪些文件、属于哪一级、依据。',
+  '[分级提醒] 动手改任何文件（含 Bash 里的 sed -i、重定向、patch）之前，第一句话先输出计划行，再按它选通道：',
+  'TIER-PLAN: tier=1 files=src/a.ts,src/b.ts scope=src',
+  '闸门读这一行，在首次业务写入前就按计划判定（而不是写到第 4 个文件才提示）。计划变了就重新输出一行。',
   TIER_RULES,
   '纯评估、纯讨论不需要声明。',
 ].join('\n');
