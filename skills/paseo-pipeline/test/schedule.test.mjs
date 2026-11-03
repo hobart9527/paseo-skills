@@ -28,6 +28,7 @@ test('default model matches the frozen contract and deep-merges overrides', () =
     reviewerCap: 4,
     writerCap: 6,
     reworkRate: { strict: 0.35, standard: 0.2, deferred: 0.2, mechanical: 0 },
+    minSpeedup: 1.8,
   });
   const resolved = resolveModel({ implMin: { M: 10 }, reviewerCap: 2 });
   assert.equal(resolved.implMin.M, 10);

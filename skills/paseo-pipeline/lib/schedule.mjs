@@ -11,6 +11,11 @@ export const DEFAULT_MODEL = {
   reviewerCap: 4,
   writerCap: 6,
   reworkRate: { strict: 0.35, standard: 0.2, deferred: 0.2, mechanical: 0 },
+  // Policy floor, not a measurement: below this weighted speedup the fixed coordination
+  // cost (R0, CP-1, merge queue, regression replays) is too large a share of the gain, so
+  // `freeze-check` suggests Tier 2. Override per call through the model when a repo's own
+  // measured history says otherwise.
+  minSpeedup: 1.8,
 };
 
 export function resolveModel(model = {}) {

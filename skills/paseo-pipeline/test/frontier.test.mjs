@@ -22,62 +22,51 @@ const dag = [
 test('fresh DAG dispatches the ready frontier in critical-path order and waits on deps', () => {
   const report = frontier(dag, { done: [] });
   assert.deepEqual(report.dispatch.map((item) => item.task), ['T-00']);
+  assert.deepEqual(report.dispatch.map((item) => item.action), ['create-branch+dispatch-worker']);
   assert.deepEqual(report.waiting.map((item) => item.task), ['T-01', 'T-02', 'T-03', 'T-04']);
   assert.deepEqual(report.waiting.find((item) => item.task === 'T-01').on, ['T-00']);
 });
 
 test('a Uses consumer dispatches once the skeleton is Done, before the producer finishes', () => {
-  // T-03 Uses T-01, which is not a skeleton: its dispatch edge is only T-01's deps.
   const report = frontier(dag, { done: ['T-00'] });
   assert.deepEqual(report.dispatch.map((item) => item.task).sort(), ['T-01', 'T-02', 'T-03']);
+  assert.ok(report.dispatch.every((item) => item.action === 'create-branch+dispatch-worker'));
   assert.deepEqual(report.waiting.map((item) => item.task), ['T-04']);
 });
 
-test('writer capacity limits slots instead of hiding the frontier', () => {
+test('worker capacity limits slots instead of hiding the frontier', () => {
   const agents = [{ id: 'a1', role: 'gongbu', task: 'T-01', status: 'running' }];
   const branches = { 'T-01': { attempts: 1, implementationCommits: 1 } };
-  const report = frontier(dag, { done: ['T-00'], agents, branches }, { writerCap: 2 });
-  assert.equal(report.capacity.writers.used, 1);
-  // One free writer slot goes to the longest remaining critical path, not the first id;
-  // T-01's review is dispatched in parallel because reviewers have their own pool.
+  const report = frontier(dag, { done: ['T-00'], agents, branches }, { workerCap: 2 });
+  assert.equal(report.capacity.workers.used, 1);
+  // One free slot goes to the longest remaining critical path. A branch with commits
+  // merges instead of dispatching anything.
   assert.deepEqual(report.dispatch.map((item) => item.task), ['T-03', 'T-01']);
-  assert.deepEqual(report.dispatch.map((item) => item.action), ['create-branch+dispatch-ceshi', 'dispatch-reviewer']);
-  const full = frontier(dag, { done: ['T-00'], agents, branches }, { writerCap: 1 });
-  assert.equal(full.capacity.writers.used, 1);
+  assert.deepEqual(report.dispatch.map((item) => item.action), ['create-branch+dispatch-worker', 'merge']);
+  const full = frontier(dag, { done: ['T-00'], agents, branches }, { workerCap: 1 });
+  assert.equal(full.capacity.workers.used, 1);
   assert.deepEqual(full.dispatch.map((item) => item.task), ['T-01']);
+  assert.deepEqual(full.dispatch.map((item) => item.action), ['merge']);
 });
 
-test('reviewer capacity holds new reviews but never blocks a writer', () => {
+test('a worker commit is dispatched for merge, never for a per-task review', () => {
   const branches = {
     'T-01': { attempts: 1, implementationCommits: 1 },
     'T-02': { attempts: 1, implementationCommits: 1 },
   };
-  const agents = [{ id: 'r1', role: 'anchasi', task: 'T-01', status: 'running' }];
-  const report = frontier(dag, { done: ['T-00'], agents, branches }, { reviewerCap: 1 });
-  assert.equal(report.capacity.reviewers.used, 1);
-  assert.ok(!report.dispatch.some((item) => item.action === 'dispatch-reviewer' && item.task === 'T-02'));
-  assert.ok(report.dispatch.some((item) => item.task === 'T-03' && item.action === 'create-branch+dispatch-ceshi'));
-});
-
-test('a mechanical or deferred implementation is dispatched for merge, not review', () => {
-  const tasks = [
-    task({ id: 'T-01', review: 'mechanical' }),
-    task({ id: 'T-02', review: 'deferred' }),
-  ];
-  const branches = {
-    'T-01': { attempts: 1, implementationCommits: 1 },
-    'T-02': { attempts: 1, implementationCommits: 1 },
-  };
-  const report = frontier(tasks, { done: [], branches });
-  assert.deepEqual(report.dispatch.map((item) => item.action), ['merge', 'merge']);
+  const report = frontier(dag, { done: ['T-00'], branches });
+  // T-03 is not blocked by any review pool; it is still ready for a worker.
+  assert.deepEqual(report.dispatch.map((item) => [item.task, item.action]), [
+    ['T-03', 'create-branch+dispatch-worker'],
+    ['T-01', 'merge'],
+    ['T-02', 'merge'],
+  ]);
 });
 
 test('a merge waits for its Uses producer even after the consumer is implemented', () => {
-  // The consumer dispatches at interface freeze but `merge-task` refuses until the
-  // producer is Done (exit 35). The frontier must not propose that merge early.
   const tasks = [
-    task({ id: 'T-01', review: 'deferred' }),
-    task({ id: 'T-02', uses: ['T-01'], review: 'deferred' }),
+    task({ id: 'T-01' }),
+    task({ id: 'T-02', uses: ['T-01'] }),
   ];
   const branches = {
     'T-01': { attempts: 1, implementationCommits: 1 },
@@ -91,17 +80,21 @@ test('a merge waits for its Uses producer even after the consumer is implemented
   assert.deepEqual(merged.mergeWaiting, []);
 });
 
-test('scope overlap with a task under review holds the pair, not the whole frontier', () => {
+test('scope overlap with a task in flight holds the pair, not the whole frontier', () => {
   const overlapping = [
     task({ id: 'T-01', scope: ['src/shared/a.ts'], est: 'L' }),
     task({ id: 'T-02', scope: ['src/shared'], est: 'S' }),
     task({ id: 'T-03', scope: ['src/other.ts'], est: 'S' }),
   ];
-  const agents = [{ id: 'r1', role: 'anchasi', task: 'T-01', status: 'running' }];
+  const agents = [{ id: 'w1', role: 'gongbu', task: 'T-01', status: 'running' }];
   const branches = { 'T-01': { attempts: 1, implementationCommits: 1 } };
   const report = frontier(overlapping, { done: [], branches, agents });
   assert.ok(!report.dispatch.some((item) => item.task === 'T-02'));
-  assert.deepEqual(report.dispatch.map((item) => item.task), ['T-03']);
+  // T-01 already has commits, so it merges; T-02 is held by the scope overlap.
+  assert.deepEqual(report.dispatch.map((item) => [item.task, item.action]), [
+    ['T-03', 'create-branch+dispatch-worker'],
+    ['T-01', 'merge'],
+  ]);
 });
 
 test('branch attempts at the cap are blocked and stop dispatch', () => {
@@ -113,7 +106,7 @@ test('branch attempts at the cap are blocked and stop dispatch', () => {
 test('pending permission and stale labels surface as attention', () => {
   const agents = [
     { id: 'a1', role: 'gongbu', task: 'T-01', status: 'running', pendingPermissions: true },
-    { id: 'a2', role: 'anchasi', task: 'T-99', status: 'running' },
+    { id: 'a2', role: 'jiangzuo', task: 'T-99', status: 'running' },
   ];
   const report = frontier(dag, { done: [], agents });
   assert.deepEqual(report.attention.map((item) => item.kind).sort(), ['PENDING_PERMISSION', 'STALE_LABEL']);
@@ -128,8 +121,8 @@ test('a dead idle agent with no result is attention, a live one is not', () => {
 });
 
 test('frontier output is deterministic', () => {
-  const args = [{ done: ['T-00'], branches: { 'T-01': { attempts: 1, implementationCommits: 0 } } }];
-  assert.deepEqual(frontier(dag, ...args), frontier(dag, ...args));
+  const state = { done: ['T-00'], branches: { 'T-01': { attempts: 1, implementationCommits: 0 } } };
+  assert.deepEqual(frontier(dag, state), frontier(dag, state));
 });
 
 // ---- CLI ----
@@ -142,11 +135,10 @@ function repo(tasksMarkdown) {
   git('add', '.'); git('commit', '-qm', 'contract');
   return { dir, git };
 }
-function fakePaseo(agents, inspect = {}) {
+function fakePaseo(agents) {
   const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'frontier-bin-'));
   const payload = Buffer.from(JSON.stringify(agents)).toString('base64');
-  const inspectJson = Buffer.from(JSON.stringify(inspect)).toString('base64');
-  fs.writeFileSync(path.join(bin, 'paseo'), `#!/bin/sh\nif [ "$1" = inspect ]; then printf '%s' '${inspectJson}' | base64 -d; else printf '%s' '${payload}' | base64 -d; fi\n`);
+  fs.writeFileSync(path.join(bin, 'paseo'), `#!/bin/sh\nif [ "$1" = inspect ]; then printf '{}'; else printf '%s' '${payload}' | base64 -d; fi\n`);
   fs.chmodSync(path.join(bin, 'paseo'), 0o755);
   return { ...process.env, PATH: `${bin}:${process.env.PATH}` };
 }
@@ -169,10 +161,11 @@ test('CLI prints the ready task and waits on the dependent', () => {
   assert.equal(result.status, 0, result.stderr);
   const report = JSON.parse(result.stdout);
   assert.deepEqual(report.dispatch.map((item) => item.task), ['T-01']);
+  assert.deepEqual(report.dispatch.map((item) => item.action), ['create-branch+dispatch-worker']);
   assert.deepEqual(report.waiting, [{ task: 'T-02', on: ['T-01'] }]);
 });
 
-test('CLI recognises a Red-only branch and asks for the implementer', () => {
+test('CLI treats a legacy Red-only branch as needing a worker, not a merge', () => {
   const { dir, git } = repo(cliTasks);
   git('checkout', '-q', '-b', 'task/chg/T-01');
   fs.writeFileSync(path.join(dir, 'red.txt'), 'x');
@@ -183,7 +176,7 @@ test('CLI recognises a Red-only branch and asks for the implementer', () => {
   });
   assert.equal(result.status, 0, result.stderr);
   const report = JSON.parse(result.stdout);
-  assert.deepEqual(report.dispatch, [{ task: 'T-01', action: 'dispatch-implementer', reason: 'Red commit present; no implementation commit yet' }]);
+  assert.deepEqual(report.dispatch, [{ task: 'T-01', action: 'dispatch-worker', reason: 'branch present; no commit yet' }]);
 });
 
 test('CLI exits 3 when Paseo is unreadable', () => {

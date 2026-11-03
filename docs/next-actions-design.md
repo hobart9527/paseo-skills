@@ -1,10 +1,11 @@
-# `next-actions.mjs` — 确定性调度输出（设计草案，未实现）
+# `next-actions.mjs` — 确定性调度输出
 
-状态：设计待确认。本文不含代码。
+状态：已实现（`next-actions.mjs` + `lib/frontier.mjs`，由 `pipeline-run.mjs plan` 调用）。
+本文保留设计推导；文中提到的 Lead / `templates/lead.md` 已撤除，主会话只执行脚本输出。
 
 ## 问题
 
-Frontier 计算、容量上限、卡住判定目前写在 `templates/lead.md` 的散文里，由长寿命 Lead（LLM）每轮重新推算。
+Frontier 计算、容量上限、卡住判定原先写在 `templates/lead.md` 的散文里，由长寿命 Lead（LLM）每轮重新推算。
 - 贵：approval-hub 实例里 `shangshu` 单会话累计约 738k 输入 token。
 - 漂移：同一状态，不同轮次可能得出不同"可派发集合"。
 - 压缩后恢复靠 Lead 重读三处状态再心算（`SKILL.md` 压缩恢复一节）。

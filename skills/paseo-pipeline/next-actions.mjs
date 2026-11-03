@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-// Deterministic next-action list for the Lead: one read-only query over git and
-// Paseo, no dispatch, no merge, no ledger. The Lead executes the list; if the list
-// is lost it recomputes (SKILL.md principle 5).
+// Deterministic next-action list for the main session: one read-only query over git
+// and Paseo, no dispatch, no merge, no ledger. The caller executes the list; if the
+// list is lost it recomputes (SKILL.md principle 5).
 //
-// Usage: next-actions.mjs <change-dir> [--json] [--writer-cap 6] [--reviewer-cap 4]
-//                          [--idle-minutes 15]
+// Usage: next-actions.mjs <change-dir> [--json] [--worker-cap 8] [--idle-minutes 15]
 // Exit: 0 list printed (including "nothing to do"); 2 usage; 3 Git/Paseo unreadable.
 
 import fs from 'node:fs';
@@ -27,12 +26,12 @@ function option(name, fallback) {
   }
   return value;
 }
-const positional = positionalArgs(args, ['writer-cap', 'reviewer-cap', 'idle-minutes']);
+const positional = positionalArgs(args, ['worker-cap', 'writer-cap', 'reviewer-cap', 'idle-minutes']);
 const changeDir = path.resolve(positional[0] || '.');
 const change = path.basename(changeDir);
 const options = {
-  writerCap: option('writer-cap', 6),
-  reviewerCap: option('reviewer-cap', 4),
+  // `--writer-cap` stays accepted as an alias for an older caller.
+  workerCap: option('worker-cap', option('writer-cap', 8)),
   idleMinutes: option('idle-minutes', 15),
 };
 
@@ -73,19 +72,31 @@ const refs = git(['for-each-ref', '--format=%(refname:short)', `refs/heads/task/
 for (const ref of refs) {
   const id = ref.slice(`task/${change}/`.length).replace(/-a\d+$/, '');
   if (!tasks.some((task) => task.id === id)) continue;
-  const entry = branches[id] ?? { attempts: 0, implementationCommits: 0 };
+  const entry = branches[id] ?? { attempts: 0, implementationCommits: 0, ownCommits: 0 };
+  // Every branch is an attempt, even one with no commits yet: `lead.md` caps a task at 3
+  // branches and `merge-task` refuses `-a4`, so counting only non-empty branches would let
+  // the breaker drift from both.
+  entry.attempts += 1;
+  // Only this attempt's own commits count. Branching from the integration tip carries
+  // every earlier merge commit, and those trailers are not this task's work: counting
+  // them made a fresh Red-only branch look implemented, so the Lead dispatched a
+  // reviewer before the writer and the merge died at exit 31.
   const base = integrationSha ? gitMaybe(['merge-base', integrationSha, `refs/heads/${ref}`]) : null;
   const range = base ? `${base}..refs/heads/${ref}` : `refs/heads/${ref}`;
   const commits = git(['log', '--format=%H%x00%(trailers:key=Pipeline-Role,valueonly)', '--no-merges', range])
     .split('\n').filter(Boolean);
-  if (commits.length > 0) {
-    entry.attempts += 1;
-  }
+  let workerCommits = 0;
   for (const line of commits) {
     const [, role = ''] = line.split('\0');
-    if (role.trim() && role.trim() !== 'ceshi') entry.implementationCommits += 1;
+    // A legacy `ceshi` Red commit is not worker output; a branch holding only that
+    // still needs a worker dispatch.
+    if (role.trim() && role.trim() !== 'ceshi') workerCommits += 1;
   }
-  branches[id] = entry;
+  branches[id] = {
+    attempts: entry.attempts,
+    implementationCommits: entry.implementationCommits + workerCommits,
+    ownCommits: (entry.ownCommits || 0) + workerCommits,
+  };
 }
 
 // Paseo: `ls --json` has no labels, so identity comes from the Lead's naming
@@ -124,7 +135,7 @@ const report = { change, integrationHead: integrationSha, ...result };
 if (json) console.log(JSON.stringify(report, null, 2));
 else {
   console.log(`[next-actions] ${change}${report.integrationHead ? ` @ ${report.integrationHead.slice(0, 7)}` : ''}`);
-  console.log(`capacity: writers ${report.capacity.writers.used}/${report.capacity.writers.cap}, reviewers ${report.capacity.reviewers.used}/${report.capacity.reviewers.cap}`);
+  console.log(`capacity: workers ${report.capacity.workers.used}/${report.capacity.workers.cap}`);
   for (const item of report.dispatch) console.log(`DISPATCH ${item.task}: ${item.action} — ${item.reason}`);
   for (const item of report.waiting) console.log(`WAIT ${item.task}: on ${item.on.join(', ')}`);
   for (const item of report.mergeWaiting) console.log(`MERGE-WAIT ${item.task}: on ${item.on.join(', ')}`);

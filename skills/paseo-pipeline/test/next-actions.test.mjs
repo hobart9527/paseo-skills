@@ -91,10 +91,35 @@ test('next-actions: integration merge commits do not count as this task\'s imple
   const result = run(cwd, localEnv);
   assert.equal(result.status, 0, result.out);
   const dispatch = result.json.dispatch.map((item) => `${item.task}:${item.action}`);
-  assert.deepEqual(dispatch, ['T-01:dispatch-implementer'], JSON.stringify(result.json));
+  assert.deepEqual(dispatch, ['T-01:dispatch-worker'], JSON.stringify(result.json));
 });
 
-test('next-actions: an implementation commit on the branch does advance to review', () => {
+test('next-actions: an empty branch is an attempt and three of them trip the breaker', () => {
+  const { cwd, localEnv } = fixture();
+  const git = (...args) => spawnSync('git', args, { cwd, env: localEnv, encoding: 'utf8' });
+  // No commits on either replacement branch: every branch is an attempt, so both count.
+  git('branch', 'task/c1/T-01-a2', 'integration/c1');
+  git('branch', 'task/c1/T-01-a3', 'integration/c1');
+  const result = run(cwd, localEnv);
+  assert.equal(result.status, 0, result.out);
+  assert.deepEqual(result.json.blocked.map((item) => [item.task, item.kind]), [['T-01', 'BLOCKED_ATTEMPTS']]);
+  assert.ok(!result.json.dispatch.some((item) => item.task === 'T-01'), JSON.stringify(result.json));
+});
+
+test('next-actions: an empty branch alone re-dispatches a worker onto it, not a new branch', () => {
+  const { cwd, localEnv } = fixture();
+  const git = (...args) => spawnSync('git', args, { cwd, env: localEnv, encoding: 'utf8' });
+  git('switch', '-q', 'integration/c1');
+  git('branch', 'task/c1/T-01-a2', 'integration/c1');
+  // Drop the committed attempt so only the empty branch remains: rename it into place.
+  git('branch', '-D', 'task/c1/T-01');
+  git('branch', '-m', 'task/c1/T-01-a2', 'task/c1/T-01');
+  const result = run(cwd, localEnv);
+  assert.equal(result.status, 0, result.out);
+  assert.deepEqual(result.json.dispatch.map((item) => `${item.task}:${item.action}`), ['T-01:dispatch-worker']);
+});
+
+test('next-actions: a worker commit on the branch advances to merge', () => {
   const { cwd, localEnv } = fixture();
   const git = (...args) => spawnSync('git', args, { cwd, env: localEnv, encoding: 'utf8' });
   git('switch', '-q', 'task/c1/T-01');
@@ -104,7 +129,6 @@ test('next-actions: an implementation commit on the branch does advance to revie
   git('switch', '-q', 'integration/c1');
   const result = run(cwd, localEnv);
   assert.equal(result.status, 0, result.out);
-  // T-01 is Review: deferred, so its implementation merges directly; the point is that
-  // it is not "dispatch-implementer" any more.
+  // A worker commit merges directly; there is no per-task review stage.
   assert.deepEqual(result.json.dispatch.map((item) => `${item.task}:${item.action}`), ['T-01:merge']);
 });

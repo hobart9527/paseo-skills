@@ -1,16 +1,16 @@
 // Pure frontier computation: graph + observed state -> deterministic next actions.
-// No I/O, no dispatch, no ledger. The Lead executes the list; git and Paseo stay
-// the only state (SKILL.md principle 5).
+// No I/O, no dispatch, no ledger. The main session executes the list; git and Paseo
+// stay the only state (SKILL.md principle 5).
+//
+// One track: a ready task gets a worker; a branch with commits merges as soon as its
+// merge dependencies are Done. There is no test-author dispatch and no per-task reviewer.
 import { dispatchDeps, mergeDeps, readyIds, pathWithin } from './schedule.mjs';
 import { normalizeScope } from './tasks.mjs';
 
-const WRITER_ROLES = new Set(['ceshi', 'gongbu', 'gaogong', 'jiangzuo']);
-const REVIEWER_ROLES = new Set(['anchasi']);
-const LEAD_ROLES = new Set(['shangshu', 'hanlin']);
+const WORKER_ROLES = new Set(['gongbu', 'gaogong', 'jiangzuo']);
 
 export const DEFAULTS = {
-  writerCap: 6,
-  reviewerCap: 4,
+  workerCap: 8,
   idleMinutes: 15,
   maxAttempts: 3,
 };
@@ -49,7 +49,7 @@ export function attemptsOf(taskId, branches = {}) {
 /**
  * @param {Array} tasks parsed tasks.md tasks
  * @param {object} state { done: string[], agents: [], branches: {}, now?: Date|string }
- * @param {object} options { writerCap, reviewerCap, idleMinutes, maxAttempts }
+ * @param {object} options { workerCap, idleMinutes, maxAttempts }
  */
 export function frontier(tasks, state = {}, options = {}) {
   const opts = { ...DEFAULTS, ...options };
@@ -61,11 +61,9 @@ export function frontier(tasks, state = {}, options = {}) {
   const ancestors = ancestorSet(byId);
   const open = tasks.filter((task) => !done.has(task.id));
 
-  const runningWriters = agents.filter((agent) => WRITER_ROLES.has(agent.role) && agent.status === 'running');
-  const runningReviewers = agents.filter((agent) => REVIEWER_ROLES.has(agent.role) && agent.status === 'running');
+  const runningWorkers = agents.filter((agent) => WORKER_ROLES.has(agent.role) && agent.status === 'running');
   const capacity = {
-    writers: { used: new Set(runningWriters.map((agent) => agent.task).filter(Boolean)).size, cap: opts.writerCap },
-    reviewers: { used: new Set(runningReviewers.map((agent) => agent.task).filter(Boolean)).size, cap: opts.reviewerCap },
+    workers: { used: new Set(runningWorkers.map((agent) => agent.task).filter(Boolean)).size, cap: opts.workerCap },
   };
 
   const attention = [];
@@ -83,7 +81,7 @@ export function frontier(tasks, state = {}, options = {}) {
       attention.push({ task, agent: agent.id, kind: 'PENDING_PERMISSION', reason: 'agent is blocked on a permission prompt' });
       continue;
     }
-    if (agent.status === 'idle' && agent.updatedAt && !LEAD_ROLES.has(agent.role)) {
+    if (agent.status === 'idle' && agent.updatedAt) {
       const idleMin = (now - new Date(agent.updatedAt).getTime()) / 60000;
       if (Number.isFinite(idleMin) && idleMin >= opts.idleMinutes) {
         attention.push({ task, agent: agent.id, kind: 'IDLE_NO_RESULT', reason: `idle ${Math.floor(idleMin)} min with no finish result` });
@@ -105,12 +103,12 @@ export function frontier(tasks, state = {}, options = {}) {
       blocked.push({ task: task.id, kind: 'BLOCKED_ATTEMPTS', reason: `${attempts} branches; cap is ${opts.maxAttempts}` });
       continue;
     }
-    // A live writer on the same files would race. Depends-on pairs are serialised by
+    // A live worker on the same files would race. Depends-on pairs are serialised by
     // the unmet check above; Uses pairs can overlap only when freeze-check allowed it.
     const overlap = open.some((other) => other.id !== task.id
       && !ancestors(task.id).has(other.id) && !ancestors(other.id).has(task.id)
       && scopesOverlap(task, other)
-      && (runningWriters.some((agent) => agent.task === other.id) || branches[other.id]));
+      && (runningWorkers.some((agent) => agent.task === other.id) || branches[other.id]));
     if (overlap) continue;
     ready.push(task);
   }
@@ -118,41 +116,34 @@ export function frontier(tasks, state = {}, options = {}) {
   // Longest remaining weighted path first; skeleton first on ties (lib/schedule.mjs).
   const order = readyIds(ready, [...done]);
   const ordered = order.map((id) => byId.get(id)).filter(Boolean);
-  const writerSlots = Math.max(0, capacity.writers.cap - capacity.writers.used);
-  const reviewerSlots = Math.max(0, capacity.reviewers.cap - capacity.reviewers.used);
-  const writerItems = [];
-  const reviewItems = [];
+  const workerSlots = Math.max(0, capacity.workers.cap - capacity.workers.used);
+  const workerItems = [];
   const mergeItems = [];
   const mergeWaiting = [];
   for (const task of ordered) {
     const branch = branches[task.id] || {};
-    const mechanical = task.review === 'mechanical';
+    // Callers that only pass {attempts, implementationCommits} keep the old meaning: a branch
+    // with attempts already carries one of its own commits.
+    const ownCommits = branch.ownCommits ?? (branch.attempts ? 1 : 0);
     if (!branch.attempts) {
-      writerItems.push({ task: task.id, action: mechanical ? 'create-branch+dispatch-implementer' : 'create-branch+dispatch-ceshi', reason: 'deps Done; scope disjoint' });
-    } else if (!branch.implementationCommits) {
-      writerItems.push({ task: task.id, action: 'dispatch-implementer', reason: 'Red commit present; no implementation commit yet' });
-    } else if (mechanical || task.review === 'deferred') {
+      workerItems.push({ task: task.id, action: 'create-branch+dispatch-worker', reason: 'deps Done; scope disjoint' });
+    } else if (!ownCommits) {
+      // The branch exists but carries no commit yet: dispatch onto it, do not create a
+      // second branch (that would burn an attempt).
+      workerItems.push({ task: task.id, action: 'dispatch-worker', reason: 'branch present; no commit yet' });
+    } else {
       // `Uses` is a merge edge: the consumer may implement as soon as the interface
-      // skeleton merges, but merging before the producer is Done fails exit 35. Report
-      // the wait instead of proposing a merge the gate will refuse.
+      // skeleton merges, but merging before the producer is Done fails exit 35.
       const unmetMerge = mergeDeps(task).filter((id) => !done.has(id) && byId.has(id));
       if (unmetMerge.length) {
         mergeWaiting.push({ task: task.id, on: unmetMerge.sort() });
         continue;
       }
-      mergeItems.push({
-        task: task.id,
-        action: 'merge',
-        reason: mechanical
-          ? 'implementation present; merge on pass(mechanical@tip/base)'
-          : 'implementation present; merge on pass(deferred@tip/base), FINAL owns review',
-      });
-    } else if (!runningReviewers.some((agent) => agent.task === task.id)) {
-      reviewItems.push({ task: task.id, action: 'dispatch-reviewer', reason: 'implementation commit present; review not running' });
+      mergeItems.push({ task: task.id, action: 'merge', reason: 'worker commit present; gate runs Verify and scope' });
     }
   }
-  // Merges consume no writer slot; only greenfield branches and Red writers do.
-  const dispatch = [...writerItems.slice(0, writerSlots), ...reviewItems.slice(0, reviewerSlots), ...mergeItems];
+  // Merges consume no worker slot; only greenfield branches and worker dispatches do.
+  const dispatch = [...workerItems.slice(0, workerSlots), ...mergeItems];
 
   return {
     done: [...done].sort(),
