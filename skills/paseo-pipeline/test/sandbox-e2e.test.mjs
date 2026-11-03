@@ -13,11 +13,9 @@ import { fileURLToPath } from 'node:url';
 const mergeTask = fileURLToPath(new URL('../merge-task.mjs', import.meta.url));
 const freezeCheck = fileURLToPath(new URL('../freeze-check.mjs', import.meta.url));
 
-const TESTER = '9b2f4c10-1111-4a2b-8c3d-000000000001';
-const WRITER = '9b2f4c10-2222-4a2b-8c3d-000000000002';
+const WORKER = '9b2f4c10-2222-4a2b-8c3d-000000000002';
 const HANLIN = '9b2f4c10-3333-4a2b-8c3d-000000000003';
-const OTHER_TESTER = '9b2f4c10-4444-4a2b-8c3d-000000000004';
-const OTHER_WRITER = '9b2f4c10-5555-4a2b-8c3d-000000000005';
+const OTHER_WORKER = '9b2f4c10-5555-4a2b-8c3d-000000000005';
 
 const baseEnv = {
   ...process.env,
@@ -33,14 +31,13 @@ function fakePaseo(cwd) {
   const bin = path.join(cwd, '.fake-bin');
   fs.mkdirSync(bin, { recursive: true });
   const agents = Buffer.from(JSON.stringify([
-    { id: TESTER, shortId: TESTER.slice(0, 7), provider: 'codex/gpt' },
-    { id: WRITER, shortId: WRITER.slice(0, 7), provider: 'claude/flash' },
+    { id: WORKER, shortId: WORKER.slice(0, 7), provider: 'claude/flash' },
     { id: HANLIN, shortId: HANLIN.slice(0, 7), name: '[Pipeline] hanlin R0', provider: 'claude/cc' },
   ])).toString('base64');
   const exe = path.join(bin, 'paseo');
   fs.writeFileSync(exe, [
     '#!/bin/sh',
-    `if [ "$1" = inspect ]; then case "$2" in ${TESTER}*) printf '{"Id":"%s","Provider":"codex","Model":"gpt"}' "$2";; ${WRITER}*) printf '{"Id":"%s","Provider":"claude","Model":"flash"}' "$2";; *) printf '{"Id":"%s","Provider":"claude","Model":"cc"}' "$2";; esac`,
+    `if [ "$1" = inspect ]; then printf '{"Id":"%s","Provider":"claude","Model":"flash"}' "$2";`,
     `else printf '%s' '${agents}' | base64 -d; fi`,
     "printf '\\n'",
   ].join('\n'));
@@ -144,7 +141,6 @@ function commit(env, cwd, message, files) {
   const result = spawnSync('git', ['commit', '-qm', message], { cwd, env, encoding: 'utf8' });
   if (result.status !== 0) throw new Error(result.stderr);
 }
-const tag = (tip, base, reviewer) => `pass(${reviewer}@${tip.slice(0, 7)}/${base.slice(0, 7)})`;
 
 test('sandbox: a converged contract freezes, then merges in dependency order without self-blocking', () => {
   const s = sandbox();
@@ -162,71 +158,71 @@ test('sandbox: a converged contract freezes, then merges in dependency order wit
   // 3. Consumer branch exists before its Uses producer is Done. Merging it must
   //    exit 35 (dependency), not merge early.
   branch(s.env, s.cwd, 'task/sandbox/T-02', base);
-  commit(s.env, s.cwd, `test(T-02): red\n\nPipeline-Role: ceshi\nPipeline-Author: ${TESTER}`, { 'test/consumer.test.mjs': redTest('consumer', 'src/consumer.mjs') });
-  commit(s.env, s.cwd, `work\n\nPipeline-Role: gongbu\nPipeline-Author: ${WRITER}`, { 'src/consumer.mjs': impl('consumer') });
+  commit(s.env, s.cwd, `work(T-02): consumer\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`, {
+    'test/consumer.test.mjs': redTest('consumer', 'src/consumer.mjs'),
+    'src/consumer.mjs': impl('consumer'),
+  });
   const consumerTip = s.git('rev-parse', 'HEAD');
   s.git('switch', '-q', 'integration/sandbox');
-  const early = run(mergeTask, s.cwd, s.env, ['task/sandbox/T-02', 'T-02', tag(consumerTip, base, 'deferred')]);
+  const early = run(mergeTask, s.cwd, s.env, ['task/sandbox/T-02', 'T-02']);
   assert.equal(early.status, 35, early.out);
   assert.match(early.out, /Uses T-00 is not Done/);
 
   // 4. Skeleton merges mechanically; then the consumer is allowed.
   branch(s.env, s.cwd, 'task/sandbox/T-00', base);
-  commit(s.env, s.cwd, `skeleton\n\nPipeline-Role: gongbu\nPipeline-Author: ${WRITER}`, {
+  commit(s.env, s.cwd, `skeleton\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`, {
     'src/iface.mjs': impl('useDraft'),
     'test/iface.test.mjs': redTest('iface', 'src/iface.mjs'),
   });
   const skeletonTip = s.git('rev-parse', 'HEAD');
   s.git('switch', '-q', 'integration/sandbox');
-  // A deferred tag on a task the contract did not mark deferred is exit 32.
-  const mislabeled = run(mergeTask, s.cwd, s.env, ['task/sandbox/T-00', 'T-00', tag(skeletonTip, base, 'deferred')]);
-  assert.equal(mislabeled.status, 32, mislabeled.out);
-  const skeleton = run(mergeTask, s.cwd, s.env, ['task/sandbox/T-00', 'T-00', tag(skeletonTip, base, 'mechanical')]);
+  // There is no reviewer tag any more: a `Review:` value never gates the merge.
+  const skeleton = run(mergeTask, s.cwd, s.env, ['task/sandbox/T-00', 'T-00']);
   assert.equal(skeleton.status, 0, skeleton.out);
-  const consumer = run(mergeTask, s.cwd, s.env, ['task/sandbox/T-02', 'T-02', tag(consumerTip, base, 'deferred')]);
+  const consumer = run(mergeTask, s.cwd, s.env, ['task/sandbox/T-02', 'T-02']);
   assert.equal(consumer.status, 0, consumer.out);
 
   // 5. Deferred producer merges on the deferred tag with a Red commit first.
   branch(s.env, s.cwd, 'task/sandbox/T-01', base);
-  commit(s.env, s.cwd, `test(T-01): red\n\nPipeline-Role: ceshi\nPipeline-Author: ${TESTER}`, { 'test/prod.test.mjs': redTest('prod', 'src/prod.mjs') });
-  commit(s.env, s.cwd, `work\n\nPipeline-Role: gongbu\nPipeline-Author: ${WRITER}`, { 'src/prod.mjs': impl('prod') });
+  commit(s.env, s.cwd, `work(T-01): producer\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`, {
+    'test/prod.test.mjs': redTest('prod', 'src/prod.mjs'),
+    'src/prod.mjs': impl('prod'),
+  });
   const prodTip = s.git('rev-parse', 'HEAD');
   s.git('switch', '-q', 'integration/sandbox');
-  const prod = run(mergeTask, s.cwd, s.env, ['task/sandbox/T-01', 'T-01', tag(prodTip, base, 'deferred')]);
+  const prod = run(mergeTask, s.cwd, s.env, ['task/sandbox/T-01', 'T-01']);
   assert.equal(prod.status, 0, prod.out);
 
   // 6. Provenance: a hand-recreated commit (same patch, different author, no cherry-pick
   //    marker) is exit 31; replaying the same commits with `cherry-pick -x` merges.
   s.git('switch', '-qc', 'seed/sandbox', base);
-  commit(s.env, s.cwd, `test(T-04): red\n\nPipeline-Role: ceshi\nPipeline-Author: ${TESTER}`, { 'test/extra.test.mjs': redTest('extra', 'src/extra.mjs') });
-  const seedRed = s.git('rev-parse', 'HEAD');
-  commit(s.env, s.cwd, `work\n\nPipeline-Role: gongbu\nPipeline-Author: ${WRITER}`, { 'src/extra.mjs': impl('extra') });
-  const seedImpl = s.git('rev-parse', 'HEAD');
+  commit(s.env, s.cwd, `work(T-04): tests + impl\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`, {
+    'test/extra.test.mjs': redTest('extra', 'src/extra.mjs'),
+    'src/extra.mjs': impl('extra'),
+  });
+  const seed = s.git('rev-parse', 'HEAD');
   s.git('switch', '-q', 'integration/sandbox');
 
   branch(s.env, s.cwd, 'task/sandbox/T-04', base);
-  s.git('cherry-pick', '-n', seedRed);
-  commit(s.env, s.cwd, `test(T-04): red\n\nPipeline-Role: ceshi\nPipeline-Author: ${OTHER_TESTER}`, {});
-  s.git('cherry-pick', '-n', seedImpl);
-  commit(s.env, s.cwd, `work\n\nPipeline-Role: gongbu\nPipeline-Author: ${OTHER_WRITER}`, {});
+  s.git('cherry-pick', '-n', seed);
+  commit(s.env, s.cwd, `work(T-04): tests + impl\n\nPipeline-Role: gongbu\nPipeline-Author: ${OTHER_WORKER}`, {});
   const forgedTip = s.git('rev-parse', 'HEAD');
   s.git('switch', '-q', 'integration/sandbox');
-  const forged = run(mergeTask, s.cwd, s.env, ['task/sandbox/T-04', 'T-04', tag(forgedTip, base, 'deferred')]);
+  const forged = run(mergeTask, s.cwd, s.env, ['task/sandbox/T-04', 'T-04']);
   assert.equal(forged.status, 31, forged.out);
   assert.match(forged.out, /cherry-pick -x/);
 
   branch(s.env, s.cwd, 'task/sandbox/T-04-a2', base);
-  s.git('cherry-pick', '-x', seedRed);
-  s.git('cherry-pick', '-x', seedImpl);
+  s.git('cherry-pick', '-x', seed);
   const replayTip = s.git('rev-parse', 'HEAD');
   s.git('switch', '-q', 'integration/sandbox');
-  const replay = run(mergeTask, s.cwd, s.env, ['task/sandbox/T-04-a2', 'T-04', tag(replayTip, base, 'deferred')]);
+  const replay = run(mergeTask, s.cwd, s.env, ['task/sandbox/T-04-a2', 'T-04']);
   assert.equal(replay.status, 0, replay.out);
 
   // 7. The mechanical sink closes the DAG and records every Done line.
   const afterReplay = s.git('rev-parse', 'HEAD');
   branch(s.env, s.cwd, 'task/sandbox/T-03', afterReplay);
-  commit(s.env, s.cwd, `sink\n\nPipeline-Role: gongbu\nPipeline-Author: ${WRITER}`, {
+  commit(s.env, s.cwd, `sink\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`, {
     'test/all.test.mjs': `import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -237,7 +233,7 @@ test('all', () => {
   });
   const sinkTip = s.git('rev-parse', 'HEAD');
   s.git('switch', '-q', 'integration/sandbox');
-  const sink = run(mergeTask, s.cwd, s.env, ['task/sandbox/T-03', 'T-03', tag(sinkTip, afterReplay, 'mechanical')]);
+  const sink = run(mergeTask, s.cwd, s.env, ['task/sandbox/T-03', 'T-03']);
   assert.equal(sink.status, 0, sink.out);
 
   const tasks = fs.readFileSync(path.join(s.cwd, 'openspec/changes/sandbox/tasks.md'), 'utf8');

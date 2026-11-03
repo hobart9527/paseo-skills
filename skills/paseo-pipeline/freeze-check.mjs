@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo-agents.mjs';
 import { parseTasks, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
-import { weightedSpeedup, weightedCriticalPath, verifyScope, dispatchDeps, readsOnlyEdges, pathWithin } from './lib/schedule.mjs';
+import { weightedSpeedup, weightedCriticalPath, verifyScope, dispatchDeps, readsOnlyEdges, pathWithin, resolveModel } from './lib/schedule.mjs';
 import { runGit } from './lib/git.mjs';
 
 const args = process.argv.slice(2);
@@ -285,9 +285,10 @@ const sectionBody = (markdown, heading) => {
   const next = rest.search(new RegExp(`^#{1,${start[1].length}}\\s`, 'm'));
   return (next === -1 ? rest : rest.slice(0, next)).replace(/<!--[\s\S]*?-->/g, '').trim();
 };
-for (const [file, markdown] of [['design.md', designMarkdown], ['digest.md', read(path.join(changeDir, 'digest.md'))]]) {
-  const body = sectionBody(markdown, 'Baseline Alignment');
-  if (!body) advisories.push(`ADVISORY_BASELINE_ALIGNMENT: ${file} has no non-empty "Baseline Alignment" section; record the baseline specs/tests read, the verdict per rule (reuse / delta / additive) and the command or path:line that proves it before R0`);
+// One reconciliation record per package, in the file R0 reads: `design.md` owns the verdict rows.
+// `digest.md` records the surfaces read; requiring the same table in both made one author fill it twice.
+if (!sectionBody(designMarkdown, 'Baseline Alignment')) {
+  advisories.push('ADVISORY_BASELINE_ALIGNMENT: design.md has no non-empty "Baseline Alignment" section; record the baseline specs/tests read, the verdict per rule (reuse / delta / additive) and the command or path:line that proves it before R0');
 }
 
 const fullSuiteSinks = tasks.filter((task) => verifyLegs(task.verify).some((leg) => leg.broad));
@@ -345,13 +346,13 @@ if (!structural) {
     blocking.push('MISSING_R0_SIGNOFF: review.md must contain `R0: pass(<reviewer-uuid>@<sha>)` — run hanlin R0 review before freeze');
   } else {
     // The signer must be a real Paseo agent, so a made-up uuid cannot satisfy the gate. Role is not
-    // exposed by `paseo ls`; a name without `hanlin` is only an advisory, merge-task keeps the hard
-    // reviewer-vs-author and model checks.
+    // exposed by `paseo ls`; a name without `hanlin` is only an advisory — the merge gate no longer
+    // inspects reviewer identity, so this is the only heterogeneous-R0 check.
     if (!skipSignerCheck) {
       const signer = r0Match[1].trim();
       const { agents, error } = listAgents();
       // Unreachable Paseo is advisory, not a block: it says nothing about the signer, and
-      // merge-task fails closed (exit 32) on the same lookup before anything is merged.
+      // the sign-off sha check below still proves the package did not change afterwards.
       if (error) advisories.push(`R0_SIGNER_UNVERIFIED: ${error}; signer ${signer} was not checked against Paseo`);
       else {
         const hits = findAgents(signer, agents);
@@ -404,8 +405,9 @@ if (!structural) {
 
 if (tasks.length === 0) blocking.push('EMPTY_TASKS: tasks.md parsed to zero tasks');
 // Expected speedup of running the DAG concurrently vs one task at a time, weighted by the
-// measured per-task cost model (lib/schedule.mjs). `speedup` keeps the legacy wave ratio for
-// existing consumers; the advisory routes on the weighted number.
+// cost model in lib/schedule.mjs (hand-set defaults, overridable per call; not measured from
+// this repository). `speedup` keeps the legacy wave ratio for existing consumers; the advisory
+// routes on the weighted number.
 const speedup = waveList.length ? Number((tasks.length / waveList.length).toFixed(2)) : 0;
 const weighted = weightedSpeedup(tasks);
 // Critical chain: the longest path by the same weighted cost model the scheduler and the
@@ -433,8 +435,9 @@ const criticalChain = [];
     criticalChain.push({ id, via });
   }
 }
-if (tasks.length >= 4 && maxWidth >= 2 && weighted < 1.8) {
-  advisories.push(`ADVISORY_LOW_SPEEDUP: weighted ${weighted}x (legacy ${speedup}x); compare with Tier 2 handoff before CP-1`);
+const policy = resolveModel();
+if (tasks.length >= 4 && maxWidth >= 2 && weighted < policy.minSpeedup) {
+  advisories.push(`ADVISORY_LOW_SPEEDUP: weighted ${weighted}x below the ${policy.minSpeedup}x policy floor (legacy ${speedup}x); compare with Tier 2 handoff before CP-1`);
 }
 // A dependency whose only shared surface is a read-only fixture is a candidate for removal:
 // `merge-task` replays every Done task whose Verify scope overlaps the changed files, so the

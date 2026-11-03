@@ -645,6 +645,14 @@ test('baseline alignment is an advisory that names the missing section, never a 
   const aligned = { ...files, 'design.md': '## Baseline Alignment\n| Rule | Baseline | Verdict | Evidence |\n| --- | --- | --- | --- |\n| none | n/a | reuse | `rg status src/` |\n\n## Impact Inventory\nnone\n', 'digest.md': '## Baseline Alignment\nnone: `rg status src/`\n' };
   const ok = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change(aligned), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
   assert.deepEqual(ok.advisories.filter((item) => item.startsWith('ADVISORY_BASELINE_ALIGNMENT')), []);
+  // One author fills the record once: `design.md` is the file R0 reads, so a missing digest
+  // section is not a second advisory. A digest-only package still warns.
+  const designOnly = { ...files, 'design.md': aligned['design.md'] };
+  const one = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change(designOnly), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
+  assert.deepEqual(one.advisories.filter((item) => item.startsWith('ADVISORY_BASELINE_ALIGNMENT')), []);
+  const digestOnly = { ...files, 'digest.md': aligned['digest.md'] };
+  const none = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change(digestOnly), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
+  assert.ok(none.advisories.some((item) => item.startsWith('ADVISORY_BASELINE_ALIGNMENT: design.md')));
   // A section written as `###` subsections is still a section: they must not truncate the body.
   const subsectioned = { ...files, 'design.md': `${design}\n## Baseline Alignment\n\n### Read\n- specs/a/spec.md:12 (reuse)\n\n### Command\n\`rg status src/\`\n`, 'digest.md': '## Baseline Alignment\n\n### Read\n- `rg status src/`\n' };
   const sub = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change(subsectioned), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
