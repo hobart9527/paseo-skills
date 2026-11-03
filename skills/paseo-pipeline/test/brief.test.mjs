@@ -122,6 +122,20 @@ test('brief: an unknown task fails instead of rendering a partial brief', () => 
   assert.match(result.stderr, /unknown task T-99/);
 });
 
+test('brief: the tester brief carries the adversarial cases of the task Risk-surface', () => {
+  const { cwd, change } = fixture();
+  const tester = run(['tester', '--change', change, '--repo', cwd, '--task', 'T-02', '--base', 'HEAD', '--json']);
+  assert.equal(tester.status, 0, tester.out);
+  const prompt = JSON.parse(tester.stdout).prompt;
+  assert.match(prompt, /## Adversarial cases \(required, Risk-surface: \[error-handling\]\)/);
+  assert.match(prompt, /- \[ \] upstream throws; the caller receives the documented error/);
+
+  // The implementation brief must not receive a tester's checklist.
+  const writer = run(['writer', '--change', change, '--repo', cwd, '--task', 'T-02', '--base', 'HEAD', '--json']);
+  assert.equal(writer.status, 0, writer.out);
+  assert.doesNotMatch(JSON.parse(writer.stdout).prompt, /Adversarial cases/);
+});
+
 test('brief: an unresolvable required placeholder fails and lists it', () => {
   const { cwd, change } = fixture();
   const result = run(['tester', '--change', change, '--repo', cwd, '--task', 'T-02',

@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { parseTasks, isTestPath } from './lib/tasks.mjs';
+import { checklistForSurfaces } from './lib/adversarial.mjs';
 
 const TEMPLATES = ['lead', 'author', 'tester', 'writer', 'reviewer', 'auditor', 'lead-resume'];
 const usage = 'Usage: brief.mjs <role> --change <name> --repo <path> [--task <id>] [--base <sha>] [--json]';
@@ -216,6 +217,14 @@ if (task) {
   lines.push(`- Verify with: ${task.verify}`);
   lines.push(`- Scenarios: ${task.scenarios.join(', ') || 'none'}`);
   lines.push(`- Exact test paths: ${testPaths.join(', ') || 'none'}`);
+  // The test author's required cases come from the same frozen table the Lead used to
+  // run as a separate ceremony. One source, no hand-copied lines, no extra command.
+  const adversarial = role === 'tester' ? checklistForSurfaces(extrasForTask['risk-surface']) : [];
+  if (adversarial.length) {
+    lines.push('');
+    lines.push(`## Adversarial cases (required, Risk-surface: ${extrasForTask['risk-surface']})`);
+    for (const item of adversarial) lines.push(`- [ ] ${item}`);
+  }
   lines.push('');
   lines.push('## Dependency state');
   if (dependencyStates.length === 0) lines.push('- No dependencies.');

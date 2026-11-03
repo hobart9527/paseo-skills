@@ -1,23 +1,6 @@
-#!/usr/bin/env node
-// Turn each task's `Risk-surface` into a deterministic adversarial test checklist for
-// the tester role. No LLM call: the mapping is a fixed table, so the same tasks.md
-// always produces the same checklist and review can diff it across attempts.
-
-import fs from 'node:fs';
-
-const args = process.argv.slice(2);
-const json = args.includes('--json');
-const positional = args.filter((arg) => !arg.startsWith('--'));
-const file = positional[0];
-if (!file) {
-  console.error('Usage: adversarial.mjs <tasks.md> [--json]');
-  process.exit(2);
-}
-let markdown;
-try { markdown = fs.readFileSync(file, 'utf8'); } catch (error) {
-  console.error(`[adversarial] cannot read ${file}: ${error.message}`);
-  process.exit(2);
-}
+// Fixed adversarial checklist per `Risk-surface`. Deterministic: the same declaration
+// always yields the same cases, so a review can diff attempts. `brief.mjs tester`
+// renders this table into the child prompt; there is no separate ceremony script.
 
 // One entry per risk surface. Each line is a concrete case a `ceshi` test can encode,
 // not a vague instruction. Order is stable so repeated runs are diff-clean.
@@ -82,7 +65,7 @@ const ALIASES = {
   errorhandling: 'error-handling',
   'data-integrity': 'persistence',
   'data integrity': 'persistence',
-  'state': 'persistence',
+  state: 'persistence',
   idempotent: 'idempotency',
   migrations: 'migration',
   security: 'security',
@@ -92,6 +75,7 @@ const ALIASES = {
 function normalizeSurface(raw) {
   return String(raw || '').trim().toLowerCase().replace(/^\[|\]$/g, '').trim();
 }
+
 function checklistFor(surface) {
   const key = normalizeSurface(surface);
   const canonical = ALIASES[key] || key;
@@ -99,49 +83,18 @@ function checklistFor(surface) {
   return [`unmapped risk surface "${surface}": derive one adversarial case from the task Scenarios and a second from its Verify boundary`];
 }
 
-// Parse the same task lines lib/tasks.mjs accepts. Risk-surface is a metadata field;
-// the parser there does not model it, so this script reads it directly.
-const TASK_LINE = /^\s*[-*]\s*\[([ xX])\]\s+(?:(?:\d+(?:\.\d+)*)\s+)?([A-Za-z][A-Za-z0-9]*-\d+)(?::\s*|\s+)(.*)$/;
-const FIELD_LINE = /^\s+[-*]\s+([^:]+):\s*(.*)$/;
-const tasks = [];
-let current = null;
-for (const line of markdown.split(/\r?\n/)) {
-  const taskLine = line.match(TASK_LINE);
-  if (taskLine) {
-    current = { id: taskLine[2], title: taskLine[3].trim(), surface: null };
-    tasks.push(current);
-    continue;
+/**
+ * Cases for a raw `Risk-surface:` value (`[persistence, public-api]` or `none`).
+ * Deduplicated, stable order, empty for a task that declares no risk.
+ */
+export function checklistForSurfaces(raw) {
+  const surfaces = String(raw || '')
+    .split(/[,\n]/)
+    .map((item) => item.replace(/^\[|\]$/g, '').trim())
+    .filter((item) => item && item.toLowerCase() !== 'none');
+  const checklist = [];
+  for (const surface of surfaces) {
+    for (const item of checklistFor(surface)) if (!checklist.includes(item)) checklist.push(item);
   }
-  if (!taskLine && /^\s*[-*]\s*\[[ xX]\]/.test(line)) { current = null; continue; }
-  const field = line.match(FIELD_LINE);
-  if (!field) {
-    if (current && /^\s*[^#\s]/.test(line)) current = null;
-    continue;
-  }
-  if (!current) continue;
-  if (field[1].trim().toLowerCase() === 'risk-surface') current.surface = field[2].trim();
-}
-
-const result = {
-  tasks: tasks.map((task) => {
-    const surfaces = (task.surface || '')
-      .split(/[,\n]/)
-      .map((item) => item.replace(/^\[|\]$/g, '').trim())
-      .filter((item) => item && item.toLowerCase() !== 'none');
-    const checklist = [];
-    for (const surface of surfaces) {
-      for (const item of checklistFor(surface)) if (!checklist.includes(item)) checklist.push(item);
-    }
-    return { id: task.id, checklist };
-  }),
-};
-
-if (json) {
-  console.log(JSON.stringify(result, null, 2));
-} else {
-  console.log(`[adversarial] ${file}`);
-  for (const task of result.tasks) {
-    console.log(`${task.id}: ${task.checklist.length} adversarial case(s)`);
-    for (const item of task.checklist) console.log(`  - ${item}`);
-  }
+  return checklist;
 }
