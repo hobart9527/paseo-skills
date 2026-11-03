@@ -4,10 +4,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo-agents.mjs';
 import { parseTasks, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
-import { weightedSpeedup, weightedCriticalPath, verifyScope, dispatchDeps, readsOnlyEdges } from './lib/schedule.mjs';
+import { weightedSpeedup, weightedCriticalPath, verifyScope, dispatchDeps, readsOnlyEdges, pathWithin } from './lib/schedule.mjs';
+import { runGit } from './lib/git.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
@@ -101,11 +101,7 @@ const sinkIds = new Set(tasks
 const waveList = [...waves.entries()].sort((a, b) => a[0] - b[0]).map(([wave, ids]) => ({ wave, ids }));
 const maxWidth = waveList.reduce((max, item) => Math.max(max, item.ids.length), 0);
 
-const scopesClash = (left, right) => left.scope.some((scope) => right.scope.some((other) => {
-  const a = normalizeScope(scope);
-  const b = normalizeScope(other);
-  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
-}));
+const scopesClash = (left, right) => left.scope.some((scope) => right.scope.some((other) => pathWithin(normalizeScope(scope), normalizeScope(other))));
 
 // Frontier scheduling runs any two tasks concurrently unless one transitively depends on the other,
 // so scope overlap is checked on every unordered pair, not only within a wave.
@@ -320,7 +316,7 @@ if (!read(path.join(changeDir, 'proposal.md'))) blocking.push('MISSING_PROPOSAL:
 // appending a new line instead of deadlocking on STALE_R0_SIGNOFF). The sha is the commit hanlin reviewed, so any contract edit
 // after it voids the sign-off. --structural skips this: it runs before the review exists.
 function gitIn(dir, gitArgs) {
-  return spawnSync('git', ['-C', dir, ...gitArgs], { encoding: 'utf8' });
+  return runGit(dir, gitArgs);
 }
 const nulList = (result) => (result.stdout || '').split('\0').filter(Boolean);
 if (!structural) {
@@ -393,13 +389,10 @@ if (tasks.length === 0) blocking.push('EMPTY_TASKS: tasks.md parsed to zero task
 // existing consumers; the advisory routes on the weighted number.
 const speedup = waveList.length ? Number((tasks.length / waveList.length).toFixed(2)) : 0;
 const weighted = weightedSpeedup(tasks);
-if (tasks.length >= 4 && maxWidth >= 2 && weighted < 1.8) {
-  advisories.push(`ADVISORY_LOW_SPEEDUP: weighted ${weighted}x (legacy ${speedup}x); compare with Tier 2 handoff before CP-1`);
-}
 // Critical chain: the longest path by the same weighted cost model the scheduler and the
 // benchmark use (lib/schedule.mjs). The wave-based chain this used to print counted edges,
 // not minutes, so it named a different path than the one that actually bounds the makespan
-// and pointed `CRITICAL_LOGICAL_EDGES` at edges that were not the bottleneck.
+// and pointed the removable-edge advice at edges that were not the bottleneck.
 // Each edge is tagged by why it exists: `scope` (shared files, forced), `uses` (an
 // interface target), `reads` (only a shared read-only fixture connects the pair), or
 // `logical` (author choice; the only removable kind).
@@ -415,20 +408,25 @@ const criticalChain = [];
       if ((current.uses || []).includes(previous.id) && !(current.depends || []).includes(previous.id)) via = 'uses';
       else if (scopesClash(previous, current)) via = 'scope';
       else if ((previous.reads || []).length
-        && (current.reads || []).some((read) => (previous.reads || []).some((other) => read === other || read.startsWith(`${other}/`) || other.startsWith(`${read}/`)))) via = 'reads';
+        && (current.reads || []).some((read) => (previous.reads || []).some((other) => pathWithin(read, other)))) via = 'reads';
       else via = 'logical';
     }
     criticalChain.push({ id, via });
   }
+}
+if (tasks.length >= 4 && maxWidth >= 2 && weighted < 1.8) {
+  advisories.push(`ADVISORY_LOW_SPEEDUP: weighted ${weighted}x (legacy ${speedup}x); compare with Tier 2 handoff before CP-1`);
 }
 // A dependency whose only shared surface is a read-only fixture is a candidate for removal:
 // `merge-task` replays every Done task whose Verify scope overlaps the changed files, so the
 // fixture is re-run against the merged tree whether or not the author serialised the pair.
 // Advisory only — dropping the edge is a contract decision the author records in design.md.
 {
+  const chainIds = new Set(criticalChain.map((step) => step.id));
   const edges = readsOnlyEdges(tasks);
   if (edges.length) {
-    const rendered = edges.map((edge) => `${edge.task} -> ${edge.dep} (${edge.shared.join(', ')})`);
+    const rendered = edges.map((edge) => `${edge.task} -> ${edge.dep} (${edge.shared.join(', ')})`
+      + (chainIds.has(edge.task) && chainIds.has(edge.dep) ? ' on the critical chain' : ''));
     advisories.push(`ADVISORY_READS_ONLY_EDGE ${rendered.join('; ')}: the pair shares only a read-only fixture and Write scopes do not overlap; merge-task replays it after either side merges. Record in design.md whether the edge is still needed before CP-1.`);
   }
 }
@@ -464,8 +462,6 @@ else {
   console.log(`[ROUTE] ${route}${route === 'pipeline' ? ': DAG has real concurrency' : ': no concurrency benefit; use Tier 2 handoff'}`);
   for (const wave of waveList) console.log(`WAVE ${wave.wave}: ${wave.ids.join(', ')}`);
   console.log(`CRITICAL ${criticalChain.map((step) => (step.via ? `-${step.via}-> ` : '') + step.id).join(' ')}`);
-  const removable = criticalChain.filter((step) => step.via === 'logical').map((step) => step.id);
-  if (removable.length) console.log(`CRITICAL_LOGICAL_EDGES into ${removable.join(', ')}: author-chosen; drop if a frozen interface in design.md lets them run in parallel`);
   for (const item of summary.advisories) console.log(`ADVISE ${item}`);
   for (const item of summary.blocking) console.error(`BLOCK ${item}`);
   if (explain) for (const item of summary.explanations) console.error(`EXPLAIN ${item.code}: ${item.reason}\n  fix: ${item.fix}`);

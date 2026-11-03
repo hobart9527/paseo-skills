@@ -1,7 +1,7 @@
 // Pure frontier computation: graph + observed state -> deterministic next actions.
 // No I/O, no dispatch, no ledger. The Lead executes the list; git and Paseo stay
 // the only state (SKILL.md principle 5).
-import { dispatchDeps, mergeDeps, readyIds } from './schedule.mjs';
+import { dispatchDeps, mergeDeps, readyIds, pathWithin } from './schedule.mjs';
 import { normalizeScope } from './tasks.mjs';
 
 const WRITER_ROLES = new Set(['ceshi', 'gongbu', 'gaogong', 'jiangzuo']);
@@ -19,8 +19,7 @@ function scopesOverlap(left, right) {
   return left.scope.some((scope) => right.scope.some((other) => {
     const a = normalizeScope(scope);
     const b = normalizeScope(other);
-    if (!a || !b) return false;
-    return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+    return Boolean(a && b) && pathWithin(a, b);
   }));
 }
 

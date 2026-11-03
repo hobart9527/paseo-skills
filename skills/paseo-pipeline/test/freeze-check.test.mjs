@@ -327,6 +327,9 @@ test('a dependency carried only by a shared read-only fixture is advisory, not b
   }), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
   assert.deepEqual(report.blocking, []);
   assert.match(report.advisories.join('\n'), /ADVISORY_READS_ONLY_EDGE T-02 -> T-01/);
+  // Chain membership is rendered on the advisory itself: the removed `CRITICAL_LOGICAL_EDGES`
+  // line used to be the only place that said the edge was the bottleneck.
+  assert.match(report.advisories.join('\n'), /T-02 -> T-01 \(scripts\/specs\/fixture\.mjs\) on the critical chain/);
 });
 
 test('a dependency between two writers of the same files is not reported as reads-only', () => {

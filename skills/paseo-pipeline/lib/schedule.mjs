@@ -155,7 +155,7 @@ export function readyIds(tasks, doneIds, model) {
     .map((task) => task.id);
 }
 
-const pathWithin = (a, b) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+export const pathWithin = (a, b) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
 
 /**
  * Which already-Done tasks `merge-task` replays when `task` merges. Single owner: the gate

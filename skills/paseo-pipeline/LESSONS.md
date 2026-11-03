@@ -345,7 +345,7 @@ Lead 未改写历史，开 `-a2` 分支，由原 ceshi 重提同字节测试、�
 | `reviewer.md` ARBITER：「归下游 T-k」的 OVERRULE 必须引用冻结文件中 T-k 已有该要求的原行，否则 `ESCALATE_HUMAN` | Arbiter 口头 OVERRULE 把 payee-accounts 泄漏推给 T-04/T-05，FINAL 评审随后失败 | 契约缺口 → 走 CP-1 增量，不靠口头 |
 | 模板：`standard|strict` 任务的测试须加载并执行被测代码；`readFileSync` + 正则读生产源码只许 `mechanical` | 源码文本断言「通过」但行为未证 | R0 标契约缺陷、TASK 评审按 `SPEC_VIOLATION` 阻断；**不**进 `merge-task`（§12：文本启发式不与合流门禁同级） |
 | `lead.md`：R2 复用 R1 的同一 reviewer id | R2 另起新 reviewer，丢失 R1 上下文 | 流程约定 |
-| `SKILL.md`：CP-1 遇 `ADVISORY_LOW_SPEEDUP`/`CRITICAL_LOGICAL_EDGES` 必须并列给出 Tier 2；CP-1 后任何契约变更同步 `design.md`、重跑 `--structural`，新接口/安全边界补 `hanlin` R0 | 契约在运行中被口头改动，设计文档与 R0 失效 | 流程约定 |
+| `SKILL.md`：CP-1 遇 `ADVISORY_LOW_SPEEDUP` 必须并列给出 Tier 2；可移除边（`CRITICAL` 的 `-logical->` 步、`ADVISORY_READS_ONLY_EDGE`）只给契约改边选项，不给 Tier 2；CP-1 后任何契约变更同步 `design.md`、重跑 `--structural`，新接口/安全边界补 `hanlin` R0 | 契约在运行中被口头改动，设计文档与 R0 失效；把「DAG 太窄」和「这条边可去」混成一个建议会误导路由 | 流程约定 |
 
 **一进一出**：`lead.md` 里「上限由你执行，`merge-task` 不管」一句已删，改为机制 + 提前自检；旧的「R0 取第一条」行为被取代而非并存。
 
