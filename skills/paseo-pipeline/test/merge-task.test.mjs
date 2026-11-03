@@ -397,7 +397,9 @@ test('warns when reviewer shares model with test author but still merges', () =>
 test('rejects merge that regresses an already-Done task (exit 21) and leaves tree clean', () => {
   // The prior task asserts its own invariant: a generated file must never exist.
   // Once the target task adds that file, replaying the prior leg must go red.
-  const tasks = '- [x] T-00 prior\n  - Write scope: test/prior.test.mjs\n  - Review: mechanical\n  - Verify with: node --test test/prior.test.mjs\n  - Done: source=abcdef1 review=pass(mechanical@abcdef1/abcdef1)\n- [ ] T-01 target\n  - Write scope: src,test\n  - Verify with: node --test test/a.test.mjs\n';
+  // `Reads` is what makes the prior's Verify surface declare that file: replay is driven
+  // by the changed files, not by ancestry or by the target's directory-shaped scope.
+  const tasks = '- [x] T-00 prior\n  - Write scope: test/prior.test.mjs\n  - Reads: src/poison.txt\n  - Review: mechanical\n  - Verify with: node --test test/prior.test.mjs\n  - Done: source=abcdef1 review=pass(mechanical@abcdef1/abcdef1)\n- [ ] T-01 target\n  - Write scope: src,test\n  - Verify with: node --test test/a.test.mjs\n';
   const f = taggedFixture(tasks);
   write(f.cwd, 'test/prior.test.mjs', `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\ntest('legacy', () => { assert.equal(fs.existsSync('src/poison.txt'), false); });\n`);
   write(f.cwd, 'test/a.test.mjs', RED_TEST); git(f.cwd, 'add', 'test');
@@ -600,10 +602,10 @@ test('foo', () => { assert.equal(foo(), 1); });
   assert.equal(r.status, 33, r.out);
 });
 
-test('skips regression replay for fully independent prior task (P2b: O(N²) fix)', () => {
+test('skips regression replay for a prior task whose Verify cannot observe the merge', () => {
   // T-00 and T-01 have disjoint scopes and no shared dependencies.
-  // T-00's verify would fail (test asserts 'src/poison.txt' absent, but nobody adds it),
-  // yet merge-task must not run it when merging T-01, because they are independent.
+  // T-00's verify would fail if replayed (it asserts a file that still does not exist), so
+  // a merge that replays it is either O(N²) or over-broad.
   const tasks = [
     '- [x] T-00 independent',
     '  - Write scope: lib',
@@ -624,35 +626,65 @@ test('skips regression replay for fully independent prior task (P2b: O(N²) fix)
   git(f.cwd, 'commit', '-qm', `w\n\nPipeline-Role: gongbu\nPipeline-Author: ${WRITER}`);
   const tip = git(f.cwd, 'rev-parse', 'HEAD'); git(f.cwd, 'switch', '-q', `integration/${f.change}`);
   const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
-  // If regression replay were O(N²), it would run T-00's verify and get exit 21.
-  // With P2b fix, T-00 is skipped → merge succeeds.
+  // Replaying T-00 would produce exit 21; the merge must succeed instead.
   assert.equal(r.status, 0, r.out);
   assert.match(r.out, /merged T-01/);
 });
 
-test('still replays regression for tasks with overlapping scope', () => {
-  // T-00 and T-01 both touch scope containing 'src' → must replay.
+test('skips replay for a dependent whose changed files miss the ancestor Verify surface', () => {
+  // Ancestry alone used to trigger a replay. T-01 depends on T-00, but the merge writes
+  // only `src/a.txt` and `test/a.test.mjs`; T-00's Verify lives in `lib` and its scope
+  // cannot observe either file. Replaying it would fail on its own invariant (exit 21).
   const tasks = [
-    '- [x] T-00 overlapper',
-    '  - Write scope: src/core',
+    '- [x] T-00 ancestor',
+    '  - Write scope: lib',
     '  - Review: mechanical',
     '  - Verify with: node --test test/prior.test.mjs',
     '  - Done: source=abcdef1 review=pass(mechanical@abcdef1/abcdef1)',
     '- [ ] T-01 target',
-    '  - Write scope: src,test',
+    '  - Depends on: T-00',
+    '  - Write scope: src/a.txt,test',
     `  - Verify with: ${GREEN}`,
     '',
   ].join('\n');
   const f = taggedFixture(tasks);
-  // Prior's verify will fail: asserts poison file absent, but T-01 adds it.
-  write(f.cwd, 'test/prior.test.mjs', `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\ntest('overlap', () => { assert.equal(fs.existsSync('src/poison.txt'), false); });\n`);
+  write(f.cwd, 'test/prior.test.mjs', `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\ntest('ancestor', () => { assert.equal(fs.existsSync('lib/data.txt'), true); });\n`);
   write(f.cwd, 'test/a.test.mjs', RED_TEST); git(f.cwd, 'add', 'test');
   git(f.cwd, 'commit', '-qm', `red\n\nPipeline-Role: ceshi\nPipeline-Author: ${TESTER}`);
-  write(f.cwd, 'src/a.txt', 'a'); write(f.cwd, 'src/poison.txt', 'x'); git(f.cwd, 'add', 'src');
+  write(f.cwd, 'src/a.txt', 'a'); git(f.cwd, 'add', 'src');
   git(f.cwd, 'commit', '-qm', `w\n\nPipeline-Role: gongbu\nPipeline-Author: ${WRITER}`);
   const tip = git(f.cwd, 'rev-parse', 'HEAD'); git(f.cwd, 'switch', '-q', `integration/${f.change}`);
   const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
-  // src/core overlaps src → prior IS replayed → regression detected
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /merged T-01/);
+});
+
+test('replays a prior task whose Verify reads a file this merge rewrites (Reads is a trigger)', () => {
+  // The mirror of the case above: the ancestor's Verify reads `src/a.txt`, which this
+  // merge rewrites. Nothing else ties the two tasks together — no dependency, no scope
+  // overlap — so a Write-scope-only rule would silently miss it.
+  const tasks = [
+    '- [x] T-00 reader',
+    '  - Write scope: test/prior.test.mjs',
+    '  - Reads: src/a.txt',
+    '  - Review: mechanical',
+    '  - Verify with: node --test test/prior.test.mjs',
+    '  - Done: source=abcdef1 review=pass(mechanical@abcdef1/abcdef1)',
+    '- [ ] T-01 target',
+    '  - Write scope: src/a.txt,test',
+    `  - Verify with: ${GREEN}`,
+    '',
+  ].join('\n');
+  const f = taggedFixture(tasks);
+  write(f.cwd, 'src/a.txt', 'orig');
+  // Fails once `a` is written: proves the replay actually ran against the merged tree.
+  write(f.cwd, 'test/prior.test.mjs', `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\ntest('reader', () => { assert.equal(fs.readFileSync('src/a.txt', 'utf8'), 'orig'); });\n`);
+  write(f.cwd, 'test/a.test.mjs', RED_TEST); git(f.cwd, 'add', 'test');
+  git(f.cwd, 'commit', '-qm', `red\n\nPipeline-Role: ceshi\nPipeline-Author: ${TESTER}`);
+  write(f.cwd, 'src/a.txt', 'a'); git(f.cwd, 'add', 'src');
+  git(f.cwd, 'commit', '-qm', `w\n\nPipeline-Role: gongbu\nPipeline-Author: ${WRITER}`);
+  const tip = git(f.cwd, 'rev-parse', 'HEAD'); git(f.cwd, 'switch', '-q', `integration/${f.change}`);
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
   assert.equal(r.status, 21, r.out);
   assert.match(r.out, /regress already-Done T-00/);
 });

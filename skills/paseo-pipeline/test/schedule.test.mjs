@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DEFAULT_MODEL, resolveModel, taskWeight, dispatchDeps, mergeDeps, verifyScope,
-  nodeCost, weightedCriticalPath, weightedSpeedup, readyIds, simulate,
+  nodeCost, weightedCriticalPath, weightedSpeedup, readyIds, simulate, regressionReplays,
 } from '../lib/schedule.mjs';
 
 const task = (over = {}) => ({
@@ -147,4 +147,18 @@ test('merge charges regression replay under both policies', () => {
     assert.equal(simulate(disjoint, { policy, model }).makespan, 10, `${policy} disjoint`);
     assert.equal(simulate(overlapping, { policy, model }).makespan, 13, `${policy} overlapping`);
   }
+});
+
+test('regressionReplays is the gate rule: changed paths vs the prior Verify surface', () => {
+  const priorReads = task({ id: 'T-01', scope: ['test/prior.test.mjs'], reads: ['src/a.txt'] });
+  const priorOwns = task({ id: 'T-02', scope: ['src/shared'] });
+  const priorElsewhere = task({ id: 'T-03', scope: ['lib'] });
+  const merging = task({ id: 'T-09', scope: ['src/a.txt', 'src/shared/b.ts'] });
+  // Reads participates: T-01 observes src/a.txt even though it only writes a test file.
+  assert.deepEqual(regressionReplays(merging, [priorReads, priorOwns, priorElsewhere]), ['T-01', 'T-02']);
+  // Ancestry is not a trigger, and a task cannot replay itself.
+  assert.deepEqual(regressionReplays(merging, [priorElsewhere, merging]), []);
+  // The gate passes the real diff; an empty diff replays nothing.
+  assert.deepEqual(regressionReplays(merging, [priorReads], []), []);
+  assert.deepEqual(regressionReplays(merging, [priorReads], ['docs/readme.md']), []);
 });

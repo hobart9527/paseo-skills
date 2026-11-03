@@ -6,7 +6,7 @@ import { spawnSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseTasks, parseTaskLine, parseReviewTag, isFileWithinScopes, graphErrors, isTestPath, verifyLegs } from './lib/tasks.mjs';
-import { mergeDeps } from './lib/schedule.mjs';
+import { mergeDeps, regressionReplays } from './lib/schedule.mjs';
 import { missingDependency, dependencyMessage } from './lib/toolchain.mjs';
 import { listAgents, inspectAgent, modelOf, findAgents, nameOf } from './lib/paseo-agents.mjs';
 
@@ -439,23 +439,20 @@ if (result.error || result.status !== 0 || result.signal || result.timedOut || v
   fail(`frozen Verify failed or changed worktree: ${task.verify}`, 20);
 }
 
-// Cross-task regression: with the merge applied, every already-Done task whose scope
-// could be affected by this task's changes must still pass its narrow Verify. Broad
-// (whole-suite) legs are skipped here; they belong to the sink and final acceptance.
-// Only replay tasks that share a transitive dependency with the current task or whose
-// scope overlaps the files this task touches — fully independent branches cannot regress.
-const scopesOverlap = (scopesA, scopesB) => scopesA.some((a) => scopesB.some((b) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)));
-const taskAncestors = new Set();
-{ const walk = (id) => { for (const dep of (parsed.tasks.find((t) => t.id === id)?.depends ?? [])) { taskAncestors.add(dep); walk(dep); } }; walk(taskId); }
+// Cross-task regression: with the merge applied, every already-Done task whose Verify can
+// observe a file this merge changed must still pass its narrow Verify. Broad (whole-suite)
+// legs are skipped here; they belong to the sink and final acceptance.
+// The replay set is the same function the cost model charges (`regressionReplays`), so the
+// benchmark and the gate cannot drift. Ancestry alone is not a trigger: a task that shares a
+// dependency but writes disjoint files cannot break the ancestor's Verify. `Reads` is on the
+// prior side: a task whose Verify reads a file this merge rewrites can regress without
+// overlapping Write scopes.
+const changedFiles = git(['diff', '--name-only', '-z', 'HEAD']).split('\0').filter(Boolean);
+const replayIds = new Set(regressionReplays(task, parsed.tasks.filter((item) => item.done && item.verify), changedFiles));
 const regressionStart = Date.now();
 let replayed = 0;
 for (const prior of parsed.tasks.filter((item) => item.done && item.id !== taskId && item.verify)) {
-  // Skip if prior is fully independent: no shared dependency chain AND no scope overlap.
-  const priorAncestors = new Set();
-  { const walk = (id) => { for (const dep of (parsed.tasks.find((t) => t.id === id)?.depends ?? [])) { priorAncestors.add(dep); walk(dep); } }; walk(prior.id); }
-  const sharesDep = taskAncestors.has(prior.id) || priorAncestors.has(taskId)
-    || [...taskAncestors].some((a) => priorAncestors.has(a));
-  if (!sharesDep && !scopesOverlap(task.scope, prior.scope)) continue;
+  if (!replayIds.has(prior.id)) continue;
   const legs = verifyLegs(prior.verify).filter((leg) => !leg.broad);
   if (!legs.length) continue;
   replayed += 1;

@@ -156,7 +156,34 @@ export function readyIds(tasks, doneIds, model) {
 }
 
 const pathWithin = (a, b) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
-const verifyOverlap = (left, right) => verifyScope(left).some((a) => verifyScope(right).some((b) => pathWithin(a, b)));
+
+/**
+ * Which already-Done tasks `merge-task` replays when `task` merges. Single owner: the gate
+ * imports this list, and the cost model charges exactly the same count.
+ *
+ * A prior task is replayed when its Verify can observe something this merge touches. The
+ * prior's Verify surface is its Write scope plus `Reads`; the merging side is the changed
+ * files plus the merging task's `Reads`.
+ *
+ * Both halves matter. `Reads` on the prior side catches a Verify that asserts on a file
+ * someone else writes. `Reads` on the merging side catches a shared read-only fixture: a
+ * spec script both tasks execute may read the merging task's files without naming them in
+ * any scope (the `payee-company-scope.mjs` shape), and no Write-scope comparison can see
+ * that. Ancestry is deliberately not a trigger: a dependent that writes only its own files
+ * cannot break its ancestor's Verify.
+ *
+ * `changedFiles` defaults to the task's Write scope, which is the model's upper bound; the
+ * gate passes the merge's real diff and therefore replays no more than that bound.
+ */
+export function regressionReplays(task, doneTasks, changedFiles = null) {
+  const changed = changedFiles ?? task.scope ?? [];
+  const surfaces = [...new Set([...changed, ...(task.reads || [])])].filter(Boolean);
+  if (!surfaces.length) return [];
+  return doneTasks
+    .filter((prior) => prior.id !== task.id)
+    .filter((prior) => verifyScope(prior).some((a) => surfaces.some((b) => pathWithin(a, b))))
+    .map((prior) => prior.id);
+}
 
 export function simulate(tasks, { policy = 'legacy', model } = {}) {
   const resolved = resolveModel(model);
@@ -254,11 +281,10 @@ export function simulate(tasks, { policy = 'legacy', model } = {}) {
     }
   };
   const mergeCost = (task) => {
-    // `merge-task` replays every already-Done task whose Verify scope overlaps the merging
-    // task, under either policy (the code has no policy branch, and it is already present at
-    // the pre-optimization commit). Charging it only to the converged run understated the
-    // legacy makespan and so overstated the gain.
-    const regressions = [...done].filter((id) => id !== task.id && verifyOverlap(known.get(id), task)).length;
+    // `merge-task` replays already-Done tasks whose Verify can observe a file this merge
+    // writes, under either policy (the code has no policy branch). The model charges the
+    // same set through `regressionReplays`, so the two cannot drift.
+    const regressions = regressionReplays(task, [...done].map((id) => known.get(id)).filter(Boolean)).length;
     return resolved.mergeMin + resolved.regressionMinPerTask * regressions;
   };
   const pumpMerges = () => {
