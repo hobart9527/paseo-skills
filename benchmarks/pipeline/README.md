@@ -57,24 +57,38 @@ After the corrections: **execution 23.7%, end-to-end 42%** at the measured
 263-minute contract (358 → 273 min execution; 721 → 418 min end-to-end). Do not
 adjust `263` or `POST` to raise the number.
 
-### The earlier 45.8% / 53.0% figure was measured on an invalid contract
+### The mechanism-derived lever: drop the reads-only edge
 
-A previous revision of `converged-tasks.md` was hand-edited: two `Depends on:` edges
-were rewritten as `Uses:` (T-04 → T-05 and T-08 → T-11) without the target declaring
-an `Interface:`. That made the converged DAG look two minutes shallower on the
-critical path, and it produced 45.8% / 53.0%. `freeze-check --structural` rejects
-exactly that shape with `USES_WITHOUT_INTERFACE`, so the pipeline would never have
-frozen that contract; the benchmark was scoring a change it could not run. Both
-edges are implementation dependencies — T-04's own Note says it is serialised
-against T-05 to avoid scope conflict, and T-08 imports an existing component from
-T-11 — so `Depends on` is the correct label. The fixture is now rendered by
-`derive.mjs`, and the honest number is 23.7% / 42%.
+`freeze-check` reports `ADVISORY_READS_ONLY_EDGE T-04 -> T-05`: the pair shares only
+`scripts/specs/payee-company-scope.mjs` in `Reads` and their Write scopes do not
+overlap. `merge-task` replays either side when the other changes
+(`regressionReplays`), so the edge buys dispatch order, not regression safety.
 
-The execution-only gain stays well below 50% here, and the critical-path ceiling
-says why: the converged chain T-00 → T-05 → T-04 → T-13 is 244 of the 273 minutes.
-No scheduler can beat it, so the most this DAG could ever show is
-(358 − 244) / 358 = 31.8% execution. The 27 minutes above the ceiling are the serial
-merge queue and the FINAL review tail.
+`benchmark.mjs` takes exactly the edges `readsOnlyEdges()` reports, drops them in
+memory, re-runs `checkContract`, and prints the result only when the variant still
+freezes. On this contract that is **194 min execution, 339 min end-to-end:
+45.8% / 53.0%**. The fixture on disk is not edited. The number is a CP-1 decision
+input for the contract author, and it appears only when the pipeline would still
+freeze the resulting contract.
+
+### The critical chain, as frozen
+
+The execution-only gain stays at 23.7% for the contract **as frozen**, and the
+critical path says why: the converged chain `T-00 -> T-05 -> T-04 -> T-13`
+(244 min) dominates the 273-minute makespan. The chain is now reported with `via`
+tags (`uses | logical | reads | scope`), so the edge that carries the chain is
+visible: `T-04 -> T-05` is a `reads` edge, the same one the advisory names. Drop it
+and the shared model reports a 194-minute critical path, i.e. 45.8%. No scheduler
+change moves either number.
+
+The earlier 45.8% / 53.0% figure that this README used to reject was measured on a
+different, invalid fixture: two `Depends on:` edges had been hand-rewritten as
+`Uses:` without an `Interface:`, and `freeze-check --structural` rejects that shape
+with `USES_WITHOUT_INTERFACE`. The current 45.8% / 53.0% comes from a variant the
+gate still accepts, and it is computed by `benchmark.mjs`, not authored.
+
+The 29 minutes above the critical path are the marginal cost of the serial merge
+gate (see below), not scheduling slack.
 
 ## Sandbox end-to-end
 
@@ -84,15 +98,43 @@ a skeleton, a `Uses` consumer, a deferred task and a cherry-picked commit, then 
 blocking codes (35 for an unfinished `Uses` producer, 32 for a deferred tag on a
 task the contract did not defer, 31 for a hand-recreated commit).
 
-## Merge queue
+## Merge queue, and why there is no merge train
 
-`skills/paseo-pipeline/merge-queue.mjs` is the P2 pre-merge probe:
+`merge-task` is the only Done writer and merges serially. That is a deliberate
+correctness choice, and its measured cost is bounded:
+
+- On the real DAG, zeroing `mergeMin` and `regressionMinPerTask` changes the
+  converged makespan from 273 to 244 min: the serial merge gate's **marginal cost is
+  29 min, 10.6%**.
+- Across the ten sandbox shapes it is **304 min, 18.7%** of converged execution.
+  That is an upper bound on what any faster merge mechanism could recover.
+- Raising `writerCap`/`reviewerCap` to 10/8 leaves the 273-minute makespan unchanged.
+  The bottleneck is contract edges, not concurrency slots.
+
+A merge train (batching task merges into one integration push) would need bisection
+and partial rollback when one commit in the batch fails, plus a second path that can
+mark Done. That is more machinery than the 10–19% it could address, and it gives up
+the single auditable writer that makes `merge-task` trustworthy. Decision: keep one
+serial writer; optimize the DAG (drop advisory edges) instead of the merge
+mechanism.
+
+`skills/paseo-pipeline/merge-queue.mjs` remains the read-only pre-merge probe:
 `merge-queue.mjs <change-dir>` chains `git merge-tree` over the pending task
 branches in dependency order and reports clean merges, conflicting files, and
 waiting dependencies. It never touches a ref or the integration worktree;
 `merge-task` remains the only writer. `test/merge-queue.test.mjs` covers an
 independent queue, a conflict introduced by an earlier queued branch, a missing
 dependency branch, and newest-attempt selection.
+
+## Red-ahead: measured, not implemented
+
+Running `ceshi` for a task whose dispatch deps are not Done yet (speculative Red)
+is *not* implemented. The model cannot price its main risk: a Red test written
+against an interface another task is still implementing often fails for the wrong
+reason and is rewritten, and that rework is invisible to the scheduling model. The
+benchmark reports scheduling levers only; it does not invent speculative work to
+move the headline. Re-open this only with measured rework data showing Red authoring
+is on the critical path.
 
 ## Ten-scenario sandbox
 
@@ -122,20 +164,22 @@ The sandbox figures are deliberately not tuned to clear an efficiency target. On
 these ten shapes the modelled execution gain is **37.7%** aggregate and the modelled
 end-to-end gain is **50.7%** aggregate. Per scenario, execution ranges 26.8–49.1%
 and end-to-end 45.0–55.8%; six of ten clear 50% end-to-end. The real
-`submit-hub-offset-and-draft-box` DAG reaches 23.7% execution / 42% end-to-end:
-its converged critical chain is 244 of 273 minutes, a ceiling of 31.8%. A
-smaller/shallower DAG gains less, and the ten-scenario suite is built to show that
-spread rather than to maximise the headline.
+`submit-hub-offset-and-draft-box` DAG reaches 23.7% execution / 42% end-to-end as
+frozen; its converged critical chain is 244 of 273 minutes, and the benchmark's
+mechanism-derived lever (dropping the advisory reads-only `T-04 -> T-05` edge) is
+45.8% / 53.0%. A smaller/shallower DAG gains less, and the ten-scenario suite is
+built to show that spread rather than to maximise the headline.
 
 **Why execution-only cannot reach 50% on these shapes.** A schedule cannot beat its
 own critical path. On the converged DAGs the weighted critical path sums to 1,209
 minutes against a legacy makespan of 2,614, so the best any scheduler could do is
 **53.7%** execution — and three shapes (`ui-form-validation` 49.6%,
 `search-index` 46.7%, `perf-profiler` 49.3%) have a critical-path ceiling below 50%.
-The remaining 419 minutes from the floor to the simulated 1,628 is the serial merge
-queue (`merge-task` is the sole Done writer, by design) plus the FINAL review tail.
-That is architecture, not slack: removing it would be the over-design this work was
-told to avoid. End-to-end is the number the contract-phase reduction moves.
+The remaining 419 minutes above that floor split into 304 minutes of serial merge
+marginal cost (18.7% of converged execution) and roughly 115 minutes of writer-cap
+contention plus the FINAL review tail. The merge share is the price of one auditable
+Done writer; the no-merge-train section above explains why batching it is the wrong
+trade. End-to-end is the number the contract-phase reduction moves.
 
 The orchestration wall time is the only directly measured number in the sandbox,
 and it is a script-overhead measure, not delivery speed: ~10%. Everything else in
@@ -155,12 +199,14 @@ edge is Done; a regression test covers it.
    `converged-tasks.md` is byte-for-byte the output of `derive.mjs`
    (`test/benchmark-contract.test.mjs`). A fixture the pipeline would refuse to
    freeze cannot contribute a number.
-2. Full unit suite green: `bash skills/paseo-pipeline/test/run-all.sh` (256 tests).
+2. Full unit suite green: `bash skills/paseo-pipeline/test/run-all.sh` (263 tests).
 3. Sandbox end-to-end run green: contract lint → freeze-check → task merges (including `Uses`, `deferred`, cherry-pick provenance) with no blocking exit codes.
 4. Ten-scenario matrix green for all ten shapes under both policies, 94 tasks each;
    aggregate modelled gain 37.7% execution / 50.7% end-to-end.
-5. The real DAG is reported as it measures: 23.7% execution / 42% end-to-end. It is
-   **not** required to clear 50%; its converged critical chain caps execution at
-   31.8%. The earlier `--assert=50` line was removed because the only contract that
-   passed it was one `freeze-check` rejects. Raising the fixture to clear a threshold
-   is the failure mode this benchmark exists to prevent.
+5. The real DAG is reported as it measures. As frozen: 23.7% execution / 42%
+   end-to-end, because its converged critical chain is 244 of 273 minutes. The
+   mechanism-derived lever — dropping the `readsOnlyEdges()` advisory and re-running
+   `checkContract` — is 45.8% / 53.0%, printed by `benchmark.mjs` and never authored.
+   The earlier `--assert=50` line was removed because the only way to pass it was a
+   fixture `freeze-check` rejects. Raising the fixture to clear a threshold is the
+   failure mode this benchmark exists to prevent.

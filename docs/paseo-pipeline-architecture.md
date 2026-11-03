@@ -77,3 +77,24 @@ A missing notification triggers reconcile of Paseo status + branch tip, never a 
 - `freeze-check.mjs` validates the frozen contract; `merge-task.mjs` is sole task merge and Done writer.
 - Only genuine DAG concurrency enters Pipeline (`maxWidth >= 2`, at least 4 tasks); otherwise Tier 2.
 - CP-1 freezes scope. CP-2 confirms main merge. Cleanup and push remain separate human decisions.
+
+## Tier 2: handoff for transfer, `/implement` for method
+
+Tier 2 covers work that is too large for one in-place session but has no real DAG
+concurrency. Two mechanisms could carry it; they are not alternatives.
+
+- **`/paseo-handoff` is the transport.** It creates the worktree, writes the brief,
+  and pins the acceptance command and the "stop if you exceed this" boundary. It
+  deliberately does not impose a development method, and it is the only one of the
+  two that is model-invocable from an orchestrating session.
+- **`/implement` (plus `/tdd` at pre-agreed seams, then `/code-review`) is the
+  method.** Inside the handed-off worktree the implementing agent follows the
+  ticket→Red→Green→review loop. `to-spec`/`to-tickets` are deliberately *not*
+  chained: OpenSpec already owns the contract for any change that went through
+  `freeze-check`, and a second ticket tracker would duplicate that authority and
+  add an external dependency for work with `maxWidth < 2`, where a task graph buys
+  nothing.
+
+So: Pipeline when there is DAG concurrency; otherwise `/paseo-handoff` carrying an
+`/implement` brief. Do not open a Pipeline for a serial change, and do not chain a
+parallel task graph onto a handoff — the handoff's single worktree is the boundary.
