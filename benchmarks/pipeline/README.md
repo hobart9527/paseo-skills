@@ -62,6 +62,35 @@ waiting dependencies. It never touches a ref or the integration worktree;
 independent queue, a conflict introduced by an earlier queued branch, a missing
 dependency branch, and newest-attempt selection.
 
+## Ten-scenario sandbox
+
+`sandbox-matrix.mjs` runs ten change shapes through the real scripts in a throwaway
+repository — `freeze-check`, `next-actions` frontier, `sync-check`, `merge-queue`,
+`merge-task`, and the FINAL reviewer brief — once under the legacy policy and once
+under the converged one. The scenarios cover UI skeletons, public-API rate limiting,
+persistence imports, security refresh, concurrency leases, search performance,
+mechanical i18n wiring, a design-token fan-out, a long CLI chain, and profiler
+fan-out.
+
+What it proves: every shape freezes, dispatches, syncs, merges, and closes with all
+tasks Done and no blocking exit code. What it does *not* prove: model quality or
+wall-clock gains. Agent work is replaced by tiny commits, so the timed orchestration
+numbers are overhead only (≈0.7% difference) and are not a delivery-speed measure.
+
+The efficiency comparison is the shared cost model, reported two ways:
+
+- **execution only** — `simulate()` makespan under each policy.
+- **end-to-end** — execution plus the measured contract phase (263 → 45 min, from
+  the real submit-hub history) plus a shared 100 min post phase, exactly as
+  `benchmark.mjs` does.
+
+The sandbox figures are deliberately not tuned to clear an efficiency target. On
+these ten shapes the modelled execution gain is **17.2%** aggregate, and the
+modelled end-to-end gain is **45.6%**. The real `submit-hub-offset-and-draft-box`
+DAG reaches 45.5% execution / 52.9% end-to-end because its critical chain is much
+longer. A smaller/shallower DAG gains less, and the ten-scenario suite is built to
+show that spread rather than to maximise the headline.
+
 ## Acceptance used for this work
 
 1. `--assert=50` passes on the real DAG (end-to-end improvement ≥ 50%).
