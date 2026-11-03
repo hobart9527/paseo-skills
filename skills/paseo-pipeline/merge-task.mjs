@@ -2,11 +2,13 @@
 // Safe merge gate. The only writer of integration history.
 // Scope, trailers, review binding, dependencies, frozen Verify, then --no-ff.
 
-import { spawnSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseTasks, parseTaskLine, parseReviewTag, isFileWithinScopes, graphErrors, isTestPath, verifyLegs } from './lib/tasks.mjs';
 import { mergeDeps, regressionReplays } from './lib/schedule.mjs';
+import { runGit } from './lib/git.mjs';
+import { patchIdOf as patchIdFor, samePatchCommits as samePatchCommitsFor } from './lib/provenance.mjs';
 import { missingDependency, dependencyMessage } from './lib/toolchain.mjs';
 import { listAgents, inspectAgent, modelOf, findAgents, nameOf } from './lib/paseo-agents.mjs';
 
@@ -20,14 +22,14 @@ function fail(message, code = 1) {
 }
 
 function git(args) {
-  const result = spawnSync('git', args, { encoding: 'utf8' });
+  const result = runGit(undefined, args);
   if (result.error) fail(`git ${args[0]} failed: ${result.error.message}`);
   if (result.status !== 0) fail(`git ${args.join(' ')} failed\n${result.stdout}${result.stderr}`);
   return result.stdout.trim();
 }
 
 function gitMaybe(args) {
-  return spawnSync('git', args, { encoding: 'utf8' });
+  return runGit(undefined, args);
 }
 
 function paseoAgents() {
@@ -58,36 +60,17 @@ function trailers(commit, key) {
 // Provenance across cherry-picks. A picked commit keeps its original author trailers only if the
 // hook preserved them (conflict-continue) or git did (clean pick); a hand-recreated commit has the
 // same patch but a fresh author. (cherry picked from commit <sha>) is the authoritative marker.
+// The patch-id lookup itself lives in lib/provenance.mjs so it can be exercised without a repo.
 const CHERRY_PICK = /\(cherry picked from commit ([0-9a-f]{7,64})\)/i;
 const authorKey = (commit) => trailers(commit, 'Pipeline-Author').map((id) => id.toLowerCase()).sort().join(',');
-function patchIdOf(commit) {
-  const shown = gitMaybe(['show', '--no-color', '--format=commit %H', commit]);
-  if (shown.status !== 0) return null;
-  const result = spawnSync('git', ['patch-id', '--stable'], { input: shown.stdout, encoding: 'utf8' });
-  if (result.status !== 0) return null;
-  return String(result.stdout || '').trim().split(/\r?\n/)[0]?.split(/\s+/)[0] || null;
-}
-// patch-id -> { commits, authors } for every reachable commit, computed in one pass. The author set
-// makes the hand-recreation check O(1) per merged commit instead of scanning the whole log.
-function patchIdIndex() {
-  const log = spawnSync('git', ['log', '--all', '--no-merges', '--no-color', '-p'], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
-  if (log.status !== 0) return { byCommit: new Map(), byPatch: new Map() };
-  const ids = spawnSync('git', ['patch-id', '--stable'], { input: log.stdout, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
-  if (ids.status !== 0) return { byCommit: new Map(), byPatch: new Map() };
-  const byCommit = new Map();
-  const byPatch = new Map();
-  for (const line of String(ids.stdout || '').split(/\r?\n/)) {
-    const match = line.trim().match(/^([0-9a-f]{7,64})\s+([0-9a-f]{7,64})$/);
-    if (!match) continue;
-    const [, patchId, commit] = match;
-    byCommit.set(commit, patchId);
-    const entry = byPatch.get(patchId) || { commits: new Set(), authors: new Set() };
-    entry.commits.add(commit);
-    entry.authors.add(authorKey(commit));
-    byPatch.set(patchId, entry);
-  }
-  return { byCommit, byPatch };
-}
+const gitAdapter = (cwd, args, options) => runGit(cwd, args, options);
+const patchIdOf = (commit) => patchIdFor(commit, { git: gitAdapter });
+
+// Commits that share this commit's patch-id. Returns null when the scan cannot be trusted (git
+// error, missing patch-id, or the path-filtered log exceeding its buffer); `samePatchCommits` owns
+// that rule and the caller refuses the merge on null, because silently skipping this check would
+// let a hand-recreated commit through.
+const samePatchCommits = (commit) => samePatchCommitsFor(commit, { git: gitAdapter });
 
 // Red proof is only meaningful when a test ran and failed on its assertions.
 // Distinguish that from "the suite could not even load": a collection/import/
@@ -264,7 +247,6 @@ const testAuthors = new Set();
 const implementationAuthors = new Set();
 let implementationCommits = 0;
 const testFiles = new Set();
-let patchIndex = null;
 for (const commit of commits) {
   const roles = trailers(commit, 'Pipeline-Role').map((x) => x.toLowerCase());
   const ids = trailers(commit, 'Pipeline-Author');
@@ -289,15 +271,13 @@ for (const commit of commits) {
       fail(`${commit.slice(0, 7)} cherry-pick Pipeline-Author (${authorKey(commit) || 'none'}) differs from ${sourceSha.slice(0, 7)} (${authorKey(sourceSha) || 'none'})`, 31);
     }
   } else {
-    patchIndex ??= patchIdIndex();
-    const patchId = patchIndex.byCommit.get(commit);
-    if (patchId) {
-      const entry = patchIndex.byPatch.get(patchId);
-      const otherAuthor = [...(entry?.authors || [])].find((author) => author && author !== authorKey(commit));
-      if (otherAuthor) {
-        const other = [...entry.commits].find((sha) => sha !== commit);
-        fail(`${commit.slice(0, 7)} restates ${other?.slice(0, 7) || 'another commit'} but Pipeline-Author differs and no "(cherry picked from commit ...)" marker is present; replay with git cherry-pick -x`, 31);
-      }
+    const samePatch = samePatchCommits(commit);
+    if (samePatch === null) {
+      fail(`${commit.slice(0, 7)}: cannot verify cherry-pick provenance (git log/patch-id failed or the history scan exceeded its buffer); refusing to merge an unverified commit`, 31);
+    }
+    const other = samePatch.find((sha) => authorKey(sha) !== authorKey(commit));
+    if (other) {
+      fail(`${commit.slice(0, 7)} restates ${other.slice(0, 7)} but Pipeline-Author differs and no "(cherry picked from commit ...)" marker is present; replay with git cherry-pick -x`, 31);
     }
   }
   const changed = filesInCommit(commit);
