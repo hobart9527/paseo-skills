@@ -6,6 +6,7 @@ import { spawnSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseTasks, parseTaskLine, parseReviewTag, isFileWithinScopes, graphErrors, isTestPath, verifyLegs } from './lib/tasks.mjs';
+import { mergeDeps } from './lib/schedule.mjs';
 import { missingDependency, dependencyMessage } from './lib/toolchain.mjs';
 import { listAgents, inspectAgent, modelOf, findAgents, nameOf } from './lib/paseo-agents.mjs';
 
@@ -52,6 +53,40 @@ function filesInCommit(commit) {
 
 function trailers(commit, key) {
   return git(['show', '-s', `--format=%(trailers:key=${key},valueonly)`, commit]).split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+}
+
+// Provenance across cherry-picks. A picked commit keeps its original author trailers only if the
+// hook preserved them (conflict-continue) or git did (clean pick); a hand-recreated commit has the
+// same patch but a fresh author. (cherry picked from commit <sha>) is the authoritative marker.
+const CHERRY_PICK = /\(cherry picked from commit ([0-9a-f]{7,64})\)/i;
+const authorKey = (commit) => trailers(commit, 'Pipeline-Author').map((id) => id.toLowerCase()).sort().join(',');
+function patchIdOf(commit) {
+  const shown = gitMaybe(['show', '--no-color', '--format=commit %H', commit]);
+  if (shown.status !== 0) return null;
+  const result = spawnSync('git', ['patch-id', '--stable'], { input: shown.stdout, encoding: 'utf8' });
+  if (result.status !== 0) return null;
+  return String(result.stdout || '').trim().split(/\r?\n/)[0]?.split(/\s+/)[0] || null;
+}
+// patch-id -> { commits, authors } for every reachable commit, computed in one pass. The author set
+// makes the hand-recreation check O(1) per merged commit instead of scanning the whole log.
+function patchIdIndex() {
+  const log = spawnSync('git', ['log', '--all', '--no-merges', '--no-color', '-p'], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+  if (log.status !== 0) return { byCommit: new Map(), byPatch: new Map() };
+  const ids = spawnSync('git', ['patch-id', '--stable'], { input: log.stdout, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+  if (ids.status !== 0) return { byCommit: new Map(), byPatch: new Map() };
+  const byCommit = new Map();
+  const byPatch = new Map();
+  for (const line of String(ids.stdout || '').split(/\r?\n/)) {
+    const match = line.trim().match(/^([0-9a-f]{7,64})\s+([0-9a-f]{7,64})$/);
+    if (!match) continue;
+    const [, patchId, commit] = match;
+    byCommit.set(commit, patchId);
+    const entry = byPatch.get(patchId) || { commits: new Set(), authors: new Set() };
+    entry.commits.add(commit);
+    entry.authors.add(authorKey(commit));
+    byPatch.set(patchId, entry);
+  }
+  return { byCommit, byPatch };
 }
 
 // Red proof is only meaningful when a test ran and failed on its assertions.
@@ -201,9 +236,12 @@ if (graph.length) fail(`invalid tasks graph:\n${graph.map((x) => `${x.code}: ${x
 const task = parsed.tasks.find((item) => item.id === taskId);
 if (!task) fail(`unknown task ${taskId}`);
 if (task.done) fail(`${taskId} is already Done (${task.done.source}); do not re-dispatch`);
-for (const dep of task.depends) {
+for (const dep of mergeDeps(task)) {
   const parent = parsed.tasks.find((item) => item.id === dep);
-  if (!parent?.done) fail(`${taskId} dependency ${dep} is not Done`, 35);
+  if (!parent?.done) {
+    const edge = task.depends.includes(dep) ? 'dependency' : 'Uses';
+    fail(`${taskId} ${edge} ${dep} is not Done`, 35);
+  }
 }
 
 const base = git(['rev-parse', '--verify', `${tag.base}^{commit}`]);
@@ -226,11 +264,41 @@ const testAuthors = new Set();
 const implementationAuthors = new Set();
 let implementationCommits = 0;
 const testFiles = new Set();
+let patchIndex = null;
 for (const commit of commits) {
   const roles = trailers(commit, 'Pipeline-Role').map((x) => x.toLowerCase());
   const ids = trailers(commit, 'Pipeline-Author');
   if (!roles.length || roles.some((role) => !WRITER_ROLES.has(role)) || !ids.length) {
     fail(`${commit.slice(0, 7)} lacks valid writer Pipeline-Role/Pipeline-Author trailers`, 31);
+  }
+  // Cherry-pick provenance. A clean pick keeps the original trailers; a conflict-continue pick
+  // relies on the commit-msg hook preserving them. A hand-recreated commit has the same patch but a
+  // fresh author, so it must carry the marker or it is rejected here.
+  const message = git(['show', '-s', '--format=%B', commit]);
+  const picked = message.match(CHERRY_PICK);
+  if (picked) {
+    const source = picked[1];
+    if (gitMaybe(['rev-parse', '--verify', '--quiet', `${source}^{commit}`]).status !== 0) {
+      fail(`${commit.slice(0, 7)} claims cherry picked from ${source}, which does not exist`, 31);
+    }
+    const sourceSha = git(['rev-parse', `${source}^{commit}`]);
+    if (patchIdOf(commit) !== patchIdOf(sourceSha)) {
+      fail(`${commit.slice(0, 7)} cherry-pick patch-id differs from ${sourceSha.slice(0, 7)}; the pick changed the diff`, 31);
+    }
+    if (authorKey(commit) !== authorKey(sourceSha)) {
+      fail(`${commit.slice(0, 7)} cherry-pick Pipeline-Author (${authorKey(commit) || 'none'}) differs from ${sourceSha.slice(0, 7)} (${authorKey(sourceSha) || 'none'})`, 31);
+    }
+  } else {
+    patchIndex ??= patchIdIndex();
+    const patchId = patchIndex.byCommit.get(commit);
+    if (patchId) {
+      const entry = patchIndex.byPatch.get(patchId);
+      const otherAuthor = [...(entry?.authors || [])].find((author) => author && author !== authorKey(commit));
+      if (otherAuthor) {
+        const other = [...entry.commits].find((sha) => sha !== commit);
+        fail(`${commit.slice(0, 7)} restates ${other?.slice(0, 7) || 'another commit'} but Pipeline-Author differs and no "(cherry picked from commit ...)" marker is present; replay with git cherry-pick -x`, 31);
+      }
+    }
   }
   const changed = filesInCommit(commit);
   const testCommit = roles.every((role) => TEST_ROLES.has(role));
@@ -277,15 +345,21 @@ if (needsAgentModels) {
 // Authors are recorded as full UUIDs and the tag may carry a shortId prefix; compare
 // identities as well as spellings. The literal check stays as a fallback for when the
 // live agent list cannot resolve either side.
-const reviewerAgents = tag.reviewer === 'mechanical' ? [] : findAgents(tag.reviewer, agents);
-if (tag.reviewer !== 'mechanical' && (
+const reviewerAgents = ['mechanical', 'deferred'].includes(tag.reviewer) ? [] : findAgents(tag.reviewer, agents);
+const deferred = task.review === 'deferred';
+const realReviewer = tag.reviewer !== 'mechanical' && tag.reviewer !== 'deferred';
+if (realReviewer && (
   authors.has(tag.reviewer.toLowerCase())
   || [...authors].some((id) => findAgents(id, agents).some((agent) => reviewerAgents.includes(agent)))
 )) {
   fail('reviewer matches a task author', 32);
 }
 if (tag.reviewer === 'mechanical' && task.review !== 'mechanical') fail('mechanical review requires Review: mechanical');
-if (tag.reviewer !== 'mechanical' && task.review !== 'mechanical') {
+if (tag.reviewer === 'deferred' && !deferred) fail('deferred review tag requires Review: deferred', 32);
+if (deferred && tag.reviewer !== 'deferred') fail(`${taskId} is Review: deferred and must merge on pass(deferred@<tip>/<base>); the FINAL review owns it`, 32);
+// Deferred tasks skip the per-task reviewer-model checks; the FINAL integrated review owns them.
+// Their test-author/implementer separation is still enforced above.
+if (realReviewer && task.review !== 'mechanical' && !deferred) {
   const reviewerModel = modelFor(tag.reviewer, agents);
   if (!reviewerModel) fail('cannot resolve reviewer model from Paseo; refusing merge', 32);
   if (implementationModels.includes(reviewerModel)) fail('reviewer and implementer must use different models', 32);

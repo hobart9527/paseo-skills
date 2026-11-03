@@ -18,6 +18,12 @@ fi
 for r in $roles; do
   case "$r" in ceshi|gongbu|gaogong|jiangzuo) ;; *) exit 0 ;; esac
 done
+# Conflict-continue cherry-pick: git runs this hook, but the original trailers are the provenance
+# merge-task verifies against the referenced commit. Preserve them instead of restamping from the
+# agent running `git cherry-pick --continue`.
+if [ -n "$PASEO_AGENT_ID" ] && grep -q 'cherry picked from commit' "$f"; then
+  exit 0
+fi
 if [ -z "$PASEO_AGENT_ID" ]; then
   echo "pipeline: PASEO_AGENT_ID is unset; refusing to author a writer commit with a guessed identity" >&2
   exit 1

@@ -11,8 +11,8 @@ Use only when the frozen DAG has `maxWidth >= 2` and `tasks >= 4`; otherwise Tie
 ## Principles
 1. **Vertical slices.** Behavior, wiring, affected fixtures, and tests belong together. No fixture-only/wiring-only tasks. Wave 0 only for a genuinely shared contract and actual consumers.
 2. **Narrow Verify.** Every non-sink task names a scope-local test/spec command. Full suite runs only at the unique sink and final acceptance.
-3. **Frontier scheduling.** Dispatch as soon as dependencies are Done and scopes do not overlap; do not wait for wave barriers.
-4. **TDD role separation.** `ceshi` authors Red tests before implementation; implementer cannot alter those tests. Mechanical tasks may skip TDD/review.
+3. **Frontier scheduling.** Dispatch once dispatch deps (`Depends on` + `Uses` skeleton ancestors) are Done and scopes do not overlap; no wave barriers.
+4. **TDD role separation.** `ceshi` authors Red tests before implementation; implementer cannot alter those tests. Mechanical tasks may skip TDD/review; `Review: deferred` joins the FINAL review.
 5. **Git is state; Paseo is scheduler.** No secondary ledger, lease, lock, or custom agent runner.
 6. **One review per artifact/stage.** R0 reviews contract package once; tasks get R1/R2 only as needed; integrated final review once plus one fix-diff recheck.
 7. **Human gates.** CP-1 freezes approved contract. CP-2 confirms merge to main. No push/destructive cleanup without explicit approval.
@@ -25,11 +25,11 @@ Before every `create_agent`, copy the matching `list_profiles` entry exactly: `p
 - `hanlin`: independent package R0 and one-turn arbitration; not package author or task reviewer for same dispute.
 - `ceshi`: behavior Red tests before implementation.
 - `gongbu` / `jiangzuo`: default / UI implementation.
-- `anchasi`: task and integrated reviews. Codex has no read-only mode: reviewers run in a separate workspace, briefed read-only; tip binding voids a review if the branch moved.
+- `anchasi`: task and integrated reviews. Reviewers run in a separate workspace, briefed read-only; tip binding voids a review if the branch moved.
 - `shangshu`: sole Lead; schedules, reconciles, merges, reports.
 - Profile notes describe a role's scope; the frozen task's `Review:` field decides process. `ceshi`'s strict-only note is stale: every non-mechanical task needs a Red test commit or `merge-task` exits 31.
 - Cost: a behavior task is three serial agents (tester → implementer → reviewer); use `Review: mechanical` only when no behavior needs proof.
-- `auto-review` profiles can stall on permission prompts. If a child idles without a finish result, check pending permissions first; never widen a read-only reviewer to `bypassPermissions`.
+- `auto-review` profiles can stall on permission prompts: if a child idles without a finish result, check pending permissions first; never widen a reviewer to `bypassPermissions`.
 
 ## Entry and CP-1
 
@@ -50,7 +50,7 @@ CP-1 approval is not the start of implementation; it is the start of handoff. `m
 1. Commit the frozen contract (`openspec/changes/<change>/`) on the default branch. This commit is the review `base`.
 2. Create the integration branch from that commit in a separate worktree: `create_workspace(isolation, branchName: "integration/<change>")` (not a main-checkout switch: Tier hook guards `main`). The Lead runs there.
 3. Create one task branch per ready frontier task from the integration tip: `task/<change>/<T-id>`. Replacement attempts take `<T-id>-aN`.
-4. Bootstrap dependencies in each new workspace — **including the integration worktree itself** — **before** any Verify runs. `merge-task` runs all Verify commands in the integration worktree, not in the task workspace. A worktree is a checkout, not a clone: `node_modules/`, `.venv/` and every other ignored path stay behind in the main checkout, so the first `Verify with` otherwise dies on `Cannot find package` — reported as exit 36. Install per lockfile (`npm ci`, `pnpm install --frozen-lockfile`, `python3 -m venv .venv`) or configure a Paseo workspace script so new worktrees self-bootstrap; do this once per workspace, not per task.
+4. Bootstrap dependencies in each new workspace — **including the integration worktree itself** — **before** any Verify runs: `merge-task` runs Verify in the integration worktree. A worktree is a checkout, not a clone, so ignored paths stay behind and the first `Verify with` dies with exit 36. Install per lockfile (`npm ci`, `pnpm install --frozen-lockfile`, `python3 -m venv .venv`) or a workspace bootstrap script; once per workspace, not per task.
 5. Draft the Lead brief from `templates/lead.md`, filling `<change>`, integration worktree path, integration branch, `base` SHA, and the frozen contract paths.
 6. Create exactly one Lead (`shangshu`, see `list_profiles`). Main session then stops: no business-code edits, no further dispatch.
 7. If the frozen DAG's `[ROUTE]` is `handoff`, create no Lead; run Tier 2 `/paseo-handoff` and say so at CP-1.
@@ -59,7 +59,7 @@ After compaction or resume, first re-read `tasks.md` Done lines, `git log --firs
 
 ## Runtime
 - Create one Lead with `templates/lead.md`; it reconciles git and Paseo state before dispatch.
-- Ready frontier = dependencies Done + disjoint scopes. Writer cap 4; auditor cap 2; merge serially.
+- Ready frontier = dispatch deps Done + disjoint scopes, longest remaining first. Writer cap 6; reviewer cap 4; merge serially, skeleton before consumers. `Uses` is dispatch-only, `Reads` never joins scope conflicts.
 - Behavior task sequence: `ceshi` Red commit → verify Red on base → implementer in same workspace/branch → narrow Verify green → independent task audit → `merge-task.mjs`. Mechanical exemption only for frozen `Review: mechanical`.
 - Test author and implementer must be different agents and models. Reviewer model must differ from implementer and should differ from tester (`merge-task` warns on overlap). If unavailable, block and report; do not claim heterogeneity.
 - Agent identity: every trailer and review tag uses the full UUID (`$PASEO_AGENT_ID`). A 7-char `shortId` resolves by prefix in a review tag only, not in a trailer.

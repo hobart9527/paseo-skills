@@ -88,6 +88,42 @@ test('cherry-pick keeps the original author (the -aN handoff path)', (t) => {
   assert.equal(r.trailer('Pipeline-Author'), OTHER);
 });
 
+test('clean cherry-pick does not invoke commit-msg, so the picked author survives even when the current agent differs', (t) => {
+  const r = repo(t);
+  r.commit('base');
+  r.sh(['checkout', '-q', '-b', 'other']);
+  assert.equal(r.commit('impl\n\nPipeline-Role: gaogong', { PASEO_AGENT_ID: OTHER }).status, 0);
+  const sha = r.sh(['rev-parse', 'HEAD']).stdout.trim();
+  r.sh(['checkout', '-q', '-']);
+  const pick = r.sh(['cherry-pick', '-x', sha], { PASEO_AGENT_ID: '33333333-3333-3333-3333-333333333333' });
+  assert.equal(pick.status, 0, pick.stderr);
+  assert.equal(r.trailer('Pipeline-Author'), OTHER);
+});
+
+test('conflict-continue cherry-pick preserves the original trailers instead of restamping', (t) => {
+  const r = repo(t);
+  // Build an actual conflict: both branches edit the same line differently.
+  const dir = r.sh(['rev-parse', '--show-toplevel']).stdout.trim();
+  fs.writeFileSync(path.join(dir, 'conflict.txt'), 'base\n');
+  r.sh(['add', '-A']); assert.equal(r.sh(['commit', '-qm', 'base2']).status, 0);
+  r.sh(['checkout', '-q', '-b', 'other']);
+  fs.writeFileSync(path.join(dir, 'conflict.txt'), 'other\n');
+  assert.equal(r.commit('impl\n\nPipeline-Role: gaogong', { PASEO_AGENT_ID: OTHER }).status, 0);
+  const sha = r.sh(['rev-parse', 'HEAD']).stdout.trim();
+  r.sh(['checkout', '-q', '-']);
+  fs.writeFileSync(path.join(dir, 'conflict.txt'), 'main\n');
+  r.sh(['add', '-A']); r.sh(['commit', '-qm', 'main edit']);
+  const pick = r.sh(['cherry-pick', '-x', sha]);
+  assert.notEqual(pick.status, 0, 'expected a conflict');
+  fs.writeFileSync(path.join(dir, 'conflict.txt'), 'resolved\n');
+  r.sh(['add', '-A']);
+  // The agent running --continue is a different id; the hook must not restamp the picked commit.
+  const cont = r.sh(['-c', 'core.editor=true', 'cherry-pick', '--continue'], { PASEO_AGENT_ID: '33333333-3333-3333-3333-333333333333' });
+  assert.equal(cont.status, 0, cont.stderr);
+  assert.equal(r.trailer('Pipeline-Author'), OTHER);
+  assert.match(r.sh(['log', '-1', '--format=%B']).stdout, /cherry picked from commit/);
+});
+
 test('Lead committing for a sandbox-blocked child exports the child id; that id is stamped, not the Lead', (t) => {
   const r = repo(t);
   const LEAD = '22222222-2222-2222-2222-222222222222';

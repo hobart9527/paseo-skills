@@ -315,3 +315,116 @@ test('CROSS_CHANGE_SCOPE_OVERLAP: outside a git repo it is silently skipped', ()
   const report = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--json', '--structural'], { encoding: 'utf8' }));
   assert.ok(!report.advisories.some((a) => /CROSS_CHANGE/.test(a)));
 });
+
+// ---- Uses / Reads / skeleton / deferred contract ----
+const scheduleContract = `- [ ] 1.1 T-00 skeleton
+  - Write scope: src/iface,test/iface.test.mjs
+  - Est: S
+  - Kind: skeleton
+  - Interface: src/iface/form.ts#useDraft
+  - Review: mechanical
+  - Verify with: node --test test/iface.test.mjs
+- [ ] 1.2 T-01 alpha
+  - Uses: T-00
+  - Write scope: src/alpha,test/alpha.test.mjs
+  - Reads: src/iface/form.ts
+  - Review: deferred
+  - Verify with: node --test test/alpha.test.mjs
+  - Scen: SCEN-1
+- [ ] 1.3 T-02 beta
+  - Uses: T-00
+  - Write scope: src/beta,test/beta.test.mjs
+  - Review: deferred
+  - Verify with: node --test test/beta.test.mjs
+  - Scen: SCEN-1
+- [ ] 1.4 T-03 sink
+  - Depends on: T-00,T-01,T-02
+  - Write scope: test/sink.test.mjs
+  - Verify with: npm test
+  - Scen: SCEN-1`;
+const scheduleFiles = (tasks) => ({
+  'tasks.md': tasks,
+  'proposal.md': 'x',
+  'design.md': design,
+  'acceptance.md': table('| SCEN-1 | CLI | T-03 | node -e "0" | yes | PENDING | pending |'),
+  'specs/a/spec.md': '### Scenario: SCEN-1\n',
+});
+const freezeStructural = (tasks) => run(change(scheduleFiles(tasks)), ['--structural', '--skip-signer-check']);
+
+test('accepts Uses/Reads/skeleton/deferred and reports the weighted model', () => {
+  const dir = change(scheduleFiles(scheduleContract));
+  const result = run(dir, ['--structural', '--skip-signer-check']);
+  assert.equal(result.status, 0, result.stdout);
+  const report = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--json', '--structural', '--skip-signer-check'], { encoding: 'utf8' }));
+  assert.equal(typeof report.weightedSpeedup, 'number');
+  assert.equal(typeof report.speedup, 'number');
+});
+
+test('USES_UNKNOWN blocks a Uses target that is not a task', () => {
+  const bad = scheduleContract.replace('  - Uses: T-00\n', '  - Uses: T-99\n');
+  const result = freezeStructural(bad);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /USES_UNKNOWN T-01/);
+});
+
+test('USES_WITHOUT_INTERFACE blocks a producer with no frozen interface', () => {
+  const bad = scheduleContract.replace('  - Interface: src/iface/form.ts#useDraft\n', '');
+  const result = freezeStructural(bad);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /USES_WITHOUT_INTERFACE T-01/);
+});
+
+test('USES_SCOPE_OVERLAP blocks overlapping writers without Depends on', () => {
+  const bad = scheduleContract.replace('Write scope: src/alpha,test/alpha.test.mjs', 'Write scope: src/iface,test/alpha.test.mjs');
+  const result = freezeStructural(bad);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /USES_SCOPE_OVERLAP T-01 and T-00/);
+});
+
+test('INTERFACE_UNOWNED blocks an Interface outside every skeleton scope', () => {
+  const bad = scheduleContract.replace('  - Review: deferred\n', '  - Interface: src/alpha/api.ts#Handler\n  - Review: deferred\n');
+  const result = freezeStructural(bad);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /INTERFACE_UNOWNED T-01/);
+});
+
+test('SKELETON_NOT_MECHANICAL blocks a skeleton that needs per-task review', () => {
+  const bad = scheduleContract.replace('  - Review: mechanical\n  - Verify with: node --test test/iface.test.mjs', '  - Review: standard\n  - Verify with: node --test test/iface.test.mjs');
+  const result = freezeStructural(bad);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /SKELETON_NOT_MECHANICAL T-00/);
+});
+
+test('DEFERRED_NOT_STANDARD blocks the sink and persistence/security surfaces, but not public-api', () => {
+  const sink = scheduleContract.replace('  - Verify with: npm test\n', '  - Verify with: npm test\n  - Review: deferred\n');
+  assert.match(freezeStructural(sink).stdout, /DEFERRED_NOT_STANDARD T-03/);
+
+  const persistence = scheduleContract.replace('  - Review: deferred\n  - Verify with: node --test test/alpha.test.mjs', '  - Review: deferred\n  - Risk-surface: [persistence]\n  - Verify with: node --test test/alpha.test.mjs');
+  assert.match(freezeStructural(persistence).stdout, /DEFERRED_NOT_STANDARD T-01/);
+
+  const security = scheduleContract.replace('  - Review: deferred\n  - Verify with: node --test test/alpha.test.mjs', '  - Review: deferred\n  - Risk-surface: security\n  - Verify with: node --test test/alpha.test.mjs');
+  assert.match(freezeStructural(security).stdout, /DEFERRED_NOT_STANDARD T-01/);
+
+  const publicApi = scheduleContract.replace('  - Review: deferred\n  - Verify with: node --test test/alpha.test.mjs', '  - Review: deferred\n  - Risk-surface: public-api\n  - Verify with: node --test test/alpha.test.mjs');
+  assert.equal(freezeStructural(publicApi).status, 0, freezeStructural(publicApi).stdout);
+});
+
+test('Reads anchors a narrow Verify without joining scope conflicts', () => {
+  const anchored = scheduleContract
+    .replace('Write scope: src/alpha,test/alpha.test.mjs', 'Write scope: src/alpha')
+    .replace('Reads: src/iface/form.ts', 'Reads: src/iface/form.ts,test/alpha.test.mjs');
+  assert.equal(freezeStructural(anchored).status, 0, freezeStructural(anchored).stdout);
+  const sharedRead = scheduleContract.replace('  - Review: deferred\n  - Verify with: node --test test/beta.test.mjs', '  - Reads: src/iface/form.ts\n  - Review: deferred\n  - Verify with: node --test test/beta.test.mjs');
+  assert.equal(freezeStructural(sharedRead).status, 0, freezeStructural(sharedRead).stdout);
+});
+
+test('--explain prints a rule, reason and fix for every block', () => {
+  const dir = change(scheduleFiles(scheduleContract.replace('  - Uses: T-00\n', '  - Uses: T-99\n')));
+  let error;
+  try { execFileSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--explain', '--structural', '--skip-signer-check'], { encoding: 'utf8', stdio: 'pipe' }); }
+  catch (caught) { error = caught; }
+  assert.ok(error, 'expected a non-zero exit');
+  assert.match(error.stderr, /BLOCK USES_UNKNOWN T-01/);
+  assert.match(error.stderr, /EXPLAIN USES_UNKNOWN: .*Uses T-99/);
+  assert.match(error.stderr, /fix: point Uses at an existing task id/);
+});
