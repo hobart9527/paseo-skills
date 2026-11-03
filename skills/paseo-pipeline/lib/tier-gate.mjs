@@ -56,6 +56,14 @@
 // 即 Tier 2」在实现里没有对应项。现按工作区根判 scopeKey（packages/web、apps/api、skills/x
 // 取前两段，其余取顶层目录），已触碰其他 scope 时该文件也要 ask。ask 仍不进 files、只进 asked，
 // 「拒绝后重试仍 ask」与 Stop 对 asked 的豁免都保持不变。
+//
+// 2026-11-04：补上「开工前声明」这一维。此前所有判定都基于「已经写了几个文件」——Agent 开工前
+// 就知道要改 5 个文件，第 1 个写入仍必然放行，写到第 4 个才 ask，资源已经花掉。现在提醒 hook
+// 教模型在首次业务写入前输出一行 `TIER-PLAN: tier=1 files=a,b scope=a`（见 readDeclaredPlan），
+// PreToolUse 读到它就在**首次写入**时按计划判定：声明 Tier 2 却在主 checkout 原地写 → deny；
+// 声明 Tier 1 但计划超过上限或跨作用域 → deny。没有声明时退回原来的按已写文件计数（fail-open）。
+// 刻意不加独立 CLI、PostToolUse 回执、任务生命周期协议或 Bash 写命令解析器：那些是为「防绕过」
+// 造的框架，而这里缺的只是「开工前把计划喂给同一个判定函数」。
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -75,10 +83,11 @@ export const DEFAULT_TURNS = 3;
 const PROTECTED_BRANCHES = new Set(['main', 'master']);
 
 export const TIER_RULES = [
-  '- Tier 1：小范围、单目录改动 → 当前会话修改并验证。',
-  '- Tier 2：超出 Tier 1 且没有真实 DAG 并发收益 → /paseo-handoff 或明确授权的 worktree Agent。',
+  '- Tier 1：只改 ≤3 个业务文件、且在同一个作用域（packages/x、apps/x、services/x、crates/x、skills/x 按包根算，其余按顶层目录）内 → 当前会话修改并验证。',
+  '- Tier 2：计划超过 3 个文件，或跨 2 个作用域，或要动共享契约/持久化/并发/不可逆变更 → /paseo-handoff 或明确授权的 worktree Agent。',
   '- Tier 3：仅当冻结 DAG 有 maxWidth>=2 且任务>=4 → /paseo-pipeline。',
-  '判定不了时按高一级处理。开工后发现范围变大，立刻停手升级，不在原通道硬撑。',
+  '「没有并发 DAG」只能排除 Tier 3，不能推出 Tier 1；拿不准在 Tier 1/2 之间取 Tier 2。',
+  '开工后发现范围变大，立刻停手升级，不在原通道硬撑。',
   '用 Bash（sed -i、重定向、heredoc、patch）改文件同样算改文件，同样要先分级；Stop 时会核对主 checkout 的实际改动。',
 ].join('\n');
 
@@ -263,13 +272,63 @@ function churnReason(turns, threshold) {
   ].join('\n');
 }
 
+const PLAN_TAIL_BYTES = 64 * 1024;
+// 全局正则在 matchAll 里会克隆自身，模块级复用不会互相污染 lastIndex。
+const PLAN_LINE = /TIER-PLAN:\s*tier=([12])\s+files=([^"\\\n]*)/g;
+
+/**
+ * 从会话 transcript 末尾读出模型最后一次输出的机器可读分级声明：
+ *   TIER-PLAN: tier=1 files=src/a.ts,src/b.ts scope=src
+ * 提醒 hook 教模型在动手前输出这一行；首次业务写入时按它提前判定，而不是等写完再数。
+ * 只读末尾 64KB（声明总在最近的消息里）；读不到、格式不完整或没有声明时返回 null，
+ * 调用方退回原来的「按已写文件计数」行为（fail-open）。
+ */
+export function readDeclaredPlan(transcriptPath) {
+  if (typeof transcriptPath !== 'string' || transcriptPath === '') return null;
+  let text;
+  try {
+    const { size } = fs.statSync(transcriptPath);
+    const fd = fs.openSync(transcriptPath, 'r');
+    try {
+      const start = Math.max(0, size - PLAN_TAIL_BYTES);
+      const buffer = Buffer.alloc(size - start);
+      fs.readSync(fd, buffer, 0, buffer.length, start);
+      text = buffer.toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+  const matches = [...text.matchAll(PLAN_LINE)];
+  if (matches.length === 0) return null;
+  const [, tier, rawFiles] = matches[matches.length - 1];
+  // 声明可能被嵌在 JSON 字符串里；scope 等后续字段不能粘进最后一个文件名。
+  const cut = rawFiles.search(/\s+\w+=/);
+  const files = (cut >= 0 ? rawFiles.slice(0, cut) : rawFiles)
+    .split(',').map((f) => f.trim()).filter((f) => f && f !== 'none');
+  return { tier: Number(tier), files };
+}
+
+function planDenyReason(declared, files, scopes, limit) {
+  return [
+    `[tier-gate] 动手前声明的计划已超出 Tier 1：${files.length} 个文件、${scopes.length} 个作用域（Tier 1 上限 ${limit} 个文件、单一作用域）。`,
+    `声明：tier=${declared.tier} files=${files.join('、')}`,
+    '首次写入前先选对通道，不要继续原地写：',
+    '- Tier 2：用 /paseo-handoff 或授权 worktree，把计划文件与验收命令写进交接。',
+    '- Tier 3：仅当冻结 DAG 有 maxWidth>=2 且任务>=4 → /paseo-pipeline。',
+    '如果只是声明写错了（实际计划更小），先输出修正后的 TIER-PLAN 声明再动手；不要改用其他方式绕过。',
+  ].join('\n');
+}
+
 /**
  * 判定一次写入。通过时把目标记入本会话账本，所以调用方每次写入只应调用一次。
  *
- * @param {{target: string, sessionId?: string}} input
- * @returns {{verdict: 'allow'|'ask', reason?: string, note?: string}}
+ * @param {{target: string, sessionId?: string, declared?: {tier: 1|2, files: string[]}}} input
+ *   declared 来自 readDeclaredPlan：有它就在首次写入前按计划判定；没有就按已写文件计数。
+ * @returns {{verdict: 'allow'|'ask'|'deny', reason?: string, note?: string}}
  */
-export function assessTierGate({ target, sessionId }) {
+export function assessTierGate({ target, sessionId, declared }) {
   if (process.env.PIPELINE_TIER_GATE === 'off') return { verdict: 'allow', note: 'gate off' };
   if (typeof sessionId !== 'string' || sessionId === '') return { verdict: 'allow', note: 'no session id' };
   if (typeof target !== 'string' || target === '') return { verdict: 'allow', note: 'no target' };
@@ -284,6 +343,27 @@ export function assessTierGate({ target, sessionId }) {
   // 可视化原型/草稿目录：gitignore 里的一次性产物（brainstorm 原型页等），
   // 不进仓库、不参与构建，与 openspec/ 同属「写多少都不算越级」的文档类产物。
   if (rel === '.superpowers' || rel.startsWith('.superpowers/')) return { verdict: 'allow', note: 'gitignored scratch artifact' };
+
+  // 开工前声明：首次写入就按计划判定，而不是写到第 4 个文件才反应。
+  if (declared && Array.isArray(declared.files) && declared.files.length > 0) {
+    const planned = declared.files.filter((f) => !EXEMPT(f));
+    const limit = limitFromEnv();
+    const scopes = [...new Set(planned.map(scopeKey))].sort();
+    if (declared.tier === 2) {
+      return {
+        verdict: 'deny',
+        reason: [
+          '[tier-gate] 你声明的是 Tier 2，但当前仍在主 checkout（main）原地写业务文件。',
+          'Tier 2 必须在 /paseo-handoff 或授权 worktree 里执行，不能在主 checkout 硬撑。',
+          `声明：tier=2 files=${planned.join('、')}`,
+          '先停手：把已确认的计划文件与验收命令写进交接，再在隔离环境里开工。若判断有误，先输出修正后的 TIER-PLAN 声明。',
+        ].join('\n'),
+      };
+    }
+    if (planned.length > limit || scopes.length >= 2) {
+      return { verdict: 'deny', reason: planDenyReason(declared, planned, scopes, limit) };
+    }
+  }
 
   const file = stateFile(sessionId);
   const state = readState(file);

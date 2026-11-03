@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// PreToolUse tier cap: on main checkout, the 4th distinct file written by one session needs user confirmation.
+// PreToolUse tier gate: before the first business write, judge the plan the model declared
+// (`TIER-PLAN: tier=1 files=...`); later writes still count distinct files on the main checkout.
 import { logHookError } from '../lib/tier-gate.mjs';
 
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
@@ -9,10 +10,17 @@ async function main() {
   if (!WRITE_TOOLS.has(payload?.tool_name)) return;
   const target = payload?.tool_input?.file_path ?? payload?.tool_input?.notebook_path;
   if (typeof target !== 'string' || !target) return;
-  const { assessTierGate } = await import('../lib/tier-gate.mjs');
-  const verdict = assessTierGate({ target, sessionId: payload.session_id });
-  // ask, not deny: deny has no release path, so the model reroutes through Bash. ask puts the user in the loop.
-  if (verdict.verdict === 'ask') {
+  const { assessTierGate, readDeclaredPlan } = await import('../lib/tier-gate.mjs');
+  const verdict = assessTierGate({
+    target,
+    sessionId: payload.session_id,
+    declared: readDeclaredPlan(payload.transcript_path),
+  });
+  // ask, not deny, for the running count: deny has no release path, so the model reroutes
+  // through Bash. A declared plan that already exceeds Tier 1 is a routing error, so it denies.
+  if (verdict.verdict === 'deny') {
+    console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: verdict.reason } }));
+  } else if (verdict.verdict === 'ask') {
     console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: `[tier-gate] ${verdict.reason}` } }));
   }
 }

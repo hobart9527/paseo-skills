@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { assessTierGate, assessStop, takeSnapshot, logHookError, scopeKey } from '../lib/tier-gate.mjs';
+import { assessTierGate, assessStop, takeSnapshot, logHookError, scopeKey, readDeclaredPlan } from '../lib/tier-gate.mjs';
 import { shouldRemind, isSystemNotification, REMINDER } from '../hooks/tier-reminder-hook.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -245,12 +245,93 @@ test('tier-write-hook 进程：第 4 个文件输出 ask JSON，其前不输出'
   assert.match(out.hookSpecificOutput.permissionDecisionReason, /tier-gate/);
 }));
 
+test('tier-write-hook 进程：声明超限时首次写入直接 deny，不落账', () => withState((dir) => {
+  const root = makeRepo();
+  const transcript = path.join(dir, 'transcript.jsonl');
+  fs.writeFileSync(transcript, JSON.stringify({ text: 'TIER-PLAN: tier=1 files=src/a,src/b,src/c,src/d scope=src' }));
+  const payload = {
+    session_id: 'proc2',
+    transcript_path: transcript,
+    tool_name: 'Write',
+    tool_input: { file_path: path.join(root, 'src', 'a') },
+  };
+  const r = runGuardHook(payload, { PIPELINE_TIER_GATE_STATE: dir });
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(out.hookSpecificOutput.permissionDecisionReason, /4 个文件/);
+  // 同会话后续无声明写入不受影响：deny 的那一笔没有进账本。
+  assert.equal(runGuardHook({ ...payload, transcript_path: undefined }, { PIPELINE_TIER_GATE_STATE: dir }).stdout.trim(), '');
+}));
+
 test('tier-write-hook 进程：非写入工具与坏输入不干预', () => {
   assert.equal(runGuardHook({ session_id: 's', tool_name: 'Read', tool_input: { file_path: '/x' } }).stdout.trim(), '');
   const bad = spawnSync('node', [GUARD_HOOK], { input: 'not json', encoding: 'utf8' });
   assert.equal(bad.status, 0);
   assert.equal(bad.stdout.trim(), '');
 });
+
+// ---- 开工前声明（TIER-PLAN）----
+
+test('readDeclaredPlan：取最后一次声明，缺省与坏格式返回 null', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tier-transcript-'));
+  const file = path.join(dir, 't.jsonl');
+  fs.writeFileSync(file, [
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'TIER-PLAN: tier=1 files=src/a.ts scope=src' }] } }),
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: '范围变了\nTIER-PLAN: tier=1 files=src/a.ts,src/b.ts scope=src\n' }] } }),
+  ].join('\n'));
+  assert.deepEqual(readDeclaredPlan(file), { tier: 1, files: ['src/a.ts', 'src/b.ts'] });
+  assert.equal(readDeclaredPlan(path.join(dir, 'missing.jsonl')), null);
+  fs.writeFileSync(file, 'no declaration here');
+  assert.equal(readDeclaredPlan(file), null);
+  fs.writeFileSync(file, JSON.stringify({ text: 'TIER-PLAN: tier=1 files=none scope=src' }));
+  assert.deepEqual(readDeclaredPlan(file), { tier: 1, files: [] });
+});
+
+test('开工前声明：计划超过 Tier 1 上限 → 首次写入就 deny', () => withState(() => {
+  const root = makeRepo();
+  const declared = { tier: 1, files: ['src/a', 'src/b', 'src/c', 'src/d'] };
+  const v = assessTierGate({ target: path.join(root, 'src', 'a'), sessionId: 's1', declared });
+  assert.equal(v.verdict, 'deny');
+  assert.match(v.reason, /4 个文件/);
+  assert.match(v.reason, /\/paseo-handoff/);
+  // 拒绝的写入不占额度，也不会被记进账本。
+  assert.equal(assessTierGate({ target: path.join(root, 'src', 'a'), sessionId: 's1' }).verdict, 'allow');
+}));
+
+test('开工前声明：跨 2 个作用域 → 首次写入就 deny', () => withState(() => {
+  const root = makeRepo();
+  const declared = { tier: 1, files: ['packages/server/a.ts', 'packages/web/b.tsx'] };
+  const v = assessTierGate({ target: path.join(root, 'packages', 'server', 'a.ts'), sessionId: 's1', declared });
+  assert.equal(v.verdict, 'deny');
+  assert.match(v.reason, /2 个作用域/);
+  assert.match(v.reason, /packages\/server/);
+  assert.match(v.reason, /packages\/web/);
+}));
+
+test('开工前声明：Tier 2 在主 checkout 原地写 → deny，指向 handoff/worktree', () => withState(() => {
+  const root = makeRepo();
+  const declared = { tier: 2, files: ['src/a'] };
+  const v = assessTierGate({ target: path.join(root, 'src', 'a'), sessionId: 's1', declared });
+  assert.equal(v.verdict, 'deny');
+  assert.match(v.reason, /Tier 2/);
+  assert.match(v.reason, /worktree/);
+}));
+
+test('开工前声明：合规计划放行，后续仍按已写文件计数', () => withState(() => {
+  const root = makeRepo();
+  const declared = { tier: 1, files: ['src/a', 'src/b', 'src/c'] };
+  assert.equal(assessTierGate({ target: path.join(root, 'src', 'a'), sessionId: 's1', declared }).verdict, 'allow');
+  assert.equal(write(root, 'b').verdict, 'allow');
+  assert.equal(write(root, 'c').verdict, 'allow');
+  assert.equal(write(root, 'd').verdict, 'ask');
+}));
+
+test('开工前声明：openspec/ 与空声明不参与 Tier 1 计数', () => withState(() => {
+  const root = makeRepo();
+  const declared = { tier: 1, files: ['openspec/changes/x/proposal.md', 'openspec/changes/x/tasks.md'] };
+  assert.equal(assessTierGate({ target: path.join(root, 'src', 'a'), sessionId: 's1', declared }).verdict, 'allow');
+}));
 
 // ---- 提醒 hook ----
 
@@ -277,6 +358,8 @@ test('tier-reminder-hook 进程：非斜杠消息输出 additionalContext，斜�
   assert.match(REMINDER, /\/paseo-handoff/);
   assert.match(REMINDER, /\/paseo-pipeline/);
   assert.match(REMINDER, /Bash/);
+  assert.match(REMINDER, /TIER-PLAN: tier=1 files=/);
+  assert.match(REMINDER, /≤3 个业务文件/);
   assert.equal(run(JSON.stringify({ prompt: '/tdd' })).stdout.trim(), '');
   assert.equal(run('garbage').stdout.trim(), '');
   assert.equal(run(JSON.stringify({ prompt: '执行' }), { PIPELINE_TIER_REMINDER: 'off' }).stdout.trim(), '');
