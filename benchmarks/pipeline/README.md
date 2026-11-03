@@ -87,12 +87,18 @@ The efficiency comparison is the shared cost model, reported two ways:
   `benchmark.mjs` does.
 
 The sandbox figures are deliberately not tuned to clear an efficiency target. On
-these ten shapes the modelled execution gain is **36.5%** aggregate and the modelled
-end-to-end gain is **50.3%** aggregate. Per scenario, execution ranges 26.3–44.7%
-and end-to-end 44.8–54.1%; six of ten clear 50% end-to-end. The real
+these ten shapes the modelled execution gain is **37.1%** aggregate and the modelled
+end-to-end gain is **50.5%** aggregate. Per scenario, execution ranges 26.3–48.7%
+and end-to-end 44.8–55.7%; six of ten clear 50% end-to-end. The real
 `submit-hub-offset-and-draft-box` DAG reaches 45.5% execution / 52.9% end-to-end
 because its critical chain is longer. A smaller/shallower DAG gains less, and the
 ten-scenario suite is built to show that spread rather than to maximise the headline.
+
+The orchestration wall time is the only directly measured number in the sandbox,
+and it is a script-overhead measure, not delivery speed: ~10%. Everything else in
+the comparison comes from the shared cost model. That model was corrected in both
+directions before the figures above (see "Fairness corrections"); it is an upper
+bound on what scheduling alone can buy, not a prediction of a specific run.
 
 The sandbox also exposed a real scheduling defect, now fixed: `next-actions` proposed
 a merge for a `Uses` consumer as soon as its own implementation existed, before the
