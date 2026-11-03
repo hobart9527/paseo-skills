@@ -232,6 +232,22 @@ if (task) {
   prompt = `${prompt.trimEnd()}\n${lines.join('\n')}\n`;
 }
 
+// A FINAL review is the only spec review of `Review: deferred` tasks, so the brief
+// must carry each one's merged diff range (from its Done line: source + review tag).
+if (['reviewer', 'auditor'].includes(role) && !task) {
+  const deferred = parsed.tasks.filter((item) => item.review === 'deferred');
+  if (deferred.length) {
+    const lines = ['', '## Deferred tasks (no per-task review: this FINAL review is their only spec review)'];
+    for (const item of deferred) {
+      const tag = item.done?.review.match(/^pass\(deferred@([0-9a-f]{7,40})\/([0-9a-f]{7,40})\)$/);
+      const scenarios = item.scenarios.join(', ') || 'none';
+      if (tag) lines.push(`- ${item.id} ${item.title}: \`git diff ${tag[2]}..${tag[1]}\`; scope ${item.scope.join(', ')}; Verify ${item.verify}; scenarios ${scenarios}`);
+      else lines.push(`- ${item.id} ${item.title}: not Done yet; scope ${item.scope.join(', ')}; scenarios ${scenarios}`);
+    }
+    prompt = `${prompt.trimEnd()}\n${lines.join('\n')}\n`;
+  }
+}
+
 // Concrete model ids never belong in a generated brief.
 if (/\b(?:claude|gpt|codex|anthropic|openai|gemini|opus|sonnet|haiku)[-/][\w.-]+/i.test(prompt)) {
   console.error('[brief] refusing to emit a concrete model id; resolve profiles with list_profiles');

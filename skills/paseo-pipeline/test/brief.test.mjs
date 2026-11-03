@@ -130,3 +130,26 @@ test('brief: an unresolvable required placeholder fails and lists it', () => {
   const { missing } = JSON.parse(result.stdout);
   assert.ok(missing.includes('base'), JSON.stringify(missing));
 });
+
+test('brief: a FINAL reviewer brief lists every deferred task with its merged diff range', () => {
+  const { cwd, change } = fixture();
+  const tasksFile = path.join(cwd, `openspec/changes/${change}/tasks.md`);
+  const text = fs.readFileSync(tasksFile, 'utf8')
+    .replace('Review: standard\n  - Scenarios: SCEN-C1-01\n  - Done: source=abcdef1 review=pass(1234567@abcdef1/abcdef0)',
+      'Review: deferred\n  - Scenarios: SCEN-C1-01\n  - Done: source=abcdef1 review=pass(deferred@abcdef1/abcdef0)')
+    .replace('Review: strict', 'Review: deferred');
+  fs.writeFileSync(tasksFile, text);
+  const result = run(['reviewer', '--change', change, '--repo', cwd, '--base', 'HEAD', '--json']);
+  assert.equal(result.status, 0, result.out);
+  const { prompt } = JSON.parse(result.stdout);
+  assert.match(prompt, /## Deferred tasks/);
+  assert.match(prompt, /T-01 alpha: `git diff abcdef0\.\.abcdef1`/);
+  assert.match(prompt, /T-02 beta: not Done yet/);
+});
+
+test('brief: a repository with no deferred task adds no deferred section', () => {
+  const { cwd, change } = fixture();
+  const result = run(['reviewer', '--change', change, '--repo', cwd, '--base', 'HEAD', '--json']);
+  assert.equal(result.status, 0, result.out);
+  assert.doesNotMatch(JSON.parse(result.stdout).prompt, /Deferred tasks/);
+});
