@@ -261,12 +261,12 @@ const modeled = selected.map((scenario) => {
   const converged = simulate(parseTasks(renderTasks(scenario, 'converged')).tasks, { policy: 'converged', model: DEFAULT_MODEL });
   return { scenario: scenario.id, legacy: legacy.makespan, converged: converged.makespan };
 });
-// The contract phase is the one measured number here, and it is measured on the real
-// submit-hub change (263 min first spec commit -> R0 pass, vs the converged 45 min).
-// It is not re-derived per synthetic scenario; both numbers come from baseline-metrics
-// and are applied unchanged, exactly as benchmark.mjs does. POST (sink suite + FINAL
-// review) is identical under both policies and cancels out of the delta.
-const CONTRACT = { legacy: 263, converged: 45 };
+// The contract phase is the one number with a real measurement behind it: 263 min on the
+// submit-hub change (first spec commit -> R0 pass). The converged 45 min is a TARGET
+// (preflight + one author pass + lint + one R0), not a measurement, so the end-to-end total is
+// reported twice: with the target, and with the contract held at its measured value for both
+// policies. POST (sink suite + FINAL review) is identical under both policies and cancels out.
+const CONTRACT = { measured: 263, target: 45 };
 const POST = 100;
 const pct = (from, to) => Number((((from - to) / from) * 100).toFixed(1));
 
@@ -274,9 +274,10 @@ const legacyRows = results.filter((row) => row.policy === 'legacy');
 const convergedRows = results.filter((row) => row.policy === 'converged');
 const endToEnd = selected.map((scenario, index) => {
   const row = modeled[index];
-  const legacyTotal = row.legacy + CONTRACT.legacy + POST;
-  const convergedTotal = row.converged + CONTRACT.converged + POST;
-  return { scenario: scenario.id, legacyTotal, convergedTotal };
+  const legacyTotal = row.legacy + CONTRACT.measured + POST;
+  const convergedTotal = row.converged + CONTRACT.target + POST;
+  const heldTotal = row.converged + CONTRACT.measured + POST;
+  return { scenario: scenario.id, legacyTotal, convergedTotal, heldTotal };
 });
 const report = {
   results,
@@ -296,6 +297,7 @@ const report = {
     endToEndMinutes: {
       legacy: endToEnd.reduce((sum, row) => sum + row.legacyTotal, 0),
       converged: endToEnd.reduce((sum, row) => sum + row.convergedTotal, 0),
+      contractHeld: endToEnd.reduce((sum, row) => sum + row.heldTotal, 0),
     },
     exitWithBlocking: results.filter((row) => row.notes.some((note) => /exit [1-9]/.test(note))).map((row) => row.scenario),
   },
@@ -303,6 +305,7 @@ const report = {
 report.summary.wallPct = pct(report.summary.wallMs.legacy, report.summary.wallMs.converged);
 report.summary.modelPct = pct(report.summary.modelMinutes.legacy, report.summary.modelMinutes.converged);
 report.summary.endToEndPct = pct(report.summary.endToEndMinutes.legacy, report.summary.endToEndMinutes.converged);
+report.summary.contractHeldPct = pct(report.summary.endToEndMinutes.legacy, report.summary.endToEndMinutes.contractHeld);
 
 if (json) console.log(JSON.stringify(report, null, 2));
 else {
@@ -323,7 +326,8 @@ else {
   console.log(`orchestration wall: legacy ${Math.round(report.summary.wallMs.legacy)}ms -> converged ${Math.round(report.summary.wallMs.converged)}ms (${report.summary.wallPct}%)`);
   console.log(`model makespan:     legacy ${report.summary.modelMinutes.legacy} min -> converged ${report.summary.modelMinutes.converged} min (${report.summary.modelPct}%)`);
   console.log(`end-to-end total:   legacy ${report.summary.endToEndMinutes.legacy} min -> converged ${report.summary.endToEndMinutes.converged} min (${report.summary.endToEndPct}%)`);
-  console.log(`  (end-to-end adds the measured contract phase ${CONTRACT.legacy}/${CONTRACT.converged} min and a shared ${POST} min post phase)`);
+  console.log(`  (end-to-end adds the contract phase ${CONTRACT.measured} min measured vs ${CONTRACT.target} min target, plus a shared ${POST} min post phase)`);
+  console.log(`  contract held at its measured ${CONTRACT.measured} min for both: converged ${report.summary.endToEndMinutes.contractHeld} min (${report.summary.contractHeldPct}%)`);
 }
 if (assertArg) {
   const want = Number(assertArg.split('=')[1]);

@@ -28,6 +28,7 @@ runs both fixtures through the real `freeze-check --structural`.
 ## What is measured, and what is not
 
 - **Measured (real run):** contract phase 263 minutes (first spec commit → R0 pass), execution start 11:12, last merge 12:43, per-task Red/implementation/merge timestamps.
+- **Target, not measured:** the converged 45-minute contract phase (preflight + one author pass + lint + one R0). Every end-to-end figure below is reported twice, once with this target and once with the contract held at its measured 263 minutes for both policies. The second number is what the scheduling change alone explains.
 - **Modeled:** makespan under each policy, using the same per-phase durations for both. Only scheduling semantics differ (readiness edges, caps, review placement).
 - **Not modeled:** LLM variance, review quality, merge conflicts, human latency. The model is an upper bound on the value of scheduling changes, not a prediction of a specific run.
 
@@ -53,9 +54,11 @@ measured data, caused the gap. All four are now fixed in both directions:
    model charged `regressionMinPerTask` only to converged merges, which understated
    the legacy makespan.
 
-After the corrections: **execution 23.7%, end-to-end 42%** at the measured
-263-minute contract (358 → 273 min execution; 721 → 418 min end-to-end). Do not
-adjust `263` or `POST` to raise the number.
+After the corrections: **execution 23.7%** (358 → 273 min). End-to-end is
+**42%** only when the converged contract target of 45 min is assumed; with the
+contract held at its measured 263 min for both policies the same run gives
+**11.8%** (721 → 636 min). `benchmark.mjs` prints both lines. Do not adjust `263`
+or `POST` to raise the number.
 
 ### The mechanism-derived lever: drop the reads-only edge
 
@@ -67,9 +70,10 @@ overlap. `merge-task` replays either side when the other changes
 `benchmark.mjs` takes exactly the edges `readsOnlyEdges()` reports, drops them in
 memory, re-runs `checkContract`, and prints the result only when the variant still
 freezes. On this contract that is **194 min execution, 339 min end-to-end:
-45.8% / 53.0%**. The fixture on disk is not edited. The number is a CP-1 decision
-input for the contract author, and it appears only when the pipeline would still
-freeze the resulting contract.
+45.8% / 53.0%** against the 45-minute contract target; with the contract held at
+its measured 263 min the same variant is **22.7%** end-to-end. The fixture on
+disk is not edited. The number is a CP-1 decision input for the contract author,
+and it appears only when the pipeline would still freeze the resulting contract.
 
 ### The critical chain, as frozen
 
@@ -156,19 +160,23 @@ delivery-speed measure.
 The efficiency comparison is the shared cost model, reported two ways:
 
 - **execution only** — `simulate()` makespan under each policy.
-- **end-to-end** — execution plus the measured contract phase (263 → 45 min, from
-  the real submit-hub history) plus a shared 100 min post phase, exactly as
-  `benchmark.mjs` does.
+- **end-to-end** — execution plus the contract phase plus a shared 100 min post
+  phase, exactly as `benchmark.mjs` does. The contract phase is counted twice:
+  once at the converged 45 min target, and once held at the measured 263 min for
+  both policies.
 
 The sandbox figures are deliberately not tuned to clear an efficiency target. On
-these ten shapes the modelled execution gain is **37.7%** aggregate and the modelled
-end-to-end gain is **50.7%** aggregate. Per scenario, execution ranges 26.8–49.1%
-and end-to-end 45.0–55.8%; six of ten clear 50% end-to-end. The real
-`submit-hub-offset-and-draft-box` DAG reaches 23.7% execution / 42% end-to-end as
-frozen; its converged critical chain is 244 of 273 minutes, and the benchmark's
-mechanism-derived lever (dropping the advisory reads-only `T-04 -> T-05` edge) is
-45.8% / 53.0%. A smaller/shallower DAG gains less, and the ten-scenario suite is
-built to show that spread rather than to maximise the headline.
+these ten shapes the modelled execution gain is **37.7%** aggregate. End-to-end is
+**50.7%** aggregate with the contract target, and **15.8%** with the contract held
+at its measured 263 min for both policies — the difference is the contract-phase
+assumption, not the scheduler. Per scenario, execution ranges 26.8–49.1% and
+end-to-end (target) 45.0–55.8%; six of ten clear 50% end-to-end under that target.
+The real `submit-hub-offset-and-draft-box` DAG reaches 23.7% execution / 42%
+end-to-end as frozen (11.8% with the contract held); its converged critical chain
+is 244 of 273 minutes, and the benchmark's mechanism-derived lever (dropping the
+advisory reads-only `T-04 -> T-05` edge) is 45.8% / 53.0% target, 22.7% held. A
+smaller/shallower DAG gains less, and the ten-scenario suite is built to show that
+spread rather than to maximise the headline.
 
 **Why execution-only cannot reach 50% on these shapes.** A schedule cannot beat its
 own critical path. On the converged DAGs the weighted critical path sums to 1,209
@@ -202,11 +210,13 @@ edge is Done; a regression test covers it.
 2. Full unit suite green: `bash skills/paseo-pipeline/test/run-all.sh` (263 tests).
 3. Sandbox end-to-end run green: contract lint → freeze-check → task merges (including `Uses`, `deferred`, cherry-pick provenance) with no blocking exit codes.
 4. Ten-scenario matrix green for all ten shapes under both policies, 94 tasks each;
-   aggregate modelled gain 37.7% execution / 50.7% end-to-end.
+   aggregate modelled gain 37.7% execution / 50.7% end-to-end against the 45-minute
+   contract target, 15.8% with the contract held at its measured 263 min.
 5. The real DAG is reported as it measures. As frozen: 23.7% execution / 42%
-   end-to-end, because its converged critical chain is 244 of 273 minutes. The
-   mechanism-derived lever — dropping the `readsOnlyEdges()` advisory and re-running
-   `checkContract` — is 45.8% / 53.0%, printed by `benchmark.mjs` and never authored.
+   end-to-end against the contract target (11.8% held at 263 min), because its
+   converged critical chain is 244 of 273 minutes. The mechanism-derived lever —
+   dropping the `readsOnlyEdges()` advisory and re-running `checkContract` — is
+   45.8% / 53.0% target, 22.7% held, printed by `benchmark.mjs` and never authored.
    The earlier `--assert=50` line was removed because the only way to pass it was a
    fixture `freeze-check` rejects. Raising the fixture to clear a threshold is the
    failure mode this benchmark exists to prevent.

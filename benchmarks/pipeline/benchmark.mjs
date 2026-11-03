@@ -18,10 +18,12 @@ const files = args.filter((a) => !a.startsWith('--'));
 const baselineFile = files[0] ?? path.join(here, 'baseline-tasks.md');
 const convergedFile = files[1] ?? path.join(here, 'converged-tasks.md');
 const modelFile = files[2];
-// Contract phase is measured, not simulated: 263 min (first spec commit -> R0 pass) vs the
-// target 45 min (preflight + one author pass + lint + one R0). Post-execution is the sink
+// Contract phase: 263 min is measured (first spec commit -> R0 pass on the real submit-hub
+// change). 45 min is a TARGET (preflight + one author pass + lint + one R0), not a measurement;
+// the end-to-end figure that depends on it is always reported next to the figure that holds the
+// contract at its measured 263 min, so the assumption is visible. Post-execution is the sink
 // full suite plus the FINAL integrated review, identical under both policies.
-const CONTRACT = { legacy: 263, converged: 45 };
+const CONTRACT = { measured: 263, target: 45 };
 const POST = 100;
 
 function load(file, text = null) {
@@ -44,10 +46,17 @@ const legacyChain = weightedCriticalPath(legacyTasks, model);
 const convergedChain = weightedCriticalPath(convergedTasks, model);
 
 const pct = (from, to) => Number((((from - to) / from) * 100).toFixed(1));
+// The converged total is reported twice: once with the contract target (45 min) and once with
+// the measured contract held at 263 min for both policies. The second is the gain the scheduling
+// change alone explains; the difference between them is the contract reduction's assumption.
+const legacyTotal = legacy.makespan + CONTRACT.measured + POST;
+const convergedTotal = converged.makespan + CONTRACT.target + POST;
+const heldTotal = converged.makespan + CONTRACT.measured + POST;
 const out = {
   model,
-  baseline: { tasks: legacyTasks.length, execMin: legacy.makespan, contractMin: CONTRACT.legacy, postMin: POST, totalMin: legacy.makespan + CONTRACT.legacy + POST, criticalChain: legacyChain },
-  converged: { tasks: convergedTasks.length, execMin: converged.makespan, contractMin: CONTRACT.converged, postMin: POST, totalMin: converged.makespan + CONTRACT.converged + POST, criticalChain: convergedChain },
+  baseline: { tasks: legacyTasks.length, execMin: legacy.makespan, contractMin: CONTRACT.measured, postMin: POST, totalMin: legacyTotal, criticalChain: legacyChain },
+  converged: { tasks: convergedTasks.length, execMin: converged.makespan, contractMin: CONTRACT.target, postMin: POST, totalMin: convergedTotal, criticalChain: convergedChain },
+  contractHeld: { contractMin: CONTRACT.measured, totalMin: heldTotal, totalPct: pct(legacyTotal, heldTotal) },
 };
 out.improvement = {
   execPct: pct(out.baseline.execMin, out.converged.execMin),
@@ -84,13 +93,16 @@ if (readsOnly.length) {
   const check = checkContract(variantMarkdown, 'bench-lever');
   if (check.ok) {
     const exec = simulate(load(convergedFile, variantMarkdown), { policy: 'converged', model }).makespan;
-    const total = exec + CONTRACT.converged + POST;
+    const total = exec + CONTRACT.target + POST;
     out.lever = {
       edges: readsOnly.map((edge) => `${edge.task}->${edge.dep}`),
       execMin: exec,
       totalMin: total,
       execPct: pct(out.baseline.execMin, exec),
       totalPct: pct(out.baseline.totalMin, total),
+      // The same lever with the contract held at its measured 263 min for both policies.
+      contractHeldTotalMin: exec + CONTRACT.measured + POST,
+      contractHeldTotalPct: pct(out.baseline.totalMin, exec + CONTRACT.measured + POST),
     };
   } else {
     console.error(`[benchmark] reads-only edge drop does not freeze: ${check.output.trim().split('\n')[0]}`);
@@ -107,12 +119,14 @@ else {
   row('contract', `${out.baseline.contractMin}       ${out.converged.contractMin}`);
   row('post', `${out.baseline.postMin}       ${out.converged.postMin}`);
   row('total', `${out.baseline.totalMin}       ${out.converged.totalMin}`);
-  console.log(`\nimprovement: exec ${out.improvement.execPct}%  end-to-end ${out.improvement.totalPct}%`);
+  console.log(`\nimprovement: exec ${out.improvement.execPct}%  end-to-end ${out.improvement.totalPct}% (45 min contract target)`);
+  console.log(`  with the measured ${CONTRACT.measured} min contract held for both policies: end-to-end ${out.contractHeld.totalPct}%`);
   console.log(`critical chain legacy:    ${legacyChain.chain.join(' -> ')} (${legacyChain.minutes} min)`);
   console.log(`critical chain converged: ${convergedChain.chain.join(' -> ')} (${convergedChain.minutes} min)`);
   if (out.lever) {
     console.log(`\ndesign lever (dropping ${out.lever.edges.join(', ')}; the pair shares only a read-only fixture and merge-task replays it):`);
     console.log(`  execution ${out.lever.execMin} min, total ${out.lever.totalMin} min, improvement: exec ${out.lever.execPct}%  end-to-end ${out.lever.totalPct}%`);
+    console.log(`  with the measured ${CONTRACT.measured} min contract held: total ${out.lever.contractHeldTotalMin} min, end-to-end ${out.lever.contractHeldTotalPct}%`);
   }
 }
 if (assertArg) {
