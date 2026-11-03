@@ -68,14 +68,14 @@ function run(args) {
 
 test('brief: a task brief renders every required section from the frozen contract', () => {
   const { cwd, change } = fixture();
-  const result = run(['tester', '--change', change, '--repo', cwd, '--task', 'T-02', '--base', 'HEAD', '--json']);
+  const result = run(['worker', '--change', change, '--repo', cwd, '--task', 'T-02', '--base', 'HEAD', '--json']);
   assert.equal(result.status, 0, result.out);
   const { prompt, missing } = JSON.parse(result.stdout);
   assert.deepEqual(missing, []);
   for (const needle of [
     'T-02', 'src/b.mjs, test/b.test.mjs', 'node --test test/b.test.mjs', 'SCEN-C1-02',
     'Frozen task contract', 'Depends on: T-01', 'Done=yes', 'Uses: T-01', 'Reads: docs/contract.md',
-    'Review: strict', 'Est: M', 'Exact test paths: test/b.test.mjs',
+    'Review: strict', 'Est: M', 'Risk-surface: [error-handling]',
     'Files you must not touch', 'src/a.mjs', 'test/a.test.mjs',
   ]) {
     assert.ok(prompt.includes(needle), `${needle}\n---\n${prompt}`);
@@ -91,21 +91,21 @@ test('brief: a dependency that is not Done is reported as such', () => {
   const { cwd, change } = fixture();
   const tasksFile = path.join(cwd, `openspec/changes/${change}/tasks.md`);
   fs.writeFileSync(tasksFile, fs.readFileSync(tasksFile, 'utf8').replace('  - Done: source=abcdef1 review=pass(1234567@abcdef1/abcdef0)\n', ''));
-  const result = run(['writer', '--change', change, '--repo', cwd, '--task', 'T-02', '--json']);
+  const result = run(['worker', '--change', change, '--repo', cwd, '--task', 'T-02', '--json']);
   assert.equal(result.status, 0, result.out);
   const { prompt } = JSON.parse(result.stdout);
   assert.match(prompt, /T-01: Done=no/);
 });
 
-test('brief: leads get the integration placeholders resolved, not a model id', () => {
+test('brief: the author package brief resolves the change placeholders and names no model', () => {
   const { cwd, change } = fixture();
-  const result = run(['lead', '--change', change, '--repo', cwd, '--base', 'HEAD', '--json']);
+  const result = run(['author', '--change', change, '--repo', cwd, '--base', 'HEAD', '--json']);
   assert.equal(result.status, 0, result.out);
   const { prompt, missing } = JSON.parse(result.stdout);
   assert.deepEqual(missing, []);
-  assert.match(prompt, /integration\/c1/);
-  assert.match(prompt, new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(prompt, /openspec\/changes\/c1\//);
   assert.doesNotMatch(prompt, /<change>/);
+  assert.doesNotMatch(prompt, /\b(?:sonnet|opus|haiku|gpt-[\w.]+|claude-[\w.]+)/i);
 });
 
 test('brief: an unknown role fails with a clear error', () => {
@@ -117,53 +117,53 @@ test('brief: an unknown role fails with a clear error', () => {
 
 test('brief: an unknown task fails instead of rendering a partial brief', () => {
   const { cwd, change } = fixture();
-  const result = run(['tester', '--change', change, '--repo', cwd, '--task', 'T-99', '--json']);
+  const result = run(['worker', '--change', change, '--repo', cwd, '--task', 'T-99', '--json']);
   assert.equal(result.status, 2);
   assert.match(result.stderr, /unknown task T-99/);
 });
 
-test('brief: the tester brief carries the adversarial cases of the task Risk-surface', () => {
+test('brief: the worker brief carries the adversarial cases of the task Risk-surface', () => {
   const { cwd, change } = fixture();
-  const tester = run(['tester', '--change', change, '--repo', cwd, '--task', 'T-02', '--base', 'HEAD', '--json']);
-  assert.equal(tester.status, 0, tester.out);
-  const prompt = JSON.parse(tester.stdout).prompt;
+  const worker = run(['worker', '--change', change, '--repo', cwd, '--task', 'T-02', '--base', 'HEAD', '--json']);
+  assert.equal(worker.status, 0, worker.out);
+  const prompt = JSON.parse(worker.stdout).prompt;
   assert.match(prompt, /## Adversarial cases \(required, Risk-surface: \[error-handling\]\)/);
   assert.match(prompt, /- \[ \] upstream throws; the caller receives the documented error/);
 
-  // The implementation brief must not receive a tester's checklist.
-  const writer = run(['writer', '--change', change, '--repo', cwd, '--task', 'T-02', '--base', 'HEAD', '--json']);
-  assert.equal(writer.status, 0, writer.out);
-  assert.doesNotMatch(JSON.parse(writer.stdout).prompt, /Adversarial cases/);
+  // A contract reviewer is not a worker and must not receive the checklist.
+  const reviewer = run(['reviewer', '--change', change, '--repo', cwd, '--task', 'T-02', '--base', 'HEAD', '--json']);
+  assert.equal(reviewer.status, 0, reviewer.out);
+  assert.doesNotMatch(JSON.parse(reviewer.stdout).prompt, /Adversarial cases/);
 });
 
 test('brief: an unresolvable required placeholder fails and lists it', () => {
   const { cwd, change } = fixture();
-  const result = run(['tester', '--change', change, '--repo', cwd, '--task', 'T-02',
+  const result = run(['worker', '--change', change, '--repo', cwd, '--task', 'T-02',
     '--base', 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef', '--json']);
   assert.equal(result.status, 1, result.out);
   const { missing } = JSON.parse(result.stdout);
   assert.ok(missing.includes('base'), JSON.stringify(missing));
 });
 
-test('brief: a FINAL reviewer brief lists every deferred task with its merged diff range', () => {
+test('brief: a FINAL reviewer brief lists every merged task the mechanical gate let through', () => {
   const { cwd, change } = fixture();
-  const tasksFile = path.join(cwd, `openspec/changes/${change}/tasks.md`);
-  const text = fs.readFileSync(tasksFile, 'utf8')
-    .replace('Review: standard\n  - Scenarios: SCEN-C1-01\n  - Done: source=abcdef1 review=pass(1234567@abcdef1/abcdef0)',
-      'Review: deferred\n  - Scenarios: SCEN-C1-01\n  - Done: source=abcdef1 review=pass(deferred@abcdef1/abcdef0)')
-    .replace('Review: strict', 'Review: deferred');
-  fs.writeFileSync(tasksFile, text);
   const result = run(['reviewer', '--change', change, '--repo', cwd, '--base', 'HEAD', '--json']);
   assert.equal(result.status, 0, result.out);
   const { prompt } = JSON.parse(result.stdout);
-  assert.match(prompt, /## Deferred tasks/);
-  assert.match(prompt, /T-01 alpha: `git diff abcdef0\.\.abcdef1`/);
-  assert.match(prompt, /T-02 beta: not Done yet/);
+  assert.match(prompt, /## Merged tasks \(each passed only the mechanical gate\)/);
+  assert.match(prompt, /- T-01 alpha: source abcdef1; scope src\/a\.mjs, test\/a\.test\.mjs; Verify node --test test\/a\.test\.mjs; scenarios SCEN-C1-01/);
+  // The FINAL gate sees the integrated diff; unmerged work is not part of it.
+  assert.doesNotMatch(prompt, /T-02 beta: source/);
 });
 
-test('brief: a repository with no deferred task adds no deferred section', () => {
+test('brief: a change with no merged task adds no merged-tasks section', () => {
   const { cwd, change } = fixture();
+  const tasksFile = path.join(cwd, `openspec/changes/${change}/tasks.md`);
+  const text = fs.readFileSync(tasksFile, 'utf8')
+    .replace('- [x] 1.1 T-01 alpha', '- [ ] 1.1 T-01 alpha')
+    .replace('  - Done: source=abcdef1 review=pass(1234567@abcdef1/abcdef0)\n', '');
+  fs.writeFileSync(tasksFile, text);
   const result = run(['reviewer', '--change', change, '--repo', cwd, '--base', 'HEAD', '--json']);
   assert.equal(result.status, 0, result.out);
-  assert.doesNotMatch(JSON.parse(result.stdout).prompt, /Deferred tasks/);
+  assert.doesNotMatch(JSON.parse(result.stdout).prompt, /Merged tasks/);
 });

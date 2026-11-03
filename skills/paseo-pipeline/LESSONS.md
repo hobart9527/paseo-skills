@@ -6,7 +6,7 @@
 
 > 历史记录：文中的 `run-state.mjs`、`reconcile.mjs`、`task-runner.mjs`、租约/账本等机制已在收敛中移除，现行做法见 `SKILL.md`。不要照搬。
 >
-> 引用前先看条目状态：**§5（contract-check）与 §8 的工具清单整节失效**（`contract-check.mjs`、`reconcile.mjs`、`hotfix.sh`、`dispatch.mjs` 均已删除，§12 记录了下架）；**§2/§3/§7 的 Task Pod、`pod/<name>`、`[ROUTE] ≥6` 已被单一 Lead 与 `freeze-check` 的 pipeline/handoff 两档取代**；**§9.5 的 exit 38 模型门禁已删**（§14.3 说明了为何 provider 不是同源判据）。§10-§14 仍是现行门禁的直接依据。
+> 引用前先看条目状态：**§5（contract-check）与 §8 的工具清单整节失效**（`contract-check.mjs`、`reconcile.mjs`、`hotfix.sh`、`dispatch.mjs` 均已删除，§12 记录了下架）；**§2/§3/§7 的 Task Pod、`pod/<name>`、`[ROUTE] ≥6` 已被单一 Lead 与 `freeze-check` 的 pipeline/handoff 两档取代**；**§9.5 的 exit 38 模型门禁已删**（§14.3 说明了为何 provider 不是同源判据）。§10-§14 仍是现行门禁的直接依据。**单一 worker 改造（2026-11-04）后，§10-§14 中关于 `ceshi` 先行 Red、逐任务审查、reviewer/model 身份门禁（exit 32/33）的记录也只作历史证据**：现行模型是「一个 worker 写测试+实现+窄 Verify+提交，门禁只做机械校验，质量由一次 FINAL 集成审查判定」。引用这些条目时先对照 `SKILL.md`。
 
 ---
 

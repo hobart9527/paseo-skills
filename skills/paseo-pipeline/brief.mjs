@@ -10,7 +10,7 @@ import { checklistForSurfaces } from './lib/adversarial.mjs';
 import { gitMaybe } from './lib/git.mjs';
 import { argValue, positionalArgs } from './lib/cli.mjs';
 
-const TEMPLATES = ['lead', 'author', 'tester', 'writer', 'reviewer', 'auditor', 'lead-resume'];
+const TEMPLATES = ['author', 'worker', 'reviewer'];
 const usage = 'Usage: brief.mjs <role> --change <name> --repo <path> [--task <id>] [--base <sha>] [--json]';
 const args = process.argv.slice(2);
 const json = args.includes('--json');
@@ -157,8 +157,8 @@ function forbiddenPaths() {
 
 const values = {
   change,
-  // A task placeholder only exists when a task was requested. A Lead brief keeps
-  // the template's literal `<T-id>`: the Lead fills it per dispatch.
+  // A task placeholder only exists when a task was requested. A package brief
+  // keeps the template's literal `<T-id>`: the caller fills it per dispatch.
   ...(taskId ? { task: taskId, 'T-id': taskId } : {}),
   id: taskId || change,
   base: base || '',
@@ -167,15 +167,13 @@ const values = {
   workspace: taskWorktree || integrationWorktree || repo,
   'integration-branch': integrationBranch,
   branch: taskBranch || integrationBranch,
-  'exact frozen test paths': testPaths.length ? testPaths.join(', ') : (task ? 'none (mechanical task)' : ''),
   'exact frozen scope': scopeList.length ? scopeList.join(', ') : '',
   'tasks.md + spec paths': contractPaths()?.filter((file) => /(?:tasks|spec)\.md$/.test(file)).join(', ') || '',
   'spec/tasks paths': contractPaths()?.filter((file) => /(?:tasks|spec)\.md$/.test(file)).join(', ') || '',
   command: task?.verify || '',
-  'provided role': 'the Pipeline-Role value supplied by the Lead (gongbu, gaogong or jiangzuo)',
-  'Lead-selected role': 'the Pipeline-Role value supplied by the Lead (gongbu, gaogong or jiangzuo)',
-  'ceshi agent id + test paths': `test-author agent id resolved live by the caller; test paths: ${testPaths.join(', ') || 'none'}`,
-  'paths / base / tip': `contract: ${path.relative(repo, changeDir)}; base: ${base || '(resolved by the Lead)'}; tip: the dispatch-time branch tip`,
+  'provided role': 'the Pipeline-Role value you were dispatched with (gongbu, gaogong or jiangzuo)',
+  'scenarios': task ? (task.scenarios.join(', ') || 'none') : '',
+  'paths / base / tip': `contract: ${path.relative(repo, changeDir)}; base: ${base || '(resolved by the main session)'}; tip: the dispatch-time branch tip`,
 };
 
 function substitute(text) {
@@ -205,10 +203,9 @@ if (task) {
   if (extrasForTask['risk-surface']) lines.push(`- Risk-surface: ${extrasForTask['risk-surface']}`);
   lines.push(`- Verify with: ${task.verify}`);
   lines.push(`- Scenarios: ${task.scenarios.join(', ') || 'none'}`);
-  lines.push(`- Exact test paths: ${testPaths.join(', ') || 'none'}`);
-  // The test author's required cases come from the same frozen table the Lead used to
-  // run as a separate ceremony. One source, no hand-copied lines, no extra command.
-  const adversarial = role === 'tester' ? checklistForSurfaces(extrasForTask['risk-surface']) : [];
+  // Required adversarial cases come from the frozen risk surface, so the worker does
+  // not have to re-derive them and the final review can check them.
+  const adversarial = role === 'worker' ? checklistForSurfaces(extrasForTask['risk-surface']) : [];
   if (adversarial.length) {
     lines.push('');
     lines.push(`## Adversarial cases (required, Risk-surface: ${extrasForTask['risk-surface']})`);
@@ -230,17 +227,14 @@ if (task) {
   prompt = `${prompt.trimEnd()}\n${lines.join('\n')}\n`;
 }
 
-// A FINAL review is the only spec review of `Review: deferred` tasks, so the brief
-// must carry each one's merged diff range (from its Done line: source + review tag).
-if (['reviewer', 'auditor'].includes(role) && !task) {
-  const deferred = parsed.tasks.filter((item) => item.review === 'deferred');
-  if (deferred.length) {
-    const lines = ['', '## Deferred tasks (no per-task review: this FINAL review is their only spec review)'];
-    for (const item of deferred) {
-      const tag = item.done?.review.match(/^pass\(deferred@([0-9a-f]{7,40})\/([0-9a-f]{7,40})\)$/);
-      const scenarios = item.scenarios.join(', ') || 'none';
-      if (tag) lines.push(`- ${item.id} ${item.title}: \`git diff ${tag[2]}..${tag[1]}\`; scope ${item.scope.join(', ')}; Verify ${item.verify}; scenarios ${scenarios}`);
-      else lines.push(`- ${item.id} ${item.title}: not Done yet; scope ${item.scope.join(', ')}; scenarios ${scenarios}`);
+// A FINAL review is the only code-quality gate: every task merged through the
+// mechanical gate, so the brief carries each Done task's merged diff range.
+if (role === 'reviewer' && !task) {
+  const merged = parsed.tasks.filter((item) => item.done);
+  if (merged.length) {
+    const lines = ['', '## Merged tasks (each passed only the mechanical gate)'];
+    for (const item of merged) {
+      lines.push(`- ${item.id} ${item.title}: source ${item.done.source}; scope ${item.scope.join(', ')}; Verify ${item.verify}; scenarios ${item.scenarios.join(', ') || 'none'}`);
     }
     prompt = `${prompt.trimEnd()}\n${lines.join('\n')}\n`;
   }
@@ -255,7 +249,7 @@ if (/\b(?:claude|gpt|codex|anthropic|openai|gemini|opus|sonnet|haiku)[-/][\w.-]+
 // Placeholders the child fills at runtime are intentional. Every other placeholder is
 // one this script promises to resolve, so an empty value is a hard failure: a brief
 // with `<base>` or `<integration-worktree>` left in it sends the child hunting.
-const RUNTIME = /^(?:your-|agent-id$|reviewer-id$|reviewed-HEAD-sha(?:-7-chars)?$|reviewed-commit-sha$|tip$|new[-_]tip$|old[-_]tip$|child-full-uuid$|lead-id$|this file$|capability$|seconds$)/;
+const RUNTIME = /^(?:your-|agent-id$|reviewer-id$|reviewed-HEAD-sha(?:-7-chars)?$|reviewed-commit-sha$|tip$|new[-_]tip$|old[-_]tip$|child-full-uuid$|this file$|capability$|seconds$)/;
 const missing = [...new Set([...prompt.matchAll(/<([^<>\n]+)>/g)].map((match) => match[1]))]
   .filter((key) => !RUNTIME.test(key))
   .filter((key) => Object.prototype.hasOwnProperty.call(values, key));
