@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 // Calibrate the scheduling cost model from git history instead of guessing.
 //
+// Standalone maintenance tool, not a pipeline step: no SKILL.md step, template, or gate calls it,
+// and nothing depends on its output. Run it by hand when the repository drifts far enough from the
+// defaults that `freeze-check` advisories stop matching reality; it only prints a model, it never
+// edits `lib/schedule.mjs`. Its own behavior is covered by test/calibrate.test.mjs.
+//
 // Pure reads: no writes, no network, no Paseo calls. Every number is derived from
 // commit timestamps and trailers that `merge-task.mjs` already produced, so the
 // result can be reproduced by anyone holding the repository.
@@ -16,28 +21,25 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { parseTasks, parseTaskLine, isTestPath } from './lib/tasks.mjs';
+import { gitMaybe } from './lib/git.mjs';
+import { argValue, positionalArgs } from './lib/cli.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
-const changeFlagIndex = args.indexOf('--change');
-const changeFilter = changeFlagIndex >= 0 ? args[changeFlagIndex + 1] : null;
-if (changeFlagIndex >= 0 && !changeFilter) {
+const changeFilter = argValue(args, 'change');
+if (args.includes('--change') && !changeFilter) {
   console.error('Usage: calibrate.mjs <repo> [--change <name>] [--json]');
   process.exit(2);
 }
-const positional = args.filter((arg, index) => !arg.startsWith('--') && (changeFlagIndex < 0 || index !== changeFlagIndex + 1));
+const positional = positionalArgs(args, ['change']);
 const repo = path.resolve(positional[0] || '.');
 if (!fs.existsSync(repo) || !fs.statSync(repo).isDirectory()) {
   console.error('Usage: calibrate.mjs <repo> [--change <name>] [--json]');
   process.exit(2);
 }
 
-function git(gitArgs) {
-  const result = spawnSync('git', gitArgs, { cwd: repo, encoding: 'utf8' });
-  return result.status === 0 ? result.stdout.trim() : null;
-}
+const git = (gitArgs) => gitMaybe(repo, gitArgs);
 
 if (git(['rev-parse', '--is-inside-work-tree']) !== 'true') {
   console.error(`[calibrate] ${repo} is not a git repository`);

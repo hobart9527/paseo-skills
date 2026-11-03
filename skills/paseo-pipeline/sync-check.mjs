@@ -14,16 +14,17 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { parseTasks } from './lib/tasks.mjs';
 import { missingDependency, dependencyMessage } from './lib/toolchain.mjs';
+import { runGit } from './lib/git.mjs';
+import { argValue, positionalArgs } from './lib/cli.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
-const verifyIndex = args.indexOf('--verify');
-const verifyFromArg = verifyIndex >= 0 ? args[verifyIndex + 1] : null;
-if (verifyIndex >= 0 && !verifyFromArg) {
+const verifyFromArg = argValue(args, 'verify');
+if (args.includes('--verify') && !verifyFromArg) {
   console.error('Usage: sync-check.mjs <task-worktree> <integration-branch> [--json] [--verify "<cmd>"]');
   process.exit(2);
 }
-const positional = args.filter((arg, index) => !arg.startsWith('--') && (verifyIndex < 0 || index !== verifyIndex + 1));
+const positional = positionalArgs(args, ['verify']);
 const [worktreeArg, integrationBranch] = positional;
 if (!worktreeArg || !integrationBranch || positional.length !== 2) {
   console.error('Usage: sync-check.mjs <task-worktree> <integration-branch> [--json] [--verify "<cmd>"]');
@@ -36,7 +37,7 @@ if (!fs.existsSync(worktree) || !fs.statSync(worktree).isDirectory()) {
 }
 
 function git(gitArgs, { allowFailure = false } = {}) {
-  const result = spawnSync('git', gitArgs, { cwd: worktree, encoding: 'utf8' });
+  const result = runGit(worktree, gitArgs);
   if (result.error) {
     if (allowFailure) return result;
     throw new Error(`git ${gitArgs.join(' ')} failed: ${result.error.message}`);

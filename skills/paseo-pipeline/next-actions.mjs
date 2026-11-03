@@ -12,25 +12,22 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { parseTasks } from './lib/tasks.mjs';
 import { frontier } from './lib/frontier.mjs';
+import { runGit } from './lib/git.mjs';
+import { argValue, positionalArgs } from './lib/cli.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
 function option(name, fallback) {
-  const index = args.indexOf(`--${name}`);
-  if (index < 0) return fallback;
-  const value = Number(args[index + 1]);
+  const raw = argValue(args, name);
+  if (raw === null) return fallback;
+  const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) {
     console.error(`[next-actions] --${name} needs a positive number`);
     process.exit(2);
   }
   return value;
 }
-const VALUE_FLAGS = new Set(['--writer-cap', '--reviewer-cap', '--idle-minutes']);
-const positional = [];
-for (let index = 0; index < args.length; index += 1) {
-  if (VALUE_FLAGS.has(args[index])) { index += 1; continue; }
-  if (!args[index].startsWith('--')) positional.push(args[index]);
-}
+const positional = positionalArgs(args, ['writer-cap', 'reviewer-cap', 'idle-minutes']);
 const changeDir = path.resolve(positional[0] || '.');
 const change = path.basename(changeDir);
 const options = {
@@ -49,7 +46,7 @@ const { tasks } = parseTasks(markdown);
 const done = tasks.filter((task) => task.done).map((task) => task.id);
 
 function git(gitArgs, cwd = changeDir) {
-  const result = spawnSync('git', gitArgs, { cwd, encoding: 'utf8' });
+  const result = runGit(cwd, gitArgs);
   if (result.error || result.status !== 0) {
     console.error(`[next-actions] git ${gitArgs.join(' ')} failed: ${result.stderr || result.error?.message || ''}`);
     process.exit(3);
@@ -57,7 +54,7 @@ function git(gitArgs, cwd = changeDir) {
   return result.stdout;
 }
 function gitMaybe(gitArgs) {
-  const result = spawnSync('git', gitArgs, { cwd: changeDir, encoding: 'utf8' });
+  const result = runGit(changeDir, gitArgs);
   return result.status === 0 ? result.stdout.trim() : null;
 }
 git(['rev-parse', '--is-inside-work-tree']);
@@ -68,7 +65,7 @@ const branches = {};
 // The integration branch is the base every task branch starts from: only commits after
 // the merge base are this task's own work.
 const integrationSha = (() => {
-  const head = spawnSync('git', ['rev-parse', '--verify', '--quiet', `refs/heads/integration/${change}`], { cwd: changeDir, encoding: 'utf8' });
+  const head = runGit(changeDir, ['rev-parse', '--verify', '--quiet', `refs/heads/integration/${change}`]);
   return head.status === 0 ? head.stdout.trim() : null;
 })();
 const refs = git(['for-each-ref', '--format=%(refname:short)', `refs/heads/task/${change}/`])
@@ -124,11 +121,7 @@ for (const agent of Array.isArray(listedAgents) ? listedAgents : []) {
 }
 
 const result = frontier(tasks, { done, branches, agents }, options);
-const integrationHead = (() => {
-  const head = spawnSync('git', ['rev-parse', '--verify', '--quiet', `refs/heads/integration/${change}`], { cwd: changeDir, encoding: 'utf8' });
-  return head.status === 0 ? head.stdout.trim() : null;
-})();
-const report = { change, integrationHead, ...result };
+const report = { change, integrationHead: integrationSha, ...result };
 
 if (json) console.log(JSON.stringify(report, null, 2));
 else {

@@ -5,29 +5,21 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { parseTasks, isTestPath } from './lib/tasks.mjs';
 import { checklistForSurfaces } from './lib/adversarial.mjs';
+import { gitMaybe } from './lib/git.mjs';
+import { argValue, positionalArgs } from './lib/cli.mjs';
 
 const TEMPLATES = ['lead', 'author', 'tester', 'writer', 'reviewer', 'auditor', 'lead-resume'];
 const usage = 'Usage: brief.mjs <role> --change <name> --repo <path> [--task <id>] [--base <sha>] [--json]';
 const args = process.argv.slice(2);
 const json = args.includes('--json');
-function option(name) {
-  const index = args.indexOf(`--${name}`);
-  return index >= 0 ? args[index + 1] : null;
-}
-const VALUE_FLAGS = new Set(['--change', '--repo', '--task', '--base']);
-const positional = [];
-for (let index = 0; index < args.length; index += 1) {
-  if (VALUE_FLAGS.has(args[index])) { index += 1; continue; }
-  if (!args[index].startsWith('--')) positional.push(args[index]);
-}
+const positional = positionalArgs(args, ['change', 'repo', 'task', 'base']);
 const role = positional[0];
-const change = option('change');
-const repoArg = option('repo');
-const taskId = option('task');
-const baseArg = option('base');
+const change = argValue(args, 'change');
+const repoArg = argValue(args, 'repo');
+const taskId = argValue(args, 'task');
+const baseArg = argValue(args, 'base');
 if (!role || !change || !repoArg) {
   console.error(usage);
   process.exit(2);
@@ -47,10 +39,7 @@ try { template = fs.readFileSync(templateFile, 'utf8'); } catch {
   }
 }
 
-function git(gitArgs, cwd = repo) {
-  const result = spawnSync('git', gitArgs, { cwd, encoding: 'utf8' });
-  return result.status === 0 ? result.stdout.trim() : null;
-}
+const git = (gitArgs, cwd = repo) => gitMaybe(cwd, gitArgs);
 const isGit = git(['rev-parse', '--is-inside-work-tree']) === 'true';
 
 const changeDir = path.join(repo, 'openspec', 'changes', change);

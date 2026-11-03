@@ -13,22 +13,15 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { parseTasks } from './lib/tasks.mjs';
 import { mergeDeps } from './lib/schedule.mjs';
+import { runGit } from './lib/git.mjs';
+import { argValue, positionalArgs } from './lib/cli.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
-function option(name) {
-  const index = args.indexOf(`--${name}`);
-  return index < 0 ? undefined : args[index + 1];
-}
-const baseOption = option('base');
-const positional = [];
-for (let index = 0; index < args.length; index += 1) {
-  if (args[index] === '--base') { index += 1; continue; }
-  if (!args[index].startsWith('--')) positional.push(args[index]);
-}
+const baseOption = argValue(args, 'base') ?? undefined;
+const positional = positionalArgs(args, ['base']);
 if (!positional.length) {
   console.error('Usage: merge-queue.mjs <change-dir> [T-id ...] [--json] [--base <ref>]');
   process.exit(2);
@@ -40,12 +33,12 @@ const only = new Set(positional.slice(1));
 // Run git from the canonical toplevel: on macOS /tmp is a symlink, and merge-tree
 // prints conflict paths relative to the cwd (../../../src/...) when given a
 // non-canonical subdirectory.
-const top = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd: changeDir, encoding: 'utf8' });
+const top = runGit(changeDir, ['rev-parse', '--show-toplevel']);
 if (top.status !== 0) { console.error('[merge-queue] not a git repository'); process.exit(3); }
 const root = top.stdout.trim();
 
 function git(gitArgs, input) {
-  const result = spawnSync('git', gitArgs, { cwd: root, encoding: 'utf8', input });
+  const result = runGit(root, gitArgs, { input });
   if (result.error || result.status !== 0) {
     const detail = (result.stderr || result.error?.message || '').trim();
     const error = new Error(`git ${gitArgs.join(' ')} failed${detail ? `: ${detail}` : ''}`);
@@ -55,7 +48,7 @@ function git(gitArgs, input) {
   return result.stdout;
 }
 function gitMaybe(gitArgs) {
-  return spawnSync('git', gitArgs, { cwd: root, encoding: 'utf8' });
+  return runGit(root, gitArgs);
 }
 
 let markdown;
@@ -130,7 +123,7 @@ for (const id of order) {
     waiting.push({ task: id, on: simulated.sort() });
     continue;
   }
-  const result = spawnSync('git', ['merge-tree', '--write-tree', '--name-only', '--no-messages', '-z', tip, candidate.ref], { cwd: root, encoding: 'utf8' });
+  const result = runGit(root, ['merge-tree', '--write-tree', '--name-only', '--no-messages', '-z', tip, candidate.ref]);
   if (result.error || result.status === null) {
     console.error(`[merge-queue] git merge-tree failed: ${result.error?.message || 'no status'}`);
     process.exit(3);
