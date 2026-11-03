@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 const root = path.resolve(import.meta.dirname, '..');
 // Signer lookup needs a live Paseo; fixtures that only exercise the contract rules skip it.
 function run(dir, flags = ['--skip-signer-check'], env = process.env) {
-  try { execFileSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--json', ...flags], { encoding: 'utf8', env }); return { status: 0 }; }
-  catch (error) { return { status: error.status, stdout: error.stdout, stderr: error.stderr }; }
+  const result = spawnSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--json', ...flags], { encoding: 'utf8', env });
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 function change(files) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-'));
@@ -418,6 +418,18 @@ test('Reads anchors a narrow Verify without joining scope conflicts', () => {
   assert.equal(freezeStructural(sharedRead).status, 0, freezeStructural(sharedRead).stdout);
 });
 
+test('rulings.md is not contract drift; any other new file is', () => {
+  const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  const sh = (...a) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8' }).trim();
+  sh('init', '-q'); sh('config', 'user.email', 't@t'); sh('config', 'user.name', 't');
+  sh('add', '.'); sh('commit', '-qm', 'draft');
+  fs.writeFileSync(path.join(dir, 'review.md'), `R0: pass(hanlin-uuid@${sh('rev-parse', '--short', 'HEAD')})\n`);
+  fs.writeFileSync(path.join(dir, 'rulings.md'), '# Rulings\n');
+  assert.equal(run(dir).status, 0, run(dir).stdout);
+  fs.writeFileSync(path.join(dir, 'extra.md'), 'x');
+  assert.match(run(dir).stdout, /STALE_R0_SIGNOFF.*extra\.md/);
+});
+
 test('--explain prints a rule, reason and fix for every block', () => {
   const dir = change(scheduleFiles(scheduleContract.replace('  - Uses: T-00\n', '  - Uses: T-99\n')));
   let error;
@@ -427,4 +439,46 @@ test('--explain prints a rule, reason and fix for every block', () => {
   assert.match(error.stderr, /BLOCK USES_UNKNOWN T-01/);
   assert.match(error.stderr, /EXPLAIN USES_UNKNOWN: .*Uses T-99/);
   assert.match(error.stderr, /fix: point Uses at an existing task id/);
+});
+
+// ---- contract lint: silent failure modes ----
+test('an acceptance row split by an unescaped pipe is a named block, not a silent skip', () => {
+  const row = '| SCEN-1 | CLI | T-02 | echo "a | b" | yes | PENDING | pending |';
+  const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table(row), 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  const result = run(dir);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /MALFORMED_ACCEPTANCE_ROW/);
+  // An escaped pipe keeps the column count and is accepted.
+  const escaped = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-02 | echo "a \\| b" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW });
+  assert.equal(run(escaped).status, 0);
+});
+
+test('shell setup is not a verify leg: set -e and || are named blocks', () => {
+  const sinkSet = contract.replace('  - Verify with: npm test', '  - Verify with: set -e; npm test');
+  const setResult = run(change({ 'tasks.md': sinkSet, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' }));
+  assert.match(setResult.stdout, /VERIFY_JUNK_LEG T-04/);
+  assert.match(setResult.stdout, /shell setup, not a verify leg/);
+  const sinkOr = contract.replace('  - Verify with: npm test', '  - Verify with: npm test || true');
+  const orResult = run(change({ 'tasks.md': sinkOr, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' }));
+  assert.match(orResult.stdout, /VERIFY_JUNK_LEG T-04/);
+  assert.match(orResult.stdout, /mandatory legs/);
+});
+
+test('a shell loop is an advisory, not invented legs', () => {
+  const loop = contract
+    .replace('Write scope: test/sink.test.mjs', 'Write scope: test/sink.test.mjs,scripts/specs/probe.mjs')
+    .replace('  - Verify with: npm test', '  - Review: mechanical\n  - Verify with: for f in scripts/specs/probe.mjs; do node "$f"; done');
+  const dir = change({ 'tasks.md': loop, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW });
+  const result = run(dir);
+  assert.equal(result.status, 0, result.stdout);
+  assert.match(result.stdout, /ADVISORY_SHELL_VERIFY T-04/);
+});
+
+test('Reads must name a path that already exists in the repository', () => {
+  const dir = change({ 'tasks.md': contract.replace('  - Scen: SCEN-1\n- [ ] 1.2', '  - Reads: docs/contract.md\n  - Scen: SCEN-1\n- [ ] 1.2'), 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  assert.match(run(dir, ['--structural', '--skip-signer-check']).stdout, /MISSING_READS_PATH T-01/);
+  fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'docs/contract.md'), 'x');
+  assert.equal(run(dir, ['--structural', '--skip-signer-check']).status, 0);
 });

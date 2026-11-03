@@ -47,6 +47,9 @@ const RULE_FIXES = {
   SELF_DEP: 'remove the self-dependency',
   CYCLE: 'break the dependency cycle into a DAG',
   BAD_READS: 'use repo-relative paths without `..` or a leading slash',
+  MISSING_READS_PATH: 'point Reads at a path that already exists in the repository; Reads is a read-only anchor, not a file the task creates',
+  MALFORMED_ACCEPTANCE_ROW: 'escape a literal pipe inside a cell as `\\|`, or keep one cell free of `|`; the row must have the header column count',
+  VERIFY_JUNK_LEG: 'put shell setup inside the leg it belongs to: `bash -c \'set -e; <command>\'`, or use `&&` between real commands',
   BAD_EST: 'use Est: S, M or L',
   BAD_INTERFACE: 'use Interface: <repo-path>[#<symbol>]',
   BAD_KIND: 'use Kind: skeleton (or omit it)',
@@ -65,6 +68,7 @@ if (tasksMarkdown === null) {
 
 const { tasks, errors } = parseTasks(tasksMarkdown);
 const blocking = errors.map((error) => `${error.code}${error.task ? ` ${error.task}` : ''}: ${error.message}`);
+const advisories = [];
 const fixes = new Map();
 if (blocking.length) fixes.set('CONTRACT', 'fix the field named in the message; see openspec-schema/templates/tasks.md for the exact shape');
 
@@ -178,10 +182,31 @@ for (const task of tasks) {
   }
 }
 
+// Reads is a read-only anchor: it must already exist. A typo used to read as "no
+// anchor" and only surface later as a mysterious VERIFY_NOT_NARROW.
+{
+  const toplevel = gitIn(changeDir, ['rev-parse', '--show-toplevel']);
+  if (toplevel.status === 0) {
+    const repoRoot = toplevel.stdout.trim();
+    for (const task of tasks) {
+      for (const read of task.reads) {
+        if (!fs.existsSync(path.join(repoRoot, read))) {
+          blocking.push(`MISSING_READS_PATH ${task.id}: Reads ${read} does not exist in the repository`);
+        }
+      }
+    }
+  }
+}
+
 // Narrow verification. A leg is narrow when its paths all sit inside the task
 // Write scope (or its reads-only anchors); a leg without paths must not invoke a
 // whole-suite runner. One sink may run one broad leg; final acceptance always
 // runs on integration HEAD.
+const SHELL_CONSTRUCT = /\b(?:for|while|if|case|until)\b/;
+// `set -e; cmd` and `a || exit 1` are shell setup, not verify legs. commandParts
+// splits them into legs that prove nothing; name the real cause instead of the
+// downstream VERIFY_NOT_NARROW.
+const CONTROL_LEG = /^(?:set(?:\s|$)|exit(?:\s|$)|true$|false$|do(?:\s|$)|done$|fi$|else$|then$|esac$)/;
 for (const task of tasks) {
   const legs = verifyLegs(task.verify);
   const broadLegs = legs.filter((leg) => leg.broad).length;
@@ -190,6 +215,19 @@ for (const task of tasks) {
   const proves = (leg) => FULL_SUITE_LEG.test(leg.command) || leg.paths.some((p) => /(?:test|spec)/i.test(p));
   const allowed = verifyScope(task);
   const unscoped = legs.filter((leg) => !leg.broad && (!proves(leg) || leg.paths.some((path) => !isFileWithinScopes(path, allowed))));
+  // Shell loops are legitimate (a sink iterating `scripts/specs/*.mjs`), but the
+  // leg splitter cannot see inside them; report that instead of inventing legs.
+  if (SHELL_CONSTRUCT.test(task.verify)) {
+    advisories.push(`ADVISORY_SHELL_VERIFY ${task.id}: Verify uses shell control syntax; freeze-check splits legs naively, so only whole-command checks apply`);
+  } else {
+    const junk = legs.filter((leg) => CONTROL_LEG.test(leg.command));
+    if (junk.length) {
+      blocking.push(`VERIFY_JUNK_LEG ${task.id}: ${junk.map((leg) => `"${leg.command}"`).join(', ')} is shell setup, not a verify leg`);
+    }
+    if (/\|\|/.test(task.verify)) {
+      blocking.push(`VERIFY_JUNK_LEG ${task.id}: \`||\` is split into two mandatory legs; use \`&&\` or \`bash -c '...'\``);
+    }
+  }
   if (broadLegs && !sinkIds.has(task.id)) {
     blocking.push(`VERIFY_FULL_SUITE_NON_SINK ${task.id}: full-suite command is reserved for the sole sink`);
     fixes.set('VERIFY_FULL_SUITE_NON_SINK', 'replace the full-suite leg with a narrow test path, and leave the suite to the sink');
@@ -237,13 +275,24 @@ if (!acceptanceMarkdown) blocking.push('MISSING_ACCEPTANCE: acceptance.md not fo
 else {
   const acceptanceScenarios = new Set();
   const requiredRows = [];
-  for (const line of acceptanceMarkdown.split(/\r?\n/)) {
-    if (/^\s*\|\s*SCEN-[A-Za-z0-9-]+\s*\|/.test(line)) {
-      const cells = line.split('|').slice(1, -1).map((cell) => cell.trim().replace(/^`|`$/g, ''));
-      if (cells.length < 6) continue;
-      acceptanceScenarios.add(cells[0].toUpperCase());
-      if (/^yes$/i.test(cells[4])) requiredRows.push(cells);
+  // A literal `|` inside a cell silently changed the column count and the old parser
+  // just skipped the row. Count against the header instead, and accept `\|`.
+  const cellsOf = (line) => line.split(/(?<!\\)\|/).slice(1, -1)
+    .map((cell) => cell.trim().replace(/\\\|/g, '|').replace(/^`|`$/g, ''));
+  const lines = acceptanceMarkdown.split(/\r?\n/);
+  const header = lines.find((line) => /^\s*\|.*\|\s*$/.test(line) && /\bScenario\b/i.test(line));
+  const expectedColumns = header ? cellsOf(header).length : 7;
+  let rowNumber = 0;
+  for (const line of lines) {
+    rowNumber += 1;
+    if (!/^\s*\|\s*SCEN-[A-Za-z0-9-]+\s*\|/.test(line)) continue;
+    const cells = cellsOf(line);
+    if (cells.length !== expectedColumns) {
+      blocking.push(`MALFORMED_ACCEPTANCE_ROW acceptance.md:${rowNumber}: ${cells.length} cells, header has ${expectedColumns}; a literal \`|\` must be written \`\\|\``);
+      continue;
     }
+    acceptanceScenarios.add(cells[0].toUpperCase());
+    if (/^yes$/i.test(cells[4])) requiredRows.push(cells);
   }
   for (const scenario of acceptanceScenarios) {
     if (!declared.has(scenario)) blocking.push(`UNKNOWN_ACCEPTANCE_SCEN: ${scenario} is not declared`);
@@ -266,7 +315,6 @@ function gitIn(dir, gitArgs) {
   return spawnSync('git', ['-C', dir, ...gitArgs], { encoding: 'utf8' });
 }
 const nulList = (result) => (result.stdout || '').split('\0').filter(Boolean);
-const advisories = [];
 if (!structural) {
   const reviewMarkdown = read(path.join(changeDir, 'review.md'));
   const r0Match = reviewMarkdown ? [...reviewMarkdown.matchAll(/^R0:\s*pass\(([^@)]+)@([a-f0-9]{7,40})\)/gim)].at(-1) : undefined;
@@ -299,7 +347,10 @@ if (!structural) {
       // Working tree (staged, unstaged, untracked) vs the reviewed commit; review.md is written after the review.
       const diff = gitIn(changeDir, ['diff', '--name-only', '-z', sha, '--', '.']);
       const untracked = gitIn(changeDir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.']);
-      const drift = [...new Set([...nulList(diff), ...nulList(untracked)])].filter((file) => path.basename(file) !== 'review.md');
+      // review.md is written after the review; rulings.md records accepted non-obvious
+      // decisions made during it. Neither changes the contract, so neither is drift.
+      const drift = [...new Set([...nulList(diff), ...nulList(untracked)])]
+        .filter((file) => !['review.md', 'rulings.md'].includes(path.basename(file)));
       if (diff.status !== 0) blocking.push(`STALE_R0_SIGNOFF: cannot diff contract against reviewed commit ${sha}`);
       else if (drift.length) blocking.push(`STALE_R0_SIGNOFF: contract changed after R0 reviewed ${sha}: ${drift.slice(0, 5).join(', ')} — re-run hanlin R0`);
     }
