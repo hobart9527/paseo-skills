@@ -4,6 +4,7 @@
 
 - [ ] 1.1 T-01 form_drafts 表、仓储方法与 /api/v1/drafts REST 接口
   - Depends on: none
+  - Est: M
   - Write scope: packages/server/src/db/index.ts, packages/server/src/routes/draft-routes.ts, packages/server/src/routes/api.ts, packages/server/test/form-drafts.test.ts
   - Risk-surface: [persistence, public-api, concurrency]
   - Review: strict
@@ -13,6 +14,7 @@
 
 - [ ] 1.2 T-02 提单与存金蝶成功后的草稿状态跃迁与单号回填
   - Depends on: T-01
+  - Est: S
   - Write scope: packages/server/src/routes/bill-routes.ts, packages/server/src/services/approval-service.ts, packages/server/test/form-drafts-submit-marking.test.ts
   - Risk-surface: [public-api, persistence]
   - Review: strict
@@ -24,6 +26,7 @@
 
 - [ ] 2.1 T-03 useFormDraft 通用草稿 Hook、本地多草稿索引与旧版迁移
   - Depends on: none
+  - Est: L
   - Write scope: packages/web/src/components/forms/common/useFormDraft.ts, packages/web/test/use-form-draft.test.tsx
   - Risk-surface: [persistence, concurrency, error-handling]
   - Review: strict
@@ -33,6 +36,7 @@
 
 - [ ] 2.2 T-04 ExpenseBillForm 接入 useFormDraft、发票序列化与失效行提交阻断
   - Depends on: T-03, T-05, T-12
+  - Est: L
   - Write scope: packages/web/src/components/forms/ExpenseBillForm.tsx, packages/web/test/expense-form-draft.test.tsx, scripts/specs/expense-form-v10.mjs, scripts/specs/invoice-autofill.mjs, scripts/specs/invoice-table.mjs, scripts/specs/payee-company-scope.mjs, scripts/specs/payee-local-directory-removed.mjs
   - Risk-surface: [persistence, public-api]
   - Review: strict
@@ -42,6 +46,7 @@
 
 - [ ] 2.3 T-05 三个非报销表单接入 useFormDraft（借款 / 差旅借款 / 差旅报销）
   - Depends on: T-03
+  - Est: L
   - Write scope: packages/web/src/components/forms/LoanBillForm.tsx, packages/web/src/components/forms/TravelLoanBillForm.tsx, packages/web/src/components/forms/TravelExpenseBillForm.tsx, packages/web/test/non-expense-form-draft.test.tsx, scripts/specs/payee-company-scope.mjs
   - Risk-surface: [persistence]
   - Review: strict
@@ -53,6 +58,7 @@
 
 - [ ] 3.1 T-08 SubmitHubView 四入口首屏、子视图路由、DraftBoxView 与 MyRequestsView 冲抵入口
   - Depends on: T-03, T-11
+  - Est: M
   - Write scope: packages/web/src/components/SubmitHubView.tsx, packages/web/src/components/DraftBoxView.tsx, packages/web/src/components/Navigation.tsx, packages/web/src/components/MyRequestsView.tsx, packages/web/test/submit-hub-views.test.tsx, packages/web/test/my-requests-offset-entry.test.tsx
   - Risk-surface: [public-api]
   - Review: standard
@@ -62,6 +68,7 @@
 
 - [ ] 3.2 T-09 App.tsx 填报深链改道 SUBMIT_HUB 与 filingTab 移除
   - Depends on: none
+  - Est: M
   - Write scope: packages/web/src/App.tsx, packages/web/src/lib/filingDeepLink.ts, packages/web/test/filing-deep-link.test.ts, scripts/specs/app-filing-deeplink.mjs
   - Risk-surface: [public-api]
   - Review: standard
@@ -73,6 +80,7 @@
 
 - [ ] 4.1 T-11 OffsetLoanSelectView 独立冲抵借款选择页
   - Depends on: none
+  - Est: M
   - Write scope: packages/web/src/components/OffsetLoanSelectView.tsx, packages/web/test/offset-loan-select-view.test.tsx
   - Risk-surface: [public-api, error-handling]
   - Review: standard
@@ -82,6 +90,7 @@
 
 - [ ] 4.2 T-12 LoanOffsetPicker 失效预填行可见阻断与刷新台账
   - Depends on: none
+  - Est: L
   - Write scope: packages/web/src/components/forms/LoanOffsetPicker.tsx, packages/web/test/loan-offset-picker-guard.test.tsx
   - Risk-surface: [error-handling, public-api]
   - Review: strict
@@ -93,6 +102,7 @@
 
 - [ ] 5.1 T-13 eas-submit-api 文档补注与全量回归
   - Depends on: T-01, T-02, T-03, T-04, T-05, T-08, T-09, T-11, T-12
+  - Est: M
   - Write scope: docs/eas-submit-api.md
   - Risk-surface: [none]
   - Review: mechanical

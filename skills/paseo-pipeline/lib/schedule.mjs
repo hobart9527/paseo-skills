@@ -203,7 +203,7 @@ export function simulate(tasks, { policy = 'legacy', model } = {}) {
     mergeQueue.push(id);
   };
   const afterReview = (id) => {
-    if (!converged && reworkMinutes(known.get(id)) > 0) {
+    if (reworkMinutes(known.get(id)) > 0) {
       workQueue.push({ id, stage: 'rework', minutes: reworkMinutes(known.get(id)) });
       return;
     }
@@ -233,7 +233,7 @@ export function simulate(tasks, { policy = 'legacy', model } = {}) {
     for (const task of tasks) {
       if (activated.has(task.id) || !depsDone(task)) continue;
       activated.add(task.id);
-      const first = converged && task.kind === 'skeleton' ? 'impl' : 'red';
+      const first = reviewOf(task) === 'mechanical' ? 'impl' : 'red';
       workQueue.push({ id: task.id, stage: first, minutes: first === 'red' ? resolved.redMin : (resolved.implMin[estOf(task)] ?? resolved.implMin.M) });
     }
   };
