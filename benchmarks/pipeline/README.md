@@ -10,10 +10,20 @@ Run:
 ```
 node benchmarks/pipeline/benchmark.mjs
 node benchmarks/pipeline/benchmark.mjs --json
-node benchmarks/pipeline/benchmark.mjs --assert=50
+node benchmarks/pipeline/derive.mjs            # verify the fixture is still the derivation
+node benchmarks/pipeline/derive.mjs --write    # regenerate it after a real design change
+node benchmarks/pipeline/contract-check.mjs benchmarks/pipeline/converged-tasks.md
 ```
 
 Makespan comes from `skills/paseo-pipeline/lib/schedule.mjs`, the same cost model `freeze-check` uses for its route advisory. Task durations are not simulated from nothing: `baseline-metrics.mjs` reconstructs the measured phases from the real repository history, and `calibrate.mjs` can re-derive the model from any repository.
+
+`converged-tasks.md` is **generated**, not authored. `derive.mjs` renders it from
+`baseline-tasks.md` using `freeze-check`'s own edge rule (a target that declares
+`Interface:` may be reached with `Uses`; every other edge is `Depends on`). The only
+authored input is the design decision: which files the skeleton freezes, which
+read-only fixtures a task executes, which standard tasks defer review.
+`test/benchmark-contract.test.mjs` fails if the file drifts from the derivation and
+runs both fixtures through the real `freeze-check --structural`.
 
 ## What is measured, and what is not
 
@@ -43,11 +53,28 @@ measured data, caused the gap. All four are now fixed in both directions:
    model charged `regressionMinPerTask` only to converged merges, which understated
    the legacy makespan.
 
-After the corrections: **execution 45.8%, end-to-end 53.0%** at the measured
-263-minute contract, and 49.5% end-to-end if the contract phase were 70 minutes
-instead — the result is sensitive to the contract-phase assumption, and the
-execution-only gain stays below the 50% line. Do not adjust `263` or `POST` to
-raise the number.
+After the corrections: **execution 23.7%, end-to-end 42%** at the measured
+263-minute contract (358 → 273 min execution; 721 → 418 min end-to-end). Do not
+adjust `263` or `POST` to raise the number.
+
+### The earlier 45.8% / 53.0% figure was measured on an invalid contract
+
+A previous revision of `converged-tasks.md` was hand-edited: two `Depends on:` edges
+were rewritten as `Uses:` (T-04 → T-05 and T-08 → T-11) without the target declaring
+an `Interface:`. That made the converged DAG look two minutes shallower on the
+critical path, and it produced 45.8% / 53.0%. `freeze-check --structural` rejects
+exactly that shape with `USES_WITHOUT_INTERFACE`, so the pipeline would never have
+frozen that contract; the benchmark was scoring a change it could not run. Both
+edges are implementation dependencies — T-04's own Note says it is serialised
+against T-05 to avoid scope conflict, and T-08 imports an existing component from
+T-11 — so `Depends on` is the correct label. The fixture is now rendered by
+`derive.mjs`, and the honest number is 23.7% / 42%.
+
+The execution-only gain stays well below 50% here, and the critical-path ceiling
+says why: the converged chain T-00 → T-05 → T-04 → T-13 is 244 of the 273 minutes.
+No scheduler can beat it, so the most this DAG could ever show is
+(358 − 244) / 358 = 31.8% execution. The 27 minutes above the ceiling are the serial
+merge queue and the FINAL review tail.
 
 ## Sandbox end-to-end
 
@@ -95,9 +122,10 @@ The sandbox figures are deliberately not tuned to clear an efficiency target. On
 these ten shapes the modelled execution gain is **37.7%** aggregate and the modelled
 end-to-end gain is **50.7%** aggregate. Per scenario, execution ranges 26.8–49.1%
 and end-to-end 45.0–55.8%; six of ten clear 50% end-to-end. The real
-`submit-hub-offset-and-draft-box` DAG reaches 45.8% execution / 53.0% end-to-end
-because its critical chain is longer. A smaller/shallower DAG gains less, and the
-ten-scenario suite is built to show that spread rather than to maximise the headline.
+`submit-hub-offset-and-draft-box` DAG reaches 23.7% execution / 42% end-to-end:
+its converged critical chain is 244 of 273 minutes, a ceiling of 31.8%. A
+smaller/shallower DAG gains less, and the ten-scenario suite is built to show that
+spread rather than to maximise the headline.
 
 **Why execution-only cannot reach 50% on these shapes.** A schedule cannot beat its
 own critical path. On the converged DAGs the weighted critical path sums to 1,209
@@ -123,6 +151,16 @@ edge is Done; a regression test covers it.
 
 ## Acceptance used for this work
 
-1. `--assert=50` passes on the real DAG (end-to-end improvement ≥ 50%).
-2. Full unit suite green: `bash skills/paseo-pipeline/test/run-all.sh`.
+1. Both fixtures pass the pipeline's own `freeze-check --structural`, and
+   `converged-tasks.md` is byte-for-byte the output of `derive.mjs`
+   (`test/benchmark-contract.test.mjs`). A fixture the pipeline would refuse to
+   freeze cannot contribute a number.
+2. Full unit suite green: `bash skills/paseo-pipeline/test/run-all.sh` (256 tests).
 3. Sandbox end-to-end run green: contract lint → freeze-check → task merges (including `Uses`, `deferred`, cherry-pick provenance) with no blocking exit codes.
+4. Ten-scenario matrix green for all ten shapes under both policies, 94 tasks each;
+   aggregate modelled gain 37.7% execution / 50.7% end-to-end.
+5. The real DAG is reported as it measures: 23.7% execution / 42% end-to-end. It is
+   **not** required to clear 50%; its converged critical chain caps execution at
+   31.8%. The earlier `--assert=50` line was removed because the only contract that
+   passed it was one `freeze-check` rejects. Raising the fixture to clear a threshold
+   is the failure mode this benchmark exists to prevent.
