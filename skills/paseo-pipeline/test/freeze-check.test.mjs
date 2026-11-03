@@ -255,6 +255,111 @@ test('low speedup advisory fires on a near-serial DAG and stays silent on a wide
   assert.deepEqual(shared.criticalChain.map((step) => [step.id, step.via]), [['T-01', null], ['T-02', 'scope'], ['T-04', 'logical']]);
 });
 
+test('critical chain follows the weighted dispatch graph, not wave depth', () => {
+  // The skeleton costs only 15 minutes, so the wave chain (which ignores Uses edges)
+  // starts at T-01 and reports 168 minutes. The weighted chain includes the skeleton
+  // dispatch edge that actually bounds the makespan, and tags it `uses`.
+  const tasks = [
+    '- [ ] 1.1 T-00 iface',
+    '  - Write scope: src/iface.mjs,test/iface.test.mjs',
+    '  - Kind: skeleton',
+    '  - Interface: src/iface.mjs#run',
+    '  - Review: mechanical',
+    '  - Verify with: node --test test/iface.test.mjs',
+    '  - Scen: SCEN-1',
+    '- [ ] 1.2 T-01 consumer',
+    '  - Uses: T-00',
+    '  - Write scope: src/a.mjs,test/a.test.mjs',
+    '  - Est: L',
+    '  - Verify with: node --test test/a.test.mjs',
+    '  - Scen: SCEN-1',
+    '- [ ] 1.3 T-02 follower',
+    '  - Depends on: T-01',
+    '  - Write scope: src/b.mjs,test/b.test.mjs',
+    '  - Verify with: node --test test/b.test.mjs',
+    '  - Scen: SCEN-1',
+    '- [ ] 1.4 T-03 sink',
+    '  - Depends on: T-02',
+    '  - Write scope: src/sink.mjs',
+    '  - Review: mechanical',
+    '  - Verify with: npm test',
+    '  - Scen: SCEN-1',
+  ].join('\n');
+  const report = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change({
+    'tasks.md': tasks,
+    'proposal.md': 'x',
+    'design.md': design,
+    'acceptance.md': table('| SCEN-1 | CLI | T-03 | npm test | yes | PENDING | pending |'),
+    'specs/a/spec.md': '### Scenario: SCEN-1\n',
+    'review.md': REVIEW,
+  }), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
+  assert.deepEqual(report.criticalChain.map((step) => [step.id, step.via]),
+    [['T-00', null], ['T-01', 'uses'], ['T-02', 'logical'], ['T-03', 'logical']]);
+});
+
+test('a dependency carried only by a shared read-only fixture is advisory, not blocking', () => {
+  const tasks = [
+    '- [ ] 1.1 T-01 a',
+    '  - Write scope: src/a.mjs,test/a.test.mjs',
+    '  - Reads: scripts/specs/fixture.mjs',
+    '  - Verify with: node scripts/specs/fixture.mjs',
+    '  - Scen: SCEN-1',
+    '- [ ] 1.2 T-02 b',
+    '  - Depends on: T-01',
+    '  - Write scope: src/b.mjs,test/b.test.mjs',
+    '  - Reads: scripts/specs/fixture.mjs',
+    '  - Verify with: node scripts/specs/fixture.mjs',
+    '  - Scen: SCEN-1',
+    '- [ ] 1.3 T-03 sink',
+    '  - Depends on: T-02',
+    '  - Write scope: test/sink.test.mjs',
+    '  - Verify with: npm test',
+    '  - Scen: SCEN-1',
+    '',
+  ].join('\n');
+  const report = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change({
+    'tasks.md': tasks,
+    'proposal.md': 'x',
+    'design.md': design,
+    'acceptance.md': table('| SCEN-1 | CLI | T-03 | npm test | yes | PENDING | pending |'),
+    'specs/a/spec.md': '### Scenario: SCEN-1\n',
+    'review.md': REVIEW,
+  }), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
+  assert.deepEqual(report.blocking, []);
+  assert.match(report.advisories.join('\n'), /ADVISORY_READS_ONLY_EDGE T-02 -> T-01/);
+});
+
+test('a dependency between two writers of the same files is not reported as reads-only', () => {
+  const tasks = [
+    '- [ ] 1.1 T-01 a',
+    '  - Write scope: src/shared.mjs,test/a.test.mjs',
+    '  - Reads: scripts/specs/fixture.mjs',
+    '  - Verify with: node --test test/a.test.mjs',
+    '  - Scen: SCEN-1',
+    '- [ ] 1.2 T-02 b',
+    '  - Depends on: T-01',
+    '  - Write scope: src/shared.mjs,test/b.test.mjs',
+    '  - Reads: scripts/specs/fixture.mjs',
+    '  - Verify with: node --test test/b.test.mjs',
+    '  - Scen: SCEN-1',
+    '- [ ] 1.3 T-03 sink',
+    '  - Depends on: T-02',
+    '  - Write scope: test/sink.test.mjs',
+    '  - Verify with: npm test',
+    '  - Scen: SCEN-1',
+    '',
+  ].join('\n');
+  const report = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change({
+    'tasks.md': tasks,
+    'proposal.md': 'x',
+    'design.md': design,
+    'acceptance.md': table('| SCEN-1 | CLI | T-03 | npm test | yes | PENDING | pending |'),
+    'specs/a/spec.md': '### Scenario: SCEN-1\n',
+    'review.md': REVIEW,
+  }), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
+  assert.doesNotMatch(report.advisories.join('\n'), /ADVISORY_READS_ONLY_EDGE/);
+});
+
 function sinkContract(verify, extra = '') {
   return contract.replace('Verify with: npm test', `Verify with: ${verify}`).replace('  - Scen: SCEN-1\n', '  - Scen: SCEN-1\n').replace(/(1\.4 T-04 sink\n)/, `$1${extra}`);
 }
@@ -513,4 +618,17 @@ test('Reads must name a path that already exists in the repository', () => {
   fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'docs/contract.md'), 'x');
   assert.equal(run(dir, ['--structural', '--skip-signer-check']).status, 0);
+});
+
+test('Reads may forward-reference a path another task writes, but not a typo', () => {
+  // T-01 reads src/poison.txt before T-02 has written it: legal, because T-02 owns it.
+  const forward = contract
+    .replace('Write scope: src/shared,test/shared.test.mjs', 'Write scope: src/shared,test/shared.test.mjs,src/poison.txt')
+    .replace('  - Scen: SCEN-1\n- [ ] 1.2', '  - Reads: src/poison.txt\n  - Scen: SCEN-1\n- [ ] 1.2');
+  const ok = change({ 'tasks.md': forward, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  execFileSync('git', ['init', '-q'], { cwd: ok });
+  assert.doesNotMatch(run(ok, ['--structural', '--skip-signer-check']).stdout, /MISSING_READS_PATH/);
+  const typo = change({ 'tasks.md': forward.replace('Reads: src/poison.txt', 'Reads: src/posion.txt'), 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  execFileSync('git', ['init', '-q'], { cwd: typo });
+  assert.match(run(typo, ['--structural', '--skip-signer-check']).stdout, /MISSING_READS_PATH T-01/);
 });

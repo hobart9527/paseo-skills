@@ -7,7 +7,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo-agents.mjs';
 import { parseTasks, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
-import { weightedSpeedup, verifyScope, dispatchDeps } from './lib/schedule.mjs';
+import { weightedSpeedup, weightedCriticalPath, verifyScope, dispatchDeps } from './lib/schedule.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
@@ -187,17 +187,20 @@ for (const task of tasks) {
   }
 }
 
-// Reads is a read-only anchor: it must already exist. A typo used to read as "no
-// anchor" and only surface later as a mysterious VERIFY_NOT_NARROW.
+// Reads is a read-only anchor: it must already exist, unless another task's Write scope
+// will create it. A greenfield consumer legitimately verifies against a module a sibling
+// produces (and `merge-task` must replay it when that sibling merges), so a forward
+// reference inside a Write scope is allowed. A path that is neither on disk nor inside any
+// Write scope is a typo and still blocks; it must not silently degrade to "no anchor".
 {
   const toplevel = gitIn(changeDir, ['rev-parse', '--show-toplevel']);
   if (toplevel.status === 0) {
     const repoRoot = toplevel.stdout.trim();
     for (const task of tasks) {
       for (const read of task.reads) {
-        if (!fs.existsSync(path.join(repoRoot, read))) {
-          blocking.push(`MISSING_READS_PATH ${task.id}: Reads ${read} does not exist in the repository`);
-        }
+        if (fs.existsSync(path.join(repoRoot, read))) continue;
+        if (tasks.some((other) => isFileWithinScopes(read, other.scope))) continue;
+        blocking.push(`MISSING_READS_PATH ${task.id}: Reads ${read} does not exist in the repository`);
       }
     }
   }
@@ -393,17 +396,48 @@ const weighted = weightedSpeedup(tasks);
 if (tasks.length >= 4 && maxWidth >= 2 && weighted < 1.8) {
   advisories.push(`ADVISORY_LOW_SPEEDUP: weighted ${weighted}x (legacy ${speedup}x); compare with Tier 2 handoff before CP-1`);
 }
-// Critical chain: one longest dependency path, each edge tagged by why it exists. `scope` edges are
-// forced (shared files); `logical` edges are author choices and the only candidates for removal
-// (freeze a shared interface in design.md, then depend on the contract instead of the implementation).
-const waveOf = new Map(waveList.flatMap((item) => item.ids.map((id) => [id, item.wave])));
+// Critical chain: the longest path by the same weighted cost model the scheduler and the
+// benchmark use (lib/schedule.mjs). The wave-based chain this used to print counted edges,
+// not minutes, so it named a different path than the one that actually bounds the makespan
+// and pointed `CRITICAL_LOGICAL_EDGES` at edges that were not the bottleneck.
+// Each edge is tagged by why it exists: `scope` (shared files, forced), `uses` (an
+// interface target), `reads` (only a shared read-only fixture connects the pair), or
+// `logical` (author choice; the only removable kind).
 const criticalChain = [];
 {
-  let cur = tasks.find((task) => waveOf.get(task.id) === waveList.length);
-  while (cur) {
-    const prev = byId.get(cur.depends.find((id) => waveOf.get(id) === waveOf.get(cur.id) - 1));
-    criticalChain.unshift({ id: cur.id, via: prev ? (scopesClash(prev, cur) ? 'scope' : 'logical') : null });
-    cur = prev;
+  const weightedChain = weightedCriticalPath(tasks).chain;
+  for (let index = 0; index < weightedChain.length; index += 1) {
+    const id = weightedChain[index];
+    const previous = index > 0 ? byId.get(weightedChain[index - 1]) : null;
+    const current = byId.get(id);
+    let via = null;
+    if (previous && current) {
+      if ((current.uses || []).includes(previous.id) && !(current.depends || []).includes(previous.id)) via = 'uses';
+      else if (scopesClash(previous, current)) via = 'scope';
+      else if ((previous.reads || []).length
+        && (current.reads || []).some((read) => (previous.reads || []).some((other) => read === other || read.startsWith(`${other}/`) || other.startsWith(`${read}/`)))) via = 'reads';
+      else via = 'logical';
+    }
+    criticalChain.push({ id, via });
+  }
+}
+// A dependency whose only shared surface is a read-only fixture is a candidate for removal:
+// `merge-task` replays every Done task whose Verify scope overlaps the changed files, so the
+// fixture is re-run against the merged tree whether or not the author serialised the pair.
+// Advisory only — dropping the edge is a contract decision the author records in design.md.
+{
+  const readsOnly = [];
+  for (const task of tasks) {
+    for (const depId of task.depends || []) {
+      const dep = byId.get(depId);
+      if (!dep || sinkIds.has(task.id)) continue;
+      if (scopesClash(task, dep)) continue;
+      const shared = (task.reads || []).filter((read) => (dep.reads || []).some((other) => read === other));
+      if (shared.length) readsOnly.push(`${task.id} -> ${dep.id} (${shared.join(', ')})`);
+    }
+  }
+  if (readsOnly.length) {
+    advisories.push(`ADVISORY_READS_ONLY_EDGE ${readsOnly.join('; ')}: the pair shares only a read-only fixture and Write scopes do not overlap; merge-task replays it after either side merges. Record in design.md whether the edge is still needed before CP-1.`);
   }
 }
 const route = maxWidth >= 2 && tasks.length >= 4 ? 'pipeline' : 'handoff';

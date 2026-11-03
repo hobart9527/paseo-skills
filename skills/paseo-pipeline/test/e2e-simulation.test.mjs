@@ -161,6 +161,7 @@ Composite arithmetic expressions.
 - [ ] 2.1 T-02 add
   - Depends on: T-01
   - Write scope: src/add.mjs,test/add.test.mjs
+  - Reads: src/core.mjs,src/mul.mjs
   - Verify with: node --test test/add.test.mjs
   - Scen: SCEN-ADD
 - [ ] 2.2 T-03 mul
