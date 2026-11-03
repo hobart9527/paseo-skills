@@ -395,6 +395,38 @@ test('SKELETON_NOT_MECHANICAL blocks a skeleton that needs per-task review', () 
   assert.match(result.stdout, /SKELETON_NOT_MECHANICAL T-00/);
 });
 
+test('a producer consumed only through Uses is not a sink and may defer review', () => {
+  // T-01 is consumed by T-02 via Uses only; nothing lists it in Depends on. Counting
+  // Depends alone made T-01 look like a sink, so DEFERRED_NOT_STANDARD rejected it.
+  const tasks = `- [ ] 1.1 T-00 skeleton
+  - Write scope: src/iface/form.ts,src/alpha/api.ts,test/iface.test.mjs
+  - Kind: skeleton
+  - Interface: src/iface/form.ts#useDraft,src/alpha/api.ts#handler
+  - Review: mechanical
+  - Verify with: node --test test/iface.test.mjs
+- [ ] 1.2 T-01 producer
+  - Uses: T-00
+  - Depends on: T-00
+  - Write scope: src/alpha/api.ts,test/alpha.test.mjs
+  - Interface: src/alpha/api.ts#handler
+  - Review: deferred
+  - Verify with: node --test test/alpha.test.mjs
+  - Scen: SCEN-1
+- [ ] 1.3 T-02 consumer
+  - Uses: T-01
+  - Write scope: src/beta,test/beta.test.mjs
+  - Review: deferred
+  - Verify with: node --test test/beta.test.mjs
+  - Scen: SCEN-1
+- [ ] 1.4 T-03 sink
+  - Depends on: T-00,T-02
+  - Write scope: test/sink.test.mjs
+  - Verify with: npm test
+  - Scen: SCEN-1`;
+  const result = freezeStructural(tasks);
+  assert.equal(result.status, 0, result.stdout);
+});
+
 test('DEFERRED_NOT_STANDARD blocks the sink and persistence/security surfaces, but not public-api', () => {
   const sink = scheduleContract.replace('  - Verify with: npm test\n', '  - Verify with: npm test\n  - Review: deferred\n');
   assert.match(freezeStructural(sink).stdout, /DEFERRED_NOT_STANDARD T-03/);

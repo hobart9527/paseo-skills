@@ -92,7 +92,12 @@ for (const [scen, file] of declared) {
 
 // Wave partition. Waves are planning data only; runtime dispatch follows the ready frontier.
 const waves = computeWaves(tasks);
-const sinkIds = new Set(tasks.filter((task) => !tasks.some((other) => other.depends.includes(task.id))).map((task) => task.id));
+// A sink is a task nothing consumes. `Uses` is a merge edge too (the consumer merges
+// after the producer), so a producer read only through Uses is still not a sink; counting
+// `depends` alone falsely marked such producers as sinks and rejected their deferred review.
+const sinkIds = new Set(tasks
+  .filter((task) => !tasks.some((other) => (other.depends || []).includes(task.id) || (other.uses || []).includes(task.id)))
+  .map((task) => task.id));
 const waveList = [...waves.entries()].sort((a, b) => a[0] - b[0]).map(([wave, ids]) => ({ wave, ids }));
 const maxWidth = waveList.reduce((max, item) => Math.max(max, item.ids.length), 0);
 
