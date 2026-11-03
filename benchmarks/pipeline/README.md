@@ -64,18 +64,20 @@ dependency branch, and newest-attempt selection.
 
 ## Ten-scenario sandbox
 
-`sandbox-matrix.mjs` runs ten change shapes through the real scripts in a throwaway
+`sandbox-matrix.mjs` runs ten complex change shapes through the real scripts in a throwaway
 repository — `freeze-check`, `next-actions` frontier, `sync-check`, `merge-queue`,
 `merge-task`, and the FINAL reviewer brief — once under the legacy policy and once
-under the converged one. The scenarios cover UI skeletons, public-API rate limiting,
-persistence imports, security refresh, concurrency leases, search performance,
-mechanical i18n wiring, a design-token fan-out, a long CLI chain, and profiler
-fan-out.
+under the converged one. Each scenario is a 9–10 task decomposition, sized like the
+measured submit-hub change, with a skeleton, interface-declaring producers, `Uses`
+consumers, and one mechanical sink. The scenarios cover UI skeletons, public-API rate
+limiting, persistence imports, security refresh, concurrency leases, search performance,
+mechanical i18n wiring, a design-token fan-out, a long CLI chain, and profiler fan-out.
 
 What it proves: every shape freezes, dispatches, syncs, merges, and closes with all
-tasks Done and no blocking exit code. What it does *not* prove: model quality or
-wall-clock gains. Agent work is replaced by tiny commits, so the timed orchestration
-numbers are overhead only (≈0.7% difference) and are not a delivery-speed measure.
+tasks Done and no blocking exit code, across 94 tasks per policy. What it does *not*
+prove: model quality or wall-clock gains. Agent work is replaced by tiny commits, so
+the timed orchestration numbers are overhead only (≈10% difference) and are not a
+delivery-speed measure.
 
 The efficiency comparison is the shared cost model, reported two ways:
 
@@ -85,11 +87,18 @@ The efficiency comparison is the shared cost model, reported two ways:
   `benchmark.mjs` does.
 
 The sandbox figures are deliberately not tuned to clear an efficiency target. On
-these ten shapes the modelled execution gain is **17.2%** aggregate, and the
-modelled end-to-end gain is **45.6%**. The real `submit-hub-offset-and-draft-box`
-DAG reaches 45.5% execution / 52.9% end-to-end because its critical chain is much
-longer. A smaller/shallower DAG gains less, and the ten-scenario suite is built to
-show that spread rather than to maximise the headline.
+these ten shapes the modelled execution gain is **36.5%** aggregate and the modelled
+end-to-end gain is **50.3%** aggregate. Per scenario, execution ranges 26.3–44.7%
+and end-to-end 44.8–54.1%; six of ten clear 50% end-to-end. The real
+`submit-hub-offset-and-draft-box` DAG reaches 45.5% execution / 52.9% end-to-end
+because its critical chain is longer. A smaller/shallower DAG gains less, and the
+ten-scenario suite is built to show that spread rather than to maximise the headline.
+
+The sandbox also exposed a real scheduling defect, now fixed: `next-actions` proposed
+a merge for a `Uses` consumer as soon as its own implementation existed, before the
+producer was Done, and `merge-task` refused with exit 35. The frontier now reports
+such a task under `mergeWaiting` and withholds the merge until every `depends`/`uses`
+edge is Done; a regression test covers it.
 
 ## Acceptance used for this work
 

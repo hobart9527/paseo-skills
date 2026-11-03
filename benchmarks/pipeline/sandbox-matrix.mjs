@@ -151,6 +151,15 @@ async function runScenario(scenario, policy) {
       const implFiles = task.scope.filter((file) => file !== testFile);
 
       if (item.action === 'merge' || item.action === 'dispatch-reviewer') {
+        // `Uses` is a merge edge. The frontier already withholds mechanical/deferred
+        // merges until it is met; a strict consumer is reviewed as soon as it is
+        // implemented, so the Lead waits for the producer before merging and retries
+        // on a later round.
+        const unmetMerge = [...task.depends, ...task.uses].filter((id) => byId.has(id) && !done.has(id));
+        if (unmetMerge.length) {
+          if (item.action === 'merge') throw new Error(`frontier proposed merge ${task.id} before ${unmetMerge.join(', ')} Done`);
+          continue;
+        }
         // A fresh branch name per attempt: an integration branch already named
         // `task/<change>/<T>` would otherwise carry commits from an earlier task.
         const branch = branchOf.get(task.id);
@@ -182,18 +191,20 @@ async function runScenario(scenario, policy) {
         const name = `task/${s.change}/${task.id}`;
         branchOf.set(task.id, name);
         s.git('switch', '-q', '-c', name, base);
-        s.write(testFile, `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\ntest('red', () => { assert.equal(fs.existsSync('${implFiles[0]}'), true); });\n`);
+        s.write(testFile, `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\nimport { pathToFileURL } from 'node:url';\nimport path from 'node:path';\ntest('red', async () => {\n  const file = '${implFiles[0]}';\n  assert.equal(fs.existsSync(file), true, 'module must exist');\n  const { value } = await import(pathToFileURL(path.resolve(file)).href);\n  assert.equal(value, '${task.id}', 'behaviour not implemented yet');\n});\n`);
         s.git('add', testFile);
         s.git('commit', '-qm', `test(${task.id}): red\n\nPipeline-Role: ceshi\nPipeline-Author: ${AGENTS.ceshi.id}`);
       } else if (item.action === 'create-branch+dispatch-implementer') {
         // Mechanical: one commit, no Red (freeze-check forces Review: mechanical on skeletons).
+        // Skeleton files hold a stub, so a producer's Red test fails until it writes the value.
         const base = s.git('rev-parse', 'HEAD');
         bases.set(task.id, base);
         const name = `task/${s.change}/${task.id}`;
         branchOf.set(task.id, name);
         s.git('switch', '-q', '-c', name, base);
         s.write(testFile, `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\ntest('mechanical', () => { for (const file of ${JSON.stringify(implFiles)}) assert.equal(fs.existsSync(file), true); });\n`);
-        for (const file of implFiles) s.write(file, `export const value = '${task.id}';\n`);
+        const stub = task.kind === 'skeleton' ? 'stub' : task.id;
+        for (const file of implFiles) s.write(file, `export const value = '${stub}';\n`);
         s.git('add', '-A');
         s.git('commit', '-qm', `work(${task.id})\n\nPipeline-Role: gongbu\nPipeline-Author: ${AGENTS.gongbu.id}`);
       } else if (item.action === 'dispatch-implementer') {
