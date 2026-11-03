@@ -66,7 +66,9 @@ test('verify scope is Write scope plus read-only anchors', () => {
 
 test('node cost includes red, implementation, review and expected rework', () => {
   assert.equal(nodeCost(task({ est: 'M', review: 'standard' }), DEFAULT_MODEL), 20 + 25 + 25 + 4);
-  assert.equal(nodeCost(task({ est: 'S', kind: 'skeleton', review: 'mechanical' }), DEFAULT_MODEL), 20 + 15);
+  // Mechanical has no Red commit: simulate() starts it at implementation, so the
+  // cost model must not charge redMin or the critical path disagrees with makespan.
+  assert.equal(nodeCost(task({ est: 'S', kind: 'skeleton', review: 'mechanical' }), DEFAULT_MODEL), 15);
   assert.equal(nodeCost(task({ est: 'L', review: 'strict' }), DEFAULT_MODEL), 20 + 45 + 30 + 7);
   assert.equal(nodeCost(task({ est: 'M', review: 'deferred' }), DEFAULT_MODEL), 20 + 25 + 0 + 4);
   assert.equal(nodeCost(task({ est: 'M', review: 'standard' }), { implMin: { M: 10 } }), 20 + 10 + 25 + 4);

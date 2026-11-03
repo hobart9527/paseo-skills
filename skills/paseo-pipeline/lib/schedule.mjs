@@ -66,9 +66,13 @@ export function nodeCost(task, model) {
   const resolved = resolveModel(model);
   const review = reviewOf(task);
   const impl = resolved.implMin[estOf(task)] ?? resolved.implMin.M;
+  // `Review: mechanical` has no Red commit, in either policy (see simulate's activate()).
+  // Charging redMin here made the critical path disagree with the simulated makespan for
+  // the same DAG and overstated a skeleton's cost by redMin.
+  const red = review === 'mechanical' ? 0 : resolved.redMin;
   const inlineReview = resolved.reviewMin[review] ?? 0;
   const rework = (resolved.reworkRate[review] ?? 0) * resolved.reworkMin;
-  return resolved.redMin + impl + inlineReview + rework;
+  return red + impl + inlineReview + rework;
 }
 
 function criticalPath(tasks, depFn, model) {
