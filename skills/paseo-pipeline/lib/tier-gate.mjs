@@ -39,6 +39,14 @@
 //   许可弹窗。用户看到后，下一条消息到达时轮次清零、重新观察，每 DEFAULT_TURNS 轮最多打断一次。
 //   按轮次而非 Edit 次数计数（LESSONS §9.4）。
 //
+// 2026-11-03：修复 Git 工作树改动回写账本污染本会话计数问题。
+//   此前 assessStop 把工作树 Git 脏文件（round）并回 seg.files，由于 Git 工作树全进程共享，
+//   并发 agent 或其他活跃会话改动的文件被持久化进当前会话账本，导致当前会话后续正常的
+//   PreToolUse（Write/Edit）被误判超限阻断。
+//   现改为：
+//   1) seg.files 严格由 PreToolUse（assessTierGate）单会话精准记录，assessStop 绝不将 round 回写进 seg.files；
+//   2) assessStop 自动排除 stateDir 中其他活跃会话账本认领的业务文件，并发产物不计入当前会话。
+//
 // 2026-11-02（三）：补上「单目录」这一维。此前闸门只数文件数，跨包的第一个文件（如已在
 // packages/server 写了 1 个，再写 packages/web 的第 2 个）完全不拦——规则里的「超出单目录
 // 即 Tier 2」在实现里没有对应项。现按工作区根判 scopeKey（packages/web、apps/api、skills/x
@@ -378,11 +386,40 @@ function localCommitFiles(root, from, to) {
 }
 
 /**
+ * 仓内其他活跃会话已经认领（files 或 asked）的文件集合。
+ * 用于 Stop 核对时排除并发 agent / 其他会话在同一 checkout 下产生的业务文件，避免误算进本会话。
+ */
+export function otherSessionsClaimedFiles(dir, currentSessionId, root, now = Date.now()) {
+  const claimed = new Set();
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.endsWith('.json') || name.endsWith('.snap.json')) continue;
+      const sid = name.slice(0, -5);
+      if (sid === currentSessionId) continue;
+      const state = readState(path.join(dir, name));
+      const entry = state[root];
+      if (!entry || Array.isArray(entry)) continue;
+      const at = typeof entry.at === 'number' ? entry.at : 0;
+      if (at > 0 && now - at < idleFromEnv()) {
+        const files = Array.isArray(entry.files) ? entry.files : [];
+        const asked = Array.isArray(entry.asked) ? entry.asked : [];
+        for (const f of files) claimed.add(f);
+        for (const f of asked) claimed.add(f);
+      }
+    }
+  } catch {
+    // 读其他会话失败不影响本会话主流程
+  }
+  return claimed;
+}
+
+/**
  * Stop 时核对：自本轮快照以来主 checkout 上变化的业务文件（含 Bash 造成的、含已提交的）是否超过 Tier 1 上限。
  * 经 ask 流程由用户确认过的文件不计入。
+ * 排除 stateDir 中其他活跃会话已认领的文件，避免并发产物误拦当前会话。
+ * 不将工作树 Git 改动（round）回写进 seg.files，保证 PreToolUse 判据仅反映当前会话结构化写入，不受 Git 脏文件污染。
  *
- * 每轮结束都把本轮实际改动的业务文件并回段账本并记一轮，这样「每轮 Bash 改 2 个文件」会累计
- * 到上限，而不是被一次快照重置掉。同一段里连续 DEFAULT_TURNS 轮都在改业务文件，也在这里
+ * 同一段里连续 DEFAULT_TURNS 轮都在改业务文件，也在这里
  * 汇报一次「原地反复试错」——事后迫使模型停下来讲清楚，而不是逐次写入弹许可框。
  *
  * @returns {{verdict: 'ok'|'block', reason?: string, files?: string[]}}
@@ -409,20 +446,21 @@ export function assessStop({ cwd, sessionId }) {
   const state = readState(file);
   const seg = segment(state[ctx.root]);
   const asked = new Set(seg.asked);
-  const business = (rel) => !EXEMPT(rel) && !asked.has(rel);
+  const claimedByOthers = otherSessionsClaimedFiles(stateDir(), sessionId, ctx.root);
+  const business = (rel) => !EXEMPT(rel) && !asked.has(rel) && !claimedByOthers.has(rel);
   const round = [...changed].filter(business).sort();
-  // 上一轮已计入的文件也要参与上限判定：每轮 2 个、累计 4 个必须拦住。
-  const accumulated = [...new Set([...seg.files, ...round])].filter(business).sort();
+  // 本会话 PreToolUse 已写文件 + 本轮 Git 变化的业务文件（排除并发产物）参与当轮判定
+  const combined = [...new Set([...seg.files, ...round])].filter(business).sort();
   const limit = limitFromEnv();
   const reportedBefore = new Set(seg.reported);
   // 同一批累计文件只汇报一次：用户看到 block 后回一句「知道了」，不应在没有任何新改动时
   // 再被同样的 block 打断；只有出现新的越界文件才重新汇报。
-  const unreported = accumulated.filter((rel) => !reportedBefore.has(rel));
-  const fileLimitBlock = accumulated.length > limit && unreported.length > 0;
+  const unreported = combined.filter((rel) => !reportedBefore.has(rel));
+  const fileLimitBlock = combined.length > limit && unreported.length > 0;
   // 跨作用域与 assessTierGate 同口径：已有累计文件、再触到第 2 个作用域即越出 Tier 1。
   // Bash 写入绕过了 PreToolUse 的 ask，这里事后补上；复用 reported，同一批只汇报一次。
-  const scopes = [...new Set([...accumulated, ...seg.asked].map(scopeKey))].sort();
-  const scopeBlock = !fileLimitBlock && accumulated.length > 0 && scopes.length >= 2 && unreported.length > 0;
+  const scopes = [...new Set([...combined, ...seg.asked].map(scopeKey))].sort();
+  const scopeBlock = !fileLimitBlock && combined.length > 0 && scopes.length >= 2 && unreported.length > 0;
   // 「连续多轮原地改」在这里判：Stop 的产出是迫使模型停下来汇报，不是逐次写入的许可。
   // 汇报过一次就设 churnReported，用户回话时由 takeSnapshot 重置；否则同一段任务每轮都打断。
   const turnLimit = turnsFromEnv();
@@ -433,11 +471,12 @@ export function assessStop({ cwd, sessionId }) {
   // 否则一段任务会被频繁的 Stop 永久保活，空闲重置永远不生效。
   if (round.length > 0) {
     writeSegment(file, state, ctx.root, {
-      files: accumulated,
+      // 关键：不将 round 回写进 files，files 严格由 PreToolUse 精确记账，避免 Git 脏文件污染后续 PreToolUse
+      files: seg.files,
       asked: seg.asked,
       at: Date.now(),
       turns: turnsAfter,
-      reported: fileLimitBlock || scopeBlock ? accumulated : seg.reported,
+      reported: fileLimitBlock || scopeBlock ? combined : seg.reported,
       // 保留已汇报标记：只有下一条用户消息（takeSnapshot）才重置，别在同一条消息里又允许重复打断。
       churnReported: seg.churnReported || churnBlock,
     });
@@ -445,19 +484,19 @@ export function assessStop({ cwd, sessionId }) {
 
   if (!block) return { verdict: 'ok', files: round };
   const limitReason = [
-    `[tier-gate] 本任务段在主 checkout（main）上已改动 ${accumulated.length} 个业务文件，超过 Tier 1 上限 ${limit}，且未经确认。`,
+    `[tier-gate] 本任务段在主 checkout（main）上已改动 ${combined.length} 个业务文件，超过 Tier 1 上限 ${limit}，且未经确认。`,
     `本轮改动：${round.join('、') || '（无新增，是上一轮累计）'}`,
-    `累计：${accumulated.join('、')}`,
+    `累计：${combined.join('、')}`,
     '不要再改文件，也不要回滚。先向用户汇报：这次已越出 Tier 1，是否未先分级；然后请用户决定走 Tier 2（/paseo-handoff）、Tier 3（/paseo-pipeline）或明确放行。',
     '（若其中有文件不是你改的，例如用户或其他会话同时在改，说明这一点即可。）',
   ].join('\n');
   const scopeReason = [
     `[tier-gate] 本任务段在主 checkout（main）上已跨 ${scopes.length} 个作用域（${scopes.join('、')}），超出 Tier 1 的「单目录小范围」，且未经确认。`,
     `本轮改动：${round.join('、') || '（无新增，是上一轮累计）'}`,
-    `累计：${accumulated.join('、')}`,
+    `累计：${combined.join('、')}`,
     '不要再改文件，也不要回滚。先向用户汇报：这次已越出 Tier 1，是否未先分级；然后请用户决定走 Tier 2（/paseo-handoff）、Tier 3（/paseo-pipeline）或明确放行。',
   ].join('\n');
   const reason = [fileLimitBlock ? limitReason : '', scopeBlock ? scopeReason : '', churnBlock ? churnReason(turnsAfter, turnLimit) : '']
     .filter(Boolean).join('\n\n');
-  return { verdict: 'block', files: accumulated, reason };
+  return { verdict: 'block', files: combined, reason };
 }

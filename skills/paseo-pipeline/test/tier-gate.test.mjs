@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { assessTierGate, assessStop, takeSnapshot, logHookError, scopeKey } from '../lib/tier-gate.mjs';
+import { assessTierGate, assessStop, takeSnapshot, logHookError, scopeKey, otherSessionsClaimedFiles } from '../lib/tier-gate.mjs';
 import { shouldRemind, isSystemNotification, REMINDER } from '../hooks/tier-reminder-hook.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -449,20 +449,33 @@ test('Stop 核对：stash 还原本轮前的脏文件不算改动', () => withSt
   assert.equal(stop(root).verdict, 'ok');
 }));
 
-test('Stop 核对：跨轮次用 Bash 小步写入，累计超限仍被 block', () => withState(() => {
+test('Stop 核对：不将 Git 脏文件并回 seg.files，PreToolUse 额度不被污染', () => withState(() => {
   const root = makeRepo();
-  snap(root, 'multi');
+  snap(root, 'clean');
   bashWrite(root, ['a', 'b']);
-  assert.equal(stop(root, 'multi').verdict, 'ok');
-  snap(root, 'multi');
-  bashWrite(root, ['c', 'd']);
-  const blocked = stop(root, 'multi');
-  assert.equal(blocked.verdict, 'block');
-  assert.match(blocked.reason, /累计/);
-  assert.match(blocked.reason, /src\/a/);
-  // 用户答复后没有新改动：同一批文件不再重复打断。
-  snap(root, 'multi');
-  assert.equal(stop(root, 'multi').verdict, 'ok');
+  assert.equal(stop(root, 'clean').verdict, 'ok');
+  // 关键不变式：Bash 造成的 Git 脏文件不回写进入 seg.files
+  // 当前会话后续结构化写入（Write/Edit）仍然拥有完整的 3 个额度
+  assert.equal(write(root, 'x', 'clean').verdict, 'allow');
+  assert.equal(write(root, 'y', 'clean').verdict, 'allow');
+  assert.equal(write(root, 'z', 'clean').verdict, 'allow');
+  assert.equal(write(root, 'extra', 'clean').verdict, 'ask');
+}));
+
+test('Stop 核对：并发会话产物自动排除，不误拦当前会话', () => withState(() => {
+  const root = makeRepo();
+  // 会话 s1 写入 4 个业务文件
+  for (const n of ['p1', 'p2', 'p3']) write(root, n, 's1');
+  assert.equal(write(root, 'p4', 's1').verdict, 'ask');
+  // 工作树真实落盘
+  bashWrite(root, ['p1', 'p2', 'p3', 'p4']);
+
+  // 并发会话 s2 在同一工作树运行，自身未改动文件
+  snap(root, 's2');
+  // s2 Stop 核对时，p1-p4 已由 s1 认领，不应将 s1 的产物算进 s2
+  const v = stop(root, 's2');
+  assert.equal(v.verdict, 'ok');
+  assert.deepEqual(v.files, []);
 }));
 
 test('连续多轮原地改：第 3 轮 Stop 汇报一次，用户回话后重新观察', () => withState(() => {
