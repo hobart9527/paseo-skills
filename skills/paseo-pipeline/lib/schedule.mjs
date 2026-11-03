@@ -254,7 +254,10 @@ export function simulate(tasks, { policy = 'legacy', model } = {}) {
     }
   };
   const mergeCost = (task) => {
-    if (!converged) return resolved.mergeMin;
+    // `merge-task` replays every already-Done task whose Verify scope overlaps the merging
+    // task, under either policy (the code has no policy branch, and it is already present at
+    // the pre-optimization commit). Charging it only to the converged run understated the
+    // legacy makespan and so overstated the gain.
     const regressions = [...done].filter((id) => id !== task.id && verifyOverlap(known.get(id), task)).length;
     return resolved.mergeMin + resolved.regressionMinPerTask * regressions;
   };

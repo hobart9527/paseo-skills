@@ -130,3 +130,21 @@ test('simulate honours model overrides', () => {
   const fast = simulate(dag, { policy: 'converged', model: { implMin: { M: 5 } } });
   assert.ok(slow.makespan > fast.makespan);
 });
+
+test('merge charges regression replay under both policies', () => {
+  // `merge-task` replays already-Done overlapping Verify legs whichever policy scheduled
+  // the DAG, so a model that charges it only to converged overstates the converged gain.
+  const model = { redMin: 0, implMin: { S: 10 }, reviewMin: { standard: 0 }, reworkRate: { standard: 0 }, mergeMin: 0, regressionMinPerTask: 3 };
+  const overlapping = [
+    task({ id: 'T-01', est: 'S', scope: ['src/shared'] }),
+    task({ id: 'T-02', est: 'S', scope: ['src/shared/b.ts'] }),
+  ];
+  const disjoint = [
+    task({ id: 'T-01', est: 'S', scope: ['src/a/a.ts'] }),
+    task({ id: 'T-02', est: 'S', scope: ['src/b/b.ts'] }),
+  ];
+  for (const policy of ['legacy', 'converged']) {
+    assert.equal(simulate(disjoint, { policy, model }).makespan, 10, `${policy} disjoint`);
+    assert.equal(simulate(overlapping, { policy, model }).makespan, 13, `${policy} overlapping`);
+  }
+});

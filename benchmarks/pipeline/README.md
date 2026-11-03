@@ -23,8 +23,8 @@ Makespan comes from `skills/paseo-pipeline/lib/schedule.mjs`, the same cost mode
 
 ## Fairness corrections to the cost model
 
-An earlier run reported 48.7% end-to-end. Three asymmetries in the model, not the
-measured data, caused the gap. All three are now fixed in both directions:
+An earlier run reported 48.7% end-to-end. Four asymmetries in the model, not the
+measured data, caused the gap. All four are now fixed in both directions:
 
 1. **Est parity.** The baseline fixture omitted `Est:`, so the model charged those
    tasks M (25 min) while the converged fixture declared L (45 min) for the same
@@ -37,9 +37,14 @@ measured data, caused the gap. All three are now fixed in both directions:
 3. **Mechanical tasks skip Red.** A `Review: mechanical` task has no Red commit, in
    either policy. `simulate` previously charged a Red phase to every task under the
    legacy policy; it now starts mechanical tasks at implementation.
+4. **Regression replay in both merges.** `merge-task` re-runs every already-Done
+   task whose Verify scope overlaps the merging task, and that code has no policy
+   branch — it is already present at the pre-optimization commit `3564da4`. The
+   model charged `regressionMinPerTask` only to converged merges, which understated
+   the legacy makespan.
 
-After the corrections: **execution 45.5%, end-to-end 52.9%** at the measured
-263-minute contract, and 49.4% end-to-end if the contract phase were 70 minutes
+After the corrections: **execution 45.8%, end-to-end 53.0%** at the measured
+263-minute contract, and 49.5% end-to-end if the contract phase were 70 minutes
 instead — the result is sensitive to the contract-phase assumption, and the
 execution-only gain stays below the 50% line. Do not adjust `263` or `POST` to
 raise the number.
@@ -87,12 +92,22 @@ The efficiency comparison is the shared cost model, reported two ways:
   `benchmark.mjs` does.
 
 The sandbox figures are deliberately not tuned to clear an efficiency target. On
-these ten shapes the modelled execution gain is **37.1%** aggregate and the modelled
-end-to-end gain is **50.5%** aggregate. Per scenario, execution ranges 26.3–48.7%
-and end-to-end 44.8–55.7%; six of ten clear 50% end-to-end. The real
-`submit-hub-offset-and-draft-box` DAG reaches 45.5% execution / 52.9% end-to-end
+these ten shapes the modelled execution gain is **37.7%** aggregate and the modelled
+end-to-end gain is **50.7%** aggregate. Per scenario, execution ranges 26.8–49.1%
+and end-to-end 45.0–55.8%; six of ten clear 50% end-to-end. The real
+`submit-hub-offset-and-draft-box` DAG reaches 45.8% execution / 53.0% end-to-end
 because its critical chain is longer. A smaller/shallower DAG gains less, and the
 ten-scenario suite is built to show that spread rather than to maximise the headline.
+
+**Why execution-only cannot reach 50% on these shapes.** A schedule cannot beat its
+own critical path. On the converged DAGs the weighted critical path sums to 1,209
+minutes against a legacy makespan of 2,614, so the best any scheduler could do is
+**53.7%** execution — and three shapes (`ui-form-validation` 48.8%,
+`search-index` 46.3%, `perf-profiler` 48.8%) have a critical-path ceiling below 50%.
+The remaining 419 minutes from the floor to the simulated 1,628 is the serial merge
+queue (`merge-task` is the sole Done writer, by design) plus the FINAL review tail.
+That is architecture, not slack: removing it would be the over-design this work was
+told to avoid. End-to-end is the number the contract-phase reduction moves.
 
 The orchestration wall time is the only directly measured number in the sandbox,
 and it is a script-overhead measure, not delivery speed: ~10%. Everything else in
