@@ -50,7 +50,17 @@ raise the number.
 a skeleton, a `Uses` consumer, a deferred task and a cherry-picked commit, then runs
 `freeze-check` and `merge-task` against it. It asserts both the happy path and the
 blocking codes (35 for an unfinished `Uses` producer, 32 for a deferred tag on a
-strict task, 31 for a hand-recreated commit).
+task the contract did not defer, 31 for a hand-recreated commit).
+
+## Merge queue
+
+`skills/paseo-pipeline/merge-queue.mjs` is the P2 pre-merge probe:
+`merge-queue.mjs <change-dir>` chains `git merge-tree` over the pending task
+branches in dependency order and reports clean merges, conflicting files, and
+waiting dependencies. It never touches a ref or the integration worktree;
+`merge-task` remains the only writer. `test/merge-queue.test.mjs` covers an
+independent queue, a conflict introduced by an earlier queued branch, a missing
+dependency branch, and newest-attempt selection.
 
 ## Acceptance used for this work
 
