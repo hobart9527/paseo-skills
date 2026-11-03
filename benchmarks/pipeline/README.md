@@ -15,7 +15,7 @@ node benchmarks/pipeline/derive.mjs --write    # regenerate it after a real desi
 node benchmarks/pipeline/contract-check.mjs benchmarks/pipeline/converged-tasks.md
 ```
 
-Makespan comes from `skills/paseo-pipeline/lib/schedule.mjs`, the same cost model `freeze-check` uses for its route advisory. Task durations are not simulated from nothing: `baseline-metrics.mjs` reconstructs the measured phases from the real repository history, and `calibrate.mjs` can re-derive the model from any repository.
+Makespan comes from `skills/paseo-pipeline/lib/schedule.mjs`, the same cost model `freeze-check` uses for its route advisory. `baseline-metrics.mjs` reconstructs the measured phases from the real repository history. The model itself is a hand-set estimate, not derived from those measurements: `DEFAULT_MODEL` is the single place to change it, and no gate reads a calibrated file.
 
 `converged-tasks.md` is **generated**, not authored. `derive.mjs` renders it from
 `baseline-tasks.md` using `freeze-check`'s own edge rule (a target that declares
@@ -130,15 +130,15 @@ waiting dependencies. It never touches a ref or the integration worktree;
 independent queue, a conflict introduced by an earlier queued branch, a missing
 dependency branch, and newest-attempt selection.
 
-## Red-ahead: measured, not implemented
+## Red-ahead: closed by the one-worker design
 
-Running `ceshi` for a task whose dispatch deps are not Done yet (speculative Red)
-is *not* implemented. The model cannot price its main risk: a Red test written
-against an interface another task is still implementing often fails for the wrong
-reason and is rewritten, and that rework is invisible to the scheduling model. The
-benchmark reports scheduling levers only; it does not invent speculative work to
-move the headline. Re-open this only with measured rework data showing Red authoring
-is on the critical path.
+The probe assumed a separate `ceshi` author writing a Red test ahead of dispatch.
+That role is retired: one worker now writes tests and implementation in a single
+pass, so a Red commit is no longer a schedulable phase. The model cannot price the
+alternative either — a test written against an interface another task is still
+implementing often fails for the wrong reason and is rewritten, and that rework is
+invisible to the scheduling model. The benchmark reports scheduling levers only; it
+does not invent speculative work to move the headline.
 
 ## Ten-scenario sandbox
 

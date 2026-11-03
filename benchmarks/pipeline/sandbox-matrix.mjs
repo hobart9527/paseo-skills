@@ -125,9 +125,9 @@ async function runScenario(scenario, policy) {
   phases.freezeMs += structural.ms + frozen.ms;
 
   s.git('switch', '-qc', `integration/${s.change}`);
-  const lead = timed('node', [bin('brief.mjs'), 'lead', '--change', s.change, '--repo', s.cwd, '--json'], s.cwd, s.env);
-  if (lead.status !== 0) throw new Error(`lead brief failed: ${lead.out}`);
-  phases.briefMs += lead.ms;
+  const workerBrief = timed('node', [bin('brief.mjs'), 'worker', '--change', s.change, '--repo', s.cwd, '--task', taskList[0].id, '--json'], s.cwd, s.env);
+  if (workerBrief.status !== 0) throw new Error(`worker brief failed: ${workerBrief.out}`);
+  phases.briefMs += workerBrief.ms;
 
   const done = new Set();
   let round = 0;
@@ -150,22 +150,11 @@ async function runScenario(scenario, policy) {
       const testFile = task.scope.find((file) => /(\.|_)(test|spec)\./.test(file));
       const implFiles = task.scope.filter((file) => file !== testFile);
 
-      if (item.action === 'merge' || item.action === 'dispatch-reviewer') {
-        // `Uses` is a merge edge. The frontier already withholds mechanical/deferred
-        // merges until it is met; a strict consumer is reviewed as soon as it is
-        // implemented, so the Lead waits for the producer before merging and retries
-        // on a later round.
+      if (item.action === 'merge') {
+        // `Uses` is a merge edge; the frontier withholds the merge until it is met.
         const unmetMerge = [...task.depends, ...task.uses].filter((id) => byId.has(id) && !done.has(id));
-        if (unmetMerge.length) {
-          if (item.action === 'merge') throw new Error(`frontier proposed merge ${task.id} before ${unmetMerge.join(', ')} Done`);
-          continue;
-        }
-        // A fresh branch name per attempt: an integration branch already named
-        // `task/<change>/<T>` would otherwise carry commits from an earlier task.
+        if (unmetMerge.length) throw new Error(`frontier proposed merge ${task.id} before ${unmetMerge.join(', ')} Done`);
         const branch = branchOf.get(task.id);
-        const tag = item.action === 'dispatch-reviewer'
-          ? AGENTS.anchasi.id
-          : task.review === 'mechanical' ? 'mechanical' : 'deferred';
         if (task.uses.length) {
           // Rehearse the consumer against the integration tip before queueing the merge.
           s.git('switch', '-q', branch);
@@ -177,39 +166,37 @@ async function runScenario(scenario, policy) {
         }
         const queued = timed('node', [bin('merge-queue.mjs'), `openspec/changes/${s.change}`, task.id, '--json'], s.cwd, s.env);
         phases.queueMs += queued.ms;
-        const merged = timed('node', [bin('merge-task.mjs'), branch, task.id, `pass(${tag}@${s.git('rev-parse', branch).slice(0, 7)}/${bases.get(task.id).slice(0, 7)})`], s.cwd, s.env);
+        const merged = timed('node', [bin('merge-task.mjs'), branch, task.id], s.cwd, s.env);
         phases.mergeMs += merged.ms;
-        if (merged.status !== 0) throw new Error(`merge ${task.id} (${tag}) failed exit ${merged.status}: ${merged.out}`);
+        if (merged.status !== 0) throw new Error(`merge ${task.id} failed exit ${merged.status}: ${merged.out}`);
         done.add(task.id);
         continue;
       }
 
       const started = process.hrtime.bigint();
-      if (item.action === 'create-branch+dispatch-ceshi') {
-        const base = s.git('rev-parse', 'HEAD');
-        bases.set(task.id, base);
-        const name = `task/${s.change}/${task.id}`;
-        branchOf.set(task.id, name);
-        s.git('switch', '-q', '-c', name, base);
-        s.write(testFile, `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\nimport { pathToFileURL } from 'node:url';\nimport path from 'node:path';\ntest('red', async () => {\n  const file = '${implFiles[0]}';\n  assert.equal(fs.existsSync(file), true, 'module must exist');\n  const { value } = await import(pathToFileURL(path.resolve(file)).href);\n  assert.equal(value, '${task.id}', 'behaviour not implemented yet');\n});\n`);
-        s.git('add', testFile);
-        s.git('commit', '-qm', `test(${task.id}): red\n\nPipeline-Role: ceshi\nPipeline-Author: ${AGENTS.ceshi.id}`);
-      } else if (item.action === 'create-branch+dispatch-implementer') {
-        // Mechanical: one commit, no Red (freeze-check forces Review: mechanical on skeletons).
-        // Skeleton files hold a stub, so a producer's Red test fails until it writes the value.
-        const base = s.git('rev-parse', 'HEAD');
-        bases.set(task.id, base);
-        const name = `task/${s.change}/${task.id}`;
-        branchOf.set(task.id, name);
-        s.git('switch', '-q', '-c', name, base);
-        s.write(testFile, `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\ntest('mechanical', () => { for (const file of ${JSON.stringify(implFiles)}) assert.equal(fs.existsSync(file), true); });\n`);
-        const stub = task.kind === 'skeleton' ? 'stub' : task.id;
-        for (const file of implFiles) s.write(file, `export const value = '${stub}';\n`);
-        s.git('add', '-A');
-        s.git('commit', '-qm', `work(${task.id})\n\nPipeline-Role: gongbu\nPipeline-Author: ${AGENTS.gongbu.id}`);
-      } else if (item.action === 'dispatch-implementer') {
-        s.git('switch', '-q', branchOf.get(task.id));
-        for (const file of implFiles) s.write(file, `export const value = '${task.id}';\n`);
+      if (item.action === 'create-branch+dispatch-worker' || item.action === 'dispatch-worker') {
+        if (item.action === 'create-branch+dispatch-worker') {
+          const base = s.git('rev-parse', 'HEAD');
+          bases.set(task.id, base);
+          const name = `task/${s.change}/${task.id}`;
+          branchOf.set(task.id, name);
+          s.git('switch', '-q', '-c', name, base);
+        } else {
+          s.git('switch', '-q', branchOf.get(task.id));
+        }
+        // One worker writes the test and the implementation in one pass.
+        if (task.kind === 'skeleton' || task.review === 'mechanical') {
+          // Mechanical: an existence-only Verify, no Red phase. A skeleton holds a stub
+          // so consumers can compile against the interface; a docs task writes prose.
+          s.write(testFile, `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\ntest('mechanical', () => { for (const file of ${JSON.stringify(implFiles)}) assert.equal(fs.existsSync(file), true); });\n`);
+          for (const file of implFiles) {
+            if (/\.(mjs|js|ts|tsx)$/.test(file)) s.write(file, `export const value = '${task.kind === 'skeleton' ? 'stub' : task.id}';\n`);
+            else s.write(file, `# ${task.title}\n`);
+          }
+        } else {
+          s.write(testFile, `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\nimport { pathToFileURL } from 'node:url';\nimport path from 'node:path';\ntest('behavior', async () => {\n  const file = '${implFiles[0]}';\n  assert.equal(fs.existsSync(file), true, 'module must exist');\n  const { value } = await import(pathToFileURL(path.resolve(file)).href);\n  assert.equal(value, '${task.id}', 'behaviour not implemented yet');\n});\n`);
+          for (const file of implFiles) s.write(file, `export const value = '${task.id}';\n`);
+        }
         s.git('add', '-A');
         s.git('commit', '-qm', `work(${task.id})\n\nPipeline-Role: gongbu\nPipeline-Author: ${AGENTS.gongbu.id}`);
       } else {
@@ -228,9 +215,9 @@ async function runScenario(scenario, policy) {
   const finalBrief = timed('node', [bin('brief.mjs'), 'reviewer', '--change', s.change, '--repo', s.cwd, '--json'], s.cwd, s.env);
   if (finalBrief.status !== 0) throw new Error(`final brief failed: ${finalBrief.out}`);
   phases.briefMs += finalBrief.ms;
-  if (policy === 'converged' && scenario.tasks.some((task) => task.review === 'deferred')) {
+  if (policy === 'converged') {
     const prompt = JSON.parse(finalBrief.out).prompt;
-    if (!/## Deferred tasks/.test(prompt)) notes.push('FINAL brief lacks the deferred section');
+    if (!/## Merged tasks/.test(prompt)) notes.push('FINAL brief lacks the merged-tasks section');
   }
 
   const marked = parseTasks(fs.readFileSync(path.join(s.changeDir, 'tasks.md'), 'utf8')).tasks.filter((task) => task.checked);
