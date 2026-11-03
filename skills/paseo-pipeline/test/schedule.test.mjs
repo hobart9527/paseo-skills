@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DEFAULT_MODEL, resolveModel, taskWeight, dispatchDeps, mergeDeps, verifyScope,
-  nodeCost, weightedCriticalPath, weightedSpeedup, readyIds, simulate, regressionReplays,
+  nodeCost, weightedCriticalPath, weightedSpeedup, readyIds, simulate, regressionReplays, readsOnlyEdges,
 } from '../lib/schedule.mjs';
 
 const task = (over = {}) => ({
@@ -161,4 +161,19 @@ test('regressionReplays is the gate rule: changed paths vs the prior Verify surf
   // The gate passes the real diff; an empty diff replays nothing.
   assert.deepEqual(regressionReplays(merging, [priorReads], []), []);
   assert.deepEqual(regressionReplays(merging, [priorReads], ['docs/readme.md']), []);
+});
+
+test('readsOnlyEdges names explicit Depends on edges carried only by a shared fixture', () => {
+  const fixture = 'scripts/specs/fixture.mjs';
+  const shared = task({ id: 'T-01', scope: ['src/a'], reads: [fixture] });
+  const consumer = task({ id: 'T-02', scope: ['src/b'], reads: [fixture], depends: ['T-01'] });
+  const sink = task({ id: 'T-03', scope: ['src/c'], reads: [fixture], depends: ['T-02'], review: 'mechanical' });
+  assert.deepEqual(readsOnlyEdges([shared, consumer, sink]), [{ task: 'T-02', dep: 'T-01', shared: [fixture] }]);
+  // An overlapping Write scope is a real serialisation edge. The `sink` above is skipped
+  // because the integration point cannot dispatch early whatever its Reads say.
+  const writes = task({ ...consumer, scope: ['src/a/b'] });
+  assert.deepEqual(readsOnlyEdges([shared, writes, sink]), []);
+  // `Uses` is a dispatch/merge edge with its own rule; this advisory only judges Depends on.
+  const viaUses = task({ ...consumer, depends: [], uses: ['T-01'] });
+  assert.deepEqual(readsOnlyEdges([shared, viaUses, sink]), []);
 });

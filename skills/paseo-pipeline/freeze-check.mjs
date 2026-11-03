@@ -7,7 +7,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo-agents.mjs';
 import { parseTasks, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
-import { weightedSpeedup, weightedCriticalPath, verifyScope, dispatchDeps } from './lib/schedule.mjs';
+import { weightedSpeedup, weightedCriticalPath, verifyScope, dispatchDeps, readsOnlyEdges } from './lib/schedule.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
@@ -426,18 +426,10 @@ const criticalChain = [];
 // fixture is re-run against the merged tree whether or not the author serialised the pair.
 // Advisory only — dropping the edge is a contract decision the author records in design.md.
 {
-  const readsOnly = [];
-  for (const task of tasks) {
-    for (const depId of task.depends || []) {
-      const dep = byId.get(depId);
-      if (!dep || sinkIds.has(task.id)) continue;
-      if (scopesClash(task, dep)) continue;
-      const shared = (task.reads || []).filter((read) => (dep.reads || []).some((other) => read === other));
-      if (shared.length) readsOnly.push(`${task.id} -> ${dep.id} (${shared.join(', ')})`);
-    }
-  }
-  if (readsOnly.length) {
-    advisories.push(`ADVISORY_READS_ONLY_EDGE ${readsOnly.join('; ')}: the pair shares only a read-only fixture and Write scopes do not overlap; merge-task replays it after either side merges. Record in design.md whether the edge is still needed before CP-1.`);
+  const edges = readsOnlyEdges(tasks);
+  if (edges.length) {
+    const rendered = edges.map((edge) => `${edge.task} -> ${edge.dep} (${edge.shared.join(', ')})`);
+    advisories.push(`ADVISORY_READS_ONLY_EDGE ${rendered.join('; ')}: the pair shares only a read-only fixture and Write scopes do not overlap; merge-task replays it after either side merges. Record in design.md whether the edge is still needed before CP-1.`);
   }
 }
 const route = maxWidth >= 2 && tasks.length >= 4 ? 'pipeline' : 'handoff';

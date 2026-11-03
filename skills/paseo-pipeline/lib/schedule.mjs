@@ -185,6 +185,31 @@ export function regressionReplays(task, doneTasks, changedFiles = null) {
     .map((prior) => prior.id);
 }
 
+/**
+ * Explicit `Depends on` edges whose only shared surface is a read-only fixture.
+ * Dropping one keeps regression detection: both sides list the fixture in `Reads`,
+ * so when either one merges `regressionReplays` re-runs the other. What the edge
+ * still buys is dispatch order; what it costs is the serial time between them.
+ * Freeze-check renders this as ADVISORY_READS_ONLY_EDGE; the author decides at CP-1.
+ */
+export function readsOnlyEdges(tasks) {
+  const known = byId(tasks);
+  const sinks = new Set(tasks
+    .filter((task) => !tasks.some((other) => (other.depends || []).includes(task.id) || (other.uses || []).includes(task.id)))
+    .map((task) => task.id));
+  const out = [];
+  for (const task of tasks) {
+    for (const depId of task.depends || []) {
+      const dep = known.get(depId);
+      if (!dep || sinks.has(task.id)) continue;
+      if ((task.scope || []).some((a) => (dep.scope || []).some((b) => pathWithin(a, b)))) continue;
+      const shared = (task.reads || []).filter((read) => (dep.reads || []).some((other) => pathWithin(read, other)));
+      if (shared.length) out.push({ task: task.id, dep: dep.id, shared });
+    }
+  }
+  return out;
+}
+
 export function simulate(tasks, { policy = 'legacy', model } = {}) {
   const resolved = resolveModel(model);
   const converged = policy === 'converged';
