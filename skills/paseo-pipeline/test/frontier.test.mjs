@@ -72,6 +72,25 @@ test('a mechanical or deferred implementation is dispatched for merge, not revie
   assert.deepEqual(report.dispatch.map((item) => item.action), ['merge', 'merge']);
 });
 
+test('a merge waits for its Uses producer even after the consumer is implemented', () => {
+  // The consumer dispatches at interface freeze but `merge-task` refuses until the
+  // producer is Done (exit 35). The frontier must not propose that merge early.
+  const tasks = [
+    task({ id: 'T-01', review: 'deferred' }),
+    task({ id: 'T-02', uses: ['T-01'], review: 'deferred' }),
+  ];
+  const branches = {
+    'T-01': { attempts: 1, implementationCommits: 1 },
+    'T-02': { attempts: 1, implementationCommits: 1 },
+  };
+  const report = frontier(tasks, { done: [], branches });
+  assert.deepEqual(report.dispatch.map((item) => item.task), ['T-01']);
+  assert.deepEqual(report.mergeWaiting, [{ task: 'T-02', on: ['T-01'] }]);
+  const merged = frontier(tasks, { done: ['T-01'], branches });
+  assert.deepEqual(merged.dispatch.map((item) => item.task), ['T-02']);
+  assert.deepEqual(merged.mergeWaiting, []);
+});
+
 test('scope overlap with a task under review holds the pair, not the whole frontier', () => {
   const overlapping = [
     task({ id: 'T-01', scope: ['src/shared/a.ts'], est: 'L' }),

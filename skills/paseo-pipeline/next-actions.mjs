@@ -136,6 +136,7 @@ else {
   console.log(`capacity: writers ${report.capacity.writers.used}/${report.capacity.writers.cap}, reviewers ${report.capacity.reviewers.used}/${report.capacity.reviewers.cap}`);
   for (const item of report.dispatch) console.log(`DISPATCH ${item.task}: ${item.action} — ${item.reason}`);
   for (const item of report.waiting) console.log(`WAIT ${item.task}: on ${item.on.join(', ')}`);
+  for (const item of report.mergeWaiting) console.log(`MERGE-WAIT ${item.task}: on ${item.on.join(', ')}`);
   for (const item of report.blocked) console.log(`BLOCKED ${item.task}: ${item.kind} — ${item.reason}`);
   for (const item of report.attention) console.log(`ATTENTION ${item.task || '?'} ${item.agent}: ${item.kind} — ${item.reason}`);
   if (!report.dispatch.length && !report.attention.length) console.log('nothing to dispatch');

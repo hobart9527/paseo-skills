@@ -1,7 +1,7 @@
 // Pure frontier computation: graph + observed state -> deterministic next actions.
 // No I/O, no dispatch, no ledger. The Lead executes the list; git and Paseo stay
 // the only state (SKILL.md principle 5).
-import { dispatchDeps, readyIds } from './schedule.mjs';
+import { dispatchDeps, mergeDeps, readyIds } from './schedule.mjs';
 import { normalizeScope } from './tasks.mjs';
 
 const WRITER_ROLES = new Set(['ceshi', 'gongbu', 'gaogong', 'jiangzuo']);
@@ -124,6 +124,7 @@ export function frontier(tasks, state = {}, options = {}) {
   const writerItems = [];
   const reviewItems = [];
   const mergeItems = [];
+  const mergeWaiting = [];
   for (const task of ordered) {
     const branch = branches[task.id] || {};
     const mechanical = task.review === 'mechanical';
@@ -131,10 +132,22 @@ export function frontier(tasks, state = {}, options = {}) {
       writerItems.push({ task: task.id, action: mechanical ? 'create-branch+dispatch-implementer' : 'create-branch+dispatch-ceshi', reason: 'deps Done; scope disjoint' });
     } else if (!branch.implementationCommits) {
       writerItems.push({ task: task.id, action: 'dispatch-implementer', reason: 'Red commit present; no implementation commit yet' });
-    } else if (mechanical) {
-      mergeItems.push({ task: task.id, action: 'merge', reason: 'implementation present; merge on pass(mechanical@tip/base)' });
-    } else if (task.review === 'deferred') {
-      mergeItems.push({ task: task.id, action: 'merge', reason: 'implementation present; merge on pass(deferred@tip/base), FINAL owns review' });
+    } else if (mechanical || task.review === 'deferred') {
+      // `Uses` is a merge edge: the consumer may implement as soon as the interface
+      // skeleton merges, but merging before the producer is Done fails exit 35. Report
+      // the wait instead of proposing a merge the gate will refuse.
+      const unmetMerge = mergeDeps(task).filter((id) => !done.has(id) && byId.has(id));
+      if (unmetMerge.length) {
+        mergeWaiting.push({ task: task.id, on: unmetMerge.sort() });
+        continue;
+      }
+      mergeItems.push({
+        task: task.id,
+        action: 'merge',
+        reason: mechanical
+          ? 'implementation present; merge on pass(mechanical@tip/base)'
+          : 'implementation present; merge on pass(deferred@tip/base), FINAL owns review',
+      });
     } else if (!runningReviewers.some((agent) => agent.task === task.id)) {
       reviewItems.push({ task: task.id, action: 'dispatch-reviewer', reason: 'implementation commit present; review not running' });
     }
@@ -146,6 +159,7 @@ export function frontier(tasks, state = {}, options = {}) {
     done: [...done].sort(),
     dispatch,
     waiting: waiting.sort((a, b) => (a.task < b.task ? -1 : 1)),
+    mergeWaiting: mergeWaiting.sort((a, b) => (a.task < b.task ? -1 : 1)),
     attention: attention.sort((a, b) => `${a.task}${a.kind}`.localeCompare(`${b.task}${b.kind}`)),
     blocked: blocked.sort((a, b) => (a.task < b.task ? -1 : 1)),
     capacity,
