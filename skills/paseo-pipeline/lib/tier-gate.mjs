@@ -488,6 +488,13 @@ export function assessStop({ cwd, sessionId }) {
       // 保留已汇报标记：只有下一条用户消息（takeSnapshot）才重置，别在同一条消息里又允许重复打断。
       churnReported: seg.churnReported || churnBlock,
     });
+  } else if (fileLimitBlock || scopeBlock) {
+    // 即使本轮无新增改动（上一轮累计触发 block），也必须落盘 reported，
+    // 确保同一批文件只向用户汇报一次，避免用户放行后因 round 为 0 导致无限循环阻断。
+    writeSegment(file, state, ctx.root, {
+      ...seg,
+      reported: combined,
+    });
   }
 
   if (!block) return { verdict: 'ok', files: round };
