@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { assessTierGate, assessStop, takeSnapshot, logHookError, scopeKey, otherSessionsClaimedFiles } from '../lib/tier-gate.mjs';
+import { assessTierGate, assessStop, takeSnapshot, logHookError, scopeKey } from '../lib/tier-gate.mjs';
 import { shouldRemind, isSystemNotification, REMINDER } from '../hooks/tier-reminder-hook.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -462,20 +462,53 @@ test('Stop 核对：不将 Git 脏文件并回 seg.files，PreToolUse 额度不�
   assert.equal(write(root, 'extra', 'clean').verdict, 'ask');
 }));
 
-test('Stop 核对：并发会话产物自动排除，不误拦当前会话', () => withState(() => {
+test('Stop 核对：跨轮次用 Bash 小步写入，累计超限仍被 block（累计在 stopFiles，不在 files）', () => withState((dir) => {
   const root = makeRepo();
-  // 会话 s1 写入 4 个业务文件
+  snap(root, 'multi');
+  bashWrite(root, ['a', 'b']);
+  assert.equal(stop(root, 'multi').verdict, 'ok');
+  snap(root, 'multi');
+  bashWrite(root, ['c', 'd']);
+  const blocked = stop(root, 'multi');
+  assert.equal(blocked.verdict, 'block');
+  assert.match(blocked.reason, /累计/);
+  assert.match(blocked.reason, /src\/a/);
+  // 累计只进 Stop 私有字段；PreToolUse 的 files 保持为空
+  const ledger = JSON.parse(fs.readFileSync(path.join(dir, 'multi.json'), 'utf8'));
+  const entry = Object.values(ledger)[0];
+  assert.deepEqual(entry.files, []);
+  assert.equal(entry.stopFiles.length, 4);
+  // 用户答复后没有新改动：同一批文件不再重复打断。
+  snap(root, 'multi');
+  assert.equal(stop(root, 'multi').verdict, 'ok');
+}));
+
+test('Stop 核对：PreToolUse 写入不抹掉 Stop 的 stopFiles 累计', () => withState(() => {
+  const root = makeRepo();
+  snap(root, 'keep');
+  bashWrite(root, ['a', 'b']);
+  assert.equal(stop(root, 'keep').verdict, 'ok');
+  assert.equal(write(root, 'x', 'keep').verdict, 'allow'); // 写回账本时必须带上 stopFiles
+  snap(root, 'keep');
+  bashWrite(root, ['c']);
+  assert.equal(stop(root, 'keep').verdict, 'block'); // a,b,c + x = 4
+}));
+
+test('Stop 核对：并发会话已认领的文件不算进本会话', () => withState(() => {
+  const root = makeRepo();
+  // s1 经 PreToolUse 认领 p1-p3（计入 files）与 p4（ask，进 asked）
   for (const n of ['p1', 'p2', 'p3']) write(root, n, 's1');
   assert.equal(write(root, 'p4', 's1').verdict, 'ask');
-  // 工作树真实落盘
-  bashWrite(root, ['p1', 'p2', 'p3', 'p4']);
-
-  // 并发会话 s2 在同一工作树运行，自身未改动文件
+  // s2 先于落盘拍快照；随后工作树出现 p1-p4（并发 agent 的产物）
   snap(root, 's2');
-  // s2 Stop 核对时，p1-p4 已由 s1 认领，不应将 s1 的产物算进 s2
+  bashWrite(root, ['p1', 'p2', 'p3', 'p4']);
   const v = stop(root, 's2');
   assert.equal(v.verdict, 'ok');
   assert.deepEqual(v.files, []);
+  // 对照：没有任何会话认领时，同样的 4 个文件会被 block
+  snap(root, 's3');
+  bashWrite(root, ['q1', 'q2', 'q3', 'q4']);
+  assert.equal(stop(root, 's3').verdict, 'block');
 }));
 
 test('连续多轮原地改：第 3 轮 Stop 汇报一次，用户回话后重新观察', () => withState(() => {

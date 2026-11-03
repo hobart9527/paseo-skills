@@ -45,7 +45,11 @@
 //   PreToolUse（Write/Edit）被误判超限阻断。
 //   现改为：
 //   1) seg.files 严格由 PreToolUse（assessTierGate）单会话精准记录，assessStop 绝不将 round 回写进 seg.files；
-//   2) assessStop 自动排除 stateDir 中其他活跃会话账本认领的业务文件，并发产物不计入当前会话。
+//   2) Stop 自己的跨轮累计（Bash 每轮小步写，见上 2026-11-02（二）2)）改记在私有字段 seg.stopFiles，
+//      assessTierGate 不读它，只透传保存；PreToolUse 额度因此不受 Git 脏文件影响，Bash 小步累计仍会在 Stop 触顶；
+//   3) assessStop 排除 stateDir 中其他活跃会话 files/asked 已认领的业务文件，并发产物不计入当前会话。
+//   局限：两个会话碰同一文件时，该文件被排除，Stop 可能漏报（宁可少拦）；认领窗口同 DEFAULT_IDLE_MS。
+//   这是减速带，不是沙箱（LESSONS §14.4）；并发写入的正解仍是 worktree 隔离。
 //
 // 2026-11-02（三）：补上「单目录」这一维。此前闸门只数文件数，跨包的第一个文件（如已在
 // packages/server 写了 1 个，再写 packages/web 的第 2 个）完全不拦——规则里的「超出单目录
@@ -213,6 +217,9 @@ function segment(entry, now = Date.now()) {
     files: fresh ? [] : strings(legacy ? entry : entry?.files),
     // 用户确认过的文件只在同一任务段内豁免；新任务段的改动要重新计数。
     asked: fresh ? [] : strings(legacy ? [] : entry?.asked),
+    // Stop 私有的跨轮累计（来自 Git 差异，含 Bash 写入）。只有 assessStop 读写；
+    // assessTierGate 不据此计数，只在 keep 里原样带过，防止被 PreToolUse 的写回抹掉。
+    stopFiles: fresh ? [] : strings(legacy ? [] : entry?.stopFiles),
     // 已经因为超过上限向用户汇报过的文件。同一批文件不重复 block，否则用户回复后
     // 没有任何新改动也会被反复打断；只有累计集合里出现新文件才再次汇报。
     reported: fresh ? [] : strings(legacy ? [] : entry?.reported),
@@ -286,7 +293,7 @@ export function assessTierGate({ target, sessionId }) {
   const asked = seg.asked;
   // 越线写入要用户确认的文件。churn 不在这里判：那是「停下来汇报试过什么」，
   // 归 Stop 事后核对（assessStop），逐次写入只做文件数上限这一件事。
-  const keep = { turns: seg.turns, reported: seg.reported, churnReported: seg.churnReported };
+  const keep = { turns: seg.turns, reported: seg.reported, churnReported: seg.churnReported, stopFiles: seg.stopFiles };
   if (counted.includes(rel)) return { verdict: 'allow', note: 'already counted' };
 
   const limit = limitFromEnv();
@@ -417,7 +424,7 @@ export function otherSessionsClaimedFiles(dir, currentSessionId, root, now = Dat
  * Stop 时核对：自本轮快照以来主 checkout 上变化的业务文件（含 Bash 造成的、含已提交的）是否超过 Tier 1 上限。
  * 经 ask 流程由用户确认过的文件不计入。
  * 排除 stateDir 中其他活跃会话已认领的文件，避免并发产物误拦当前会话。
- * 不将工作树 Git 改动（round）回写进 seg.files，保证 PreToolUse 判据仅反映当前会话结构化写入，不受 Git 脏文件污染。
+ * Git 改动（round）只累计进私有 seg.stopFiles、不写进 seg.files，PreToolUse 判据不受 Git 脏文件污染。
  *
  * 同一段里连续 DEFAULT_TURNS 轮都在改业务文件，也在这里
  * 汇报一次「原地反复试错」——事后迫使模型停下来讲清楚，而不是逐次写入弹许可框。
@@ -449,8 +456,8 @@ export function assessStop({ cwd, sessionId }) {
   const claimedByOthers = otherSessionsClaimedFiles(stateDir(), sessionId, ctx.root);
   const business = (rel) => !EXEMPT(rel) && !asked.has(rel) && !claimedByOthers.has(rel);
   const round = [...changed].filter(business).sort();
-  // 本会话 PreToolUse 已写文件 + 本轮 Git 变化的业务文件（排除并发产物）参与当轮判定
-  const combined = [...new Set([...seg.files, ...round])].filter(business).sort();
+  // PreToolUse 已写文件 + Stop 私有累计 + 本轮 Git 变化（均排除并发产物）参与当轮判定
+  const combined = [...new Set([...seg.files, ...seg.stopFiles, ...round])].filter(business).sort();
   const limit = limitFromEnv();
   const reportedBefore = new Set(seg.reported);
   // 同一批累计文件只汇报一次：用户看到 block 后回一句「知道了」，不应在没有任何新改动时
@@ -471,8 +478,9 @@ export function assessStop({ cwd, sessionId }) {
   // 否则一段任务会被频繁的 Stop 永久保活，空闲重置永远不生效。
   if (round.length > 0) {
     writeSegment(file, state, ctx.root, {
-      // 关键：不将 round 回写进 files，files 严格由 PreToolUse 精确记账，避免 Git 脏文件污染后续 PreToolUse
+      // 关键：round 不进 files（PreToolUse 的账本），只进 Stop 私有的 stopFiles，避免 Git 脏文件污染后续 PreToolUse
       files: seg.files,
+      stopFiles: combined.filter((rel) => !seg.files.includes(rel)),
       asked: seg.asked,
       at: Date.now(),
       turns: turnsAfter,
