@@ -99,3 +99,73 @@ test('malformed checkbox lines are reported instead of silently ignored', () => 
   assert.equal(tasks.length, 0);
   assert.ok(errors.some((error) => error.code === 'MALFORMED_LINE'));
 });
+
+test('parses uses, reads, est, skeleton, interface and deferred review', () => {
+  const text = `
+- [ ] 1.1 T-00 skeleton
+  - Write scope: src/iface.ts, test/iface.test.mjs
+  - Est: S
+  - Kind: skeleton
+  - Interface: src/iface.ts#useDraft
+  - Interface: src/iface.ts#DraftState, src/iface.ts#useOffset
+  - Review: mechanical
+  - Verify with: node --test test/iface.test.mjs
+- [ ] 1.2 T-01 consumer
+  - Depends on: none
+  - Uses: T-00, T-02
+  - Write scope: src/consumer.ts, test/consumer.test.mjs
+  - Reads: src/shared/data.ts, scripts/specs/probe.mjs
+  - Est: L
+  - Review: deferred
+  - Risk-surface: [public-api, ui]
+  - Verify with: node --test test/consumer.test.mjs
+`;
+  const { tasks, errors } = parseTasks(text);
+  assert.deepEqual(errors, []);
+  const [skeleton, consumer] = tasks;
+  assert.equal(skeleton.est, 'S');
+  assert.equal(skeleton.kind, 'skeleton');
+  assert.deepEqual(skeleton.interface, ['src/iface.ts#useDraft', 'src/iface.ts#DraftState', 'src/iface.ts#useOffset']);
+  assert.equal(skeleton.review, 'mechanical');
+  assert.deepEqual(consumer.uses, ['T-00', 'T-02']);
+  assert.deepEqual(consumer.reads, ['src/shared/data.ts', 'scripts/specs/probe.mjs']);
+  assert.equal(consumer.est, 'L');
+  assert.deepEqual(consumer.riskSurface, ['public-api', 'ui']);
+  assert.equal(consumer.review, 'deferred');
+  // Defaults stay stable when optional scheduling fields are absent.
+  const bare = parseTasks('- [ ] 1.1 T-09 x\n  - Write scope: a\n  - Verify with: true\n').tasks[0];
+  assert.deepEqual(bare.uses, []);
+  assert.deepEqual(bare.reads, []);
+  assert.equal(bare.est, 'M');
+  assert.equal(bare.kind, null);
+  assert.deepEqual(bare.interface, []);
+  assert.deepEqual(bare.riskSurface, []);
+});
+
+test('rejects malformed Reads, Est, Interface and Kind values', () => {
+  const text = `
+- [ ] 1.1 T-01 x
+  - Write scope: a
+  - Reads: /etc/passwd
+  - Est: XL
+  - Kind: partial
+  - Interface: a.ts#two words
+  - Interface: a.ts#sym#extra
+  - Verify with: true
+`;
+  const { errors } = parseTasks(text);
+  for (const code of ['BAD_READS', 'BAD_EST', 'BAD_KIND', 'BAD_INTERFACE']) {
+    assert.ok(errors.some((error) => error.code === code), code);
+  }
+  assert.equal(errors.filter((error) => error.code === 'BAD_INTERFACE').length, 2);
+  const escaped = parseTasks('- [ ] 1.1 T-01 x\n  - Write scope: a\n  - Reads: ../secret\n  - Verify with: true\n').errors;
+  assert.ok(escaped.some((error) => error.code === 'BAD_READS'));
+});
+
+test('review enum accepts deferred and rejects unknown modes', () => {
+  const ok = parseTasks('- [ ] 1.1 T-01 x\n  - Write scope: a\n  - Review: deferred\n  - Verify with: true\n');
+  assert.equal(ok.tasks[0].review, 'deferred');
+  assert.deepEqual(ok.errors, []);
+  const bad = parseTasks('- [ ] 1.1 T-01 x\n  - Write scope: a\n  - Review: later\n  - Verify with: true\n');
+  assert.ok(bad.errors.some((error) => error.code === 'UNKNOWN_REVIEW'));
+});

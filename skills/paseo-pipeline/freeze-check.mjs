@@ -7,9 +7,11 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo-agents.mjs';
 import { parseTasks, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
+import { weightedSpeedup, verifyScope, dispatchDeps } from './lib/schedule.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
+const explain = args.includes('--explain');
 // --structural: validate the contract the authors wrote, before hanlin reviews it. The R0
 // sign-off is the output of that review, so requiring it here would deadlock the entry flow.
 const structural = args.includes('--structural');
@@ -18,14 +20,13 @@ const skipSignerCheck = args.includes('--skip-signer-check');
 const positional = args.filter((arg) => !arg.startsWith('--'));
 const changeDir = positional[0];
 if (!changeDir) {
-  console.error('Usage: freeze-check.mjs <change-dir> [--json] [--structural] [--skip-signer-check]');
+  console.error('Usage: freeze-check.mjs <change-dir> [--json] [--explain] [--structural] [--skip-signer-check]');
   process.exit(2);
 }
 
 function read(file) {
   try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
-}
-function walk(dir, out = []) {
+}function walk(dir, out = []) {
   if (!fs.existsSync(dir)) return out;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
@@ -34,6 +35,26 @@ function walk(dir, out = []) {
   }
   return out;
 }
+
+// One concrete fix per blocking rule, printed by --explain.
+const RULE_FIXES = {
+  MALFORMED_LINE: 'rewrite the task line as `- [ ] <n> T-<id> <title>` with a valid id',
+  DUPLICATE_ID: 'give every task a unique id',
+  MISSING_SCOPE: 'add a non-empty `Write scope:` of repo-relative paths',
+  MISSING_VERIFY: 'add an executable `Verify with:` command',
+  UNKNOWN_REVIEW: 'use Review: strict, standard, mechanical or deferred',
+  UNKNOWN_DEP: 'point Depends on at an existing task id',
+  SELF_DEP: 'remove the self-dependency',
+  CYCLE: 'break the dependency cycle into a DAG',
+  BAD_READS: 'use repo-relative paths without `..` or a leading slash',
+  BAD_EST: 'use Est: S, M or L',
+  BAD_INTERFACE: 'use Interface: <repo-path>[#<symbol>]',
+  BAD_KIND: 'use Kind: skeleton (or omit it)',
+  UNKNOWN_SCEN: 'claim a SCEN declared under specs/',
+  UNCLAIMED_SCEN: 'assign each declared SCEN to at least one task',
+  NO_SCEN: 'claim at least one SCEN, or mark the task Review: mechanical',
+  EMPTY_TASKS: 'write at least one parseable task line',
+};
 
 const tasksMarkdown = read(path.join(changeDir, 'tasks.md'));
 if (tasksMarkdown === null) {
@@ -44,6 +65,8 @@ if (tasksMarkdown === null) {
 
 const { tasks, errors } = parseTasks(tasksMarkdown);
 const blocking = errors.map((error) => `${error.code}${error.task ? ` ${error.task}` : ''}: ${error.message}`);
+const fixes = new Map();
+if (blocking.length) fixes.set('CONTRACT', 'fix the field named in the message; see openspec-schema/templates/tasks.md for the exact shape');
 
 // Scenario mapping.
 const declared = new Map();
@@ -89,32 +112,93 @@ const ancestorsOf = (id, trail = new Set()) => {
   ancestors.set(id, out);
   return out;
 };
+// A Uses edge makes the consumer wait for the producer's merge, so it serialises a pair exactly
+// like Depends on does — including the skeleton exemption below.
+const orderedPair = (left, right) => ancestorsOf(left.id).has(right.id) || ancestorsOf(right.id).has(left.id)
+  || left.uses?.includes(right.id) || right.uses?.includes(left.id);
+const skeletonCovers = (skeleton, other) => skeleton.kind === 'skeleton' && other.id !== skeleton.id
+  && (dispatchDeps(other, tasks).includes(skeleton.id) || other.uses?.includes(skeleton.id));
 for (let i = 0; i < tasks.length; i += 1) {
   for (let j = i + 1; j < tasks.length; j += 1) {
     const left = tasks[i];
     const right = tasks[j];
-    if (ancestorsOf(left.id).has(right.id) || ancestorsOf(right.id).has(left.id)) continue;
-    if (scopesClash(left, right)) blocking.push(`SCOPE_CONFLICT ${left.id} and ${right.id}: scopes overlap and neither depends on the other; add Depends on or split scope`);
+    if (orderedPair(left, right)) continue;
+    // The skeleton owns the interface files every consumer imports; consumers depend on it, so
+    // their overlap is serialised by the dependency rather than a hidden race.
+    if (skeletonCovers(left, right) || skeletonCovers(right, left)) continue;
+    if (scopesClash(left, right)) {
+      blocking.push(`SCOPE_CONFLICT ${left.id} and ${right.id}: scopes overlap and neither depends on the other; add Depends on or split scope`);
+      fixes.set('SCOPE_CONFLICT', 'add a Depends on edge between the pair, or give each task its own files');
+    }
+  }
+}
+
+// Uses/Reads/skeleton contract. Dispatch treats Uses as "start as soon as the interface is frozen";
+// merge still waits for the producer, so a Uses pair that writes the same files needs a real
+// Depends on edge to serialise the writers.
+const dependsBetween = (a, b) => ancestorsOf(a).has(b) || ancestorsOf(b).has(a);
+const skeletons = tasks.filter((task) => task.kind === 'skeleton');
+for (const task of tasks) {
+  for (const used of task.uses || []) {
+    if (used === task.id || !byId.has(used)) {
+      blocking.push(`USES_UNKNOWN ${task.id}: Uses ${used} is not a task in this file; name a real producer or use Depends on`);
+      fixes.set('USES_UNKNOWN', 'point Uses at an existing task id (never the task itself)');
+      continue;
+    }
+    const target = byId.get(used);
+    if (!target.interface.length) {
+      blocking.push(`USES_WITHOUT_INTERFACE ${task.id}: Uses ${used} but ${used} declares no Interface; freeze the symbol on the producer`);
+      fixes.set('USES_WITHOUT_INTERFACE', `add Interface: <path>#<symbol> to ${used}, or use Depends on if the implementation is required`);
+    }
+    if (scopesClash(task, target) && !dependsBetween(task.id, target.id)) {
+      blocking.push(`USES_SCOPE_OVERLAP ${task.id} and ${used}: Write scopes overlap but no Depends on edge exists; Uses only skips the implementation wait`);
+      fixes.set('USES_SCOPE_OVERLAP', 'add a Depends on edge between the producer and consumer, or split the overlapping Write scope');
+    }
+  }
+  for (const entry of task.interface || []) {
+    const interfacePath = entry.split('#')[0];
+    if (!skeletons.some((skeleton) => isFileWithinScopes(interfacePath, skeleton.scope))) {
+      blocking.push(`INTERFACE_UNOWNED ${task.id}: Interface ${entry} is not inside any Kind: skeleton Write scope`);
+      fixes.set('INTERFACE_UNOWNED', 'move the interface file into a Kind: skeleton task Write scope, or declare the skeleton that owns it');
+    }
+  }
+  if (task.kind === 'skeleton' && task.review !== 'mechanical') {
+    blocking.push(`SKELETON_NOT_MECHANICAL ${task.id}: Kind: skeleton requires Review: mechanical`);
+    fixes.set('SKELETON_NOT_MECHANICAL', `set Review: mechanical on ${task.id}`);
+  }
+  if (task.review === 'deferred') {
+    if (sinkIds.has(task.id)) {
+      blocking.push(`DEFERRED_NOT_STANDARD ${task.id}: the sink cannot defer review; FINAL review owns it and the sink is its entry point`);
+      fixes.set('DEFERRED_NOT_STANDARD', 'use Review: standard or strict on the sink; only non-sink standard tasks may defer');
+    }
+    if (task.riskSurface.some((risk) => risk === 'persistence' || risk === 'security')) {
+      blocking.push(`DEFERRED_NOT_STANDARD ${task.id}: Risk-surface ${task.riskSurface.join(', ')} must be Review: strict and reviewed inline`);
+      fixes.set('DEFERRED_NOT_STANDARD', 'set Review: strict for persistence/security surfaces; deferred is only for standard tasks');
+    }
   }
 }
 
 // Narrow verification. A leg is narrow when its paths all sit inside the task
-// Write scope; a leg without paths must not invoke a whole-suite runner. One sink
-// may run one broad leg; final acceptance always runs on integration HEAD.
+// Write scope (or its reads-only anchors); a leg without paths must not invoke a
+// whole-suite runner. One sink may run one broad leg; final acceptance always
+// runs on integration HEAD.
 for (const task of tasks) {
   const legs = verifyLegs(task.verify);
   const broadLegs = legs.filter((leg) => leg.broad).length;
   // A leg must also prove something: a known test runner, or a test/spec path. `true`,
   // `echo ok` and `node src/a.mjs` pass a path-only check but verify nothing.
   const proves = (leg) => FULL_SUITE_LEG.test(leg.command) || leg.paths.some((p) => /(?:test|spec)/i.test(p));
-  const unscoped = legs.filter((leg) => !leg.broad && (!proves(leg) || leg.paths.some((path) => !isFileWithinScopes(path, task.scope))));
+  const allowed = verifyScope(task);
+  const unscoped = legs.filter((leg) => !leg.broad && (!proves(leg) || leg.paths.some((path) => !isFileWithinScopes(path, allowed))));
   if (broadLegs && !sinkIds.has(task.id)) {
     blocking.push(`VERIFY_FULL_SUITE_NON_SINK ${task.id}: full-suite command is reserved for the sole sink`);
+    fixes.set('VERIFY_FULL_SUITE_NON_SINK', 'replace the full-suite leg with a narrow test path, and leave the suite to the sink');
   }
   // A sink with no full-suite leg is just a task: its Verify must be narrow too (mechanical tasks may run any check).
   const mustBeNarrow = !sinkIds.has(task.id) || (broadLegs === 0 && task.review !== 'mechanical');
   if (mustBeNarrow && (legs.length === 0 || unscoped.length > 0 || broadLegs > 0)) {
     blocking.push(`VERIFY_NOT_NARROW ${task.id}: every Verify leg must name a test/spec path inside Write scope${unscoped.length ? ` (outside: ${unscoped.map((leg) => leg.command).join(', ')})` : ''}`);
+    fixes.set('VERIFY_NOT_NARROW', 'name a runnable test path inside Write scope or Reads, or add that anchor to Reads (Reads never authorises edits)');
   }
   if (sinkIds.has(task.id) && broadLegs > 1) {
     blocking.push(`VERIFY_TOO_BROAD ${task.id}: sole sink may run at most one full-suite leg`);
@@ -245,11 +329,13 @@ if (!structural) {
 }
 
 if (tasks.length === 0) blocking.push('EMPTY_TASKS: tasks.md parsed to zero tasks');
-// Expected speedup of running the DAG concurrently vs one task at a time. Under 1.5x the three-agent
-// chain per task and serial merges usually eat the gain; advisory only, never a reason to pad the DAG.
+// Expected speedup of running the DAG concurrently vs one task at a time, weighted by the
+// measured per-task cost model (lib/schedule.mjs). `speedup` keeps the legacy wave ratio for
+// existing consumers; the advisory routes on the weighted number.
 const speedup = waveList.length ? Number((tasks.length / waveList.length).toFixed(2)) : 0;
-if (tasks.length >= 4 && maxWidth >= 2 && speedup < 1.5) {
-  advisories.push(`ADVISORY_LOW_SPEEDUP: ${tasks.length} tasks over critical path ${waveList.length} = ${speedup}x; compare with Tier 2 handoff before CP-1`);
+const weighted = weightedSpeedup(tasks);
+if (tasks.length >= 4 && maxWidth >= 2 && weighted < 1.8) {
+  advisories.push(`ADVISORY_LOW_SPEEDUP: weighted ${weighted}x (legacy ${speedup}x); compare with Tier 2 handoff before CP-1`);
 }
 // Critical chain: one longest dependency path, each edge tagged by why it exists. `scope` edges are
 // forced (shared files); `logical` edges are author choices and the only candidates for removal
@@ -265,6 +351,16 @@ const criticalChain = [];
   }
 }
 const route = maxWidth >= 2 && tasks.length >= 4 ? 'pipeline' : 'handoff';
+const summaryBlocking = (items) => [...new Set(items)].map((item) => {
+  const match = item.match(/^([A-Z][A-Z0-9_]*)\b(?:\s+[^:]*)?:\s*(.*)$/);
+  const code = match?.[1] ?? item;
+  return {
+    code,
+    reason: match?.[2] ?? item,
+    fix: fixes.get(code) ?? RULE_FIXES[code] ?? 'correct the contract field named in the reason and re-run freeze-check',
+  };
+});
+const explanations = summaryBlocking(blocking);
 const summary = {
   change: path.resolve(changeDir),
   tasks: tasks.length,
@@ -273,9 +369,11 @@ const summary = {
   criticalPath: waveList.length,
   criticalChain,
   speedup,
+  weightedSpeedup: weighted,
   route,
   blocking: [...new Set(blocking)],
   advisories,
+  explanations,
 };
 if (json) console.log(JSON.stringify(summary, null, 2));
 else {
@@ -288,6 +386,7 @@ else {
   if (removable.length) console.log(`CRITICAL_LOGICAL_EDGES into ${removable.join(', ')}: author-chosen; drop if a frozen interface in design.md lets them run in parallel`);
   for (const item of summary.advisories) console.log(`ADVISE ${item}`);
   for (const item of summary.blocking) console.error(`BLOCK ${item}`);
+  if (explain) for (const item of summary.explanations) console.error(`EXPLAIN ${item.code}: ${item.reason}\n  fix: ${item.fix}`);
   console.log(summary.blocking.length ? `RESULT freeze rejected (${summary.blocking.length})` : 'RESULT freeze ok');
 }
 process.exit(summary.blocking.length ? 1 : 0);

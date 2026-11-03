@@ -273,6 +273,116 @@ test('mechanical task is exempt from tester and model checks', () => {
   assert.equal(r.status, 0, r.out);
 });
 
+// ---- deferred review ----
+function deferredFixture() {
+  const change = `c${++seq}`;
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'merge-'));
+  git(cwd, 'init', '-q', '-b', 'main');
+  write(cwd, `openspec/changes/${change}/tasks.md`, `- [ ] 1.1 T-01 task\n  - Write scope: src,test\n  - Review: deferred\n  - Verify with: ${GREEN}\n`);
+  write(cwd, `openspec/changes/${change}/proposal.md`, 'p\n');
+  write(cwd, `openspec/changes/${change}/acceptance.md`, 'a\n');
+  git(cwd, 'add', '.'); git(cwd, 'commit', '-qm', 'base'); git(cwd, 'switch', '-qc', `integration/${change}`);
+  const base = git(cwd, 'rev-parse', 'HEAD'); git(cwd, 'switch', '-qc', `task/${change}/T-01`);
+  write(cwd, 'test/a.test.mjs', RED_TEST); git(cwd, 'add', '.');
+  git(cwd, 'commit', '-qm', `red tests\n\nPipeline-Role: ceshi\nPipeline-Author: ${TESTER}`);
+  write(cwd, 'src/a.txt', 'a'); git(cwd, 'add', '.');
+  git(cwd, 'commit', '-qm', `work\n\nPipeline-Role: gongbu\nPipeline-Author: ${WRITER}`);
+  const tip = git(cwd, 'rev-parse', 'HEAD'); git(cwd, 'switch', '-q', `integration/${change}`);
+  installPaseo(cwd);
+  return { cwd, change, base, tip };
+}
+
+test('deferred task merges on pass(deferred@tip/base) without a per-task reviewer', () => {
+  const f = deferredFixture();
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(f.tip, f.base, 'deferred')]);
+  assert.equal(r.status, 0, r.out);
+  assert.match(fs.readFileSync(path.join(f.cwd, `openspec/changes/${f.change}/tasks.md`), 'utf8'), /- Done: source=[0-9a-f]{7,40} review=pass\(deferred@/);
+});
+
+test('deferred tag is refused on a standard task and a real reviewer is refused on a deferred task', () => {
+  const standard = fixture();
+  const wrong = invoke(standard.cwd, [`task/${standard.change}/T-01`, 'T-01', passTag(standard.tip, standard.base, 'deferred')]);
+  assert.equal(wrong.status, 32, wrong.out);
+  assert.match(wrong.out, /deferred review tag requires Review: deferred/);
+
+  const deferred = deferredFixture();
+  const real = invoke(deferred.cwd, [`task/${deferred.change}/T-01`, 'T-01', passTag(deferred.tip, deferred.base)]);
+  assert.equal(real.status, 32, real.out);
+  assert.match(real.out, /Review: deferred and must merge on pass\(deferred@/);
+});
+
+// ---- Uses is a merge edge ----
+test('Uses target must be Done before the consumer merges (exit 35)', () => {
+  const tasks = `- [ ] T-00 producer
+  - Write scope: src/producer
+  - Kind: skeleton
+  - Interface: src/producer/api.ts#run
+  - Review: mechanical
+  - Verify with: true
+- [ ] T-01 consumer
+  - Uses: T-00
+  - Write scope: src,test
+  - Verify with: ${GREEN}
+`;
+  const f = taggedFixture(tasks);
+  const tip = git(f.cwd, 'rev-parse', 'HEAD');
+  git(f.cwd, 'switch', '-q', `integration/${f.change}`);
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
+  assert.equal(r.status, 35, r.out);
+  assert.match(r.out, /T-01 Uses T-00 is not Done/);
+});
+
+// ---- cherry-pick provenance ----
+const FAKE = '9b2f4c1e-9999-4a2b-8c3d-000000000009';
+const provenanceTasks = `- [ ] T-01 work
+  - Write scope: src,test
+  - Verify with: ${GREEN}
+`;
+function provenanceFixture() {
+  const f = taggedFixture(provenanceTasks);
+  git(f.cwd, 'switch', '-qc', 'original', f.base);
+  write(f.cwd, 'src/a.txt', 'a');
+  git(f.cwd, 'add', 'src/a.txt');
+  git(f.cwd, 'commit', '-qm', `work\n\nPipeline-Role: gongbu\nPipeline-Author: ${WRITER}`);
+  const original = git(f.cwd, 'rev-parse', 'HEAD');
+  git(f.cwd, 'switch', '-q', `task/${f.change}/T-01`);
+  return { ...f, original };
+}
+const provenanceTip = (cwd, change) => {
+  const tip = git(cwd, 'rev-parse', 'HEAD');
+  git(cwd, 'switch', '-q', `integration/${change}`);
+  return tip;
+};
+
+test('clean cherry-pick -x is accepted: marker, patch-id and author trailers agree', () => {
+  const f = provenanceFixture();
+  git(f.cwd, 'cherry-pick', '-x', f.original);
+  const tip = provenanceTip(f.cwd, f.change);
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
+  assert.equal(r.status, 0, r.out);
+});
+
+test('hand-recreated commit with the same patch but a different author is exit 31', () => {
+  const f = provenanceFixture();
+  write(f.cwd, 'src/a.txt', 'a');
+  git(f.cwd, 'add', 'src/a.txt');
+  git(f.cwd, 'commit', '-qm', `work\n\nPipeline-Role: gongbu\nPipeline-Author: ${FAKE}`);
+  const tip = provenanceTip(f.cwd, f.change);
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
+  assert.equal(r.status, 31, r.out);
+  assert.match(r.out, /restates .*Pipeline-Author differs.*cherry-pick -x/);
+});
+
+test('cherry-pick marker whose author trailers disagree with the source is exit 31', () => {
+  const f = provenanceFixture();
+  git(f.cwd, 'cherry-pick', '-x', f.original);
+  git(f.cwd, 'commit', '--amend', '-qm', `work\n\nPipeline-Role: gongbu\nPipeline-Author: ${FAKE}\n(cherry picked from commit ${f.original})`);
+  const tip = provenanceTip(f.cwd, f.change);
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
+  assert.equal(r.status, 31, r.out);
+  assert.match(r.out, /cherry-pick Pipeline-Author .* differs from/);
+});
+
 test('warns when reviewer shares model with test author but still merges', () => {
   const agents = JSON.stringify([
     { id: TESTER, shortId: '9b2f4c1', provider: 'codex/gpt' },

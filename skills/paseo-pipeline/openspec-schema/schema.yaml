@@ -226,8 +226,13 @@ artifacts:
 
       - [ ] 1.1 T-01 <one-line goal>
         - Depends on: <T-xx, T-yy | none>
+        - Uses: <T-xx, T-yy | none>
         - Write scope: <repo-relative path>[, <path>]
-        - Review: <strict | standard | mechanical>
+        - Reads: <repo-relative path>[, <path>]
+        - Est: <S | M | L>
+        - Kind: <skeleton | none>
+        - Interface: <repo-relative path>[#<symbol>]
+        - Review: <strict | standard | mechanical | deferred>
         - Verify with: <executable command>
         - Scenarios: <SCEN-xxx-yy>[, ...]
       ```
@@ -240,8 +245,19 @@ artifacts:
         paths, no `..` escaping the repo root.
       - `Depends on` must name task IDs that exist in this file; no self-dependency,
         no cycles.
-      - `Review` is one of `strict` / `standard` / `mechanical`; omitting it means
-        `standard`.
+      - `Uses` is a consumer edge: dispatch starts once the target's frozen interface
+        (and its skeleton ancestors) exist, while merge still waits for the target's
+        Done. A `Uses` target must declare `Interface:`; a `Uses` pair with overlapping
+        Write scopes also needs a real `Depends on` edge.
+      - `Reads` lists paths a Verify leg may execute against without writing them. It
+        never joins scope-conflict checks and never authorises source edits.
+      - `Est` is `S`, `M` or `L` (default `M`). `Kind: skeleton` marks the interface-stub
+        task and requires `Review: mechanical`; every `Interface:` path must sit inside
+        some skeleton's Write scope.
+      - `Review` is one of `strict` / `standard` / `mechanical` / `deferred`; omitting it
+        means `standard`. `deferred` is only for non-sink standard tasks: its review runs
+        once in the FINAL integrated review instead of per task. Tasks with a
+        `persistence` or `security` Risk-surface, and the sink, cannot defer.
       - `Verify with` must be an executable command. For every non-sink task it must
         name a test/spec path inside that task's `Write scope`; only one sink task may
         run the full suite. Write the full invocation when the command needs env vars:
