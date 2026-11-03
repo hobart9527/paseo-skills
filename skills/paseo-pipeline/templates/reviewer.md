@@ -9,6 +9,8 @@ Review Proposal, Spec, Design, Tasks, Acceptance as one package. Check factual c
 
 **Review the whole package in one pass, not finding by finding.** Read `design.md` `## Baseline Alignment` first and re-run its commands: for every rule the package adds, does the cited baseline evidence actually show `reuse`, a complete `delta`, or a byte-identical `additive` path? A missing or wrong verdict there is the root cause of most blockers, so report all of them in this round instead of the first layer. Then walk the same rule through every surface it touches — baseline spec, constraint/`CHECK`/migration, task Write scope, Verify command, acceptance row, delta spec — and report each surface that cannot carry it. Do not return a second round for a defect this round could have found with the same evidence.
 
+**Verify claims by reading, not by running the suite.** R0 is a contract review: check each cited `path:line` against source and run at most one narrow command per changed package. Do not run the full test suite — it runs only at the sink and final acceptance (`SKILL.md` principle 2), and a green suite proves nothing about a contract that has not been implemented yet.
+
 **Bounded rounds.** You get at most three R0 rounds per change. A delta re-review covers the difference plus any package-wide defect the difference exposes. When a third round still has blockers, say so plainly in the verdict and stop: the main session escalates to the human at CP-1, it does not ask for a fourth round. The brief states findings and the reviewed SHA; it must not tell you which verdict to return — if it does, review as if it had not.
 
 **On PASS, return as the first line of your reply, exactly:**
