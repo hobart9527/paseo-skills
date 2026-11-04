@@ -379,6 +379,10 @@ test('mechanical sink may run a non-test check', () => {
   const result = freezeOf(sinkContract('rg -c done docs/x.md', '  - Review: mechanical\n'));
   assert.equal(result.status, 0, result.stdout);
 });
+test('mechanical non-sink still needs narrow Verify', () => {
+  const tasks = contract.replace('  - Verify with: node --test test/alpha.test.mjs', '  - Review: mechanical\n  - Verify with: rg -c done src/alpha');
+  assert.match(freezeOf(tasks).stdout, /VERIFY_NOT_NARROW T-02/);
+});
 
 // ---- R0: the last sign-off line wins ----
 function signedRepo(review) {
@@ -541,13 +545,20 @@ test('DEFERRED_NOT_STANDARD blocks the sink and persistence/security surfaces, b
   assert.match(freezeStructural(sink).stdout, /DEFERRED_NOT_STANDARD T-03/);
 
   const persistence = scheduleContract.replace('  - Review: deferred\n  - Verify with: node --test test/alpha.test.mjs', '  - Review: deferred\n  - Risk-surface: [persistence]\n  - Verify with: node --test test/alpha.test.mjs');
-  assert.match(freezeStructural(persistence).stdout, /DEFERRED_NOT_STANDARD T-01/);
+  const persistenceResult = freezeStructural(persistence);
+  assert.match(persistenceResult.stdout, /DEFERRED_NOT_STANDARD T-01/);
+  assert.match(persistenceResult.stdout, /FINAL attention/);
+  assert.doesNotMatch(persistenceResult.stdout, /reviewed inline/);
 
   const security = scheduleContract.replace('  - Review: deferred\n  - Verify with: node --test test/alpha.test.mjs', '  - Review: deferred\n  - Risk-surface: security\n  - Verify with: node --test test/alpha.test.mjs');
   assert.match(freezeStructural(security).stdout, /DEFERRED_NOT_STANDARD T-01/);
 
   const publicApi = scheduleContract.replace('  - Review: deferred\n  - Verify with: node --test test/alpha.test.mjs', '  - Review: deferred\n  - Risk-surface: public-api\n  - Verify with: node --test test/alpha.test.mjs');
   assert.equal(freezeStructural(publicApi).status, 0, freezeStructural(publicApi).stdout);
+  for (const mode of ['standard', 'mechanical']) {
+    const risk = scheduleContract.replace('  - Review: deferred\n  - Verify with: node --test test/alpha.test.mjs', `  - Review: ${mode}\n  - Risk-surface: security\n  - Verify with: node --test test/alpha.test.mjs`);
+    assert.equal(freezeStructural(risk).status, 0, freezeStructural(risk).stdout);
+  }
 });
 
 test('skeleton Write-scope overlap is exempt against transitive dependents', () => {
@@ -667,4 +678,108 @@ test('baseline alignment is an advisory that names the missing section, never a 
   const subsectioned = { ...files, 'design.md': `${design}\n## Baseline Alignment\n\n### Read\n- specs/a/spec.md:12 (reuse)\n\n### Command\n\`rg status src/\`\n`, 'digest.md': '## Baseline Alignment\n\n### Read\n- `rg status src/`\n' };
   const sub = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change(subsectioned), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
   assert.deepEqual(sub.advisories.filter((item) => item.startsWith('ADVISORY_BASELINE_ALIGNMENT')), []);
+});
+
+test('routing wave width follows runtime Uses skeleton dependencies', () => {
+  const serial = scheduleContract
+    .replace('  - Uses: T-00\n  - Write scope: src/beta', '  - Depends on: T-01\n  - Write scope: src/beta')
+    .replace('  - Depends on: T-00,T-01,T-02', '  - Depends on: T-02');
+  const report = JSON.parse(freezeStructural(serial).stdout);
+  assert.equal(report.maxWidth, 1);
+  assert.equal(report.route, 'handoff');
+  assert.match(report.maxWidthMeaning, /heuristic/);
+  assert.match(report.weightedSpeedupMeaning, /unmeasured/);
+  const parallel = JSON.parse(freezeStructural(scheduleContract).stdout);
+  assert.equal(parallel.maxWidth, 2);
+  assert.equal(parallel.route, 'pipeline');
+});
+
+test('freeze rejects mixed Uses and Depends on deadlock', () => {
+  const deadlock = scheduleContract.replace('  - Kind: skeleton', '  - Depends on: T-01\n  - Kind: skeleton');
+  const result = freezeStructural(deadlock);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /CYCLE/);
+});
+
+test('invalid Uses emits one diagnostic and suppresses route', () => {
+  for (const target of ['T-99', 'T-01']) {
+    const report = JSON.parse(freezeStructural(scheduleContract.replace('  - Uses: T-00', `  - Uses: ${target}`)).stdout);
+    assert.equal(report.blocking.filter((item) => item.startsWith('USES_UNKNOWN T-01:')).length, 1);
+    assert.equal(report.blocking.filter((item) => item.startsWith('CYCLE')).length, 0);
+    assert.equal(report.route, null);
+  }
+});
+
+test('invalid graphs never report actionable routing or modeled estimates', () => {
+  const cases = [
+    scheduleContract.replace('  - Kind: skeleton', '  - Depends on: T-01\n  - Kind: skeleton'),
+    scheduleContract.replace('  - Uses: T-00', '  - Uses: T-99'),
+    scheduleContract.replace('  - Depends on: T-00,T-01,T-02', '  - Depends on: T-99'),
+    scheduleContract + '\n- [ ] T-01 duplicate\n',
+    '# Tasks\n',
+  ];
+  for (const tasks of cases) {
+    const dir = change(scheduleFiles(tasks));
+    const result = run(dir, ['--structural', '--skip-signer-check']);
+    assert.equal(result.status, 1);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.route, null);
+    assert.equal(report.weightedSpeedup, null);
+    assert.equal(report.speedup, null);
+    assert.equal(report.maxWidth, null);
+    assert.equal(report.criticalPath, null);
+    assert.deepEqual(report.waves, []);
+    assert.deepEqual(report.criticalChain, []);
+    const text = spawnSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--structural', '--skip-signer-check'], { encoding: 'utf8' });
+    assert.equal(text.status, 1);
+    assert.match(text.stdout, /\[ROUTE\] invalid/);
+    assert.doesNotMatch(text.stdout, /\[ROUTE\] (pipeline|handoff)\b|^WAVE |^CRITICAL /m);
+  }
+});
+
+test('non-graph blocks retain advisory route needed before R0', () => {
+  const result = run(change(scheduleFiles(scheduleContract)), ['--skip-signer-check']);
+  assert.equal(result.status, 1);
+  const report = JSON.parse(result.stdout);
+  assert.ok(report.blocking.some((item) => item.startsWith('MISSING_R0_SIGNOFF')));
+  assert.equal(report.route, 'pipeline');
+  assert.equal(typeof report.weightedSpeedup, 'number');
+});
+
+test('acceptance Required accepts yes/no case-insensitively and rejects invalid values even beside yes', () => {
+  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW };
+  for (const required of ['yes', 'YES', 'Yes', 'no', 'NO', 'No', '`yes`', '`no`']) {
+    const rows = `${acceptance}\n| SCEN-1 | CLI | T-02 | node -e "0" | ${required} | PENDING | pending |`;
+    const result = run(change({ ...files, 'acceptance.md': rows }));
+    assert.equal(result.status, 0, `${required}: ${result.stdout}`);
+  }
+  for (const required of ['', 'maybe', 'y', 'true', 'nope', 'yes please']) {
+    const rows = `${acceptance}\n| SCEN-1 | CLI | T-02 | node -e "0" | ${required} | PENDING | pending |`;
+    const result = run(change({ ...files, 'acceptance.md': rows }));
+    assert.equal(result.status, 1, required);
+    assert.match(result.stdout, /BAD_ACCEPTANCE_REQUIRED/);
+    assert.match(result.stdout, /acceptance\.md:4/);
+  }
+});
+
+test('acceptance requires the same seven-column header as runner', () => {
+  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW };
+  const original = '| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |';
+  for (const [header, row] of [
+    ['| Scenario | Entry | Tasks | Verify | Required | Result | Evidence | Extra |', '| SCEN-1 | CLI | T-02 | node -e "0" | yes | PENDING | pending | extra |'],
+    ['| Scenario | Entry | Tasks | Verify | Required | Outcome | Evidence |', '| SCEN-1 | CLI | T-02 | node -e "0" | yes | PENDING | pending |'],
+    ['| Scenario | Entry | Tasks | Verify | Required | Evidence | Result |', '| SCEN-1 | CLI | T-02 | node -e "0" | yes | PENDING | pending |'],
+  ]) {
+    const content = table(row).replace(original, header);
+    const result = run(change({ ...files, 'acceptance.md': content }));
+    assert.equal(result.status, 1, header);
+    assert.match(result.stdout, /BAD_ACCEPTANCE_HEADER/);
+  }
+  for (const header of ['| scenario | ENTRY | tasks | verify | required | result | evidence |', '| `Scenario` | `Entry` | `Tasks` | `Verify` | `Required` | `Result` | `Evidence` |']) {
+    const result = run(change({ ...files, 'acceptance.md': acceptance.replace(original, header) }));
+    assert.equal(result.status, 0, result.stdout);
+  }
+  const missing = run(change({ ...files, 'acceptance.md': '| SCEN-1 | CLI | T-02 | node -e "0" | yes | PENDING | pending |' }));
+  assert.equal(missing.status, 1);
+  assert.match(missing.stdout, /BAD_ACCEPTANCE_HEADER/);
 });

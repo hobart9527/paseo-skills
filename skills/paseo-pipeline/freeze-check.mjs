@@ -5,8 +5,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo-agents.mjs';
-import { parseTasks, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
-import { weightedSpeedup, weightedCriticalPath, verifyScope, readsOnlyEdges, pathWithin, resolveModel } from './lib/schedule.mjs';
+import { parseTasks, graphErrors, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
+import { weightedSpeedup, weightedCriticalPath, verifyScope, readsOnlyEdges, pathWithin, resolveModel, LIVE_MODEL } from './lib/schedule.mjs';
 import { runGit } from './lib/git.mjs';
 
 const args = process.argv.slice(2);
@@ -45,9 +45,12 @@ const RULE_FIXES = {
   UNKNOWN_REVIEW: 'use Review: strict, standard, mechanical or deferred',
   UNKNOWN_DEP: 'point Depends on at an existing task id',
   SELF_DEP: 'remove the self-dependency',
+  USES_UNKNOWN: 'point Uses at an existing task id (never the task itself)',
   CYCLE: 'break the dependency cycle into a DAG',
   BAD_READS: 'use repo-relative paths without `..` or a leading slash',
   MISSING_READS_PATH: 'point Reads at a path that already exists in the repository; Reads is a read-only anchor, not a file the task creates',
+  BAD_ACCEPTANCE_HEADER: 'use the seven columns Scenario, Entry, Tasks, Verify, Required, Result, Evidence in that order',
+  BAD_ACCEPTANCE_REQUIRED: 'set Required to yes or no (case-insensitive)',
   MALFORMED_ACCEPTANCE_ROW: 'escape a literal pipe inside a cell as `\\|`, or keep one cell free of `|`; the row must have the header column count',
   VERIFY_JUNK_LEG: 'put shell setup inside the leg it belongs to: `bash -c \'set -e; <command>\'`, or use `&&` between real commands',
   BAD_EST: 'use Est: S, M or L',
@@ -90,8 +93,10 @@ for (const [scen, file] of declared) {
   if (!claimed.has(scen)) blocking.push(`UNCLAIMED_SCEN: ${scen} (${file}) has no task`);
 }
 
-// Wave partition. Waves are planning data only; runtime dispatch follows the ready frontier.
-const waves = computeWaves(tasks);
+// Dispatch-dependency wave width is a planning heuristic, not exact maximum concurrency.
+// Runtime dispatch follows the ready frontier, without wave barriers.
+const graphValid = tasks.length > 0 && graphErrors(errors).length === 0;
+const waves = graphValid ? computeWaves(tasks) : new Map();
 // A sink is a task nothing consumes. `Uses` is a merge edge too (the consumer merges
 // after the producer), so a producer read only through Uses is still not a sink; counting
 // `depends` alone falsely marked such producers as sinks and rejected their deferred review.
@@ -99,7 +104,7 @@ const sinkIds = new Set(tasks
   .filter((task) => !tasks.some((other) => (other.depends || []).includes(task.id) || (other.uses || []).includes(task.id)))
   .map((task) => task.id));
 const waveList = [...waves.entries()].sort((a, b) => a[0] - b[0]).map(([wave, ids]) => ({ wave, ids }));
-const maxWidth = waveList.reduce((max, item) => Math.max(max, item.ids.length), 0);
+const maxWidth = graphValid ? waveList.reduce((max, item) => Math.max(max, item.ids.length), 0) : null;
 
 const scopesClash = (left, right) => left.scope.some((scope) => right.scope.some((other) => pathWithin(normalizeScope(scope), normalizeScope(other))));
 
@@ -161,8 +166,6 @@ const skeletons = tasks.filter((task) => task.kind === 'skeleton');
 for (const task of tasks) {
   for (const used of task.uses || []) {
     if (used === task.id || !byId.has(used)) {
-      blocking.push(`USES_UNKNOWN ${task.id}: Uses ${used} is not a task in this file; name a real producer or use Depends on`);
-      fixes.set('USES_UNKNOWN', 'point Uses at an existing task id (never the task itself)');
       continue;
     }
     const target = byId.get(used);
@@ -188,11 +191,11 @@ for (const task of tasks) {
   }
   if (task.review === 'deferred') {
     if (sinkIds.has(task.id)) {
-      blocking.push(`DEFERRED_NOT_STANDARD ${task.id}: the sink cannot defer review; FINAL review owns it and the sink is its entry point`);
+      blocking.push(`DEFERRED_NOT_STANDARD ${task.id}: the sink cannot use Review: deferred under the compatibility rule`);
       fixes.set('DEFERRED_NOT_STANDARD', 'use Review: standard or strict on the sink; only non-sink standard tasks may defer');
     }
     if (task.riskSurface.some((risk) => risk === 'persistence' || risk === 'security')) {
-      blocking.push(`DEFERRED_NOT_STANDARD ${task.id}: Risk-surface ${task.riskSurface.join(', ')} must be Review: strict and reviewed inline`);
+      blocking.push(`DEFERRED_NOT_STANDARD ${task.id}: Risk-surface ${task.riskSurface.join(', ')} cannot use Review: deferred; mark this risk Review: strict for FINAL attention`);
       fixes.set('DEFERRED_NOT_STANDARD', 'set Review: strict for persistence/security surfaces; deferred is only for standard tasks');
     }
   }
@@ -320,6 +323,9 @@ else {
     .map((cell) => cell.trim().replace(/\\\|/g, '|').replace(/^`|`$/g, ''));
   const lines = acceptanceMarkdown.split(/\r?\n/);
   const header = lines.find((line) => /^\s*\|.*\|\s*$/.test(line) && /\bScenario\b/i.test(line));
+  if (!header || cellsOf(header).join('|').toLowerCase() !== 'scenario|entry|tasks|verify|required|result|evidence') {
+    blocking.push('BAD_ACCEPTANCE_HEADER: acceptance.md needs exactly Scenario, Entry, Tasks, Verify, Required, Result, Evidence in that order');
+  }
   const expectedColumns = header ? cellsOf(header).length : 7;
   let rowNumber = 0;
   for (const line of lines) {
@@ -331,6 +337,10 @@ else {
       continue;
     }
     acceptanceScenarios.add(cells[0].toUpperCase());
+    if (!/^(yes|no)$/i.test(cells[4])) {
+      blocking.push(`BAD_ACCEPTANCE_REQUIRED acceptance.md:${rowNumber}: ${cells[0]} Required must be yes or no`);
+      continue;
+    }
     if (/^yes$/i.test(cells[4])) requiredRows.push(cells);
   }
   for (const scenario of acceptanceScenarios) {
@@ -421,20 +431,20 @@ if (!structural) {
 if (tasks.length === 0) blocking.push('EMPTY_TASKS: tasks.md parsed to zero tasks');
 // Expected speedup of running the DAG concurrently vs one task at a time, weighted by the
 // cost model in lib/schedule.mjs (hand-set defaults, overridable per call; not measured from
-// this repository). `speedup` keeps the legacy wave ratio for existing consumers; the advisory
-// routes on the weighted number.
-const speedup = waveList.length ? Number((tasks.length / waveList.length).toFixed(2)) : 0;
-const weighted = weightedSpeedup(tasks);
-// Critical chain: the longest path by the same weighted cost model the scheduler and the
-// benchmark use (lib/schedule.mjs). The wave-based chain this used to print counted edges,
-// not minutes, so it named a different path than the one that actually bounds the makespan
-// and pointed the removable-edge advice at edges that were not the bottleneck.
+// this repository). `speedup` retains the wave ratio for existing consumers; the weighted
+// estimate is advisory and does not determine the route.
+const speedup = graphValid ? Number((tasks.length / waveList.length).toFixed(2)) : null;
+const weighted = graphValid ? weightedSpeedup(tasks, LIVE_MODEL) : null;
+// Critical chain: the longest path by the same weighted cost model the scheduler uses
+// (lib/schedule.mjs); historical benchmarks use a separate model. The wave-based chain counted edges,
+// not weights, so it could point removable-edge advice at a different path. Neither path
+// is a measured makespan or accounts for coordination and merge gates.
 // Each edge is tagged by why it exists: `scope` (shared files, forced), `uses` (an
 // interface target), `reads` (only a shared read-only fixture connects the pair), or
 // `logical` (author choice; the only removable kind).
 const criticalChain = [];
-{
-  const weightedChain = weightedCriticalPath(tasks).chain;
+if (graphValid) {
+  const weightedChain = weightedCriticalPath(tasks, LIVE_MODEL).chain;
   for (let index = 0; index < weightedChain.length; index += 1) {
     const id = weightedChain[index];
     const previous = index > 0 ? byId.get(weightedChain[index - 1]) : null;
@@ -451,14 +461,14 @@ const criticalChain = [];
   }
 }
 const policy = resolveModel();
-if (tasks.length >= 4 && maxWidth >= 2 && weighted < policy.minSpeedup) {
-  advisories.push(`ADVISORY_LOW_SPEEDUP: weighted ${weighted}x below the ${policy.minSpeedup}x policy floor (legacy ${speedup}x); compare with Tier 2 handoff before CP-1`);
+if (graphValid && tasks.length >= 4 && maxWidth >= 2 && weighted < policy.minSpeedup) {
+  advisories.push(`ADVISORY_LOW_SPEEDUP: modeled ${weighted}x below advisory reference ${policy.minSpeedup}x (wave ratio ${speedup}x); compare with Tier 2 handoff before CP-1`);
 }
 // A dependency whose only shared surface is a read-only fixture is a candidate for removal:
 // `merge-task` replays every Done task whose Verify scope overlaps the changed files, so the
 // fixture is re-run against the merged tree whether or not the author serialised the pair.
 // Advisory only — dropping the edge is a contract decision the author records in design.md.
-{
+if (graphValid) {
   const chainIds = new Set(criticalChain.map((step) => step.id));
   const edges = readsOnlyEdges(tasks);
   if (edges.length) {
@@ -467,7 +477,7 @@ if (tasks.length >= 4 && maxWidth >= 2 && weighted < policy.minSpeedup) {
     advisories.push(`ADVISORY_READS_ONLY_EDGE ${rendered.join('; ')}: the pair shares only a read-only fixture and Write scopes do not overlap; merge-task replays it after either side merges. Record in design.md whether the edge is still needed before CP-1.`);
   }
 }
-const route = maxWidth >= 2 && tasks.length >= 4 ? 'pipeline' : 'handoff';
+const route = graphValid ? (maxWidth >= 2 && tasks.length >= 4 ? 'pipeline' : 'handoff') : null;
 const summaryBlocking = (items) => [...new Set(items)].map((item) => {
   const match = item.match(/^([A-Z][A-Z0-9_]*)\b(?:\s+[^:]*)?:\s*(.*)$/);
   const code = match?.[1] ?? item;
@@ -483,10 +493,12 @@ const summary = {
   tasks: tasks.length,
   waves: waveList,
   maxWidth,
-  criticalPath: waveList.length,
+  maxWidthMeaning: 'largest dispatch-dependency wave; heuristic, not exact maximum concurrency',
+  criticalPath: graphValid ? waveList.length : null,
   criticalChain,
   speedup,
   weightedSpeedup: weighted,
+  weightedSpeedupMeaning: 'unmeasured worker implementation weights; excludes coordination and FINAL review',
   route,
   blocking: [...new Set(blocking)],
   advisories,
@@ -495,10 +507,13 @@ const summary = {
 if (json) console.log(JSON.stringify(summary, null, 2));
 else {
   console.log(`[freeze-check] ${summary.change}`);
-  console.log(`tasks=${tasks.length} waves=${waveList.length} maxWidth=${maxWidth} criticalPath=${waveList.length}`);
-  console.log(`[ROUTE] ${route}${route === 'pipeline' ? ': DAG has real concurrency' : ': no concurrency benefit; use Tier 2 handoff'}`);
-  for (const wave of waveList) console.log(`WAVE ${wave.wave}: ${wave.ids.join(', ')}`);
-  console.log(`CRITICAL ${criticalChain.map((step) => (step.via ? `-${step.via}-> ` : '') + step.id).join(' ')}`);
+  if (graphValid) {
+    console.log(`tasks=${tasks.length} waves=${waveList.length} maxWidth=${maxWidth} criticalPath=${waveList.length}`);
+    console.log('maxWidth is a wave-width heuristic, not exact maximum concurrency; weighted estimates are unmeasured.');
+    console.log(`[ROUTE] ${route}${route === 'pipeline' ? ': wave-width gate met' : ': wave-width/task-count gate not met; use Tier 2 handoff'}`);
+    for (const wave of waveList) console.log(`WAVE ${wave.wave}: ${wave.ids.join(', ')}`);
+    console.log(`CRITICAL ${criticalChain.map((step) => (step.via ? `-${step.via}-> ` : '') + step.id).join(' ')}`);
+  } else console.log(`[ROUTE] invalid: task graph invalid; fix graph errors before routing`);
   for (const item of summary.advisories) console.log(`ADVISE ${item}`);
   for (const item of summary.blocking) console.error(`BLOCK ${item}`);
   if (explain) for (const item of summary.explanations) console.error(`EXPLAIN ${item.code}: ${item.reason}\n  fix: ${item.fix}`);

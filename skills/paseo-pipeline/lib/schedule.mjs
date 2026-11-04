@@ -11,11 +11,16 @@ export const DEFAULT_MODEL = {
   reviewerCap: 4,
   writerCap: 6,
   reworkRate: { strict: 0.35, standard: 0.2, deferred: 0.2, mechanical: 0 },
-  // Policy floor, not a measurement: below this weighted speedup the fixed coordination
-  // cost (R0, CP-1, merge queue, regression replays) is too large a share of the gain, so
-  // `freeze-check` suggests Tier 2. Override per call through the model when a repo's own
-  // measured history says otherwise.
+  // Advisory reference only; routing uses the human-defined task and wave-width gate.
   minSpeedup: 1.8,
+};
+
+// Planning weights for the current worker/FINAL workflow, not measured durations.
+// DEFAULT_MODEL remains unchanged for historical benchmark simulations.
+export const LIVE_MODEL = {
+  redMin: 0,
+  reviewMin: { strict: 0, standard: 0, deferred: 0, mechanical: 0 },
+  reworkRate: { strict: 0, standard: 0, deferred: 0, mechanical: 0 },
 };
 
 export function resolveModel(model = {}) {
@@ -122,13 +127,14 @@ export function weightedSpeedup(tasks, model) {
 
 // Longest path starting at each task over a dependency function, used to order the ready frontier
 // (longest downstream first) without re-walking the graph per comparison.
-function remainingWeights(tasks, depFn, model) {
+function remainingWeights(tasks, depFn, model, done = new Set()) {
   const resolved = resolveModel(model);
   const known = byId(tasks);
   const dependents = new Map(tasks.map((task) => [task.id, []]));
   for (const task of tasks) {
+    if (done.has(task.id)) continue;
     for (const dep of depFn(task, tasks)) {
-      if (dependents.has(dep)) dependents.get(dep).push(task.id);
+      if (!done.has(dep) && dependents.has(dep)) dependents.get(dep).push(task.id);
     }
   }
   const memo = new Map();
@@ -151,7 +157,7 @@ function remainingWeights(tasks, depFn, model) {
 export function readyIds(tasks, doneIds, model) {
   const done = new Set(doneIds);
   const known = byId(tasks);
-  const remaining = remainingWeights(tasks, dispatchDeps, model);
+  const remaining = remainingWeights(tasks, dispatchDeps, model, done);
   return tasks
     .filter((task) => !done.has(task.id) && dispatchDeps(task, tasks).every((dep) => !known.has(dep) || done.has(dep)))
     .sort((a, b) => (remaining.get(b.id) - remaining.get(a.id))

@@ -178,3 +178,20 @@ test('readsOnlyEdges names explicit Depends on edges carried only by a shared fi
   const viaUses = task({ ...consumer, depends: [], uses: ['T-01'] });
   assert.deepEqual(readsOnlyEdges([shared, viaUses, sink]), []);
 });
+
+test('waves use dispatch dependencies including Uses skeleton ancestors', async () => {
+  const { computeWaves } = await import('../lib/tasks.mjs');
+  const chain = [
+    task({ id: 'T-00', kind: 'skeleton' }), task({ id: 'T-01', uses: ['T-00'] }),
+    task({ id: 'T-02', depends: ['T-01'] }), task({ id: 'T-03', depends: ['T-02'] }),
+  ];
+  assert.deepEqual([...computeWaves(chain).values()], [['T-00'], ['T-01'], ['T-02'], ['T-03']]);
+  const concurrent = [chain[0], task({ id: 'T-01', uses: ['T-00'] }), task({ id: 'T-02', uses: ['T-00'] })];
+  assert.deepEqual([...computeWaves(concurrent).values()], [['T-00'], ['T-01', 'T-02']]);
+});
+
+test('live weights exclude historical Red and per-task review without changing benchmark defaults', async () => {
+  const { LIVE_MODEL } = await import('../lib/schedule.mjs');
+  assert.equal(nodeCost(task({ est: 'M', review: 'strict' }), LIVE_MODEL), DEFAULT_MODEL.implMin.M);
+  assert.equal(nodeCost(task({ est: 'M', review: 'standard' })), 74);
+});

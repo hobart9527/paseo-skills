@@ -119,6 +119,9 @@ test('parses uses, reads, est, skeleton, interface and deferred review', () => {
   - Review: deferred
   - Risk-surface: [public-api, ui]
   - Verify with: node --test test/consumer.test.mjs
+- [ ] 1.3 T-02 producer
+  - Write scope: src/producer.ts
+  - Verify with: node --test test/producer.test.mjs
 `;
   const { tasks, errors } = parseTasks(text);
   assert.deepEqual(errors, []);
@@ -168,4 +171,17 @@ test('review enum accepts deferred and rejects unknown modes', () => {
   assert.deepEqual(ok.errors, []);
   const bad = parseTasks('- [ ] 1.1 T-01 x\n  - Write scope: a\n  - Review: later\n  - Verify with: true\n');
   assert.ok(bad.errors.some((error) => error.code === 'UNKNOWN_REVIEW'));
+});
+
+test('graph validation rejects cycles across Depends on and Uses merge edges', async () => {
+  const { graphErrors } = await import('../lib/tasks.mjs');
+  const make = (a, b) => `- [ ] T-01 first\n  - ${a}\n  - Write scope: src/a\n  - Verify with: true\n- [ ] T-02 second\n  - ${b}\n  - Write scope: src/b\n  - Verify with: true\n`;
+  for (const [a, b] of [['Depends on: T-02', 'Uses: T-01'], ['Uses: T-02', 'Uses: T-01']]) {
+    const result = graphErrors(parseTasks(make(a, b)).errors);
+    assert.ok(result.some((error) => error.code === 'CYCLE'), `${a}, ${b}`);
+  }
+  assert.equal(graphErrors(parseTasks(make('Uses: T-02', 'Depends on: none')).errors).length, 0);
+  const indirect = make('Depends on: T-02', 'Uses: T-03')
+    + '- [ ] T-03 third\n  - Depends on: T-01\n  - Write scope: src/c\n  - Verify with: true\n';
+  assert.ok(graphErrors(parseTasks(indirect).errors).some((error) => error.code === 'CYCLE'));
 });

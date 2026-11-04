@@ -8,10 +8,11 @@
 //   pipeline-run.mjs plan   <change-dir> [--json] [--worker-cap N] [--idle-minutes N]
 //   pipeline-run.mjs merge  <change-dir> <task-id> [--timeout=ms] [--allow-attempt-over]
 //   pipeline-run.mjs status <change-dir>
+//   pipeline-run.mjs acceptance run|check <change-dir> --evidence <file> ...
 //   pipeline-run.mjs install-hook <worktree> [<worktree>...]
 //
 // `merge` must run inside the integration worktree (`integration/<change>`).
-// Exit: plan/status 0 ok, 3 unreadable state; merge forwards merge-task's exit code.
+// Exit: plan/status 0 ok, 3 invalid or unreadable state; merge forwards merge-task's exit code.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -62,7 +63,10 @@ function hookWarnings(change) {
   return warnings;
 }
 
-if (command === 'plan') {
+if (command === 'acceptance') {
+  const result = spawnSync(process.execPath, [path.join(HOME, 'acceptance-run.mjs'), ...rest], { stdio: 'inherit' });
+  process.exit(result.status ?? 1);
+} else if (command === 'plan') {
   let parsed;
   try { parsed = parseOptions(rest, planOptions); } catch (error) { die(error.message); }
   if (parsed.positional.length !== 1) die('plan needs <change-dir>');
@@ -126,7 +130,9 @@ if (command === 'plan') {
   let tasksSource;
   try { ({ markdown, source: tasksSource } = readTasksMarkdown(dir, change)); }
   catch (error) { die(`cannot read tasks.md: ${error.message}`, 3); }
-  const { tasks } = parseTasks(markdown);
+  const { tasks, errors } = parseTasks(markdown);
+  if (!tasks.length) errors.push({ code: 'EMPTY_TASKS', message: 'tasks.md parsed to zero tasks' });
+  if (errors.length) die(`invalid tasks.md (${tasksSource}):\n${errors.map((error) => `${error.code}${error.task ? ` ${error.task}` : ''}: ${error.message}`).join('\n')}`, 3);
   const done = tasks.filter((task) => task.done);
   const head = runGit(undefined, ['rev-parse', '--verify', '--quiet', `refs/heads/integration/${change}`]);
   const headSha = head.status === 0 ? head.stdout.trim() : null;
@@ -144,5 +150,5 @@ if (command === 'plan') {
     for (const task of tasks.filter((item) => !item.done)) console.log(`OPEN ${task.id}: ${task.title}`);
   }
 } else {
-  die('usage: pipeline-run.mjs plan|merge|status <change-dir> ...', 2);
+  die('usage: pipeline-run.mjs plan|merge|status|acceptance <change-dir> ...', 2);
 }

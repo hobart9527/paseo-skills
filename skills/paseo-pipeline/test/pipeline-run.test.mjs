@@ -314,3 +314,59 @@ test('merge driver forwards both timeout forms and rejects unknown options', () 
     assert.equal(result.status, 2, result.out);
   }
 });
+
+test('plan and status reject corrupt integration contracts rather than reporting a frontier', () => {
+  for (const [name, mutate, expected] of [
+    ['unknown Uses', (text) => text.replace('  - Write scope: src,test', '  - Uses: T-99\n  - Write scope: src,test'), /USES_UNKNOWN/],
+    ['self Uses', (text) => text.replace('  - Write scope: src,test', '  - Uses: T-01\n  - Write scope: src,test'), /USES_UNKNOWN/],
+    ['mixed cycle', (text) => text.replace('  - Write scope: src,test', '  - Uses: T-02\n  - Write scope: src,test'), /CYCLE/],
+    ['invalid Done', (text) => text.replace('  - Write scope: src,test', '  - Done: corrupted\n  - Write scope: src,test'), /BAD_DONE_LINE/],
+    ['missing scope', (text) => text.replace('  - Write scope: src,test\n', ''), /MISSING_SCOPE/],
+    ['empty contract', () => '# Tasks\n', /EMPTY_TASKS/],
+  ]) {
+    const f = fixture();
+    const dir = path.join(f.cwd, 'openspec/changes/chg');
+    const file = path.join(dir, 'tasks.md');
+    fs.writeFileSync(file, mutate(fs.readFileSync(file, 'utf8')));
+    git(f.cwd, 'add', 'openspec/changes/chg/tasks.md');
+    git(f.cwd, 'commit', '-qm', 'corrupt contract');
+    for (const command of ['plan', 'status']) {
+      const r = run(f.cwd, f.localEnv, [command, dir, '--json']);
+      assert.equal(r.status, 3, `${name} ${command}: ${r.out}`);
+      assert.match(r.stderr, expected, `${name} ${command}`);
+      assert.equal(r.stdout, '', `${name} ${command}`);
+    }
+  }
+});
+
+test('plan and status accept historical Done review tags', () => {
+  for (const review of ['worker', 'main-session', 'pass(94d49a23@fc5df03/51d53dc)']) {
+    const f = fixture({ done: true });
+    const dir = path.join(f.cwd, 'openspec/changes/chg');
+    const file = path.join(dir, 'tasks.md');
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('review=worker', `review=${review}`));
+    git(f.cwd, 'add', 'openspec/changes/chg/tasks.md');
+    git(f.cwd, 'commit', '--allow-empty', '-qm', 'legacy done');
+    for (const command of ['plan', 'status']) {
+      const r = run(f.cwd, f.localEnv, [command, dir, '--json']);
+      assert.equal(r.status, 0, `${review} ${command}: ${r.out}`);
+      const report = JSON.parse(r.stdout);
+      if (command === 'plan') assert.deepEqual(report.dispatch.map((item) => item.task), ['T-02']);
+      else assert.deepEqual(report.done, ['T-01']);
+    }
+  }
+});
+
+test('plan and status accept valid historical Uses references', () => {
+  const f = fixture({ done: true });
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  const file = path.join(dir, 'tasks.md');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('  - Depends on: T-01', '  - Uses: T-01'));
+  git(f.cwd, 'add', 'openspec/changes/chg/tasks.md');
+  git(f.cwd, 'commit', '-qm', 'historical Uses');
+  for (const command of ['plan', 'status']) {
+    const r = run(f.cwd, f.localEnv, [command, dir, '--json']);
+    assert.equal(r.status, 0, `${command}: ${r.out}`);
+    assert.doesNotThrow(() => JSON.parse(r.stdout));
+  }
+});

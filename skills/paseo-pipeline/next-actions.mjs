@@ -4,7 +4,7 @@
 // list is lost it recomputes (SKILL.md principle 5).
 //
 // Usage: next-actions.mjs <change-dir> [--json] [--worker-cap 8] [--idle-minutes 15]
-// Exit: 0 list printed (including "nothing to do"); 2 usage; 3 Git/Paseo unreadable.
+// Exit: 0 list printed (including "nothing to do"); 2 usage; 3 invalid or unreadable state.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -53,7 +53,12 @@ try {
   console.error(`[next-actions] cannot read tasks.md: ${error.message}`);
   process.exit(3);
 }
-const { tasks } = parseTasks(markdown);
+const { tasks, errors } = parseTasks(markdown);
+if (!tasks.length) errors.push({ code: 'EMPTY_TASKS', message: 'tasks.md parsed to zero tasks' });
+if (errors.length) {
+  console.error(`[next-actions] invalid tasks.md (${tasksSource}):\n${errors.map((error) => `${error.code}${error.task ? ` ${error.task}` : ''}: ${error.message}`).join('\n')}`);
+  process.exit(3);
+}
 const done = tasks.filter((task) => task.done).map((task) => task.id);
 
 function git(gitArgs, cwd = changeDir) {

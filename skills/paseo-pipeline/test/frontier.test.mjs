@@ -245,3 +245,48 @@ test('failed empty merge and existing worker holds dispatch', () => {
     assert.equal(report.blocked[0].kind, 'BLOCKED_WORKER_RESULT');
   }
 });
+
+test('priority uses the remaining full dispatch graph, excluding Done descendants', () => {
+  const tasks = [
+    task({ id: 'T-01' }), task({ id: 'T-02' }),
+    task({ id: 'T-03', depends: ['T-02'] }), task({ id: 'T-04', depends: ['T-03'] }),
+  ];
+  assert.equal(frontier(tasks, {}, { workerCap: 1 }).dispatch[0].task, 'T-02');
+  assert.equal(frontier(tasks, { done: ['T-03', 'T-04'] }, { workerCap: 1 }).dispatch[0].task, 'T-01');
+});
+
+test('serial Uses skeleton chain dispatches one task at each frontier', () => {
+  const tasks = [
+    task({ id: 'T-00', kind: 'skeleton' }), task({ id: 'T-01', uses: ['T-00'] }),
+    task({ id: 'T-02', depends: ['T-01'] }), task({ id: 'T-03', depends: ['T-02'] }),
+  ];
+  for (let n = 0; n < tasks.length; n += 1) {
+    const report = frontier(tasks, { done: tasks.slice(0, n).map((item) => item.id) });
+    assert.deepEqual(report.dispatch.map((item) => item.task), [tasks[n].id]);
+  }
+});
+
+test('mixed Uses and Depends on can create a mutually waiting dispatch frontier', () => {
+  const tasks = [task({ id: 'T-00', kind: 'skeleton', depends: ['T-01'] }), task({ id: 'T-01', uses: ['T-00'] })];
+  const report = frontier(tasks);
+  assert.deepEqual(report.dispatch, []);
+  assert.deepEqual(report.waiting, [{ task: 'T-00', on: ['T-01'] }, { task: 'T-01', on: ['T-00'] }]);
+});
+
+test('Uses-only cycle permits dispatch but blocks both merges', () => {
+  const tasks = [task({ id: 'T-01', uses: ['T-02'] }), task({ id: 'T-02', uses: ['T-01'] })];
+  const report = frontier(tasks, { branches: { 'T-01': { attempts: 1 }, 'T-02': { attempts: 1 } } });
+  assert.deepEqual(report.dispatch, []);
+  assert.deepEqual(report.mergeWaiting, [{ task: 'T-01', on: ['T-02'] }, { task: 'T-02', on: ['T-01'] }]);
+});
+
+test('next-actions rejects invalid tasks before reading Paseo state', () => {
+  const invalid = cliTasks.replace('  - Write scope: src/a.ts', '  - Uses: T-02\n  - Write scope: src/a.ts');
+  const { dir } = repo(invalid);
+  const direct = spawnSync(process.execPath, [path.join(root, 'next-actions.mjs'), path.join(dir, 'openspec/changes/chg'), '--json'], {
+    encoding: 'utf8', env: { ...process.env, PATH: '/usr/bin:/bin' },
+  });
+  assert.equal(direct.status, 3, direct.stderr);
+  assert.match(direct.stderr, /CYCLE/);
+  assert.equal(direct.stdout, '');
+});

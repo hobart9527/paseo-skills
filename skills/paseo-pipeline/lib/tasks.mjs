@@ -1,5 +1,6 @@
 // Minimal tasks.md parser for the converged pipeline.
 // State lives in git; this module only validates the frozen contract.
+import { dispatchDeps, mergeDeps } from './schedule.mjs';
 
 const TASK_LINE = /^\s*[-*]\s*\[([ xX])\]\s+(?:(?:\d+(?:\.\d+)*)\s+)?([A-Za-z][A-Za-z0-9]*-\d+)(?::\s*|\s+)(.*)$/;
 const FIELD_LINE = /^\s+[-*]\s+([^:]+):\s*(.*)$/;
@@ -162,9 +163,14 @@ export function parseTasks(markdown) {
       if (!ids.has(dep)) errors.push({ code: 'UNKNOWN_DEP', task: task.id, message: `${task.id} depends on unknown ${dep}` });
       if (dep === task.id) errors.push({ code: 'SELF_DEP', task: task.id, message: `${task.id} depends on itself` });
     }
+    for (const used of new Set(task.uses)) {
+      if (used === task.id || !ids.has(used)) errors.push({ code: 'USES_UNKNOWN', task: task.id, message: `Uses ${used} must name another task in this file` });
+    }
   }
 
-  const graph = new Map(tasks.map((task) => [task.id, task.depends.filter(ids.has.bind(ids))]));
+  // Every dispatch dependency is reachable through merge edges. Checking their union
+  // catches both dispatch deadlocks and cycles that only block completed merges.
+  const graph = new Map(tasks.map((task) => [task.id, mergeDeps(task).filter((id) => ids.has(id) && id !== task.id)]));
   const state = new Map([...ids].map((id) => [id, 0]));
   const visit = (id, trail = []) => {
     if (state.get(id) === 2) return;
@@ -183,7 +189,7 @@ export function parseTasks(markdown) {
 }
 
 export function graphErrors(errors) {
-  const graphCodes = new Set(['MALFORMED_LINE', 'DUPLICATE_ID', 'UNKNOWN_DEP', 'SELF_DEP', 'CYCLE']);
+  const graphCodes = new Set(['MALFORMED_LINE', 'DUPLICATE_ID', 'UNKNOWN_DEP', 'SELF_DEP', 'USES_UNKNOWN', 'CYCLE']);
   return errors.filter((error) => graphCodes.has(error.code));
 }
 
@@ -252,9 +258,10 @@ export function computeWaves(tasks) {
   const visit = (task) => {
     if (cache.has(task.id)) return cache.get(task.id);
     cache.set(task.id, 0);
-    const wave = task.depends.length === 0
+    const deps = dispatchDeps(task, tasks).filter((id) => byId.has(id));
+    const wave = deps.length === 0
       ? 1
-      : 1 + Math.max(...task.depends.filter((id) => byId.has(id)).map((id) => visit(byId.get(id))));
+      : 1 + Math.max(...deps.map((id) => visit(byId.get(id))));
     cache.set(task.id, wave);
     return wave;
   };

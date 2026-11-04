@@ -4,7 +4,7 @@
 //
 // One track: a ready task gets a worker; a branch with commits merges as soon as its
 // merge dependencies are Done. There is no test-author dispatch and no per-task reviewer.
-import { dispatchDeps, mergeDeps, readyIds, pathWithin } from './schedule.mjs';
+import { dispatchDeps, mergeDeps, readyIds, pathWithin, LIVE_MODEL } from './schedule.mjs';
 import { normalizeScope } from './tasks.mjs';
 
 const WORKER_ROLES = new Set(['gongbu', 'gaogong', 'jiangzuo']);
@@ -116,8 +116,9 @@ export function frontier(tasks, state = {}, options = {}) {
   }
 
   // Longest remaining weighted path first; skeleton first on ties (lib/schedule.mjs).
-  const order = readyIds(ready, [...done]);
-  const ordered = order.map((id) => byId.get(id)).filter(Boolean);
+  const eligible = new Set(ready.map((task) => task.id));
+  const order = readyIds(tasks, [...done], LIVE_MODEL);
+  const ordered = order.filter((id) => eligible.has(id)).map((id) => byId.get(id));
   const workerSlots = Math.max(0, capacity.workers.cap - capacity.workers.used);
   const workerItems = [];
   const mergeItems = [];
