@@ -19,11 +19,10 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseTasks } from './lib/tasks.mjs';
 import { runGit } from './lib/git.mjs';
+import { parseOptions, planOptions } from './lib/cli.mjs';
 
 const HOME = path.dirname(fileURLToPath(import.meta.url));
 const [command, ...rest] = process.argv.slice(2);
-const options = rest.filter((arg) => arg.startsWith('--'));
-const positional = rest.filter((arg) => !arg.startsWith('--'));
 
 function die(message, code = 2) {
   console.error(`[pipeline-run] ${message}`);
@@ -63,16 +62,21 @@ function hookWarnings(change) {
 }
 
 if (command === 'plan') {
-  const dir = changeDirOf(positional[0]);
+  let parsed;
+  try { parsed = parseOptions(rest, planOptions); } catch (error) { die(error.message); }
+  if (parsed.positional.length !== 1) die('plan needs <change-dir>');
+  const dir = changeDirOf(parsed.positional[0]);
   for (const warning of hookWarnings(path.basename(dir))) console.error(`[pipeline-run] ${warning}`);
-  const result = spawnSync(process.execPath, [path.join(HOME, 'next-actions.mjs'), dir, ...options], {
+  const result = spawnSync(process.execPath, [path.join(HOME, 'next-actions.mjs'), ...rest], {
     encoding: 'utf8',
     stdio: 'inherit',
   });
   process.exit(result.status ?? 1);
 } else if (command === 'install-hook') {
   // One command per workspace instead of two raw git invocations; idempotent.
-  const targets = positional.length ? positional.map((item) => path.resolve(item)) : [process.cwd()];
+  let parsed;
+  try { parsed = parseOptions(rest, {}); } catch (error) { die(error.message); }
+  const targets = parsed.positional.length ? parsed.positional.map((item) => path.resolve(item)) : [process.cwd()];
   let failed = false;
   for (const target of targets) {
     if (!fs.existsSync(target)) die(`no worktree at ${target}`, 3);
@@ -86,9 +90,14 @@ if (command === 'plan') {
   }
   process.exit(failed ? 1 : 0);
 } else if (command === 'merge') {
-  const dir = changeDirOf(positional[0]);
-  const taskId = positional[1];
-  if (!taskId) die('merge needs <task-id>', 2);
+  let parsed;
+  try { parsed = parseOptions(rest, { timeout: 'value', 'allow-attempt-over': 'boolean' }); } catch (error) { die(error.message); }
+  if (parsed.positional.length !== 2) die('merge needs <change-dir> <task-id>');
+  const dir = changeDirOf(parsed.positional[0]);
+  const taskId = parsed.positional[1];
+  const mergeOptions = [];
+  if (parsed.options.timeout !== undefined) mergeOptions.push(`--timeout=${parsed.options.timeout}`);
+  if (parsed.options['allow-attempt-over']) mergeOptions.push('--allow-attempt-over');
   const change = path.basename(dir);
   const refs = runGit(undefined, ['for-each-ref', '--format=%(refname:short)', `refs/heads/task/${change}/`]).stdout
     .split('\n').map((line) => line.trim()).filter(Boolean);
@@ -100,19 +109,22 @@ if (command === 'plan') {
     });
   const branch = candidates.at(-1);
   if (!branch) die(`no branch for ${taskId} under task/${change}/`, 3);
-  const result = spawnSync(process.execPath, [path.join(HOME, 'merge-task.mjs'), branch, taskId, ...options], {
+  const result = spawnSync(process.execPath, [path.join(HOME, 'merge-task.mjs'), branch, taskId, ...mergeOptions], {
     encoding: 'utf8',
     stdio: 'inherit',
   });
   process.exit(result.status ?? 1);
 } else if (command === 'status') {
-  const dir = changeDirOf(positional[0]);
+  let parsed;
+  try { parsed = parseOptions(rest, { json: 'boolean' }); } catch (error) { die(error.message); }
+  if (parsed.positional.length > 1) die('status accepts one <change-dir>');
+  const dir = changeDirOf(parsed.positional[0]);
   const change = path.basename(dir);
   const { tasks } = parseTasks(fs.readFileSync(path.join(dir, 'tasks.md'), 'utf8'));
   const done = tasks.filter((task) => task.done);
   const head = runGit(undefined, ['rev-parse', '--verify', '--quiet', `refs/heads/integration/${change}`]);
   const headSha = head.status === 0 ? head.stdout.trim() : null;
-  if (options.includes('--json')) {
+  if (parsed.options.json) {
     console.log(JSON.stringify({
       change,
       integrationHead: headSha,

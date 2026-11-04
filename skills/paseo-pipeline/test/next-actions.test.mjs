@@ -94,12 +94,13 @@ test('next-actions: integration merge commits do not count as this task\'s imple
   assert.deepEqual(dispatch, ['T-01:dispatch-worker'], JSON.stringify(result.json));
 });
 
-test('next-actions: an empty branch is an attempt and three of them trip the breaker', () => {
+test('next-actions: four branches trip the breaker', () => {
   const { cwd, localEnv } = fixture();
   const git = (...args) => spawnSync('git', args, { cwd, env: localEnv, encoding: 'utf8' });
   // No commits on either replacement branch: every branch is an attempt, so both count.
   git('branch', 'task/c1/T-01-a2', 'integration/c1');
   git('branch', 'task/c1/T-01-a3', 'integration/c1');
+  git('branch', 'task/c1/T-01-a4', 'integration/c1');
   const result = run(cwd, localEnv);
   assert.equal(result.status, 0, result.out);
   assert.deepEqual(result.json.blocked.map((item) => [item.task, item.kind]), [['T-01', 'BLOCKED_ATTEMPTS']]);
@@ -131,4 +132,194 @@ test('next-actions: a worker commit on the branch advances to merge', () => {
   assert.equal(result.status, 0, result.out);
   // A worker commit merges directly; there is no per-task review stage.
   assert.deepEqual(result.json.dispatch.map((item) => `${item.task}:${item.action}`), ['T-01:merge']);
+});
+
+test('next-actions: change label isolates active workers and inspect errors fail closed', () => {
+  const { cwd, localEnv } = fixture();
+  const paseo = path.join(cwd, '.fake-bin', 'paseo');
+  const agent = { id: 'worker', name: '[Pipeline] gongbu T-01 c1', status: 'running', cwd };
+  fs.writeFileSync(paseo, `#!/bin/sh\nif [ "$1" = inspect ]; then printf '%s' '${JSON.stringify({ Id: agent.id, Name: agent.name, Status: agent.status, PendingPermissions: [] })}'; exit 0; fi\ncase " $* " in *" --label pipeline.change=c1 "*) printf '%s' '${JSON.stringify([agent])}' ;; *) printf '%s' '${JSON.stringify([agent])}' ;; esac\n`);
+  let result = run(cwd, localEnv);
+  assert.equal(result.status, 0, result.out);
+  assert.deepEqual(result.json.dispatch, []);
+  fs.writeFileSync(paseo, `#!/bin/sh\nif [ "$1" = inspect ]; then exit 1; fi\nprintf '%s' '${JSON.stringify([agent])}'\n`);
+  result = run(cwd, localEnv);
+  assert.equal(result.status, 3, result.out);
+});
+
+test('next-actions: malformed list and unrecognized identity fail closed', () => {
+  const { cwd, localEnv } = fixture();
+  const paseo = path.join(cwd, '.fake-bin', 'paseo');
+  for (const payload of [{}, [{ id: 'worker', name: 'gongbu-c1', status: 'running' }]]) {
+    fs.writeFileSync(paseo, `#!/bin/sh\nprintf '%s' '${JSON.stringify(payload)}'\n`);
+    const result = run(cwd, localEnv);
+    assert.equal(result.status, 3, result.out);
+  }
+});
+
+test('next-actions: old active unlabelled pipeline agent stops scheduling', () => {
+  const { cwd, localEnv } = fixture();
+  const paseo = path.join(cwd, '.fake-bin', 'paseo');
+  fs.writeFileSync(paseo, `#!/bin/sh\ncase " $* " in *" --label "*) printf '[]' ;; *) printf '[{"id":"old","name":"[Pipeline] gongbu T-01","status":"running"}]' ;; esac\n`);
+  const result = run(cwd, localEnv);
+  assert.equal(result.status, 3, result.out);
+  assert.match(result.out, /lacks a matching change label/);
+});
+
+test('next-actions: identifiable other change does not interfere', () => {
+  const { cwd, localEnv } = fixture();
+  const paseo = path.join(cwd, '.fake-bin', 'paseo');
+  fs.writeFileSync(paseo, `#!/bin/sh\ncase " $* " in *" pipeline.change=c1 "*) printf '[]' ;; *) printf '[{"id":"other","name":"[Pipeline] gongbu T-01 c2","status":"running"}]' ;; esac\n`);
+  const result = run(cwd, localEnv);
+  assert.equal(result.status, 0, result.out);
+  assert.equal(result.json.dispatch[0].action, 'dispatch-worker');
+});
+
+test('next-actions: title claiming another change without its label stops scheduling', () => {
+  const { cwd, localEnv } = fixture();
+  const paseo = path.join(cwd, '.fake-bin', 'paseo');
+  fs.writeFileSync(paseo, `#!/bin/sh\ncase " $* " in *" --label "*) printf '[]' ;; *) printf '[{"id":"old","name":"[Pipeline] gongbu T-01 c2","status":"running"}]' ;; esac\n`);
+  const result = run(cwd, localEnv);
+  assert.equal(result.status, 3, result.out);
+});
+
+test('next-actions: former role-change titles fail closed without label', () => {
+  const { cwd, localEnv } = fixture();
+  const paseo = path.join(cwd, '.fake-bin', 'paseo');
+  fs.writeFileSync(paseo, `#!/bin/sh\ncase " $* " in *" --label "*) printf '[]' ;; *) printf '[{"id":"old","name":"gongbu-c1","status":"running"}]' ;; esac\n`);
+  const result = run(cwd, localEnv);
+  assert.equal(result.status, 3, result.out);
+});
+
+test('next-actions: closed legacy title is ignored and short title accepts initializing transition', () => {
+  const { cwd, localEnv } = fixture();
+  const paseo = path.join(cwd, '.fake-bin', 'paseo');
+  const agents = [{ id: 'old', name: '[Pipeline] old title extra words', status: 'closed', cwd }, { id: 'w', name: '[Pipeline] gongbu T-01', status: 'initializing', cwd }];
+  fs.writeFileSync(paseo, `#!/bin/sh\nif [ "$1" = inspect ]; then printf '%s' '${JSON.stringify({Id:'w',Name:agents[1].name,Status:'running',PendingPermissions:[]})}'; else printf '%s' '${JSON.stringify(agents)}'; fi\n`);
+  const result = run(cwd, localEnv);
+  assert.equal(result.status, 0, result.out);
+  assert.deepEqual(result.json.dispatch, []);
+  assert.equal(result.json.capacity.workers.used, 1);
+});
+
+test('next-actions: active legacy agent in another repository does not block', () => {
+  const { cwd, localEnv } = fixture();
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeline-other-'));
+  spawnSync('git', ['init', '-q', other]);
+  const paseo = path.join(cwd, '.fake-bin', 'paseo');
+  fs.writeFileSync(paseo, `#!/bin/sh\ncase " $* " in *" --label "*) printf '[]' ;; *) printf '%s' '${JSON.stringify([{id:'other',name:'[Pipeline] gongbu T-01',status:'running',cwd:other}])}' ;; esac\n`);
+  const result = run(cwd, localEnv);
+  assert.equal(result.status, 0, result.out);
+});
+
+test('next-actions: long change uses label and short title', () => {
+  const { cwd, localEnv } = fixture();
+  const change = 'long-change-name-that-exceeds-sixty-characters-when-added-to-a-worker-title';
+  fs.renameSync(path.join(cwd, 'openspec/changes/c1'), path.join(cwd, 'openspec/changes', change));
+  spawnSync('git', ['branch', '-m', 'integration/c1', `integration/${change}`], { cwd, env: localEnv });
+  const agent = { id: 'w', name: '[Pipeline] gongbu T-01', status: 'running', cwd };
+  const paseo = path.join(cwd, '.fake-bin', 'paseo');
+  fs.writeFileSync(paseo, `#!/bin/sh\nif [ "$1" = inspect ]; then printf '%s' '${JSON.stringify({Id:'w',Name:agent.name,Status:'running',PendingPermissions:[]})}'; else printf '%s' '${JSON.stringify([agent])}'; fi\n`);
+  const result = spawnSync('node', [script, `openspec/changes/${change}`, '--json'], { cwd, env: localEnv, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).dispatch, []);
+});
+
+test('next-actions: short title from another labelled change in same repository is isolated', () => {
+  const { cwd, localEnv } = fixture();
+  spawnSync('git', ['branch', 'integration/c2'], { cwd, env: localEnv });
+  const agent = { id: 'other', name: '[Pipeline] gongbu T-01', status: 'running', cwd };
+  const paseo = path.join(cwd, '.fake-bin', 'paseo');
+  fs.writeFileSync(paseo, `#!/bin/sh\ncase " $* " in *" pipeline.change=c1 "*) printf '[]' ;; *) printf '%s' '${JSON.stringify([agent])}' ;; esac\n`);
+  const result = run(cwd, localEnv);
+  assert.equal(result.status, 0, result.out);
+  assert.equal(result.json.dispatch[0].action, 'dispatch-worker');
+});
+
+test('next-actions: labelled idle legacy title with removed cwd is reconciled, active is not', () => {
+  const { cwd, localEnv } = fixture();
+  const paseo = path.join(cwd, '.fake-bin', 'paseo');
+  const agent = { id: 'w', name: '[Pipeline] gongbu T-01 fix legacy behavior', status: 'idle', cwd: path.join(cwd, 'removed') };
+  const fake = (status) => fs.writeFileSync(paseo, `#!/bin/sh\nif [ "$1" = inspect ]; then printf '%s' '${JSON.stringify({Id:'w',Name:agent.name,Status:status,PendingPermissions:[]})}'; else printf '%s' '${JSON.stringify([agent])}'; fi\n`);
+  fake('idle');
+  let result = run(cwd, localEnv);
+  assert.equal(result.status, 0, result.out);
+  assert.equal(result.json.blocked[0].kind, 'BLOCKED_WORKER_RESULT');
+  fake('running');
+  result = run(cwd, localEnv);
+  assert.equal(result.status, 3, result.out);
+});
+
+test('next-actions: other pre-CP1 change discovered in agent worktree', () => {
+  const { cwd, localEnv } = fixture();
+  fs.mkdirSync(path.join(cwd, 'openspec/changes/c2'), { recursive: true });
+  const agent = { id: 'other', name: '[Pipeline] gongbu FULL', status: 'running', cwd };
+  const paseo = path.join(cwd, '.fake-bin', 'paseo');
+  fs.writeFileSync(paseo, `#!/bin/sh\ncase " $* " in *" pipeline.change=c1 "*) printf '[]' ;; *) printf '%s' '${JSON.stringify([agent])}' ;; esac\n`);
+  const result = run(cwd, localEnv);
+  assert.equal(result.status, 0, result.out);
+  assert.equal(result.json.dispatch[0].action, 'dispatch-worker');
+});
+
+test('next-actions: removed cwd closed worker is retained as completion evidence', () => {
+  const { cwd, localEnv } = fixture();
+  const agent = { id: 'w', name: '[Pipeline] gongbu T-01 old description', status: 'closed', cwd: path.join(cwd, 'removed') };
+  fs.writeFileSync(path.join(cwd, '.fake-bin', 'paseo'), `#!/bin/sh\nprintf '%s' '${JSON.stringify([agent])}'\n`);
+  const result = run(cwd, localEnv);
+  assert.equal(result.status, 0, result.out);
+  assert.equal(result.json.blocked[0].kind, 'BLOCKED_WORKER_RESULT');
+});
+
+test('next-actions: labelled active legacy description holds task', () => {
+  const { cwd, localEnv } = fixture();
+  const agent = { id: 'w', name: '[Pipeline] gongbu T-01 detailed legacy task', status: 'running', cwd };
+  fs.writeFileSync(path.join(cwd, '.fake-bin', 'paseo'), `#!/bin/sh\nif [ "$1" = inspect ]; then printf '%s' '${JSON.stringify({Id:'w',Name:agent.name,Status:'running',PendingPermissions:[]})}'; else printf '%s' '${JSON.stringify([agent])}'; fi\n`);
+  const result = run(cwd, localEnv);
+  assert.equal(result.status, 0, result.out);
+  assert.deepEqual(result.json.dispatch, []);
+});
+
+test('next-actions: removed cwd idle author requires inspect and active state fails closed', () => {
+  const { cwd, localEnv } = fixture();
+  const agent = { id: 'a', name: '[Pipeline] gongbu FULL authoring', status: 'idle', cwd: path.join(cwd, 'removed') };
+  const paseo = path.join(cwd, '.fake-bin', 'paseo');
+  const fake = (status) => fs.writeFileSync(paseo, `#!/bin/sh\nif [ "$1" = inspect ]; then printf '%s' '${JSON.stringify({Id:'a',Name:agent.name,Status:status,PendingPermissions:[]})}'; else printf '%s' '${JSON.stringify([agent])}'; fi\n`);
+  fake('idle');
+  assert.equal(run(cwd, localEnv).status, 0);
+  fake('running');
+  assert.equal(run(cwd, localEnv).status, 3);
+});
+
+test('next-actions: inspect pending permission holds idle worker with commit', () => {
+  const { cwd, localEnv } = fixture();
+  const git = (...args) => spawnSync('git', args, { cwd, env: localEnv, encoding: 'utf8' });
+  git('switch', '-q', 'task/c1/T-01');
+  fs.writeFileSync(path.join(cwd, 'src/one.mjs'), 'export const one = true;\n');
+  git('add', '-A');
+  git('commit', '-qm', 'work\n\nPipeline-Role: gongbu\nPipeline-Author: 11111111-0000-4000-8000-000000000001');
+  git('switch', '-q', 'integration/c1');
+  const agent = { id: 'w', name: '[Pipeline] gongbu T-01', status: 'idle', cwd };
+  fs.writeFileSync(path.join(cwd, '.fake-bin', 'paseo'), `#!/bin/sh\nif [ "$1" = inspect ]; then printf '%s' '${JSON.stringify({Id:'w',Name:agent.name,Status:'idle',PendingPermissions:[{id:'p'}]})}'; else printf '%s' '${JSON.stringify([agent])}'; fi\n`);
+  const result = run(cwd, localEnv);
+  assert.equal(result.status, 0, result.out);
+  assert.deepEqual(result.json.dispatch, []);
+  assert.equal(result.json.attention[0].kind, 'PENDING_PERMISSION');
+});
+
+test('next-actions rejects invalid options and missing change directory', () => {
+  const { cwd, localEnv } = fixture();
+  for (const args of [['--other-change', 'openspec/changes/c1'], ['openspec/changes/c1', '--bogus'], ['openspec/changes/c1', '--json=1'], ['openspec/changes/c1', '--other-change=']]) {
+    const result = spawnSync('node', [script, ...args], { cwd, env: localEnv, encoding: 'utf8' });
+    assert.equal(result.status, 2, `${args}: ${result.stderr}`);
+  }
+});
+
+test('next-actions explains safe recovery for labelled unrecognized legacy reviewer', () => {
+  const { cwd, localEnv } = fixture();
+  const agent = { id: 'legacy', name: '[Pipeline] review T-09-a2 deep links', status: 'running', cwd };
+  fs.writeFileSync(path.join(cwd, '.fake-bin', 'paseo'), `#!/bin/sh\nprintf '%s' '${JSON.stringify([agent])}'\n`);
+  const result = run(cwd, localEnv);
+  assert.equal(result.status, 3, result.out);
+  assert.match(result.out, /confirming its role is non-worker/);
+  assert.match(result.out, /paseo agent update legacy --name/);
 });

@@ -1,6 +1,6 @@
 # Independent Reviewer Brief
 
-Mode: `R0 | FINAL | ARBITER`. Change: `<id>`. Evidence: `<paths / base / tip>`.
+Mode: `R0 | FINAL`. Change: `<id>`. Evidence: `<paths / base / tip>`.
 
 Read-only: do not edit files, create commits, or change workspace state. You run in a separate workspace; the provider cannot enforce read-only, so this rule is yours to keep. Any write voids your verdict. Use only the stated contract and evidence. Findings must include `path:line` or reproducible reasoning. No broad refactor requests.
 
@@ -20,12 +20,9 @@ R0: pass(<your-full-agent-uuid>@<reviewed-HEAD-sha-7-chars>)
 followed by your findings summary (or "Findings: none."). Do not write `review.md` yourself: the main session records your line, so your read-only rule stays absolute. `freeze-check` voids the sign-off if the contract changes after it.
 
 ## FINAL — the one integrated review
-This is the only code-quality gate in the pipeline. Every task was merged by a mechanical gate (Verify + scope + regression); none had a per-task reviewer. Read `main...integration/<change>` as a whole against the approved Spec and repository standards.
+This is the only code-quality gate in the pipeline. Every task was merged by a mechanical gate (Verify + scope + regression); none had a per-task reviewer. Read `main...<reviewed-full-SHA>` as a whole against the approved Spec and repository standards. Check out that exact SHA in the review workspace; return the full SHA and verdict. After a blocker fix, review both the fix diff and the integrated result at the new final SHA; prior verdicts do not transfer to a different SHA.
 
 - **Spec axis:** is every frozen SCEN actually implemented and exercised? Cross-task interactions, interface consistency, and whether the tests would catch the behaviour going wrong (not just "a test exists"). An assertion on production source text (`fs.readFileSync` + regex) proves nothing — treat it as an unproven behavior.
 - **Standards axis:** error handling, security, naming, duplication, and the repository's own conventions.
 
 Block only `SPEC_VIOLATION`, `CORRECTNESS_BUG`, `SECURITY_DEFECT`, `SCOPE_VIOLATION`; classify everything else as NIT. Report each blocker with `path:line` and the minimal fix. When the diff is large, work module by module and report all blockers in one verdict rather than stopping at the first.
-
-## ARBITER — one-turn dispute resolution
-Read frozen contract and R1/R2 findings. Return `OVERRULE` with reason or `ESCALATE_HUMAN` with the exact unresolved question. An `OVERRULE` reasoned as "owned by downstream task T-k" is valid only if it cites the exact line in the frozen `tasks.md`/`spec.md` where T-k already carries that requirement; if no such line exists it is a contract gap: return `ESCALATE_HUMAN` (CP-1 delta), never a verbal `OVERRULE`. No new audit loop.

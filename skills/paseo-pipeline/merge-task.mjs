@@ -5,11 +5,13 @@
 // The optional third argument is a legacy review tag, used only as a base hint.
 
 import { spawn } from 'node:child_process';
+import { parseOptions } from './lib/cli.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseTasks, parseTaskLine, isFileWithinScopes, graphErrors, verifyLegs } from './lib/tasks.mjs';
 import { mergeDeps, regressionReplays } from './lib/schedule.mjs';
 import { runGit } from './lib/git.mjs';
+import { writeMergeState, clearMergeState } from './lib/merge-state.mjs';
 import { patchIdOf as patchIdFor, samePatchCommits as samePatchCommitsFor } from './lib/provenance.mjs';
 import { missingDependency, dependencyMessage } from './lib/toolchain.mjs';
 
@@ -17,7 +19,12 @@ import { missingDependency, dependencyMessage } from './lib/toolchain.mjs';
 // provenance; new work uses one of the worker roles.
 const WRITER_ROLES = new Set(['gongbu', 'gaogong', 'jiangzuo', 'ceshi']);
 const usage = 'Usage: merge-task.mjs <branch> <task-id> [<legacy-review-tag>] [--timeout ms]';
+let mergeState = null;
 function fail(message, code = 1) {
+  if (mergeState) {
+    try { writeMergeState(undefined, mergeState.change, mergeState.task, { tip: mergeState.tip, status: 'failed', code }); }
+    catch (error) { console.error(`[merge-task] cannot record failure: ${error.message}`); }
+  }
   console.error(`[merge-task] Error: ${message}`);
   process.exit(code);
 }
@@ -81,10 +88,14 @@ function run(command, timeoutMs, { capture = false } = {}) {
 const timing = {};
 const startedAt = Date.now();
 // --allow-attempt-over: a human approved attempts beyond the -a3 circuit breaker.
-const allowAttemptOver = process.argv.includes('--allow-attempt-over');
-const args = process.argv.slice(2).filter((arg) => !arg.startsWith('--timeout') && arg !== '--allow-attempt-over');
-const timeoutArg = process.argv.find((arg) => arg.startsWith('--timeout'));
-const timeout = Number(timeoutArg?.split('=')[1] ?? 30 * 60 * 1000);
+let parsedArgs;
+try { parsedArgs = parseOptions(process.argv.slice(2), { timeout: 'value', 'allow-attempt-over': 'boolean' }); }
+catch (error) { fail(error.message, 2); }
+const allowAttemptOver = !!parsedArgs.options['allow-attempt-over'];
+const timeoutRaw = parsedArgs.options.timeout ?? '1800000';
+const timeout = Number(timeoutRaw);
+if (!/^\d+$/.test(timeoutRaw) || !Number.isSafeInteger(timeout) || timeout < 1 || timeout > 2147483647) fail('--timeout needs a positive integer in milliseconds (maximum 2147483647)', 2);
+const args = parsedArgs.positional;
 const [branch, taskId, baseHint] = args;
 if (!branch || !taskId || args.length > 3) fail(usage, 2);
 
@@ -95,9 +106,23 @@ if (match[2] !== taskId) fail(`branch task ID ${match[2]} does not match request
 if (Number(match[3] ?? 1) > 3 && !allowAttemptOver) fail(`${branch} is attempt ${match[3]}; breaker allows 3 without human approval (pass --allow-attempt-over)`, 37);
 
 if (git(['branch', '--show-current']) !== `integration/${change}`) fail(`current branch must be integration/${change}`);
-if (git(['status', '--porcelain']) !== '') fail('integration worktree must be clean');
 const preMergeHead = git(['rev-parse', 'HEAD']);
 const tip = git(['rev-parse', '--verify', `${branch}^{commit}`]);
+// A clean committed Done state can survive a crash before the pending marker clears.
+// Never overwrite that evidence when a caller retries the completed task.
+const doneFile = path.join('openspec', 'changes', change, 'tasks.md');
+if (git(['status', '--porcelain']) === '' && fs.existsSync(doneFile)) {
+  const prior = parseTasks(fs.readFileSync(doneFile, 'utf8'));
+  if (!graphErrors(prior.errors).length) {
+    const completed = prior.tasks.find((item) => item.id === taskId)?.done;
+    if (completed) fail(`${taskId} is already Done (${completed.source}); do not re-dispatch`);
+  }
+}
+try {
+  writeMergeState(undefined, change, taskId, { tip, status: 'pending' });
+  mergeState = { change, task: taskId, tip };
+} catch (error) { fail(`cannot record merge state: ${error.message}`, 3); }
+if (git(['status', '--porcelain']) !== '') fail('integration worktree must be clean');
 
 const tasksFile = path.join('openspec', 'changes', change, 'tasks.md');
 const runLog = path.join('openspec', 'changes', change, 'run-log.md');
@@ -276,4 +301,6 @@ git(['commit', '-m', `merge(${taskId}): ${branch}`, '-m', [
   ...[...authors].sort().map((id) => `Pipeline-Author: ${id}`),
   `Pipeline-Role: ${task.review === 'mechanical' ? 'mechanical' : task.review}`,
 ].join('\n')]);
+try { clearMergeState(undefined, change, taskId); mergeState = null; }
+catch (error) { console.error(`[merge-task] merged, but cannot clear merge state: ${error.message}`); process.exit(3); }
 console.log(`[merge-task] merged ${taskId} from ${tip.slice(0, 7)} as ${git(['rev-parse', 'HEAD']).slice(0, 7)}`);

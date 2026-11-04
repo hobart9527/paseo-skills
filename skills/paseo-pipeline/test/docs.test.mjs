@@ -48,13 +48,13 @@ test('briefs preserve author/worker/reviewer role boundaries', () => {
   assert.match(read('templates/worker.md'), /Co-Authored-By/);
 });
 
-test('templates avoid removed scripts and the reviewer keeps all modes', () => {
+test('templates avoid removed scripts and reviewer keeps current modes', () => {
   for (const f of ['author.md', 'worker.md', 'reviewer.md']) {
     const text = read(`templates/${f}`);
     for (const stale of ['run-state.mjs', 'reconcile.mjs', 'task-runner.mjs', 'replan.mjs']) assert.ok(!text.includes(stale), `${f}: ${stale}`);
   }
-  for (const mode of ['R0', 'FINAL', 'ARBITER']) assert.ok(read('templates/reviewer.md').includes(mode), mode);
-  assert.doesNotMatch(read('templates/reviewer.md'), /Mode.*\bTASK\b/);
+  for (const mode of ['R0', 'FINAL']) assert.ok(read('templates/reviewer.md').includes(mode), mode);
+  assert.doesNotMatch(read('templates/reviewer.md'), /Mode.*\bTASK\b|ARBITER/);
 });
 
 test('briefs carry wait backstop, reviewer containment and impact inventory rules', () => {
@@ -136,4 +136,17 @@ test('FINAL review is the only code-quality gate; the merge gate proves mechanic
   const reviewer = read('templates/reviewer.md');
   assert.match(reviewer, /only code-quality gate/);
   assert.match(reviewer, /none had a per-task reviewer/);
+});
+
+test('FINAL repair instructions retain gate and bind all evidence to final SHA', () => {
+  const recovery = read('templates/final-recovery.md');
+  for (const requirement of ['human CP-1 approval', 'pipeline-run.mjs merge', 'frozen Verify', 'regression', 'every `Required=yes`', 'original FINAL reviewer', 'same SHA', 'before CP-2']) {
+    assert.ok(recovery.includes(requirement), requirement);
+  }
+  assert.match(read('templates/reviewer.md'), /full SHA and verdict/);
+});
+
+test('recovery documents verified other change, permission hold, empty branch and final SHA', () => {
+  const skill = read('SKILL.md');
+  for (const text of ['--other-change <id>', 'label is verified', 'no pending permission', 'only when no worker', 'main...<full-SHA>', 'author commits the amendment', 'exit 3']) assert.ok(skill.includes(text), text);
 });

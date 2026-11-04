@@ -39,14 +39,11 @@ test('worker capacity limits slots instead of hiding the frontier', () => {
   const branches = { 'T-01': { attempts: 1, implementationCommits: 1 } };
   const report = frontier(dag, { done: ['T-00'], agents, branches }, { workerCap: 2 });
   assert.equal(report.capacity.workers.used, 1);
-  // One free slot goes to the longest remaining critical path. A branch with commits
-  // merges instead of dispatching anything.
-  assert.deepEqual(report.dispatch.map((item) => item.task), ['T-03', 'T-01']);
-  assert.deepEqual(report.dispatch.map((item) => item.action), ['create-branch+dispatch-worker', 'merge']);
+  assert.deepEqual(report.dispatch.map((item) => item.task), ['T-03']);
+  assert.deepEqual(report.dispatch.map((item) => item.action), ['create-branch+dispatch-worker']);
   const full = frontier(dag, { done: ['T-00'], agents, branches }, { workerCap: 1 });
   assert.equal(full.capacity.workers.used, 1);
-  assert.deepEqual(full.dispatch.map((item) => item.task), ['T-01']);
-  assert.deepEqual(full.dispatch.map((item) => item.action), ['merge']);
+  assert.deepEqual(full.dispatch, []);
 });
 
 test('a worker commit is dispatched for merge, never for a per-task review', () => {
@@ -90,16 +87,15 @@ test('scope overlap with a task in flight holds the pair, not the whole frontier
   const branches = { 'T-01': { attempts: 1, implementationCommits: 1 } };
   const report = frontier(overlapping, { done: [], branches, agents });
   assert.ok(!report.dispatch.some((item) => item.task === 'T-02'));
-  // T-01 already has commits, so it merges; T-02 is held by the scope overlap.
+  // T-01 is still running; T-02 is held by the scope overlap.
   assert.deepEqual(report.dispatch.map((item) => [item.task, item.action]), [
     ['T-03', 'create-branch+dispatch-worker'],
-    ['T-01', 'merge'],
   ]);
 });
 
-test('branch attempts at the cap are blocked and stop dispatch', () => {
-  const report = frontier(dag, { done: ['T-00'], branches: { 'T-01': { attempts: 3, implementationCommits: 2 } } });
-  assert.deepEqual(report.blocked, [{ task: 'T-01', kind: 'BLOCKED_ATTEMPTS', reason: '3 branches; cap is 3' }]);
+test('branch attempts above the cap are blocked and stop dispatch', () => {
+  const report = frontier(dag, { done: ['T-00'], branches: { 'T-01': { attempts: 4, implementationCommits: 2 } } });
+  assert.deepEqual(report.blocked, [{ task: 'T-01', kind: 'BLOCKED_ATTEMPTS', reason: '4 branches; cap is 3' }]);
   assert.ok(!report.dispatch.some((item) => item.task === 'T-01'));
 });
 
@@ -189,4 +185,63 @@ test('CLI exits 3 when Paseo is unreadable', () => {
   });
   assert.equal(result.status, 3);
   assert.match(result.stderr, /cannot read Paseo state/);
+});
+
+test('running worker holds both uncommitted and committed task branches', () => {
+  for (const ownCommits of [0, 1]) {
+    const report = frontier([task()], { agents: [{ id: 'w', role: 'gongbu', task: 'T-01', status: 'running' }], branches: { 'T-01': { attempts: 1, ownCommits } } });
+    assert.deepEqual(report.dispatch, []);
+  }
+});
+
+test('third attempt remains executable', () => {
+  const report = frontier([task()], { branches: { 'T-01': { attempts: 3, ownCommits: 1 } } });
+  assert.equal(report.dispatch[0].action, 'merge');
+});
+
+test('finished worker is not silently redispatched or merged; a new attempt may dispatch', () => {
+  for (const status of ['idle', 'closed', 'error']) {
+    for (const ownCommits of [0, 1]) {
+      const agents = [{ id: 'w', role: 'gongbu', task: 'T-01', status, attempt: 1 }];
+      const report = frontier([task()], { agents, branches: { 'T-01': { attempts: 1, latestAttempt: 1, ownCommits } } });
+      if (ownCommits) assert.equal(report.dispatch[0].action, 'merge');
+      else { assert.deepEqual(report.dispatch, []); assert.equal(report.blocked[0].kind, 'BLOCKED_WORKER_RESULT'); }
+      const retry = frontier([task()], { agents, branches: { 'T-01': { attempts: 2, latestAttempt: 2, ownCommits: 0 } } });
+      assert.equal(retry.dispatch[0].action, 'dispatch-worker');
+    }
+  }
+});
+
+test('inactive worker commit merges after lost notification; empty failure permits dispatch', () => {
+  for (const status of ['idle', 'closed', 'error']) {
+    const agents = [{ id: 'w', role: 'gongbu', task: 'T-01', status }];
+    assert.equal(frontier([task()], { agents, branches: { 'T-01': { attempts: 1, ownCommits: 1 } } }).dispatch[0]?.action, 'merge');
+    assert.equal(frontier([task()], { agents, branches: { 'T-01': { attempts: 1, ownCommits: 0 } } }).blocked[0]?.kind, 'BLOCKED_WORKER_RESULT');
+  }
+  assert.equal(frontier([task()], { branches: { 'T-01': { attempts: 1, ownCommits: 0, mergeFailure: { status: 'failed' } } } }).dispatch[0]?.action, 'dispatch-worker');
+  assert.equal(frontier([task()], { branches: { 'T-01': { attempts: 1, ownCommits: 0, mergeFailure: { status: 'pending' } } } }).blocked[0]?.kind, 'BLOCKED_MERGE');
+});
+
+test('initializing worker occupies capacity and holds merge', () => {
+  const agents = [{ id: 'w', role: 'gongbu', task: 'T-01', status: 'initializing' }];
+  const report = frontier([task()], { agents, branches: { 'T-01': { attempts: 1, ownCommits: 1 } } });
+  assert.equal(report.capacity.workers.used, 1);
+  assert.deepEqual(report.dispatch, []);
+});
+
+test('idle worker awaiting permission holds task even with commits', () => {
+  const agents = [{ id: 'w', role: 'gongbu', task: 'T-01', status: 'idle', pendingPermissions: true }];
+  const report = frontier([task()], { agents, branches: { 'T-01': { attempts: 1, ownCommits: 1 } } });
+  assert.deepEqual(report.dispatch, []);
+  assert.equal(report.attention[0].kind, 'PENDING_PERMISSION');
+});
+
+test('failed empty merge and existing worker holds dispatch', () => {
+  for (const status of ['idle', 'closed', 'error']) {
+    const agents = [{ id: 'w', role: 'gongbu', task: 'T-01', status }];
+    const branches = { 'T-01': { attempts: 1, ownCommits: 0, mergeFailure: { status: 'failed' } } };
+    const report = frontier([task()], { agents, branches });
+    assert.deepEqual(report.dispatch, []);
+    assert.equal(report.blocked[0].kind, 'BLOCKED_WORKER_RESULT');
+  }
 });

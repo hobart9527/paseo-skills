@@ -140,3 +140,164 @@ test('a change directory without tasks.md is unreadable state (exit 3)', () => {
   assert.equal(r.status, 3);
   assert.match(r.stderr, /no tasks.md/);
 });
+
+test('failed merge survives process restart and linked worktree; explicit retry recovers same tip', () => {
+  const f = fixture();
+  git(f.cwd, 'switch', '-qc', 'task/chg/T-01');
+  write(f.cwd, 'src/a.txt', 'a');
+  write(f.cwd, 'test/a.test.mjs', "if (!process.env.FIXED_ENV) process.exit(1);\n");
+  git(f.cwd, 'add', '.');
+  git(f.cwd, 'commit', '-qm', `work\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
+  git(f.cwd, 'switch', '-q', 'integration/chg');
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  let r = run(f.cwd, f.localEnv, ['merge', dir, 'T-01']);
+  assert.equal(r.status, 20, r.out);
+  const other = `${f.cwd}-other`;
+  git(f.cwd, 'worktree', 'add', '-q', '--detach', other, 'integration/chg');
+  r = run(other, f.localEnv, ['plan', path.join(other, 'openspec/changes/chg'), '--json']);
+  assert.equal(r.status, 0, r.out);
+  assert.equal(JSON.parse(r.stdout).blocked[0].kind, 'BLOCKED_MERGE');
+  assert.ok(!JSON.parse(r.stdout).dispatch.some((item) => item.task === 'T-01'));
+  r = run(f.cwd, { ...f.localEnv, FIXED_ENV: '1' }, ['merge', dir, 'T-01']);
+  assert.equal(r.status, 0, r.out);
+  assert.match(fs.readFileSync(path.join(dir, 'tasks.md'), 'utf8'), /\[x\].*T-01/);
+});
+
+test('new worker tip releases a previous merge failure', () => {
+  const f = fixture();
+  git(f.cwd, 'switch', '-qc', 'task/chg/T-01');
+  write(f.cwd, 'src/a.txt', 'a');
+  write(f.cwd, 'test/a.test.mjs', 'process.exit(1);\n');
+  git(f.cwd, 'add', '.');
+  git(f.cwd, 'commit', '-qm', `work\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
+  git(f.cwd, 'switch', '-q', 'integration/chg');
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  assert.equal(run(f.cwd, f.localEnv, ['merge', dir, 'T-01']).status, 20);
+  git(f.cwd, 'switch', '-q', 'task/chg/T-01');
+  write(f.cwd, 'test/a.test.mjs', 'process.exit(0);\n');
+  git(f.cwd, 'add', '.');
+  git(f.cwd, 'commit', '-qm', `fix\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
+  git(f.cwd, 'switch', '-q', 'integration/chg');
+  const r = run(f.cwd, f.localEnv, ['plan', dir, '--json']);
+  assert.equal(r.status, 0, r.out);
+  assert.equal(JSON.parse(r.stdout).dispatch.find((item) => item.task === 'T-01').action, 'merge');
+  assert.equal(run(f.cwd, f.localEnv, ['merge', dir, 'T-01']).status, 0);
+});
+
+test('FINAL repair enters integration through a new task and verification binds to merged SHA', () => {
+  const f = fixture();
+  implement(f.cwd, 'task/chg/T-01');
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  assert.equal(run(f.cwd, f.localEnv, ['merge', dir, 'T-01']).status, 0);
+  // Simulate an approved contract amendment, retaining the original Done line.
+  const tasksFile = path.join(dir, 'tasks.md');
+  let tasks = fs.readFileSync(tasksFile, 'utf8');
+  tasks = tasks.replace('Write scope: src/b,test/b', 'Write scope: src/a.txt,test/fix.test.mjs')
+    .replace('node --test test/b.test.mjs', 'node --test test/fix.test.mjs');
+  fs.writeFileSync(tasksFile, tasks);
+  git(f.cwd, 'add', 'openspec/changes/chg/tasks.md');
+  git(f.cwd, 'commit', '-qm', 'approved repair task');
+  git(f.cwd, 'switch', '-qc', 'task/chg/T-02');
+  write(f.cwd, 'src/a.txt', 'fixed');
+  write(f.cwd, 'test/fix.test.mjs', "import {readFileSync} from 'node:fs'; import assert from 'node:assert/strict'; assert.equal(readFileSync('src/a.txt','utf8'), 'fixed');\n");
+  git(f.cwd, 'add', '.');
+  git(f.cwd, 'commit', '-qm', `repair\n\nPipeline-Role: gaogong\nPipeline-Author: ${WORKER}`);
+  git(f.cwd, 'switch', '-q', 'integration/chg');
+  const merged = run(f.cwd, f.localEnv, ['merge', dir, 'T-02']);
+  assert.equal(merged.status, 0, merged.out);
+  const sha = git(f.cwd, 'rev-parse', 'HEAD');
+  const validation = spawnSync('node', ['--test', 'test/a.test.mjs', 'test/fix.test.mjs'], { cwd: f.cwd, env: f.localEnv, encoding: 'utf8' });
+  assert.equal(validation.status, 0, validation.stderr);
+  assert.equal(git(f.cwd, 'rev-parse', 'HEAD'), sha);
+  assert.match(fs.readFileSync(tasksFile, 'utf8'), /\[x\].*T-02/);
+  assert.equal(git(f.cwd, 'status', '--porcelain'), '');
+});
+
+test('interrupted merge marker is shared and blocks automatic retry', () => {
+  const f = fixture();
+  const tip = implement(f.cwd, 'task/chg/T-01');
+  const payload = JSON.stringify({ tip, status: 'pending' });
+  const object = spawnSync('git', ['hash-object', '-w', '--stdin'], { cwd: f.cwd, env, input: payload, encoding: 'utf8' });
+  assert.equal(object.status, 0, object.stderr);
+  git(f.cwd, 'update-ref', 'refs/pipeline/merge-failures/chg/T-01', object.stdout.trim());
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  const r = run(f.cwd, f.localEnv, ['plan', dir, '--json']);
+  assert.equal(r.status, 0, r.out);
+  assert.equal(JSON.parse(r.stdout).blocked[0].kind, 'BLOCKED_MERGE');
+  assert.equal(run(f.cwd, f.localEnv, ['merge', dir, 'T-01']).status, 0);
+});
+
+test('failed empty branch merge allows worker dispatch after restart', () => {
+  const f = fixture();
+  git(f.cwd, 'branch', 'task/chg/T-01');
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  const failed = run(f.cwd, f.localEnv, ['merge', dir, 'T-01']);
+  assert.equal(failed.status, 31, failed.out);
+  const report = run(f.cwd, f.localEnv, ['plan', dir, '--json']);
+  assert.equal(report.status, 0, report.out);
+  assert.equal(JSON.parse(report.stdout).dispatch[0].action, 'dispatch-worker');
+});
+
+test('plan forwards explicit other change label before its integration branch exists', () => {
+  const f = fixture();
+  const agent = { id: 'other', name: '[Pipeline] gongbu FULL', status: 'running', cwd: f.cwd };
+  const bin = path.join(f.cwd, '.fake-bin', 'paseo');
+  fs.writeFileSync(bin, `#!/bin/sh\ncase " $* " in *" pipeline.change=chg "*) printf '[]' ;; *" pipeline.change=draft "*) printf '%s' '${JSON.stringify([agent])}' ;; *) printf '%s' '${JSON.stringify([agent])}' ;; esac\n`);
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  let r = run(f.cwd, f.localEnv, ['plan', dir, '--json']);
+  assert.equal(r.status, 3, r.out);
+  r = run(f.cwd, f.localEnv, ['plan', dir, '--json', '--other-change', 'draft']);
+  assert.equal(r.status, 0, r.out);
+  assert.equal(JSON.parse(r.stdout).dispatch[0].task, 'T-01');
+  fs.writeFileSync(bin, `#!/bin/sh\ncase " $* " in *" --label "*) printf '[]' ;; *) printf '%s' '${JSON.stringify([agent])}' ;; esac\n`);
+  r = run(f.cwd, f.localEnv, ['plan', dir, '--json', '--other-change', 'draft']);
+  assert.equal(r.status, 3, r.out);
+});
+
+test('plan strictly parses equals form and rejects unknown or missing options', () => {
+  const f = fixture();
+  const agent = { id: 'other', name: '[Pipeline] gongbu FULL', status: 'idle', cwd: '/missing/pipeline-worktree' };
+  fs.writeFileSync(path.join(f.cwd, '.fake-bin', 'paseo'), `#!/bin/sh\ncase " $* " in *" pipeline.change=chg "*) printf '[]' ;; *" pipeline.change=draft "*) printf '%s' '${JSON.stringify([agent])}' ;; *) printf '%s' '${JSON.stringify([agent])}' ;; esac\n`);
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  let r = run(f.cwd, f.localEnv, ['plan', dir, '--json']);
+  assert.equal(r.status, 3, r.out);
+  assert.match(r.out, /--other-change/);
+  r = run(f.cwd, f.localEnv, ['plan', dir, '--json', '--other-change=draft']);
+  assert.equal(r.status, 0, r.out);
+  for (const args of [['plan', dir, '--bogus'], ['plan', '--other-change', dir], ['plan', dir, '--worker-cap'], ['plan', dir, '--json=1'], ['plan', dir, '--other-change=']]) {
+    r = run(f.cwd, f.localEnv, args);
+    assert.equal(r.status, 2, `${args}: ${r.out}`);
+  }
+});
+
+test('pending marker after completed merge does not trigger repeat or rewrite marker', () => {
+  const f = fixture();
+  const tip = implement(f.cwd, 'task/chg/T-01');
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  assert.equal(run(f.cwd, f.localEnv, ['merge', dir, 'T-01']).status, 0);
+  const object = spawnSync('git', ['hash-object', '-w', '--stdin'], { cwd: f.cwd, env, input: JSON.stringify({ tip, status: 'pending' }), encoding: 'utf8' });
+  git(f.cwd, 'update-ref', 'refs/pipeline/merge-failures/chg/T-01', object.stdout.trim());
+  let r = run(f.cwd, f.localEnv, ['plan', dir, '--json']);
+  assert.equal(r.status, 0, r.out);
+  assert.ok(!JSON.parse(r.stdout).dispatch.some((item) => item.task === 'T-01'));
+  r = run(f.cwd, f.localEnv, ['merge', dir, 'T-01']);
+  assert.notEqual(r.status, 0);
+  assert.match(r.out, /already Done/);
+  assert.equal(git(f.cwd, 'rev-parse', 'refs/pipeline/merge-failures/chg/T-01'), object.stdout.trim());
+});
+
+test('merge driver forwards both timeout forms and rejects unknown options', () => {
+  for (const args of [['--timeout', '5000'], ['--timeout=5000']]) {
+    const f = fixture();
+    implement(f.cwd, 'task/chg/T-01');
+    const dir = path.join(f.cwd, 'openspec/changes/chg');
+    const result = run(f.cwd, f.localEnv, ['merge', dir, 'T-01', ...args]);
+    assert.equal(result.status, 0, result.out);
+  }
+  const f = fixture();
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  for (const args of [['--bogus'], ['--timeout'], ['--timeout=']]) {
+    const result = run(f.cwd, f.localEnv, ['merge', dir, 'T-01', ...args]);
+    assert.equal(result.status, 2, result.out);
+  }
+});

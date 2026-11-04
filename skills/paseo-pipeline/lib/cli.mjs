@@ -18,3 +18,32 @@ export function positionalArgs(args, valueFlags = []) {
   }
   return positional;
 }
+
+/** Strict long-option parser; schema values are 'value', 'repeat', or 'boolean'. */
+export function parseOptions(args, schema) {
+  const positional = [];
+  const options = {};
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (!arg.startsWith('-')) { positional.push(arg); continue; }
+    const match = arg.match(/^--([^=]+)(?:=(.*))?$/);
+    const name = match?.[1];
+    const type = Object.hasOwn(schema, name) ? schema[name] : undefined;
+    if (!match || !type) throw new Error(`unknown option: ${arg}`);
+    if (type === 'boolean') {
+      if (match[2] !== undefined) throw new Error(`--${name} takes no value`);
+      options[name] = true;
+      continue;
+    }
+    const value = match[2] === undefined ? args[++i] : match[2];
+    if (!value || value.startsWith('--')) throw new Error(`--${name} needs a value`);
+    if (type === 'repeat') (options[name] ??= []).push(value);
+    else {
+      if (options[name] !== undefined) throw new Error(`duplicate option: --${name}`);
+      options[name] = value;
+    }
+  }
+  return { positional, options };
+}
+
+export const planOptions = { json: 'boolean', 'worker-cap': 'value', 'writer-cap': 'value', 'reviewer-cap': 'value', 'idle-minutes': 'value', 'other-change': 'repeat' };

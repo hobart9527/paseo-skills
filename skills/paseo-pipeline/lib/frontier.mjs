@@ -8,6 +8,7 @@ import { dispatchDeps, mergeDeps, readyIds, pathWithin } from './schedule.mjs';
 import { normalizeScope } from './tasks.mjs';
 
 const WORKER_ROLES = new Set(['gongbu', 'gaogong', 'jiangzuo']);
+const active = (agent) => agent.status === 'running' || agent.status === 'initializing' || agent.pendingPermissions;
 
 export const DEFAULTS = {
   workerCap: 8,
@@ -54,14 +55,15 @@ export function attemptsOf(taskId, branches = {}) {
 export function frontier(tasks, state = {}, options = {}) {
   const opts = { ...DEFAULTS, ...options };
   const done = new Set(state.done || []);
-  const agents = (state.agents || []).filter((agent) => agent && agent.status !== 'closed');
+  const allAgents = (state.agents || []).filter(Boolean);
+  const agents = allAgents.filter((agent) => agent.status !== 'closed');
   const branches = state.branches || {};
   const now = state.now ? new Date(state.now).getTime() : Date.now();
   const byId = new Map(tasks.map((task) => [task.id, task]));
   const ancestors = ancestorSet(byId);
   const open = tasks.filter((task) => !done.has(task.id));
 
-  const runningWorkers = agents.filter((agent) => WORKER_ROLES.has(agent.role) && agent.status === 'running');
+  const runningWorkers = agents.filter((agent) => WORKER_ROLES.has(agent.role) && active(agent));
   const capacity = {
     workers: { used: new Set(runningWorkers.map((agent) => agent.task).filter(Boolean)).size, cap: opts.workerCap },
   };
@@ -73,7 +75,7 @@ export function frontier(tasks, state = {}, options = {}) {
       attention.push({ task, agent: agent.id, kind: 'STALE_LABEL', reason: `${task} is not in tasks.md` });
       continue;
     }
-    if (task && done.has(task) && agent.status === 'running') {
+    if (task && done.has(task) && active(agent)) {
       attention.push({ task, agent: agent.id, kind: 'DONE_AGENT_RUNNING', reason: `${task} is Done but ${agent.role || 'an agent'} still runs` });
       continue;
     }
@@ -99,7 +101,7 @@ export function frontier(tasks, state = {}, options = {}) {
       continue;
     }
     const attempts = attemptsOf(task.id, branches);
-    if (attempts >= opts.maxAttempts) {
+    if (attempts > opts.maxAttempts) {
       blocked.push({ task: task.id, kind: 'BLOCKED_ATTEMPTS', reason: `${attempts} branches; cap is ${opts.maxAttempts}` });
       continue;
     }
@@ -121,10 +123,21 @@ export function frontier(tasks, state = {}, options = {}) {
   const mergeItems = [];
   const mergeWaiting = [];
   for (const task of ordered) {
+    if (runningWorkers.some((agent) => agent.task === task.id)) continue;
+    if (agents.some((agent) => WORKER_ROLES.has(agent.role) && agent.task === task.id && agent.pendingPermissions)) continue;
     const branch = branches[task.id] || {};
+    const ownCommits = branch.ownCommits ?? (branch.attempts ? 1 : 0);
+    if (branch.mergeFailure && (ownCommits || branch.mergeFailure.status === 'pending')) {
+      blocked.push({ task: task.id, kind: 'BLOCKED_MERGE', reason: `merge ${branch.mergeFailure.status} for ${branch.tip}; inspect failure, fix it, then explicitly retry merge` });
+      continue;
+    }
+    const attempt = branch.latestAttempt || 1;
+    if (!ownCommits && allAgents.some((agent) => WORKER_ROLES.has(agent.role) && agent.task === task.id && (agent.attempt || 1) === attempt)) {
+      blocked.push({ task: task.id, kind: 'BLOCKED_WORKER_RESULT', reason: 'inspect existing worker result; resume it or explicitly merge after completion' });
+      continue;
+    }
     // Callers that only pass {attempts, implementationCommits} keep the old meaning: a branch
     // with attempts already carries one of its own commits.
-    const ownCommits = branch.ownCommits ?? (branch.attempts ? 1 : 0);
     if (!branch.attempts) {
       workerItems.push({ task: task.id, action: 'create-branch+dispatch-worker', reason: 'deps Done; scope disjoint' });
     } else if (!ownCommits) {

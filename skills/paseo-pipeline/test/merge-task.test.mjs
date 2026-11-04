@@ -359,3 +359,16 @@ test('rework cap: --allow-attempt-over bypasses it', () => {
   const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base), '--allow-attempt-over']);
   assert.equal(r.status, 0, r.out);
 });
+
+test('timeout accepts separate and equals forms and rejects invalid values', () => {
+  for (const flag of [['--timeout', '5000'], ['--timeout=5000']]) {
+    const f = fixture();
+    const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', ...flag]);
+    assert.equal(r.status, 0, r.out);
+  }
+  const f = fixture();
+  for (const flag of [['--timeout'], ['--timeout=bogus'], ['--timeout=0'], ['--timeout-malformed']]) {
+    const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', ...flag]);
+    assert.equal(r.status, 2, `${flag}: ${r.out}`);
+  }
+});

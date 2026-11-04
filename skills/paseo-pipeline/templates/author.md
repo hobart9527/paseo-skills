@@ -1,17 +1,16 @@
 # Change Author Brief
 
-Mode: `FULL`, `SPEC` or `TASKS`. Change: `<change>`. Output location: `openspec/changes/<change>/`.
+Mode: `FULL`. Change: `<change>`. Output location: `openspec/changes/<change>/`.
 
 ## Shared contract
 - Read `SKILL.md` (the normative rules) and inspect relevant repository evidence; cite code claims as `path:line`. `LESSONS.md` is a 35KB historical evidence log, not a spec: consult a specific section only when a claim depends on past incidents, and never treat it as current procedure.
 - Do not edit business code. Return assumptions with a concrete verification method; mark unverifiable claims `UNVERIFIED`.
 - Report changed files, evidence, unresolved decisions, and acceptance commands. Do not invent provider/model requirements.
-- `FULL` fast path (`gongbu`): dispatch only when a human-approved design document exists; the Mode FULL section below is the whole brief.
-- `TASKS`-only mode (`gaogong`, full path): the committed Proposal/Spec/Digest already exist; write `design.md`, `tasks.md`, `acceptance.md` from them.
+- One `gongbu` author writes the entire package. A human-approved design is optional; otherwise record assumptions from the request.
 
 ## Baseline alignment (all modes; R0 checks it first)
 - The request and the design document are inputs, not evidence. Before writing a rule they imply, read what the rule collides with: the capability specs it touches (`openspec/specs/<cap>/spec.md`), the enum/`CHECK`/migration it would store into, and the existing tests and fixtures for every file in scope. `rg` the identifiers the rule names (statuses, error codes, fields). A rule that contradicts a `CHECK` constraint, an existing scenario, or a passing test is a contract defect the author must fix now — review is for defects the author could not see.
-- `SPEC` records the baseline evidence in `digest.md` (`## Baseline Alignment`); `TASKS` turns it into one verdict row per rule in `design.md` (`## Baseline Alignment`) and picks exactly one resolution:
+- Record baseline evidence in `digest.md` (`## Baseline Alignment`); put one verdict row per rule in `design.md` (`## Baseline Alignment`) and pick exactly one resolution:
   - `reuse` — the existing state/enum/behaviour already covers it; cite the line that proves it.
   - `delta` — behaviour changes: add `specs/<capability>/spec.md` in the change with a `## MODIFIED Requirements` section naming the baseline Requirement **verbatim**, plus every baseline test whose assertions change and the task that owns it. Only the owning task edits that test later; this authoring commit records the change, it does not perform it.
   - `additive` — a new sibling symbol/path; the existing symbol, its callers and its tests stay byte-identical. Add a delta spec for the new requirement and say so.
@@ -21,19 +20,12 @@ Mode: `FULL`, `SPEC` or `TASKS`. Change: `<change>`. Output location: `openspec/
 - If you cannot verify a claim, mark it `UNVERIFIED` and name the command that would settle it. Never present a guessed enum value or status as existing.
 
 ## Mode FULL — single author (`gongbu`, fast path)
-- Input: a human-approved design document and repository context. **Write the whole package directly to OpenSpec files** (`proposal.md`, `specs/<capability>/spec.md`, `digest.md`, `design.md`, `tasks.md`, `acceptance.md`) and commit — one pass, one commit is fine. Do not return text for the main session to re-type, and do not stop to hand the package to a second author.
+- Input: the approved request, any human-approved design document, and repository context. **Write the whole package directly to OpenSpec files** (`proposal.md`, `specs/<capability>/spec.md`, `digest.md`, `design.md`, `tasks.md`, `acceptance.md`) and commit — one pass, one commit is fine. Do not return text for the main session to re-type, and do not stop to hand the package to a second author.
 - Assign `SCEN-*` ids from the design's numbered sections; each states observable behavior and a falsifiable verification approach. Cite the design section per task instead of re-deriving intent.
 - You are the only author, so write both `digest.md` and `design.md` once: the digest holds the surfaces read and the baseline failures, the design the verdict per rule. Do not duplicate one section into both. Every other rule below (`Impact Inventory`, vertical slices, disjoint scopes, contract-first edges, narrow Verify) still applies.
 
-## Mode SPEC — Product/spec author (`chanpin`)
-- Input: user-approved request and repository context. **Write output directly to OpenSpec files** (`openspec/changes/<change>/proposal.md`, `specs/<capability>/spec.md`, `digest.md`) — do not return text for the main session to re-type. Commit to the draft branch when done.
-- Define user-visible behavior and constraints, not implementation task ownership or DAG.
-- Each `SCEN-*` must state observable behavior and a falsifiable verification approach. Identify edge cases and compatibility assumptions.
-- Digest: the baseline surfaces the rules touch — capability specs, `CHECK`/enums, cited test files — with `path:line` evidence and the commands used. Do not inventory unrelated modules and do not mine other changes for format: the schema templates are the format.
-- You own `## Baseline Known Failures`: one narrow command per changed package (never the full suite); write the failing test ids with that command, or `none`. No later mode re-derives it.
-
-## Mode TASKS — Design/DAG author (`gaogong`)
-- Input: approved Proposal/Spec and Codebase Digest. **Write output directly to OpenSpec files** (`design.md`, `tasks.md`, `acceptance.md`) — do not return text for the main session to re-type. Commit to the draft branch when done.
+## Task design
+- Define falsifiable `SCEN-*` behavior, edge cases and compatibility assumptions. Record baseline surfaces and evidence in `digest.md`; own `## Baseline Known Failures` with one narrow command per changed package and failing test IDs, or `none`.
 - For each changed exported symbol, search call sites and fixtures; record behavior conflicts and ownership in the required `## Impact Inventory` section of `design.md` (symbol, call sites, affected fixtures, owning task; write "no shared symbol change" if none). `freeze-check` rejects a missing section, tasks with no SCEN, and test-only scopes.
 - Split into vertical behavior slices: behavior + wiring + affected fixtures + tests together. No fixture-only or wiring-only task. Wave 0 only for a real shared contract and only actual consumers depend on it.
 - Each task has disjoint Write scope, explicit dependencies, claimed SCENs, and a narrow executable Verify inside its scope. Reserve full suite for one sink and final acceptance. Name Verify so it can run in a fresh worktree: prefer a command whose runner is a repo dependency or lockfile-pinned, since a global-only runner (`tsx`, `vitest` installed elsewhere) fails there.
@@ -44,7 +36,7 @@ Mode: `FULL`, `SPEC` or `TASKS`. Change: `<change>`. Output location: `openspec/
 - **Split shared files, don't chain them.** Several tasks writing one file (e.g. a service) are forced serial by `SCOPE_CONFLICT`. Where the design allows, split that file by feature so each task owns its own; if it cannot be split, accept the chain and say so.
 - Verify must execute the code under test. For `Review: standard|strict` tasks, a test that only reads production source (`fs.readFileSync` + regex/string match) proves nothing about behavior: load and run (or render) it. Source-text assertions are for `Review: mechanical` tasks only; `hanlin` R0 flags them as a contract defect.
 - Do not pad DAG to qualify. If real `maxWidth < 2` or task count < 4, recommend Tier 2.
-- Do not run the full test suite at authoring: it runs only at the sink and final acceptance (`SKILL.md` principle 2). Take baseline reds from the digest's `## Baseline Known Failures`; run one narrow command only when that section is missing or stale. Run `freeze-check --structural` (R0 sign-off does not exist yet) and report its route, waves, max width, and critical path. Read its `CRITICAL` line: each `-logical->` edge is yours to justify or drop (contract-first); each `-scope->` edge is forced by a shared file.
+- Do not run the full test suite at authoring: it runs only at the sink and final acceptance (`SKILL.md` principle 5). Take baseline reds from the digest's `## Baseline Known Failures`; run one narrow command only when that section is missing or stale. Run `freeze-check --structural` (R0 sign-off does not exist yet) and report its route, waves, max width, and critical path. Read its `CRITICAL` line: each `-logical->` edge is yours to justify or drop (contract-first); each `-scope->` edge is forced by a shared file.
 
 ## Return envelope
 `mode`, draft paths/content, evidence, assumptions/unverified, task count, max width, route, baseline, freeze-check result, blockers.
