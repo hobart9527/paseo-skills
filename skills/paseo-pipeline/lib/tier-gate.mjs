@@ -129,7 +129,9 @@ function deepestExistingDir(target) {
 
 /**
  * 目标所在仓库的上下文；不在 git 仓库内、或读取失败时返回 null。
- * isPrimaryOnProtected = 主 checkout（git-dir 即 common-dir）且分支为 main/master。
+ * isPrimary = 主 checkout（git-dir 即 common-dir）。分级规则跟着主 checkout 走，
+ * 与分支无关：功能分支不是隔离环境，linked worktree 才是。
+ * isPrimaryOnProtected 仅用于「已提交到默认分支」这一更窄的 Stop 判据。
  */
 export function repoContext(target) {
   try {
@@ -143,7 +145,8 @@ export function repoContext(target) {
     } catch {
       branch = ''; // 游离 HEAD
     }
-    return { root, isPrimaryOnProtected: gitDir === commonDir && PROTECTED_BRANCHES.has(branch), branch };
+    const isPrimary = gitDir === commonDir;
+    return { root, isPrimary, isPrimaryOnProtected: isPrimary && PROTECTED_BRANCHES.has(branch), branch };
   } catch {
     return null;
   }
@@ -255,8 +258,8 @@ function denyReason(count, limit, files, scopes = []) {
     scopeLine,
     `已写：${files.join('、')}`,
     '先停手，按范围改走对应通道（不要继续原地写）：',
-    '- Tier 2（单模块、不涉及持久化/并发/不可逆）：用 /paseo-handoff 交给 worktree 里的 Agent，交接内容写明验收命令与「越级即停」。',
-    '- Tier 3（冻结后的 DAG 有 maxWidth≥2 且任务≥4；跨模块共享契约、持久化、并发、不可逆变更通常是这类迹象）：用 /paseo-pipeline。不要为了够格而拆分 DAG。',
+    '- Tier 2（计划超过 3 个文件、跨 2 个作用域，或要动共享契约/持久化/并发/不可逆变更）：用 /paseo-handoff 交给 worktree 里的 Agent，交接内容写明验收命令与「越级即停」。',
+    '- Tier 3（仅当冻结 DAG 有 maxWidth≥2 且任务≥4）：用 /paseo-pipeline。上面的风险属性本身推不出 Tier 3，也不要为了够格而拆分 DAG。',
     '已写的改动保留在工作区，不要回滚；把它们列进交接内容的「当前状态」。',
     '这是需要用户确认的越级写入：用户若在确认框放行才继续；不要改用 Bash 等方式绕过。',
   ].join('\n');
@@ -264,7 +267,7 @@ function denyReason(count, limit, files, scopes = []) {
 
 function churnReason(turns, threshold) {
   return [
-    `[tier-gate] 本任务段已连续 ${turns} 轮在主 checkout（main）上改业务文件，达到阈值 ${threshold} 轮：这不是「一次小范围改动」，是原地反复试错。`,
+    `[tier-gate] 本任务段已连续 ${turns} 轮只重复修改此前改过的业务文件，没有推进到新文件：这不是「一次小范围改动」，是原地反复试错。`,
     '先不要再改文件。向用户汇报：反复了几轮、每轮改了什么、卡在哪里。然后二选一：',
     '- 疑难 Bug：用 /diagnosing-bugs 建最小复现，不要继续盲改。',
     '- 复杂度超预期：用 /paseo-handoff 交给 worktree 里的 Agent，交接内容必写「## What was tried」，避免下游重走同一条死路。',
@@ -274,13 +277,16 @@ function churnReason(turns, threshold) {
 
 const PLAN_TAIL_BYTES = 64 * 1024;
 // 全局正则在 matchAll 里会克隆自身，模块级复用不会互相污染 lastIndex。
-const PLAN_LINE = /TIER-PLAN:\s*tier=([12])\s+files=([^"\\\n]*)/g;
+// 声明必须在行首（可带缩进），否则提醒 hook 自己注入的示例也会被当成声明。
+const PLAN_LINE = /^[ \t]*TIER-PLAN:\s*tier=([12])\s+files=([^"\\\n]*)/gm;
 
 /**
  * 从会话 transcript 末尾读出模型最后一次输出的机器可读分级声明：
  *   TIER-PLAN: tier=1 files=src/a.ts,src/b.ts scope=src
  * 提醒 hook 教模型在动手前输出这一行；首次业务写入时按它提前判定，而不是等写完再数。
- * 只读末尾 64KB（声明总在最近的消息里）；读不到、格式不完整或没有声明时返回 null，
+ * 只认 assistant 文本：工具结果或注入的提醒里出现的示例不算声明。只有整段都不可解析
+ * （旧格式 / 纯文本 transcript）时才回退到原始文本匹配。
+ * 只读末尾 64KB；读不到、格式不完整或没有声明时返回 null，
  * 调用方退回原来的「按已写文件计数」行为（fail-open）。
  */
 export function readDeclaredPlan(transcriptPath) {
@@ -300,7 +306,24 @@ export function readDeclaredPlan(transcriptPath) {
   } catch {
     return null;
   }
-  const matches = [...text.matchAll(PLAN_LINE)];
+  const assistantText = (() => {
+    const chunks = [];
+    let parsedAny = false;
+    for (const line of text.split('\n')) {
+      let entry;
+      try { entry = JSON.parse(line); } catch { continue; }
+      if (!entry || typeof entry !== 'object') continue;
+      parsedAny = true;
+      if (entry.type !== 'assistant') continue;
+      const content = entry.message?.content;
+      if (typeof content === 'string') chunks.push(content);
+      else if (Array.isArray(content)) for (const block of content) if (block?.type === 'text' && typeof block.text === 'string') chunks.push(block.text);
+    }
+    // 没有任何可解析的 JSON 行：兼容纯文本 transcript。有 JSON 但没有 assistant 条目时
+    // 返回空串——此时任何示例都来自用户侧或工具输出，不能当声明。
+    return parsedAny ? chunks.join('\n') : text;
+  })();
+  const matches = [...assistantText.matchAll(PLAN_LINE)];
   if (matches.length === 0) return null;
   const [, tier, rawFiles] = matches[matches.length - 1];
   // 声明可能被嵌在 JSON 字符串里；scope 等后续字段不能粘进最后一个文件名。
@@ -335,7 +358,7 @@ export function assessTierGate({ target, sessionId, declared }) {
 
   const ctx = repoContext(target);
   if (ctx === null) return { verdict: 'allow', note: 'not a readable git repo' };
-  if (!ctx.isPrimaryOnProtected) return { verdict: 'allow', note: 'not primary checkout on main' };
+  if (!ctx.isPrimary) return { verdict: 'allow', note: 'not the primary checkout' };
 
   const rel = relativeInRepo(target, ctx.root);
   if (rel === null) return { verdict: 'allow', note: 'outside repo' };
@@ -423,15 +446,15 @@ function snapFile(sessionId) {
 
 /**
  * 分级提醒/会话规则只对「人在主 checkout 上直接对话」的会话有意义。
- * linked worktree / 功能分支里注入只是噪声：那里的 tier 已经由派发方决定。
- * cwd 不在 git 仓库内（ctx 为 null）时照常注入——不能用 `!ctx?.isPrimaryOnProtected`，
- * 否则非仓库目录的会话会丢掉规则。
+ * linked worktree 里注入只是噪声：那里的 tier 已经由派发方决定；主 checkout 上的功能分支
+ * 不是隔离环境，同样要受分级约束。cwd 不在 git 仓库内（ctx 为 null）时照常注入——不能用
+ * `!ctx?.isPrimary`，否则非仓库目录的会话会丢掉规则。
  * 不看 `PASEO_AGENT_ID`：人在 Paseo 里直连的会话同样带它，按环境变量跳过会静默吞掉提醒。
  */
 export function skipInjection(cwd) {
   if (typeof cwd !== 'string' || cwd === '') return false;
   const ctx = repoContext(cwd);
-  return ctx !== null && !ctx.isPrimaryOnProtected;
+  return ctx !== null && !ctx.isPrimary;
 }
 
 /**
@@ -443,7 +466,7 @@ export function takeSnapshot({ cwd, sessionId, isHumanTurn = true }) {
   if (process.env.PIPELINE_TIER_GATE === 'off') return;
   if (typeof sessionId !== 'string' || sessionId === '' || typeof cwd !== 'string' || cwd === '') return;
   const ctx = repoContext(cwd);
-  if (ctx === null || !ctx.isPrimaryOnProtected) return;
+  if (ctx === null || !ctx.isPrimary) return;
   // 新一条用户消息到达 = 用户已经看到上一次汇报（文件名或「原地反复改」）并选择继续。
   // 只在这里重置观察窗：越线后同一轮里不会每写一次都弹窗，用户答复后也不会被同一批文件
   // 反复打断。files / asked 不动——否则越线的写入就真的被忘掉了。
@@ -515,7 +538,7 @@ export function assessStop({ cwd, sessionId }) {
   if (process.env.PIPELINE_TIER_GATE === 'off') return { verdict: 'ok' };
   if (typeof sessionId !== 'string' || sessionId === '' || typeof cwd !== 'string' || cwd === '') return { verdict: 'ok' };
   const ctx = repoContext(cwd);
-  if (ctx === null || !ctx.isPrimaryOnProtected) return { verdict: 'ok' };
+  if (ctx === null || !ctx.isPrimary) return { verdict: 'ok' };
   const snap = readState(snapFile(sessionId));
   if (snap.root !== ctx.root || typeof snap.sig !== 'object' || snap.sig === null) return { verdict: 'ok' };
 
@@ -549,10 +572,14 @@ export function assessStop({ cwd, sessionId }) {
   const scopes = [...new Set([...combined, ...seg.asked].map(scopeKey))].sort();
   const scopeBlock = !fileLimitBlock && combined.length > 0 && scopes.length >= 2 && unreported.length > 0;
   // 「连续多轮原地改」在这里判：Stop 的产出是迫使模型停下来汇报，不是逐次写入的许可。
-  // 汇报过一次就设 churnReported，用户回话时由 takeSnapshot 重置；否则同一段任务每轮都打断。
+  // 只有本轮没有碰到任何新文件（全部是此前已改过的文件）才算原地打转；正常的增量工作
+  // 每轮都会引入新文件，不应被周期性打断。汇报过一次就设 churnReported，用户回话时由
+  // takeSnapshot 重置；否则同一段任务每轮都打断。
   const turnLimit = turnsFromEnv();
   const turnsAfter = round.length > 0 ? seg.turns + 1 : seg.turns;
-  const churnBlock = turnsAfter >= turnLimit && round.length > 0 && !seg.churnReported;
+  const previouslyTouched = new Set([...seg.files, ...seg.stopFiles]);
+  const fresh = round.filter((rel) => !previouslyTouched.has(rel));
+  const churnBlock = turnsAfter >= turnLimit && round.length > 0 && fresh.length === 0 && !seg.churnReported;
   const block = fileLimitBlock || scopeBlock || churnBlock;
   // 只有真的在本轮改动了业务文件才算一轮；纯阅读/纯讨论不推进计数器，也不刷新段时钟，
   // 否则一段任务会被频繁的 Stop 永久保活，空闲重置永远不生效。

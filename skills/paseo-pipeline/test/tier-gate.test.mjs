@@ -97,10 +97,11 @@ test('linked worktree 内不受限（Tier 2/3 写手的落点）', () => withSta
   }
 }));
 
-test('主 checkout 上的功能分支不受限', () => withState(() => {
+test('主 checkout 上的功能分支同样受限（隔离靠 worktree，不靠分支）', () => withState(() => {
   const root = makeRepo();
   sh(root, 'checkout', '-q', '-b', 'feat/x');
-  for (const n of ['a', 'b', 'c', 'd', 'e']) assert.equal(write(root, n).verdict, 'allow', n);
+  for (const n of ['a', 'b', 'c']) assert.equal(write(root, n).verdict, 'allow', n);
+  assert.equal(write(root, 'd').verdict, 'ask');
 }));
 
 test('openspec/ 产物不计数也不拦（Tier 3 的主会话要写 spec）', () => withState(() => {
@@ -248,7 +249,7 @@ test('tier-write-hook 进程：第 4 个文件输出 ask JSON，其前不输出'
 test('tier-write-hook 进程：声明超限时首次写入直接 deny，不落账', () => withState((dir) => {
   const root = makeRepo();
   const transcript = path.join(dir, 'transcript.jsonl');
-  fs.writeFileSync(transcript, JSON.stringify({ text: 'TIER-PLAN: tier=1 files=src/a,src/b,src/c,src/d scope=src' }));
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'TIER-PLAN: tier=1 files=src/a,src/b,src/c,src/d scope=src' }] } }));
   const payload = {
     session_id: 'proc2',
     transcript_path: transcript,
@@ -284,8 +285,22 @@ test('readDeclaredPlan：取最后一次声明，缺省与坏格式返回 null',
   assert.equal(readDeclaredPlan(path.join(dir, 'missing.jsonl')), null);
   fs.writeFileSync(file, 'no declaration here');
   assert.equal(readDeclaredPlan(file), null);
-  fs.writeFileSync(file, JSON.stringify({ text: 'TIER-PLAN: tier=1 files=none scope=src' }));
+  fs.writeFileSync(file, JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'TIER-PLAN: tier=1 files=none scope=src' }] } }));
   assert.deepEqual(readDeclaredPlan(file), { tier: 1, files: [] });
+});
+
+test('readDeclaredPlan：只认 assistant 文本，提醒示例与工具输出不算声明', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tier-transcript-'));
+  const file = path.join(dir, 't.jsonl');
+  const reminder = '[分级提醒] 动手改任何文件之前……\nTIER-PLAN: tier=1 files=src/a.ts,src/b.ts scope=src';
+  fs.writeFileSync(file, [
+    JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: reminder }] } }),
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'TIER-PLAN: tier=1 files=src/c.ts scope=src' }] } }),
+  ].join('\n'));
+  assert.deepEqual(readDeclaredPlan(file), { tier: 1, files: ['src/c.ts'] });
+  // 只有用户侧 / 提醒里的示例：没有声明。
+  fs.writeFileSync(file, JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: reminder }] } }));
+  assert.equal(readDeclaredPlan(file), null);
 });
 
 test('开工前声明：计划超过 Tier 1 上限 → 首次写入就 deny', () => withState(() => {
@@ -469,13 +484,13 @@ test('Stop 核对：openspec/ 不计；经 ask 流程用户确认过的文件不
   assert.equal(stop(root).verdict, 'ok');
 }));
 
-test('Stop 核对：worktree、功能分支、无快照、gate off 都放行', () => withState(() => {
+test('Stop 核对：worktree、无快照、gate off 放行；主 checkout 功能分支仍核对', () => withState(() => {
   const root = makeRepo();
   assert.equal(stop(root).verdict, 'ok'); // 无快照
   sh(root, 'checkout', '-q', '-b', 'feat/x');
   snap(root);
   bashWrite(root, ['a', 'b', 'c', 'd', 'e']);
-  assert.equal(stop(root).verdict, 'ok');
+  assert.equal(stop(root).verdict, 'block');
   sh(root, 'checkout', '-q', 'main');
   snap(root, 'st2');
   bashWrite(root, ['f', 'g', 'h', 'i', 'j']);
@@ -620,6 +635,18 @@ test('连续多轮原地改：第 3 轮 Stop 汇报一次，用户回话后重�
     bashWrite(root, ['a']);
     assert.equal(stop(root, 'churn').verdict, round === 2 ? 'ok' : 'block', `新一轮第 ${round} 轮`);
   }
+}));
+
+test('逐轮新增文件的正常增量工作不触发 churn 汇报', () => withState(() => {
+  const root = makeRepo();
+  process.env.PIPELINE_TIER_GATE_LIMIT = '20';
+  try {
+    for (let round = 1; round <= 5; round += 1) {
+      snap(root, 'growth');
+      bashWrite(root, [`g${round}`]);
+      assert.equal(stop(root, 'growth').verdict, 'ok', `第 ${round} 轮不该打断`);
+    }
+  } finally { delete process.env.PIPELINE_TIER_GATE_LIMIT; }
 }));
 
 test('系统通知轮：刷新快照，但不重置 churn 计数', () => withState((dir) => {
