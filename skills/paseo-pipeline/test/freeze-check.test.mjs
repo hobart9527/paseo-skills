@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 const root = path.resolve(import.meta.dirname, '..');
 // Signer lookup needs a live Paseo; fixtures that only exercise the contract rules skip it.
 function run(dir, flags = ['--skip-signer-check'], env = process.env) {
-  try { execFileSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--json', ...flags], { encoding: 'utf8', env }); return { status: 0 }; }
-  catch (error) { return { status: error.status, stdout: error.stdout, stderr: error.stderr }; }
+  const result = spawnSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--json', ...flags], { encoding: 'utf8', env });
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 function change(files) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-'));
@@ -244,7 +244,8 @@ test('low speedup advisory fires on a near-serial DAG and stays silent on a wide
   const adv = (tasks) => JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change({ ...files, 'tasks.md': tasks }), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
   const wide = adv(diamond(6)); // T-01 then 5 parallel: 6 tasks / 2 waves = 3x
   assert.equal(wide.route, 'pipeline');
-  assert.deepEqual(wide.advisories, []);
+  // Baseline Alignment is an unrelated advisory (its content is the author's job, not the DAG's).
+  assert.deepEqual(wide.advisories.filter((item) => !item.startsWith('ADVISORY_BASELINE_ALIGNMENT')), []);
   const chain = adv(`- [ ] 1.1 T-01 a\n  - Write scope: src/a.mjs,test/a.test.mjs\n  - Verify with: node --test test/a.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.2 T-02 b\n  - Depends on: T-01\n  - Write scope: src/b.mjs,test/b.test.mjs\n  - Verify with: node --test test/b.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.3 T-03 c\n  - Depends on: T-01\n  - Write scope: src/c.mjs,test/c.test.mjs\n  - Verify with: node --test test/c.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.4 T-04 d\n  - Depends on: T-02,T-03\n  - Write scope: src/d.mjs,test/d.test.mjs\n  - Verify with: node --test test/d.test.mjs\n  - Scen: SCEN-1`);
   assert.equal(chain.speedup, 1.33);
   assert.match(chain.advisories.join('\n'), /ADVISORY_LOW_SPEEDUP/);
@@ -253,6 +254,114 @@ test('low speedup advisory fires on a near-serial DAG and stays silent on a wide
   // Shared file forces the edge: tag it `scope`, not `logical`.
   const shared = adv(`- [ ] 1.1 T-01 a\n  - Write scope: src/a.mjs,test/a.test.mjs\n  - Verify with: node --test test/a.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.2 T-02 b\n  - Depends on: T-01\n  - Write scope: src/a.mjs,test/b.test.mjs\n  - Verify with: node --test test/b.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.3 T-03 c\n  - Write scope: src/c.mjs,test/c.test.mjs\n  - Verify with: node --test test/c.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.4 T-04 d\n  - Depends on: T-02,T-03\n  - Write scope: src/d.mjs,test/d.test.mjs\n  - Verify with: node --test test/d.test.mjs\n  - Scen: SCEN-1`);
   assert.deepEqual(shared.criticalChain.map((step) => [step.id, step.via]), [['T-01', null], ['T-02', 'scope'], ['T-04', 'logical']]);
+});
+
+test('critical chain follows the weighted dispatch graph, not wave depth', () => {
+  // The skeleton costs only 15 minutes, so the wave chain (which ignores Uses edges)
+  // starts at T-01 and reports 168 minutes. The weighted chain includes the skeleton
+  // dispatch edge that actually bounds the makespan, and tags it `uses`.
+  const tasks = [
+    '- [ ] 1.1 T-00 iface',
+    '  - Write scope: src/iface.mjs,test/iface.test.mjs',
+    '  - Kind: skeleton',
+    '  - Interface: src/iface.mjs#run',
+    '  - Review: mechanical',
+    '  - Verify with: node --test test/iface.test.mjs',
+    '  - Scen: SCEN-1',
+    '- [ ] 1.2 T-01 consumer',
+    '  - Uses: T-00',
+    '  - Write scope: src/a.mjs,test/a.test.mjs',
+    '  - Est: L',
+    '  - Verify with: node --test test/a.test.mjs',
+    '  - Scen: SCEN-1',
+    '- [ ] 1.3 T-02 follower',
+    '  - Depends on: T-01',
+    '  - Write scope: src/b.mjs,test/b.test.mjs',
+    '  - Verify with: node --test test/b.test.mjs',
+    '  - Scen: SCEN-1',
+    '- [ ] 1.4 T-03 sink',
+    '  - Depends on: T-02',
+    '  - Write scope: src/sink.mjs',
+    '  - Review: mechanical',
+    '  - Verify with: npm test',
+    '  - Scen: SCEN-1',
+  ].join('\n');
+  const report = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change({
+    'tasks.md': tasks,
+    'proposal.md': 'x',
+    'design.md': design,
+    'acceptance.md': table('| SCEN-1 | CLI | T-03 | npm test | yes | PENDING | pending |'),
+    'specs/a/spec.md': '### Scenario: SCEN-1\n',
+    'review.md': REVIEW,
+  }), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
+  assert.deepEqual(report.criticalChain.map((step) => [step.id, step.via]),
+    [['T-00', null], ['T-01', 'uses'], ['T-02', 'logical'], ['T-03', 'logical']]);
+});
+
+test('a dependency carried only by a shared read-only fixture is advisory, not blocking', () => {
+  const tasks = [
+    '- [ ] 1.1 T-01 a',
+    '  - Write scope: src/a.mjs,test/a.test.mjs',
+    '  - Reads: scripts/specs/fixture.mjs',
+    '  - Verify with: node scripts/specs/fixture.mjs',
+    '  - Scen: SCEN-1',
+    '- [ ] 1.2 T-02 b',
+    '  - Depends on: T-01',
+    '  - Write scope: src/b.mjs,test/b.test.mjs',
+    '  - Reads: scripts/specs/fixture.mjs',
+    '  - Verify with: node scripts/specs/fixture.mjs',
+    '  - Scen: SCEN-1',
+    '- [ ] 1.3 T-03 sink',
+    '  - Depends on: T-02',
+    '  - Write scope: test/sink.test.mjs',
+    '  - Verify with: npm test',
+    '  - Scen: SCEN-1',
+    '',
+  ].join('\n');
+  const report = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change({
+    'tasks.md': tasks,
+    'proposal.md': 'x',
+    'design.md': design,
+    'acceptance.md': table('| SCEN-1 | CLI | T-03 | npm test | yes | PENDING | pending |'),
+    'specs/a/spec.md': '### Scenario: SCEN-1\n',
+    'review.md': REVIEW,
+  }), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
+  assert.deepEqual(report.blocking, []);
+  assert.match(report.advisories.join('\n'), /ADVISORY_READS_ONLY_EDGE T-02 -> T-01/);
+  // Chain membership is rendered on the advisory itself: the removed `CRITICAL_LOGICAL_EDGES`
+  // line used to be the only place that said the edge was the bottleneck.
+  assert.match(report.advisories.join('\n'), /T-02 -> T-01 \(scripts\/specs\/fixture\.mjs\) on the critical chain/);
+});
+
+test('a dependency between two writers of the same files is not reported as reads-only', () => {
+  const tasks = [
+    '- [ ] 1.1 T-01 a',
+    '  - Write scope: src/shared.mjs,test/a.test.mjs',
+    '  - Reads: scripts/specs/fixture.mjs',
+    '  - Verify with: node --test test/a.test.mjs',
+    '  - Scen: SCEN-1',
+    '- [ ] 1.2 T-02 b',
+    '  - Depends on: T-01',
+    '  - Write scope: src/shared.mjs,test/b.test.mjs',
+    '  - Reads: scripts/specs/fixture.mjs',
+    '  - Verify with: node --test test/b.test.mjs',
+    '  - Scen: SCEN-1',
+    '- [ ] 1.3 T-03 sink',
+    '  - Depends on: T-02',
+    '  - Write scope: test/sink.test.mjs',
+    '  - Verify with: npm test',
+    '  - Scen: SCEN-1',
+    '',
+  ].join('\n');
+  const report = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change({
+    'tasks.md': tasks,
+    'proposal.md': 'x',
+    'design.md': design,
+    'acceptance.md': table('| SCEN-1 | CLI | T-03 | npm test | yes | PENDING | pending |'),
+    'specs/a/spec.md': '### Scenario: SCEN-1\n',
+    'review.md': REVIEW,
+  }), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
+  assert.doesNotMatch(report.advisories.join('\n'), /ADVISORY_READS_ONLY_EDGE/);
 });
 
 function sinkContract(verify, extra = '') {
@@ -269,6 +378,10 @@ test('sink without a full-suite leg must still have a narrow Verify', () => {
 test('mechanical sink may run a non-test check', () => {
   const result = freezeOf(sinkContract('rg -c done docs/x.md', '  - Review: mechanical\n'));
   assert.equal(result.status, 0, result.stdout);
+});
+test('mechanical non-sink still needs narrow Verify', () => {
+  const tasks = contract.replace('  - Verify with: node --test test/alpha.test.mjs', '  - Review: mechanical\n  - Verify with: rg -c done src/alpha');
+  assert.match(freezeOf(tasks).stdout, /VERIFY_NOT_NARROW T-02/);
 });
 
 // ---- R0: the last sign-off line wins ----
@@ -314,4 +427,359 @@ test('CROSS_CHANGE_SCOPE_OVERLAP: outside a git repo it is silently skipped', ()
   const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
   const report = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--json', '--structural'], { encoding: 'utf8' }));
   assert.ok(!report.advisories.some((a) => /CROSS_CHANGE/.test(a)));
+});
+
+// ---- Uses / Reads / skeleton / deferred contract ----
+const scheduleContract = `- [ ] 1.1 T-00 skeleton
+  - Write scope: src/iface,test/iface.test.mjs
+  - Est: S
+  - Kind: skeleton
+  - Interface: src/iface/form.ts#useDraft
+  - Review: mechanical
+  - Verify with: node --test test/iface.test.mjs
+- [ ] 1.2 T-01 alpha
+  - Uses: T-00
+  - Write scope: src/alpha,test/alpha.test.mjs
+  - Reads: src/iface/form.ts
+  - Review: deferred
+  - Verify with: node --test test/alpha.test.mjs
+  - Scen: SCEN-1
+- [ ] 1.3 T-02 beta
+  - Uses: T-00
+  - Write scope: src/beta,test/beta.test.mjs
+  - Review: deferred
+  - Verify with: node --test test/beta.test.mjs
+  - Scen: SCEN-1
+- [ ] 1.4 T-03 sink
+  - Depends on: T-00,T-01,T-02
+  - Write scope: test/sink.test.mjs
+  - Verify with: npm test
+  - Scen: SCEN-1`;
+const scheduleFiles = (tasks) => ({
+  'tasks.md': tasks,
+  'proposal.md': 'x',
+  'design.md': design,
+  'acceptance.md': table('| SCEN-1 | CLI | T-03 | node -e "0" | yes | PENDING | pending |'),
+  'specs/a/spec.md': '### Scenario: SCEN-1\n',
+});
+const freezeStructural = (tasks) => run(change(scheduleFiles(tasks)), ['--structural', '--skip-signer-check']);
+
+test('accepts Uses/Reads/skeleton/deferred and reports the weighted model', () => {
+  const dir = change(scheduleFiles(scheduleContract));
+  const result = run(dir, ['--structural', '--skip-signer-check']);
+  assert.equal(result.status, 0, result.stdout);
+  const report = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--json', '--structural', '--skip-signer-check'], { encoding: 'utf8' }));
+  assert.equal(typeof report.weightedSpeedup, 'number');
+  assert.equal(typeof report.speedup, 'number');
+});
+
+test('USES_UNKNOWN blocks a Uses target that is not a task', () => {
+  const bad = scheduleContract.replace('  - Uses: T-00\n', '  - Uses: T-99\n');
+  const result = freezeStructural(bad);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /USES_UNKNOWN T-01/);
+});
+
+test('USES_WITHOUT_INTERFACE blocks a producer with no frozen interface', () => {
+  const bad = scheduleContract.replace('  - Interface: src/iface/form.ts#useDraft\n', '');
+  const result = freezeStructural(bad);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /USES_WITHOUT_INTERFACE T-01/);
+});
+
+test('USES_SCOPE_OVERLAP blocks overlapping writers without Depends on', () => {
+  const bad = scheduleContract.replace('Write scope: src/alpha,test/alpha.test.mjs', 'Write scope: src/iface,test/alpha.test.mjs');
+  const result = freezeStructural(bad);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /USES_SCOPE_OVERLAP T-01 and T-00/);
+});
+
+test('INTERFACE_UNOWNED blocks an Interface outside every skeleton scope', () => {
+  const bad = scheduleContract.replace('  - Review: deferred\n', '  - Interface: src/alpha/api.ts#Handler\n  - Review: deferred\n');
+  const result = freezeStructural(bad);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /INTERFACE_UNOWNED T-01/);
+});
+
+test('SKELETON_NOT_MECHANICAL blocks a skeleton that needs per-task review', () => {
+  const bad = scheduleContract.replace('  - Review: mechanical\n  - Verify with: node --test test/iface.test.mjs', '  - Review: standard\n  - Verify with: node --test test/iface.test.mjs');
+  const result = freezeStructural(bad);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /SKELETON_NOT_MECHANICAL T-00/);
+});
+
+test('a producer consumed only through Uses is not a sink and may defer review', () => {
+  // T-01 is consumed by T-02 via Uses only; nothing lists it in Depends on. Counting
+  // Depends alone made T-01 look like a sink, so DEFERRED_NOT_STANDARD rejected it.
+  const tasks = `- [ ] 1.1 T-00 skeleton
+  - Write scope: src/iface/form.ts,src/alpha/api.ts,test/iface.test.mjs
+  - Kind: skeleton
+  - Interface: src/iface/form.ts#useDraft,src/alpha/api.ts#handler
+  - Review: mechanical
+  - Verify with: node --test test/iface.test.mjs
+- [ ] 1.2 T-01 producer
+  - Uses: T-00
+  - Depends on: T-00
+  - Write scope: src/alpha/api.ts,test/alpha.test.mjs
+  - Interface: src/alpha/api.ts#handler
+  - Review: deferred
+  - Verify with: node --test test/alpha.test.mjs
+  - Scen: SCEN-1
+- [ ] 1.3 T-02 consumer
+  - Uses: T-01
+  - Write scope: src/beta,test/beta.test.mjs
+  - Review: deferred
+  - Verify with: node --test test/beta.test.mjs
+  - Scen: SCEN-1
+- [ ] 1.4 T-03 sink
+  - Depends on: T-00,T-02
+  - Write scope: test/sink.test.mjs
+  - Verify with: npm test
+  - Scen: SCEN-1`;
+  const result = freezeStructural(tasks);
+  assert.equal(result.status, 0, result.stdout);
+});
+
+test('DEFERRED_NOT_STANDARD blocks the sink and persistence/security surfaces, but not public-api', () => {
+  const sink = scheduleContract.replace('  - Verify with: npm test\n', '  - Verify with: npm test\n  - Review: deferred\n');
+  assert.match(freezeStructural(sink).stdout, /DEFERRED_NOT_STANDARD T-03/);
+
+  const persistence = scheduleContract.replace('  - Review: deferred\n  - Verify with: node --test test/alpha.test.mjs', '  - Review: deferred\n  - Risk-surface: [persistence]\n  - Verify with: node --test test/alpha.test.mjs');
+  const persistenceResult = freezeStructural(persistence);
+  assert.match(persistenceResult.stdout, /DEFERRED_NOT_STANDARD T-01/);
+  assert.match(persistenceResult.stdout, /FINAL attention/);
+  assert.doesNotMatch(persistenceResult.stdout, /reviewed inline/);
+
+  const security = scheduleContract.replace('  - Review: deferred\n  - Verify with: node --test test/alpha.test.mjs', '  - Review: deferred\n  - Risk-surface: security\n  - Verify with: node --test test/alpha.test.mjs');
+  assert.match(freezeStructural(security).stdout, /DEFERRED_NOT_STANDARD T-01/);
+
+  const publicApi = scheduleContract.replace('  - Review: deferred\n  - Verify with: node --test test/alpha.test.mjs', '  - Review: deferred\n  - Risk-surface: public-api\n  - Verify with: node --test test/alpha.test.mjs');
+  assert.equal(freezeStructural(publicApi).status, 0, freezeStructural(publicApi).stdout);
+  for (const mode of ['standard', 'mechanical']) {
+    const risk = scheduleContract.replace('  - Review: deferred\n  - Verify with: node --test test/alpha.test.mjs', `  - Review: ${mode}\n  - Risk-surface: security\n  - Verify with: node --test test/alpha.test.mjs`);
+    assert.equal(freezeStructural(risk).status, 0, freezeStructural(risk).stdout);
+  }
+});
+
+test('skeleton Write-scope overlap is exempt against transitive dependents', () => {
+  // T-03 depends on T-01, which Uses the skeleton: it cannot start before the skeleton merged.
+  const transitive = scheduleContract
+    .replace('  - Depends on: T-00,T-01,T-02\n  - Write scope: test/sink.test.mjs', '  - Depends on: T-01,T-02\n  - Write scope: src/iface/sink.ts,test/sink.test.mjs');
+  assert.equal(freezeStructural(transitive).status, 0, freezeStructural(transitive).stdout);
+  // An independent task with no path to the skeleton is a real writer race.
+  const race = scheduleContract.replace('  - Scen: SCEN-1', '  - Scen: SCEN-1\n- [ ] 1.5 T-04 race\n  - Write scope: src/iface/race.ts,test/race.test.mjs\n  - Verify with: node --test test/race.test.mjs\n  - Scen: SCEN-1');
+  assert.match(freezeStructural(race).stdout, /SCOPE_CONFLICT T-00 and T-04/);
+});
+
+test('Reads anchors a narrow Verify without joining scope conflicts', () => {
+  const anchored = scheduleContract
+    .replace('Write scope: src/alpha,test/alpha.test.mjs', 'Write scope: src/alpha')
+    .replace('Reads: src/iface/form.ts', 'Reads: src/iface/form.ts,test/alpha.test.mjs');
+  assert.equal(freezeStructural(anchored).status, 0, freezeStructural(anchored).stdout);
+  const sharedRead = scheduleContract.replace('  - Review: deferred\n  - Verify with: node --test test/beta.test.mjs', '  - Reads: src/iface/form.ts\n  - Review: deferred\n  - Verify with: node --test test/beta.test.mjs');
+  assert.equal(freezeStructural(sharedRead).status, 0, freezeStructural(sharedRead).stdout);
+});
+
+test('rulings.md is not contract drift; any other new file is', () => {
+  const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  const sh = (...a) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8' }).trim();
+  sh('init', '-q'); sh('config', 'user.email', 't@t'); sh('config', 'user.name', 't');
+  sh('add', '.'); sh('commit', '-qm', 'draft');
+  fs.writeFileSync(path.join(dir, 'review.md'), `R0: pass(hanlin-uuid@${sh('rev-parse', '--short', 'HEAD')})\n`);
+  fs.writeFileSync(path.join(dir, 'rulings.md'), '# Rulings\n');
+  assert.equal(run(dir).status, 0, run(dir).stdout);
+  fs.writeFileSync(path.join(dir, 'extra.md'), 'x');
+  assert.match(run(dir).stdout, /STALE_R0_SIGNOFF.*extra\.md/);
+});
+
+test('--explain prints a rule, reason and fix for every block', () => {
+  const dir = change(scheduleFiles(scheduleContract.replace('  - Uses: T-00\n', '  - Uses: T-99\n')));
+  let error;
+  try { execFileSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--explain', '--structural', '--skip-signer-check'], { encoding: 'utf8', stdio: 'pipe' }); }
+  catch (caught) { error = caught; }
+  assert.ok(error, 'expected a non-zero exit');
+  assert.match(error.stderr, /BLOCK USES_UNKNOWN T-01/);
+  assert.match(error.stderr, /EXPLAIN USES_UNKNOWN: .*Uses T-99/);
+  assert.match(error.stderr, /fix: point Uses at an existing task id/);
+});
+
+// ---- contract lint: silent failure modes ----
+test('an acceptance row split by an unescaped pipe is a named block, not a silent skip', () => {
+  const row = '| SCEN-1 | CLI | T-02 | echo "a | b" | yes | PENDING | pending |';
+  const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table(row), 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  const result = run(dir);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /MALFORMED_ACCEPTANCE_ROW/);
+  // An escaped pipe keeps the column count and is accepted.
+  const escaped = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-02 | echo "a \\| b" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW });
+  assert.equal(run(escaped).status, 0);
+});
+
+test('shell setup is not a verify leg: set -e and || are named blocks', () => {
+  const sinkSet = contract.replace('  - Verify with: npm test', '  - Verify with: set -e; npm test');
+  const setResult = run(change({ 'tasks.md': sinkSet, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' }));
+  assert.match(setResult.stdout, /VERIFY_JUNK_LEG T-04/);
+  assert.match(setResult.stdout, /shell setup, not a verify leg/);
+  const sinkOr = contract.replace('  - Verify with: npm test', '  - Verify with: npm test || true');
+  const orResult = run(change({ 'tasks.md': sinkOr, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' }));
+  assert.match(orResult.stdout, /VERIFY_JUNK_LEG T-04/);
+  assert.match(orResult.stdout, /mandatory legs/);
+});
+
+test('a shell loop is an advisory, not invented legs', () => {
+  const loop = contract
+    .replace('Write scope: test/sink.test.mjs', 'Write scope: test/sink.test.mjs,scripts/specs/probe.mjs')
+    .replace('  - Verify with: npm test', '  - Review: mechanical\n  - Verify with: for f in scripts/specs/probe.mjs; do node "$f"; done');
+  const dir = change({ 'tasks.md': loop, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW });
+  const result = run(dir);
+  assert.equal(result.status, 0, result.stdout);
+  assert.match(result.stdout, /ADVISORY_SHELL_VERIFY T-04/);
+});
+
+test('Reads must name a path that already exists in the repository', () => {
+  const dir = change({ 'tasks.md': contract.replace('  - Scen: SCEN-1\n- [ ] 1.2', '  - Reads: docs/contract.md\n  - Scen: SCEN-1\n- [ ] 1.2'), 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  assert.match(run(dir, ['--structural', '--skip-signer-check']).stdout, /MISSING_READS_PATH T-01/);
+  fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'docs/contract.md'), 'x');
+  assert.equal(run(dir, ['--structural', '--skip-signer-check']).status, 0);
+});
+
+test('Reads may forward-reference a path another task writes, but not a typo', () => {
+  // T-01 reads src/poison.txt before T-02 has written it: legal, because T-02 owns it.
+  const forward = contract
+    .replace('Write scope: src/shared,test/shared.test.mjs', 'Write scope: src/shared,test/shared.test.mjs,src/poison.txt')
+    .replace('  - Scen: SCEN-1\n- [ ] 1.2', '  - Reads: src/poison.txt\n  - Scen: SCEN-1\n- [ ] 1.2');
+  const ok = change({ 'tasks.md': forward, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  execFileSync('git', ['init', '-q'], { cwd: ok });
+  assert.doesNotMatch(run(ok, ['--structural', '--skip-signer-check']).stdout, /MISSING_READS_PATH/);
+  const typo = change({ 'tasks.md': forward.replace('Reads: src/poison.txt', 'Reads: src/posion.txt'), 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  execFileSync('git', ['init', '-q'], { cwd: typo });
+  assert.match(run(typo, ['--structural', '--skip-signer-check']).stdout, /MISSING_READS_PATH T-01/);
+});
+
+test('baseline alignment is an advisory that names the missing section, never a block', () => {
+  const files = { 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'tasks.md': contract, 'review.md': REVIEW };
+  const missing = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change(files), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
+  assert.equal(missing.route, 'pipeline');
+  assert.ok(missing.advisories.some((item) => item.startsWith('ADVISORY_BASELINE_ALIGNMENT: design.md')));
+  const aligned = { ...files, 'design.md': '## Baseline Alignment\n| Rule | Baseline | Verdict | Evidence |\n| --- | --- | --- | --- |\n| none | n/a | reuse | `rg status src/` |\n\n## Impact Inventory\nnone\n', 'digest.md': '## Baseline Alignment\nnone: `rg status src/`\n' };
+  const ok = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change(aligned), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
+  assert.deepEqual(ok.advisories.filter((item) => item.startsWith('ADVISORY_BASELINE_ALIGNMENT')), []);
+  // One author fills the record once: `design.md` is the file R0 reads, so a missing digest
+  // section is not a second advisory. A digest-only package still warns.
+  const designOnly = { ...files, 'design.md': aligned['design.md'] };
+  const one = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change(designOnly), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
+  assert.deepEqual(one.advisories.filter((item) => item.startsWith('ADVISORY_BASELINE_ALIGNMENT')), []);
+  const digestOnly = { ...files, 'digest.md': aligned['digest.md'] };
+  const none = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change(digestOnly), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
+  assert.ok(none.advisories.some((item) => item.startsWith('ADVISORY_BASELINE_ALIGNMENT: design.md')));
+  // A section written as `###` subsections is still a section: they must not truncate the body.
+  const subsectioned = { ...files, 'design.md': `${design}\n## Baseline Alignment\n\n### Read\n- specs/a/spec.md:12 (reuse)\n\n### Command\n\`rg status src/\`\n`, 'digest.md': '## Baseline Alignment\n\n### Read\n- `rg status src/`\n' };
+  const sub = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change(subsectioned), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
+  assert.deepEqual(sub.advisories.filter((item) => item.startsWith('ADVISORY_BASELINE_ALIGNMENT')), []);
+});
+
+test('routing wave width follows runtime Uses skeleton dependencies', () => {
+  const serial = scheduleContract
+    .replace('  - Uses: T-00\n  - Write scope: src/beta', '  - Depends on: T-01\n  - Write scope: src/beta')
+    .replace('  - Depends on: T-00,T-01,T-02', '  - Depends on: T-02');
+  const report = JSON.parse(freezeStructural(serial).stdout);
+  assert.equal(report.maxWidth, 1);
+  assert.equal(report.route, 'handoff');
+  assert.match(report.maxWidthMeaning, /heuristic/);
+  assert.match(report.weightedSpeedupMeaning, /unmeasured/);
+  const parallel = JSON.parse(freezeStructural(scheduleContract).stdout);
+  assert.equal(parallel.maxWidth, 2);
+  assert.equal(parallel.route, 'pipeline');
+});
+
+test('freeze rejects mixed Uses and Depends on deadlock', () => {
+  const deadlock = scheduleContract.replace('  - Kind: skeleton', '  - Depends on: T-01\n  - Kind: skeleton');
+  const result = freezeStructural(deadlock);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /CYCLE/);
+});
+
+test('invalid Uses emits one diagnostic and suppresses route', () => {
+  for (const target of ['T-99', 'T-01']) {
+    const report = JSON.parse(freezeStructural(scheduleContract.replace('  - Uses: T-00', `  - Uses: ${target}`)).stdout);
+    assert.equal(report.blocking.filter((item) => item.startsWith('USES_UNKNOWN T-01:')).length, 1);
+    assert.equal(report.blocking.filter((item) => item.startsWith('CYCLE')).length, 0);
+    assert.equal(report.route, null);
+  }
+});
+
+test('invalid graphs never report actionable routing or modeled estimates', () => {
+  const cases = [
+    scheduleContract.replace('  - Kind: skeleton', '  - Depends on: T-01\n  - Kind: skeleton'),
+    scheduleContract.replace('  - Uses: T-00', '  - Uses: T-99'),
+    scheduleContract.replace('  - Depends on: T-00,T-01,T-02', '  - Depends on: T-99'),
+    scheduleContract + '\n- [ ] T-01 duplicate\n',
+    '# Tasks\n',
+  ];
+  for (const tasks of cases) {
+    const dir = change(scheduleFiles(tasks));
+    const result = run(dir, ['--structural', '--skip-signer-check']);
+    assert.equal(result.status, 1);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.route, null);
+    assert.equal(report.weightedSpeedup, null);
+    assert.equal(report.speedup, null);
+    assert.equal(report.maxWidth, null);
+    assert.equal(report.criticalPath, null);
+    assert.deepEqual(report.waves, []);
+    assert.deepEqual(report.criticalChain, []);
+    const text = spawnSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--structural', '--skip-signer-check'], { encoding: 'utf8' });
+    assert.equal(text.status, 1);
+    assert.match(text.stdout, /\[ROUTE\] invalid/);
+    assert.doesNotMatch(text.stdout, /\[ROUTE\] (pipeline|handoff)\b|^WAVE |^CRITICAL /m);
+  }
+});
+
+test('non-graph blocks retain advisory route needed before R0', () => {
+  const result = run(change(scheduleFiles(scheduleContract)), ['--skip-signer-check']);
+  assert.equal(result.status, 1);
+  const report = JSON.parse(result.stdout);
+  assert.ok(report.blocking.some((item) => item.startsWith('MISSING_R0_SIGNOFF')));
+  assert.equal(report.route, 'pipeline');
+  assert.equal(typeof report.weightedSpeedup, 'number');
+});
+
+test('acceptance Required accepts yes/no case-insensitively and rejects invalid values even beside yes', () => {
+  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW };
+  for (const required of ['yes', 'YES', 'Yes', 'no', 'NO', 'No', '`yes`', '`no`']) {
+    const rows = `${acceptance}\n| SCEN-1 | CLI | T-02 | node -e "0" | ${required} | PENDING | pending |`;
+    const result = run(change({ ...files, 'acceptance.md': rows }));
+    assert.equal(result.status, 0, `${required}: ${result.stdout}`);
+  }
+  for (const required of ['', 'maybe', 'y', 'true', 'nope', 'yes please']) {
+    const rows = `${acceptance}\n| SCEN-1 | CLI | T-02 | node -e "0" | ${required} | PENDING | pending |`;
+    const result = run(change({ ...files, 'acceptance.md': rows }));
+    assert.equal(result.status, 1, required);
+    assert.match(result.stdout, /BAD_ACCEPTANCE_REQUIRED/);
+    assert.match(result.stdout, /acceptance\.md:4/);
+  }
+});
+
+test('acceptance requires the same seven-column header as runner', () => {
+  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW };
+  const original = '| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |';
+  for (const [header, row] of [
+    ['| Scenario | Entry | Tasks | Verify | Required | Result | Evidence | Extra |', '| SCEN-1 | CLI | T-02 | node -e "0" | yes | PENDING | pending | extra |'],
+    ['| Scenario | Entry | Tasks | Verify | Required | Outcome | Evidence |', '| SCEN-1 | CLI | T-02 | node -e "0" | yes | PENDING | pending |'],
+    ['| Scenario | Entry | Tasks | Verify | Required | Evidence | Result |', '| SCEN-1 | CLI | T-02 | node -e "0" | yes | PENDING | pending |'],
+  ]) {
+    const content = table(row).replace(original, header);
+    const result = run(change({ ...files, 'acceptance.md': content }));
+    assert.equal(result.status, 1, header);
+    assert.match(result.stdout, /BAD_ACCEPTANCE_HEADER/);
+  }
+  for (const header of ['| scenario | ENTRY | tasks | verify | required | result | evidence |', '| `Scenario` | `Entry` | `Tasks` | `Verify` | `Required` | `Result` | `Evidence` |']) {
+    const result = run(change({ ...files, 'acceptance.md': acceptance.replace(original, header) }));
+    assert.equal(result.status, 0, result.stdout);
+  }
+  const missing = run(change({ ...files, 'acceptance.md': '| SCEN-1 | CLI | T-02 | node -e "0" | yes | PENDING | pending |' }));
+  assert.equal(missing.status, 1);
+  assert.match(missing.stdout, /BAD_ACCEPTANCE_HEADER/);
 });

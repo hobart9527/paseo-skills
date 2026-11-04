@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { assessTierGate, assessStop, takeSnapshot, logHookError, scopeKey, otherSessionsClaimedFiles } from '../lib/tier-gate.mjs';
+import { assessTierGate, assessStop, takeSnapshot, logHookError, scopeKey, readDeclaredPlan, readDeclaredPlanStatus } from '../lib/tier-gate.mjs';
 import { shouldRemind, isSystemNotification, REMINDER } from '../hooks/tier-reminder-hook.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -97,10 +97,11 @@ test('linked worktree 内不受限（Tier 2/3 写手的落点）', () => withSta
   }
 }));
 
-test('主 checkout 上的功能分支不受限', () => withState(() => {
+test('主 checkout 上的功能分支同样受限（隔离靠 worktree，不靠分支）', () => withState(() => {
   const root = makeRepo();
   sh(root, 'checkout', '-q', '-b', 'feat/x');
-  for (const n of ['a', 'b', 'c', 'd', 'e']) assert.equal(write(root, n).verdict, 'allow', n);
+  for (const n of ['a', 'b', 'c']) assert.equal(write(root, n).verdict, 'allow', n);
+  assert.equal(write(root, 'd').verdict, 'ask');
 }));
 
 test('openspec/ 产物不计数也不拦（Tier 3 的主会话要写 spec）', () => withState(() => {
@@ -230,8 +231,10 @@ function runGuardHook(payload, env = {}) {
 
 test('tier-write-hook 进程：第 4 个文件输出 ask JSON，其前不输出', () => withState((dir) => {
   const root = makeRepo();
+  const transcript = path.join(dir, 'transcript');
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { content: 'TIER-PLAN: tier=1 files=src/a' } }));
   const env = { PIPELINE_TIER_GATE_STATE: dir };
-  const call = (n) => runGuardHook({ session_id: 'proc1', tool_name: 'Edit', tool_input: { file_path: path.join(root, 'src', n) } }, env);
+  const call = (n) => runGuardHook({ session_id: 'proc1', transcript_path: transcript, tool_name: 'Edit', tool_input: { file_path: path.join(root, 'src', n) } }, env);
   for (const n of ['a', 'b', 'c']) {
     const r = call(n);
     assert.equal(r.status, 0);
@@ -245,12 +248,324 @@ test('tier-write-hook 进程：第 4 个文件输出 ask JSON，其前不输出'
   assert.match(out.hookSpecificOutput.permissionDecisionReason, /tier-gate/);
 }));
 
+test('tier-write-hook 进程：声明超限时首次写入直接 deny，不落账', () => withState((dir) => {
+  const root = makeRepo();
+  const transcript = path.join(dir, 'transcript.jsonl');
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'TIER-PLAN: tier=1 files=src/a,src/b,src/c,src/d scope=src' }] } }));
+  const payload = {
+    session_id: 'proc2',
+    transcript_path: transcript,
+    tool_name: 'Write',
+    tool_input: { file_path: path.join(root, 'src', 'a') },
+  };
+  const r = runGuardHook(payload, { PIPELINE_TIER_GATE_STATE: dir });
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(out.hookSpecificOutput.permissionDecisionReason, /4 个文件/);
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { content: 'TIER-PLAN: tier=1 files=src/a' } }));
+  assert.equal(runGuardHook(payload, { PIPELINE_TIER_GATE_STATE: dir }).stdout.trim(), '');
+}));
+
+test('tier-write-hook: missing or unreadable declaration denies with distinct recovery; exemptions remain', () => withState((dir) => {
+  const root = makeRepo();
+  const transcript = path.join(dir, 'transcript');
+  const payload = { session_id: 'missing', transcript_path: transcript, tool_name: 'Write', tool_input: { file_path: path.join(root, 'src/a') } };
+  const call = (p, env = {}) => runGuardHook(p, { PIPELINE_TIER_GATE_STATE: dir, ...env });
+  const decision = (p) => JSON.parse(call(p).stdout).hookSpecificOutput;
+  const unreadable = decision(payload);
+  assert.equal(unreadable.permissionDecision, 'deny');
+  assert.match(unreadable.permissionDecisionReason, /transcript.*读取/);
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'user', message: { content: 'TIER-PLAN: tier=1 files=src/a' } }));
+  const missing = decision(payload);
+  assert.equal(missing.permissionDecision, 'deny');
+  assert.match(missing.permissionDecisionReason, /TIER-PLAN/);
+  assert.doesNotMatch(missing.permissionDecisionReason, /transcript.*读取/);
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { content: 'TIER-PLAN: tier=3 files=src/a' } }));
+  assert.equal(decision({ ...payload, permission_mode: 'bypassPermissions' }).permissionDecision, 'deny');
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { content: 'TIER-PLAN: tier=1 files=none' } }));
+  assert.equal(decision(payload).permissionDecision, 'deny');
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { content: 'TIER-PLAN: tier=1 files=src/a' } }));
+  assert.equal(call(payload).stdout.trim(), '');
+  assert.equal(call({ ...payload, transcript_path: undefined }, { PIPELINE_TIER_GATE: 'off' }).stdout.trim(), '');
+  assert.equal(call({ ...payload, session_id: '' }).stdout.trim(), '');
+  assert.equal(call({ ...payload, transcript_path: undefined, tool_input: { file_path: path.join(root, 'openspec/x') } }).stdout.trim(), '');
+  assert.equal(call({ ...payload, transcript_path: undefined, tool_input: { file_path: path.join(root, '.superpowers/x') } }).stdout.trim(), '');
+  const wt = `${root}-wt`;
+  sh(root, 'worktree', 'add', '-q', '-b', 'task/missing', wt);
+  assert.equal(call({ ...payload, transcript_path: undefined, tool_input: { file_path: path.join(wt, 'src/a') } }).stdout.trim(), '');
+}));
+
+test('tier-write-hook: current turn survives large transcript; old and invalid plans do not', () => withState((dir) => {
+  const root = makeRepo();
+  const transcript = path.join(dir, 'long.jsonl');
+  const entry = (type, content) => JSON.stringify({ type, message: { content } });
+  const plan = entry('assistant', 'TIER-PLAN: tier=1 files=src/a');
+  const payload = { session_id: 'long', transcript_path: transcript, tool_name: 'Edit', tool_input: { file_path: path.join(root, 'src/a') } };
+  const call = () => runGuardHook(payload, { PIPELINE_TIER_GATE_STATE: dir }).stdout.trim();
+  const deny = (reason) => { const result = JSON.parse(call()).hookSpecificOutput; assert.equal(result.permissionDecision, 'deny'); assert.match(result.permissionDecisionReason, reason); };
+  fs.writeFileSync(transcript, [entry('user', 'first task'), plan].join('\n'));
+  assert.equal(call(), '');
+  fs.appendFileSync(transcript, '\n' + entry('assistant', 'x'.repeat(150000)));
+  assert.equal(call(), '');
+  fs.appendFileSync(transcript, '\n' + entry('user', '<paseo-system>notification</paseo-system>'));
+  assert.equal(call(), '');
+  fs.appendFileSync(transcript, '\n' + entry('user', 'new task'));
+  deny(/TIER-PLAN/);
+  fs.appendFileSync(transcript, '\n' + entry('assistant', 'TIER-PLAN: tier=3 files=src/a'));
+  deny(/tier=3/);
+  fs.appendFileSync(transcript, '\n' + entry('assistant', 'TIER-PLAN: tier=1 files=none'));
+  deny(/files/);
+  fs.appendFileSync(transcript, '\n' + plan + '\n' + entry('user', [{ type: 'tool_result', content: 'ok' }]));
+  assert.equal(call(), '');
+}));
+
+test('tier-write-hook: commands, prose and fenced examples do not replace a real plan', () => withState((dir) => {
+  const root = makeRepo();
+  const transcript = path.join(dir, 'commands.jsonl');
+  const entry = (type, content) => JSON.stringify({ type, message: { content } });
+  const payload = { session_id: 'commands', transcript_path: transcript, tool_name: 'Edit', tool_input: { file_path: path.join(root, 'src/a') } };
+  const call = () => runGuardHook(payload, { PIPELINE_TIER_GATE_STATE: dir }).stdout.trim();
+  fs.writeFileSync(transcript, [entry('user', 'implement task'), entry('assistant', 'TIER-PLAN: tier=1 files=src/a'), entry('user', '<command-name>/status</command-name>\n<local-command-stdout>ok</local-command-stdout>'), entry('user', '/status'), entry('assistant', 'Example: TIER-PLAN: tier=2 files=src/a\n```text\nTIER-PLAN: tier=2 files=src/a\n```\n~~~\nTIER-PLAN: tier=3 files=src/a\n~~~\nExample in prose: TIER-PLAN: this is an example')].join('\n'));
+  assert.equal(call(), '');
+  fs.appendFileSync(transcript, '\n' + entry('assistant', 'TIER-PLAN: tier=2 files=src/a is only an example'));
+  assert.match(JSON.parse(call()).hookSpecificOutput.permissionDecisionReason, /TIER-PLAN 无效/);
+  fs.appendFileSync(transcript, '\n' + entry('user', 'different task'));
+  fs.appendFileSync(transcript, '\n' + entry('assistant', 'Example:\n```\nTIER-PLAN: tier=1 files=src/a\n```'));
+  assert.equal(JSON.parse(call()).hookSpecificOutput.permissionDecision, 'deny');
+  fs.appendFileSync(transcript, '\n' + entry('assistant', 'TIER-PLAN: tier=3 files=src/a'));
+  assert.match(JSON.parse(call()).hookSpecificOutput.permissionDecisionReason, /tier=3/);
+  fs.appendFileSync(transcript, '\n' + entry('assistant', 'TIER-PLAN: tier=1 files=src/a'));
+  assert.equal(call(), '');
+  fs.appendFileSync(transcript, '\n' + entry('user', '/some-skill new task'));
+  assert.equal(JSON.parse(call()).hookSpecificOutput.permissionDecision, 'deny');
+}));
+
+test('slash skill transcript resets plan; only known argument-free read-only commands retain it', () => withState((dir) => {
+  const root = makeRepo();
+  const transcript = path.join(dir, 'slash.jsonl');
+  const entry = (type, content) => JSON.stringify({ type, message: { role: type, content: [{ type: 'text', text: content }] } });
+  const plan = entry('assistant', 'TIER-PLAN: tier=1 files=src/a scope=src');
+  const payload = { session_id: 'slash', transcript_path: transcript, tool_name: 'Edit', tool_input: { file_path: path.join(root, 'src/a') } };
+  const call = () => runGuardHook(payload, { PIPELINE_TIER_GATE_STATE: dir }).stdout.trim();
+  const skill = '<command-message>implement</command-message><command-name>/implement</command-name><command-args>新任务</command-args>';
+  fs.writeFileSync(transcript, [entry('user', 'task'), plan, entry('user', skill)].join('\n'));
+  assert.equal(JSON.parse(call()).hookSpecificOutput.permissionDecision, 'deny');
+  for (const event of [
+    '<command-name>/status</command-name>\n<local-command-stdout>ok</local-command-stdout>',
+    '<command-name>/status</command-name><command-args></command-args>',
+    '<command-message>status</command-message><command-name>/status</command-name><command-args></command-args>',
+    '/status',
+  ]) {
+    fs.writeFileSync(transcript, [entry('user', 'task'), plan, entry('user', event)].join('\n'));
+    assert.equal(call(), '', event);
+  }
+  for (const event of ['<command-name>/status</command-name><command-args>do work</command-args>', '<command-message>other</command-message><command-name>/status</command-name><command-args></command-args>', '<command-name>/mystery</command-name>', '<command-message>unknown</command-message>', '/status do work', '/config', '<command-name>/status</command-name>new task']) {
+    fs.writeFileSync(transcript, [entry('user', 'task'), plan, entry('user', event)].join('\n'));
+    assert.equal(JSON.parse(call()).hookSpecificOutput.permissionDecision, 'deny', event);
+  }
+}));
+
+test('malformed declaration after files is invalid rather than missing or inherited', () => withState((dir) => {
+  const file = path.join(dir, 'invalid.jsonl');
+  const entry = (text) => JSON.stringify({ type: 'assistant', message: { content: text } });
+  fs.writeFileSync(file, [entry('TIER-PLAN: tier=1 files=src/a'), entry('TIER-PLAN: tier=1 files=src/a unmarked prose')].join('\n'));
+  assert.equal(readDeclaredPlanStatus(file).status, 'invalid');
+  fs.writeFileSync(file, entry('TIER-PLAN: tier=1 files=src/a unmarked prose'));
+  assert.equal(readDeclaredPlanStatus(file).status, 'invalid');
+}));
+
+test('real built-in command shape keeps the plan; skills and unknown arguments reset it', () => withState((dir) => {
+  const file = path.join(dir, 'ui.jsonl');
+  const entry = (type, text) => JSON.stringify({ type, message: { role: type, content: [{ type: 'text', text }] } });
+  const base = [entry('user', 'task'), entry('assistant', 'TIER-PLAN: tier=1 files=src/a')];
+  // Observed in real transcripts: message tag equals the command name, output is a later entry.
+  for (const [name, arg] of [['model', 'opus'], ['model', ''], ['compact', ''], ['theme', 'dark'], ['config', ''], ['status', '']]) {
+    const real = `<command-message>${name}</command-message>\n<command-name>/${name}</command-name>\n<command-args>${arg}</command-args>`;
+    fs.writeFileSync(file, [...base, entry('user', real), entry('user', '<local-command-stdout>ok</local-command-stdout>')].join('\n'));
+    assert.equal(readDeclaredPlanStatus(file).status, 'found', name);
+  }
+  for (const reset of [
+    '<command-message>implement</command-message><command-name>/implement</command-name><command-args>新任务</command-args>',
+    '<command-message>compact</command-message><command-name>/compact</command-name><command-args>implement task</command-args>',
+    '<command-message>theme</command-message><command-name>/theme</command-name><command-args>make it red</command-args>',
+    '<command-message>model</command-message><command-name>/model</command-name><command-args>two words</command-args>',
+    '/theme dark',
+  ]) {
+    fs.writeFileSync(file, [...base, entry('user', reset)].join('\n'));
+    assert.equal(readDeclaredPlanStatus(file).status, 'missing', reset);
+  }
+}));
+
+test('sidechain traffic neither resets nor replaces the main plan', () => withState((dir) => {
+  const file = path.join(dir, 'side.jsonl');
+  const line = (type, text, extra = {}) => JSON.stringify({ type, ...extra, message: { content: text } });
+  fs.writeFileSync(file, [
+    line('user', 'task'), line('assistant', 'TIER-PLAN: tier=1 files=src/a'),
+    line('user', 'subagent prompt', { isSidechain: true }),
+    line('assistant', 'TIER-PLAN: tier=2 files=src/x', { isSidechain: true }),
+  ].join('\n'));
+  const result = readDeclaredPlanStatus(file);
+  assert.equal(result.status, 'found');
+  assert.deepEqual(result.plan, { tier: 1, files: ['src/a'] });
+}));
+
+test('fences: indented code, unclosed examples and info-string lines never become declarations', () => withState((dir) => {
+  const file = path.join(dir, 'fence.jsonl');
+  const entry = (text) => JSON.stringify({ type: 'assistant', message: { content: text } });
+  const real = 'TIER-PLAN: tier=1 files=src/a';
+  const cases = [
+    [`${real}`, 'Example:\n    ```text\n    TIER-PLAN: tier=2 files=src/x\n    ```'],
+    [`${real}`, '    TIER-PLAN: tier=2 files=src/x'],
+    [`${real}`, 'Example:\n```\n```text\nTIER-PLAN: tier=2 files=src/x\n```\n```'],
+  ];
+  for (const [declared, example] of cases) {
+    fs.writeFileSync(file, [entry(declared), entry(example)].join('\n'));
+    assert.deepEqual(readDeclaredPlanStatus(file).plan, { tier: 1, files: ['src/a'] }, example);
+  }
+  // An unclosed fence in an earlier message must not swallow a later real declaration.
+  for (const open of ['```', '~~~']) {
+    fs.writeFileSync(file, [entry(`Example not closed:\n${open}\nTIER-PLAN: tier=1 files=src/example`), entry('TIER-PLAN: tier=1 files=src/real')].join('\n'));
+    assert.deepEqual(readDeclaredPlanStatus(file).plan, { tier: 1, files: ['src/real'] }, open);
+  }
+  // A closer may be indented.
+  fs.writeFileSync(file, entry('```\nTIER-PLAN: tier=2 files=src/x\n    ```\nTIER-PLAN: tier=1 files=src/a'));
+  assert.deepEqual(readDeclaredPlanStatus(file).plan, { tier: 1, files: ['src/a'] });
+}));
+
+test('file list: duplicates and ./ collapse; quotes, absolute paths and scope after a comma are invalid', () => withState((dir) => {
+  const file = path.join(dir, 'files.jsonl');
+  const entry = (text) => JSON.stringify({ type: 'assistant', message: { content: text } });
+  const parse = (text) => { fs.writeFileSync(file, entry(text)); return readDeclaredPlanStatus(file); };
+  assert.deepEqual(parse('TIER-PLAN: tier=1 files=src/a, src/a, ./src/a, src/b scope=src').plan, { tier: 1, files: ['src/a', 'src/b'] });
+  for (const bad of ['files=src/a,scope=src', 'files="src/a.ts","src/b.ts"', 'files=src/a.ts,"src/b.ts"', 'files=/abs/repo/packages/web/a.ts,/abs/repo/apps/api/b.ts']) {
+    assert.equal(parse(`TIER-PLAN: tier=1 ${bad}`).status, 'invalid', bad);
+  }
+}));
+
+test('malformed standalone declarations invalidate earlier plan, fenced examples do not', () => withState((dir) => {
+  const file = path.join(dir, 'typo.jsonl');
+  const entry = (text) => JSON.stringify({ type: 'assistant', message: { content: text } });
+  for (const line of ['TIER-PLAN: tiers=1 files=src/a', 'TIER-PLAN: tier = 1 files=src/a']) {
+    fs.writeFileSync(file, [entry('TIER-PLAN: tier=1 files=src/a'), entry(line)].join('\n'));
+    assert.equal(readDeclaredPlanStatus(file).status, 'invalid', line);
+    fs.writeFileSync(file, [entry('TIER-PLAN: tier=1 files=src/a'), entry(`\`\`\`text\n${line}\n\`\`\``)].join('\n'));
+    assert.equal(readDeclaredPlanStatus(file).status, 'found', line);
+  }
+}));
+
+test('tier gate does not read declarations for exempt paths', () => withState(() => {
+  const root = makeRepo();
+  const unavailable = () => { throw new Error('must not read transcript'); };
+  for (const target of [path.join(root, 'openspec/x'), path.join(root, '.superpowers/x')]) {
+    assert.equal(assessTierGate({ target, sessionId: 'lazy', loadDeclaration: unavailable }).verdict, 'allow');
+  }
+  const wt = `${root}-lazy-wt`;
+  sh(root, 'worktree', 'add', '-q', '-b', 'task/lazy', wt);
+  assert.equal(assessTierGate({ target: path.join(wt, 'src/a'), sessionId: 'lazy', loadDeclaration: unavailable }).verdict, 'allow');
+  let called = false;
+  const verdict = assessTierGate({ target: path.join(root, 'src/a'), sessionId: 'lazy', loadDeclaration: () => { called = true; return { status: 'missing' }; } });
+  assert.equal(called, true);
+  assert.equal(verdict.verdict, 'deny');
+}));
+
 test('tier-write-hook 进程：非写入工具与坏输入不干预', () => {
   assert.equal(runGuardHook({ session_id: 's', tool_name: 'Read', tool_input: { file_path: '/x' } }).stdout.trim(), '');
   const bad = spawnSync('node', [GUARD_HOOK], { input: 'not json', encoding: 'utf8' });
   assert.equal(bad.status, 0);
   assert.equal(bad.stdout.trim(), '');
 });
+
+// ---- 开工前声明（TIER-PLAN）----
+
+test('readDeclaredPlan：取最后一次声明，缺省与坏格式返回 null', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tier-transcript-'));
+  const file = path.join(dir, 't.jsonl');
+  fs.writeFileSync(file, [
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'TIER-PLAN: tier=1 files=src/a.ts scope=src' }] } }),
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: '范围变了\nTIER-PLAN: tier=1 files=src/a.ts,src/b.ts scope=src\n' }] } }),
+  ].join('\n'));
+  assert.deepEqual(readDeclaredPlan(file), { tier: 1, files: ['src/a.ts', 'src/b.ts'] });
+  assert.equal(readDeclaredPlan(path.join(dir, 'missing.jsonl')), null);
+  fs.writeFileSync(file, 'no declaration here');
+  assert.equal(readDeclaredPlan(file), null);
+  fs.writeFileSync(file, JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'TIER-PLAN: tier=1 files=none scope=src' }] } }));
+  assert.deepEqual(readDeclaredPlan(file), { tier: 1, files: [] });
+});
+
+test('plan tolerates spaced lists and trailing notes; bash echoes are not human boundaries', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tier-plan-'));
+  const file = path.join(dir, 'transcript.jsonl');
+  const entry = (type, content) => JSON.stringify({ type, message: { content } });
+  const plan = entry('assistant', 'TIER-PLAN: tier=1 files=src/a, src/b scope=src # narrow fix');
+  for (const declaration of ['TIER-PLAN: tier=1 files=src/a, src/b scope=src', 'TIER-PLAN: tier=1 files=src/a,src/b scope=src narrow fix', 'TIER-PLAN: tier=1 files=src/a,src/b # narrow fix']) {
+    fs.writeFileSync(file, [entry('user', 'task'), entry('assistant', declaration)].join('\n'));
+    assert.deepEqual(readDeclaredPlan(file), { tier: 1, files: ['src/a', 'src/b'] });
+  }
+  fs.writeFileSync(file, [entry('user', 'task'), plan, entry('user', '<bash-input>pwd</bash-input>'), entry('user', '<bash-stdout>/tmp</bash-stdout>')].join('\n'));
+  assert.deepEqual(readDeclaredPlan(file), { tier: 1, files: ['src/a', 'src/b'] });
+  fs.appendFileSync(file, '\n' + entry('user', 'continue'));
+  assert.equal(readDeclaredPlan(file), null);
+});
+
+test('readDeclaredPlan：只认 assistant 文本，提醒示例与工具输出不算声明', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tier-transcript-'));
+  const file = path.join(dir, 't.jsonl');
+  const reminder = '[分级提醒] 动手改任何文件之前……\nTIER-PLAN: tier=1 files=src/a.ts,src/b.ts scope=src';
+  fs.writeFileSync(file, [
+    JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: reminder }] } }),
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'TIER-PLAN: tier=1 files=src/c.ts scope=src' }] } }),
+  ].join('\n'));
+  assert.deepEqual(readDeclaredPlan(file), { tier: 1, files: ['src/c.ts'] });
+  // 只有用户侧 / 提醒里的示例：没有声明。
+  fs.writeFileSync(file, JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: reminder }] } }));
+  assert.equal(readDeclaredPlan(file), null);
+});
+
+test('开工前声明：计划超过 Tier 1 上限 → 首次写入就 deny', () => withState(() => {
+  const root = makeRepo();
+  const declared = { tier: 1, files: ['src/a', 'src/b', 'src/c', 'src/d'] };
+  const v = assessTierGate({ target: path.join(root, 'src', 'a'), sessionId: 's1', declared });
+  assert.equal(v.verdict, 'deny');
+  assert.match(v.reason, /4 个文件/);
+  assert.match(v.reason, /\/paseo-handoff/);
+  // 拒绝的写入不占额度，也不会被记进账本。
+  assert.equal(assessTierGate({ target: path.join(root, 'src', 'a'), sessionId: 's1' }).verdict, 'allow');
+}));
+
+test('开工前声明：跨 2 个作用域 → 首次写入就 deny', () => withState(() => {
+  const root = makeRepo();
+  const declared = { tier: 1, files: ['packages/server/a.ts', 'packages/web/b.tsx'] };
+  const v = assessTierGate({ target: path.join(root, 'packages', 'server', 'a.ts'), sessionId: 's1', declared });
+  assert.equal(v.verdict, 'deny');
+  assert.match(v.reason, /2 个作用域/);
+  assert.match(v.reason, /packages\/server/);
+  assert.match(v.reason, /packages\/web/);
+}));
+
+test('开工前声明：Tier 2 在主 checkout 原地写 → deny，指向 handoff/worktree', () => withState(() => {
+  const root = makeRepo();
+  const declared = { tier: 2, files: ['src/a'] };
+  const v = assessTierGate({ target: path.join(root, 'src', 'a'), sessionId: 's1', declared });
+  assert.equal(v.verdict, 'deny');
+  assert.match(v.reason, /Tier 2/);
+  assert.match(v.reason, /worktree/);
+}));
+
+test('开工前声明：合规计划放行，后续仍按已写文件计数', () => withState(() => {
+  const root = makeRepo();
+  const declared = { tier: 1, files: ['src/a', 'src/b', 'src/c'] };
+  assert.equal(assessTierGate({ target: path.join(root, 'src', 'a'), sessionId: 's1', declared }).verdict, 'allow');
+  assert.equal(write(root, 'b').verdict, 'allow');
+  assert.equal(write(root, 'c').verdict, 'allow');
+  assert.equal(write(root, 'd').verdict, 'ask');
+}));
+
+test('开工前声明：openspec/ 与空声明不参与 Tier 1 计数', () => withState(() => {
+  const root = makeRepo();
+  const declared = { tier: 1, files: ['openspec/changes/x/proposal.md', 'openspec/changes/x/tasks.md'] };
+  assert.equal(assessTierGate({ target: path.join(root, 'src', 'a'), sessionId: 's1', declared }).verdict, 'allow');
+}));
 
 // ---- 提醒 hook ----
 
@@ -277,6 +592,8 @@ test('tier-reminder-hook 进程：非斜杠消息输出 additionalContext，斜�
   assert.match(REMINDER, /\/paseo-handoff/);
   assert.match(REMINDER, /\/paseo-pipeline/);
   assert.match(REMINDER, /Bash/);
+  assert.match(REMINDER, /TIER-PLAN: tier=1 files=/);
+  assert.match(REMINDER, /≤3 个业务文件/);
   assert.equal(run(JSON.stringify({ prompt: '/tdd' })).stdout.trim(), '');
   assert.equal(run('garbage').stdout.trim(), '');
   assert.equal(run(JSON.stringify({ prompt: '执行' }), { PIPELINE_TIER_REMINDER: 'off' }).stdout.trim(), '');
@@ -386,13 +703,13 @@ test('Stop 核对：openspec/ 不计；经 ask 流程用户确认过的文件不
   assert.equal(stop(root).verdict, 'ok');
 }));
 
-test('Stop 核对：worktree、功能分支、无快照、gate off 都放行', () => withState(() => {
+test('Stop 核对：worktree、无快照、gate off 放行；主 checkout 功能分支仍核对', () => withState(() => {
   const root = makeRepo();
   assert.equal(stop(root).verdict, 'ok'); // 无快照
   sh(root, 'checkout', '-q', '-b', 'feat/x');
   snap(root);
   bashWrite(root, ['a', 'b', 'c', 'd', 'e']);
-  assert.equal(stop(root).verdict, 'ok');
+  assert.equal(stop(root).verdict, 'block');
   sh(root, 'checkout', '-q', 'main');
   snap(root, 'st2');
   bashWrite(root, ['f', 'g', 'h', 'i', 'j']);
@@ -462,20 +779,53 @@ test('Stop 核对：不将 Git 脏文件并回 seg.files，PreToolUse 额度不�
   assert.equal(write(root, 'extra', 'clean').verdict, 'ask');
 }));
 
-test('Stop 核对：并发会话产物自动排除，不误拦当前会话', () => withState(() => {
+test('Stop 核对：跨轮次用 Bash 小步写入，累计超限仍被 block（累计在 stopFiles，不在 files）', () => withState((dir) => {
   const root = makeRepo();
-  // 会话 s1 写入 4 个业务文件
+  snap(root, 'multi');
+  bashWrite(root, ['a', 'b']);
+  assert.equal(stop(root, 'multi').verdict, 'ok');
+  snap(root, 'multi');
+  bashWrite(root, ['c', 'd']);
+  const blocked = stop(root, 'multi');
+  assert.equal(blocked.verdict, 'block');
+  assert.match(blocked.reason, /累计/);
+  assert.match(blocked.reason, /src\/a/);
+  // 累计只进 Stop 私有字段；PreToolUse 的 files 保持为空
+  const ledger = JSON.parse(fs.readFileSync(path.join(dir, 'multi.json'), 'utf8'));
+  const entry = Object.values(ledger)[0];
+  assert.deepEqual(entry.files, []);
+  assert.equal(entry.stopFiles.length, 4);
+  // 用户答复后没有新改动：同一批文件不再重复打断。
+  snap(root, 'multi');
+  assert.equal(stop(root, 'multi').verdict, 'ok');
+}));
+
+test('Stop 核对：PreToolUse 写入不抹掉 Stop 的 stopFiles 累计', () => withState(() => {
+  const root = makeRepo();
+  snap(root, 'keep');
+  bashWrite(root, ['a', 'b']);
+  assert.equal(stop(root, 'keep').verdict, 'ok');
+  assert.equal(write(root, 'x', 'keep').verdict, 'allow'); // 写回账本时必须带上 stopFiles
+  snap(root, 'keep');
+  bashWrite(root, ['c']);
+  assert.equal(stop(root, 'keep').verdict, 'block'); // a,b,c + x = 4
+}));
+
+test('Stop 核对：并发会话已认领的文件不算进本会话', () => withState(() => {
+  const root = makeRepo();
+  // s1 经 PreToolUse 认领 p1-p3（计入 files）与 p4（ask，进 asked）
   for (const n of ['p1', 'p2', 'p3']) write(root, n, 's1');
   assert.equal(write(root, 'p4', 's1').verdict, 'ask');
-  // 工作树真实落盘
-  bashWrite(root, ['p1', 'p2', 'p3', 'p4']);
-
-  // 并发会话 s2 在同一工作树运行，自身未改动文件
+  // s2 先于落盘拍快照；随后工作树出现 p1-p4（并发 agent 的产物）
   snap(root, 's2');
-  // s2 Stop 核对时，p1-p4 已由 s1 认领，不应将 s1 的产物算进 s2
+  bashWrite(root, ['p1', 'p2', 'p3', 'p4']);
   const v = stop(root, 's2');
   assert.equal(v.verdict, 'ok');
   assert.deepEqual(v.files, []);
+  // 对照：没有任何会话认领时，同样的 4 个文件会被 block
+  snap(root, 's3');
+  bashWrite(root, ['q1', 'q2', 'q3', 'q4']);
+  assert.equal(stop(root, 's3').verdict, 'block');
 }));
 
 test('连续多轮原地改：第 3 轮 Stop 汇报一次，用户回话后重新观察', () => withState(() => {
@@ -504,6 +854,18 @@ test('连续多轮原地改：第 3 轮 Stop 汇报一次，用户回话后重�
     bashWrite(root, ['a']);
     assert.equal(stop(root, 'churn').verdict, round === 2 ? 'ok' : 'block', `新一轮第 ${round} 轮`);
   }
+}));
+
+test('逐轮新增文件的正常增量工作不触发 churn 汇报', () => withState(() => {
+  const root = makeRepo();
+  process.env.PIPELINE_TIER_GATE_LIMIT = '20';
+  try {
+    for (let round = 1; round <= 5; round += 1) {
+      snap(root, 'growth');
+      bashWrite(root, [`g${round}`]);
+      assert.equal(stop(root, 'growth').verdict, 'ok', `第 ${round} 轮不该打断`);
+    }
+  } finally { delete process.env.PIPELINE_TIER_GATE_LIMIT; }
 }));
 
 test('系统通知轮：刷新快照，但不重置 churn 计数', () => withState((dir) => {
@@ -573,3 +935,49 @@ test('hook 异常写入 errors.log，而不是静默吞掉', () => withState((di
   assert.match(log, /probe/);
   assert.match(log, /boom/);
 }));
+
+const TOOL_GUARD = path.join(here, '..', 'hooks', 'tool-guard-hook.mjs');
+function toolGuard(payload) {
+  const result = spawnSync('node', [TOOL_GUARD], { input: JSON.stringify(payload), encoding: 'utf8', env: cleanEnv() });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout ? JSON.parse(result.stdout).hookSpecificOutput : {};
+}
+
+test('tool guard reminds only for CLI dispatch without a wait', () => {
+  const bash = (command) => toolGuard({ tool_name: 'Bash', tool_input: { command } });
+  assert.match(bash('paseo run x').additionalContext, /no completion callback/);
+  for (const command of ['paseo run --wait x', 'paseo ls', 'paseo send x; paseo wait x --timeout 540']) {
+    assert.deepEqual(bash(command), {});
+  }
+});
+
+test('tool guard rejects invalid local server IDs', () => {
+  for (const serverId of ['self', 'local', ' LOCALHOST ', '']) {
+    assert.equal(toolGuard({ tool_name: 'mcp__paseo__list_agents', tool_input: { serverId } }).permissionDecision, 'deny');
+  }
+  for (const tool_input of [{ serverId: 'srv_AdzDXaf59gwG' }, {}]) {
+    assert.deepEqual(toolGuard({ tool_name: 'mcp__paseo__list_agents', tool_input }), {});
+  }
+});
+
+test('tool guard breaks consecutive identical MCP failures', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tool-guard-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const transcript_path = path.join(dir, 'transcript.jsonl');
+  const name = 'mcp__example__call';
+  const pair = (id, input, is_error) => [
+    { message: { content: [{ type: 'tool_use', id, name, input }] } },
+    { message: { content: [{ type: 'tool_result', tool_use_id: id, is_error }] } },
+  ];
+  const run = (records, input = { a: 1, nested: { x: 1, y: 2 } }) => {
+    fs.writeFileSync(transcript_path, records.map(JSON.stringify).join('\n'));
+    return toolGuard({ tool_name: name, tool_input: input, transcript_path });
+  };
+  const input = { nested: { y: 2, x: 1 }, a: 1 };
+  const failures = [1, 2, 3].flatMap((id) => pair(String(id), input, true));
+  assert.equal(run(failures).permissionDecision, 'deny');
+  assert.deepEqual(run(failures, { a: 2 }), {});
+  assert.deepEqual(run([...failures, ...pair('4', input, false)]), {});
+  assert.deepEqual(run([...failures, ...pair('4', { a: 2 }, true)]), {});
+  assert.deepEqual(toolGuard({ tool_name: name, tool_input: input, transcript_path: path.join(dir, 'missing') }), {});
+});

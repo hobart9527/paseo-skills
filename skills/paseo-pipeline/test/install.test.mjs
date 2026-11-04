@@ -9,7 +9,7 @@ test('writes PIPELINE_HOME idempotently', (context) => {
   const env = { ...process.env, HOME: home };
   fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
   fs.writeFileSync(path.join(home, '.claude/settings.json'), JSON.stringify({ hooks: {
-    PreToolUse: [{ hooks: [{ command: `node ${path.dirname(install)}/hooks/tier-write-hook.mjs` }] }],
+    PreToolUse: [{ hooks: [{ command: `node ${path.dirname(install)}/hooks/tier-write-hook.mjs` }, { command: `node ${path.dirname(install)}/hooks/tool-guard-hook.mjs` }] }],
     UserPromptSubmit: [{ hooks: [{ command: `node ${path.dirname(install)}/hooks/tier-reminder-hook.mjs` }] }],
     SessionStart: [{ hooks: [{ command: `node ${path.dirname(install)}/hooks/tier-session-hook.mjs` }] }],
     Stop: [{ hooks: [{ command: `node ${path.dirname(install)}/hooks/tier-stop-hook.mjs` }] }],

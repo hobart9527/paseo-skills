@@ -3,13 +3,13 @@
 # 派生自 OpenSpec 1.8.0 内置的 `spec-driven`（`@fission-ai/openspec/schemas/spec-driven/schema.yaml`）。OpenSpec schema 是**整份替换**，
 # 不是叠加，所以这里必须连 proposal/specs/design 一起保留。
 #
-# 与上游的差异（只有三处，其余逐字相同）：
+# 与上游的差异（只有五处，其余逐字相同）：
 #   1. tasks 的 instruction 与 templates/tasks.md 改成 pipeline 可解析的任务格式。
 #      上游只要求 `- [ ] X.Y 描述`，parseTasks 需要 `T-xx` 编号 + 元数据子字段；
 #      这个差距实测导致「validate --strict 通过、parseTasks 解析出 0 个任务」。
 #   2. specs 的 instruction 追加 SCEN- 编号要求（freeze-check 按编号对账）。
 #   3. 新增 acceptance 产物（冻结的业务验收矩阵，人类 CP-2 验收消费）。
-#   4. 新增 digest（chanpin 的代码库全景）与 review（hanlin 的 R0 签署）产物，
+#   4. 新增 digest（gongbu 的代码库全景）与 review（hanlin 的 R0 签署）产物，
 #      让 `openspec status` 看到 author.md / freeze-check 实际要求的全部文件。
 #   5. design 额外 requires specs：流程是 gaogong 读已提交的 spec 再写设计。
 #
@@ -158,7 +158,7 @@ artifacts:
     description: Codebase digest the design and task authors rely on
     template: digest.md
     instruction: |
-      Written by `chanpin` (templates/author.md Mode SPEC) alongside the spec.
+      Written by `gongbu` (templates/author.md) alongside the spec.
       Record, with `path:line` evidence: relevant modules, exported symbols, call sites,
       existing tests and fixtures, and baseline known failures. The design's Impact Inventory
       and every task's Write scope are checked against this, so claims without evidence
@@ -226,8 +226,14 @@ artifacts:
 
       - [ ] 1.1 T-01 <one-line goal>
         - Depends on: <T-xx, T-yy | none>
+        - Uses: <T-xx, T-yy | none>
         - Write scope: <repo-relative path>[, <path>]
-        - Review: <strict | standard | mechanical>
+        - Reads: <repo-relative path>[, <path>]
+        - Est: <S | M | L>
+        - Kind: <skeleton | none>
+        - Interface: <repo-relative path>[#<symbol>]
+        - Review: <strict | standard | mechanical | deferred>
+        - Risk-surface: <persistence | security | other risk>[, ...]
         - Verify with: <executable command>
         - Scenarios: <SCEN-xxx-yy>[, ...]
       ```
@@ -240,17 +246,37 @@ artifacts:
         paths, no `..` escaping the repo root.
       - `Depends on` must name task IDs that exist in this file; no self-dependency,
         no cycles.
-      - `Review` is one of `strict` / `standard` / `mechanical`; omitting it means
-        `standard`.
-      - `Verify with` must be an executable command. For every non-sink task it must
-        name a test/spec path inside that task's `Write scope`; only one sink task may
-        run the full suite. Write the full invocation when the command needs env vars:
+      - `Uses` is a consumer edge: dispatch starts once the target's frozen interface
+        (and its skeleton ancestors) exist, while merge still waits for the target's
+        Done. A `Uses` target must declare `Interface:`; a `Uses` pair with overlapping
+        Write scopes also needs a real `Depends on` edge.
+      - `Reads` lists paths a Verify leg may execute against without writing them. It
+        never joins scope-conflict checks and never authorises source edits.
+      - `Est` is `S`, `M` or `L` (default `M`). `Kind: skeleton` marks the interface-stub
+        task and requires `Review: mechanical`; every `Interface:` path must sit inside
+        some skeleton's Write scope.
+      - `Review` is one of `strict` / `standard` / `mechanical` / `deferred`; omitting it
+        means `standard`. These labels do not select per-task review; all tasks receive
+        the independent FINAL integrated review. For compatibility, freeze-check rejects
+        `deferred` on sinks and on tasks declaring `persistence` or `security` Risk-surface.
+        As author guidance, mark material persistence or security risk `strict` for FINAL
+        attention. Freeze-check does not require `strict` for all such risks or validate
+        label completeness. `mechanical` is not an exemption from semantic review.
+      - `Verify with` must be runnable. Freeze-check checks command structure, not whether
+        it executes or proves the claimed behavior. Each non-sink Verify leg, including
+        for `mechanical`, must name a test/spec path within `Write scope` or `Reads`.
+        A `mechanical` sink may use a non-test check; other command checks still apply.
+        Full-suite legs are reserved for sinks, with at most one per sink. Write the full
+        invocation when the command needs env vars:
         PYTHONPATH=runtime python3 -m pytest tests/x_test.py.
       - `Scenarios` lists the `SCEN-*` ids from the spec delta that this task carries.
         Every id must exist in the spec, and every declared id must be claimed by at
-        least one task.
-      - When a task is complete, add `- Done: source=<7-hex> review=<tag>` under it.
-        The tag is `pass(<reviewer>@<tip7>/<base7>)` or `pass(mechanical@<tip7>/<base7>)`.
+        least one task. A `mechanical` task may omit a scenario and have a test-only
+        Write scope; these structural exemptions do not establish safety.
+      - The merge gate records `- Done: source=<tip7> review=worker` when a task
+        completes. `worker` records execution, not a review verdict. Historical Done
+        tags such as `pass(<reviewer>@<tip>/<base>)` remain readable; do not rewrite
+        frozen history to this format.
 
       Guidelines:
       - Group related tasks under ## numbered headings
@@ -293,14 +319,17 @@ artifacts:
       - **Tasks**: comma-separated task ids from tasks.md that carry this row.
       - **Verify**: the command or manual procedure that exercises Entry.
       - **Required**: `yes` blocks delivery; `no` is recorded but does not block.
-      - **Result**: leave `PENDING` at freeze time. Fill `PASS` during closeout.
-      - **Evidence**: leave `pending` at freeze time. Fill the evidence file path plus
-        the acceptance SHA once verified.
+      - **Result**: leave `PENDING` in the frozen matrix. Record closeout results externally.
+      - **Evidence**: leave `pending` in the frozen matrix. Record output and the full
+        source SHA in the external execution record.
 
-      Do not write `PASS` before anything ran: the matrix is filled in during
-      closeout and the recorded SHA must match the integration HEAD being accepted.
-      External dependencies that cannot be reached at freeze time are marked
-      `BLOCKED` in Result with the reason - a mock passing is not business acceptance.
+      The frozen matrix is the sole authority for requirements; the external record
+      does not replace it or authorize CP-2. Do not claim `PASS` before execution.
+      The recorded SHA must match the clean integration HEAD being accepted. Record
+      unavailable external dependencies as blocked, with the reason, in separate
+      operator notes without modifying the execution record. The runner reports failed
+      commands as FAIL; neither FAIL nor BLOCKED satisfies CP-2. A mock passing is
+      not business acceptance.
     requires:
       - specs
 

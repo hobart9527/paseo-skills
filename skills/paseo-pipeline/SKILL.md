@@ -1,100 +1,101 @@
 ---
 name: paseo-pipeline
-description: SDD concurrent delivery pipeline for changes with real DAG concurrency. OpenSpec owns contracts; Paseo owns agents/workspaces; git owns state.
+description: SDD concurrent delivery pipeline for changes with real DAG concurrency. OpenSpec owns contracts; Paseo owns agents/workspaces; git owns state. Scripts schedule; workers close tasks; two heterogeneous gates guard the ends.
 user-invocable: true
 ---
 
 # Paseo Pipeline
 
 Use only when the frozen DAG has `maxWidth >= 2` and `tasks >= 4`; otherwise Tier 2 `/paseo-handoff`. Never split to qualify.
+`maxWidth` is the largest dispatch-dependency wave, a routing heuristic, not exact graph concurrency. Waves do not constrain dispatch. Weighted estimates use planning weights, not observed durations.
+An invalid task graph has no routing estimate: `freeze-check` emits `[ROUTE] invalid` and JSON `route: null`, not `pipeline` or `handoff`. Fix graph errors before routing. Other contract blocks still prevent freeze even when a graph route is shown.
 
 ## Principles
-1. **Vertical slices.** Behavior, wiring, affected fixtures, and tests belong together. No fixture-only/wiring-only tasks. Wave 0 only for a genuinely shared contract and actual consumers.
-2. **Narrow Verify.** Every non-sink task names a scope-local test/spec command. Full suite runs only at the unique sink and final acceptance.
-3. **Frontier scheduling.** Dispatch as soon as dependencies are Done and scopes do not overlap; do not wait for wave barriers.
-4. **TDD role separation.** `ceshi` authors Red tests before implementation; implementer cannot alter those tests. Mechanical tasks may skip TDD/review.
-5. **Git is state; Paseo is scheduler.** No secondary ledger, lease, lock, or custom agent runner.
-6. **One review per artifact/stage.** R0 reviews contract package once; tasks get R1/R2 only as needed; integrated final review once plus one fix-diff recheck.
-7. **Human gates.** CP-1 freezes approved contract. CP-2 confirms merge to main. No push/destructive cleanup without explicit approval.
+1. **Concurrency is the engine.** Ready tasks run in separate worktrees. There is no Lead, no per-task reviewer, and no wave barrier.
+2. **Deterministic scheduling, not an LLM.** `pipeline-run.mjs` computes the frontier, capacity, and merge order. The main session executes its list; it never recomputes the DAG by hand.
+3. **One worker per task, closed loop.** A worker writes tests and implementation, runs the frozen narrow Verify, commits, and returns. Either order is allowed.
+4. **Vertical slices.** Behavior, wiring, affected fixtures, and tests belong together. No fixture-only/wiring-only tasks. Wave 0 only for a genuinely shared contract and actual consumers.
+5. **Narrow Verify.** Every non-sink task names a scope-local test/spec command. Full suite runs only at the unique sink and final acceptance.
+6. **Heterogeneous gates at the ends.** R0 reviews the contract before CP-1; one independent FINAL review covers the integrated result. The middle is mechanical: Verify, scope, dependencies, drift.
+7. **Git is state; Paseo is transport.** Shared Git refs record interrupted or failed merge tips. No coordination service, lease, lock, or custom agent runner.
+8. **Human gates.** CP-1 freezes the approved contract. CP-2 confirms merge to main. No push/destructive cleanup without explicit approval.
 
 ## Roles and briefs
-Before every `create_agent`, copy the matching `list_profiles` entry exactly: `provider/model`, `modeId`, `thinkingOptionId`, `featureValues`. If none fits, verify with `list_providers`/`list_models`. Never copy model IDs from examples, tool descriptions, memory, or prior runs; if the exact pair is not returned, stop and report. Use live values for independence checks. Briefs: `templates/author.md` (SPEC/TASKS), `tester.md`, `writer.md`, `reviewer.md` (R0/TASK/FINAL/ARBITER), `lead.md`. `auditor.md` is an alias.
+Before `create_agent`, copy the matching `list_profiles` settings exactly; if none fits, verify the exact provider/model via `list_providers`/`list_models` or stop if not returned. Never copy model IDs from examples or memory. `create_agent` needs a non-empty `title` (`[Pipeline] <role> <T-id>[-aN]` for workers (include the attempt suffix from the branch), `[Pipeline] <role> <mode>` for authors/reviewers; keep titles within 60 characters and use the label, not the title, for change identity). Dispatch natively (set `pipeline.change=<change>` on every pipeline agent, finish notification, a background `paseo wait` backstop); on timeout, inspect and re-arm. CLI `paseo run/send` registers no finish callback; a CLI dispatch MUST be paired with a background `paseo wait <id> --timeout 540`. Briefs: `templates/author.md`, `templates/worker.md`, `templates/reviewer.md`.
 
-- `chanpin`: writes Proposal/Spec/Codebase Digest directly to OpenSpec files and commits; does not return text for main session to re-type.
-- `gaogong`: writes Design/Tasks/Acceptance directly to OpenSpec files and commits; also handles complex implementation and confirmed-blocker fixes.
-- `hanlin`: independent package R0 and one-turn arbitration; not package author or task reviewer for same dispute.
-- `ceshi`: behavior Red tests before implementation.
-- `gongbu` / `jiangzuo`: default / UI implementation.
-- `anchasi`: task and integrated reviews. Codex has no read-only mode: reviewers run in a separate workspace, briefed read-only; tip binding voids a review if the branch moved.
-- `shangshu`: sole Lead; schedules, reconciles, merges, reports.
-- Profile notes describe a role's scope; the frozen task's `Review:` field decides process. `ceshi`'s strict-only note is stale: every non-mechanical task needs a Red test commit or `merge-task` exits 31.
-- Cost: a behavior task is three serial agents (tester → implementer → reviewer); use `Review: mechanical` only when no behavior needs proof.
-- `auto-review` profiles can stall on permission prompts. If a child idles without a finish result, check pending permissions first; never widen a read-only reviewer to `bypassPermissions`.
+- `gongbu` (author): on the contract stage, writes the whole package in one pass. Its `notes` describe implementation; authoring is a separate job assignment, not a second role.
+- `hanlin` (R0): independent package review before CP-1; writes nothing.
+- `gongbu` / `jiangzuo` / `gaogong` (worker): implementation and tests for one task.
+- `anchasi` (FINAL): the single integrated code review, after every task has merged.
+- `gaogong` (fixer): narrow repair of a confirmed FINAL-review blocker.
+- `ceshi` and `shangshu` are retired. A legacy branch may still carry a `ceshi` commit for merge compatibility; never dispatch either.
+- Profile notes describe a role's scope; the frozen task's `Review:` field no longer selects a process. It stays as risk metadata for the contract stage.
 
 ## Entry and CP-1
 
-制宪阶段是一条有序的 agent 串联管道，每步 blocking。主会话按以下顺序调度，不得跳过或乱序：
+Contract steps are serial.
 
+0. **Preflight** (read-only): `node "$PIPELINE_HOME"/preflight.mjs <repo>` reports each package's test runner and whether a UI package can run DOM tests. Fix a missing DOM environment before authoring — the expensive late failure.
 1. Run `openspec new change <name> --schema paseo-pipeline`. The schema resolves from the global OpenSpec schema link installed by `install.sh`; do not keep stale project-local copies that shadow it.
-2. **Dispatch `chanpin`** (`templates/author.md` Mode SPEC). It writes `proposal.md`, `specs/<capability>/spec.md`, `digest.md` into `openspec/changes/<name>/` and commits to the draft branch; main session does not re-type.
-3. **Dispatch `gaogong`** (`templates/author.md` Mode TASKS) after `chanpin` commits. It reads the committed spec, writes `design.md`, `tasks.md`, `acceptance.md`, and commits.
-4. Run `node "$PIPELINE_HOME"/freeze-check.mjs openspec/changes/<name> --structural` (Impact Inventory, SCEN per task, no test-only tasks; skips the R0 check, which cannot exist yet). Read its `ADVISE` lines (`ADVISORY_LOW_SPEEDUP`: compare with Tier 2). If it blocks, dispatch the relevant author to fix and re-run. Do not proceed past a block. `[ROUTE] handoff` here: skip R0; run Tier 2 `/paseo-handoff` on the committed spec and tasks.
-5. **Dispatch `hanlin`** (`templates/reviewer.md` Mode R0) in a read-only workspace once the structural check passes and the contract is committed. `hanlin` writes nothing: it returns findings, or `R0: pass(<its-agent-uuid>@<reviewed-HEAD-sha>)`. On pass, main session writes that line first in `openspec/changes/<name>/review.md` (uuid = the agent it dispatched, sha = the commit it reviewed; `freeze-check` verifies the uuid is a live Paseo agent, offline use `--skip-signer-check`). On blockers, dispatch the author to revise once, re-run freeze-check, re-dispatch `hanlin`. A second R0 is final.
-6. Re-run `freeze-check` without `--structural`. It rejects a missing sign-off, and `STALE_R0_SIGNOFF` when the sha is unknown or any contract file changed after it. This is the mechanical gate.
-7. Present final contract, R0 findings/responses, DAG/scopes/Verify/acceptance. On `ADVISORY_LOW_SPEEDUP` or `CRITICAL_LOGICAL_EDGES`, the CP-1 prompt also offers "switch to Tier 2 /paseo-handoff". Freeze only after human confirms CP-1. The CP-1 prompt names the executor ("确认冻结并交给 shangshu 执行"), never just "确认冻结并启动实施".
+2. **One author, one pass** (`gongbu`, `templates/author.md`). Dispatch one author to write the whole package — proposal, specs, digest, design, tasks, acceptance — directly to `openspec/changes/<name>/`, then commit. Without an approved design, the author records assumptions. Do not split authors or re-derive the DAG.
+3. Run `node "$PIPELINE_HOME"/freeze-check.mjs openspec/changes/<name> --structural` (Impact Inventory, SCEN per task, no test-only tasks; skips the R0 check, which cannot exist yet). Read `ADVISE` lines; fix blocks and re-run. `[ROUTE] handoff` here: skip R0; run Tier 2 `/paseo-handoff` on the committed spec and tasks.
+4. **Dispatch `hanlin`** (`templates/reviewer.md` Mode R0) in a read-only workspace after the structural check passes on a committed contract. It returns findings, or `R0: pass(<agent-uuid>@<reviewed-sha>)`, recorded in `review.md`; accepted rulings go in `rulings.md`, one line per R0 finding: `R0-<round>-<n> <BLOCKER|NIT> <accepted|rejected|fixed> <one-line reason>`. This is a retrospective record of R0 findings, not a gate. **Bounded R0 (max two rounds):** revise the whole package, re-run `freeze-check --structural`, then re-dispatch. A second round passing frees CP-1; otherwise escalate the unclosed list, never a third round. A delta brief never states the expected verdict.
+5. Re-run `freeze-check` without `--structural`; it rejects a missing sign-off and `STALE_R0_SIGNOFF`.
+6. Present the final contract, R0 findings, DAG/scopes/Verify/acceptance. `ADVISORY_LOW_SPEEDUP` offers Tier 2; `-logical->` or `ADVISORY_READS_ONLY_EDGE` offers dropping the edge, not Tier 2. Freeze only after human confirmation. The CP-1 prompt names the executor ("确认冻结并交给主会话执行"), never just "确认冻结并启动实施".
 
-## Handoff after CP-1
+## Start after CP-1
 
-CP-1 approval is not the start of implementation; it is the start of handoff. `merge-task.mjs` only runs on `integration/<change>` with a clean worktree and `tasks.md` already present there, so this sequence is mandatory and belongs to the main session:
+1. Commit the frozen contract (`openspec/changes/<change>/`) on the default branch.
+2. Create the integration worktree from that commit: `create_workspace(isolation: "worktree", mode: "branch-off", branchName: "integration/<change>", baseBranch: "refs/heads/main", path: <主仓库路径>)`. Modes are exclusive: `branch-off` takes only `branchName` + `baseBranch` (optional `worktreeSlug`/`path`), never `branch`, `prNumber`, or `forge`; on conflict, drop extras and retry once. `origin/main` when pushed; `refs/heads/main` while the base stays local.
+3. Create one task worktree + branch per currently-ready task from the integration tip: `task/<change>/<T-id>`. Replacement attempts take `<T-id>-aN`.
+4. Install the author hook in every task worktree: `node "$PIPELINE_HOME"/pipeline-run.mjs install-hook <worktree> [...]`. Without it a worker cannot stamp its own `Pipeline-Author`, and the merge gate exits 31. `plan` warns about any `task/<change>/` or `integration/<change>` worktree that is missing it.
+5. Bootstrap dependencies per lockfile in every workspace — **including the integration worktree**, where `merge-task` runs Verify — before any Verify. A worktree is a checkout, not a clone; an uninstalled package exits 36. Install once per workspace, not per task.
+6. Run `node "$PIPELINE_HOME"/pipeline-run.mjs plan openspec/changes/<change>` and dispatch exactly the workers it lists. The main session is an event router: it edits no business code and schedules only from `plan`.
 
-1. Commit the frozen contract (`openspec/changes/<change>/`) on the default branch. This commit is the review `base`.
-2. Create the integration branch from that commit in a separate worktree: `create_workspace(isolation, branchName: "integration/<change>")` (not a main-checkout switch: Tier hook guards `main`). The Lead runs there.
-3. Create one task branch per ready frontier task from the integration tip: `task/<change>/<T-id>`. Replacement attempts take `<T-id>-aN`.
-4. Bootstrap dependencies in each new workspace — **including the integration worktree itself** — **before** any Verify runs. `merge-task` runs all Verify commands in the integration worktree, not in the task workspace. A worktree is a checkout, not a clone: `node_modules/`, `.venv/` and every other ignored path stay behind in the main checkout, so the first `Verify with` otherwise dies on `Cannot find package` — reported as exit 36. Install per lockfile (`npm ci`, `pnpm install --frozen-lockfile`, `python3 -m venv .venv`) or configure a Paseo workspace script so new worktrees self-bootstrap; do this once per workspace, not per task.
-5. Draft the Lead brief from `templates/lead.md`, filling `<change>`, integration worktree path, integration branch, `base` SHA, and the frozen contract paths.
-6. Create exactly one Lead (`shangshu`, see `list_profiles`). Main session then stops: no business-code edits, no further dispatch.
-7. If the frozen DAG's `[ROUTE]` is `handoff`, create no Lead; run Tier 2 `/paseo-handoff` and say so at CP-1.
-
-After compaction or resume, first re-read `tasks.md` Done lines, `git log --first-parent integration/<change>`, and `paseo ls --label pipeline.change=<change> --json` before any dispatch. Summaries are not state.
+After compaction or resume, re-read Done lines from `integration/<change>` (`git show integration/<change>:openspec/changes/<change>/tasks.md`), `git log --first-parent integration/<change>`, and `paseo ls --global --background --label pipeline.change=<change> --json` before any dispatch; summaries are not state.
 
 ## Runtime
-- Create one Lead with `templates/lead.md`; it reconciles git and Paseo state before dispatch.
-- Ready frontier = dependencies Done + disjoint scopes. Writer cap 4; auditor cap 2; merge serially.
-- Behavior task sequence: `ceshi` Red commit → verify Red on base → implementer in same workspace/branch → narrow Verify green → independent task audit → `merge-task.mjs`. Mechanical exemption only for frozen `Review: mechanical`.
-- Test author and implementer must be different agents and models. Reviewer model must differ from implementer and should differ from tester (`merge-task` warns on overlap). If unavailable, block and report; do not claim heterogeneity.
-- Agent identity: every trailer and review tag uses the full UUID (`$PASEO_AGENT_ID`). A 7-char `shortId` resolves by prefix in a review tag only, not in a trailer.
-- Every dispatch uses Paseo native workspaces, labels, finish notifications, plus a background `paseo wait` backstop (`lead.md`). A returned or timed-out wait means "inspect now", not success. Lost notifications trigger reconciliation, not duplicate dispatch. Review fixes reuse the original agent.
-- Circuit breaker (`lead.md`): at most 3 attempts per task; on breach the Lead stops dispatching that task and escalates to the human.
-- Contract amendments after CP-1: main session updates tasks, human confirms delta, commit, Lead reloads. Any post-CP-1 change (new/split task, Write scope, interface) also updates `design.md` and re-runs `freeze-check --structural`; a new interface or security boundary needs `hanlin` R0, its `R0: pass(...)` line APPENDED to `review.md` (last line wins).
+- **Task state is the integration branch.** `merge-task` writes Done lines to `integration/<change>`; the default branch keeps the frozen contract. `plan` and `status` read that `tasks.md` from the branch when it exists, so they are checkout-safe. Before CP-1 (no integration branch) they read the worktree copy. Local Done lines are evidence only if they are committed on integration.
+- `pipeline-run.mjs plan <change-dir>` is the only scheduler: `DISPATCH`/`MERGE`/`WAIT`/`ATTENTION`, worker cap 8, critical path first. Execute its list; never recompute the frontier by hand.
+- Dispatch a ready task to one worker (`templates/worker.md`) carrying its branch/workspace, frozen scope, SCENs, and Verify. The worker commits with `Pipeline-Role` and `Pipeline-Author` trailers.
+- On a worker's finish notification, verify the branch tip and run `pipeline-run.mjs merge <change-dir> <T-id>` from the integration worktree. The gate records Done; then re-run `plan`.
+- A worker failing Verify or exceeding scope retries on the same branch at most twice (initial plus two retries); then report to the human and do not silently spawn a second agent.
+- Circuit breaker: at most 3 attempts per task (`-a2`, `-a3`); the third attempt may finish and merge, but creating a fourth requires human approval.
+- A lost notification triggers `plan` reconciliation, never a duplicate dispatch. An inactive worker with commits and no pending permission proceeds to the normal merge gate; without commits, `BLOCKED_WORKER_RESULT` requires inspecting and resuming the worker or explicitly creating an approved new attempt.
+- Contract amendments after CP-1: the author commits the amendment on integration; a human confirms before re-running `plan`. A new interface or security boundary needs `hanlin` R0, its `R0: pass(...)` line APPENDED to `review.md` (last line wins).
 
 ## Merge gate
 ```
-node "$PIPELINE_HOME"/merge-task.mjs \
-  task/<change>/<T> <T> 'pass(<reviewer-uuid>@<tip>/<base>)'
+node "$PIPELINE_HOME"/pipeline-run.mjs merge <change-dir> <task-id>
 ```
-`merge-task` checks branch/task identity, dependency Done, frozen Write scope, commit trailers, test-author protection, agent/model independence, review binding, base drift, Verify, and clean worktree; then no-ff merges and records Done. After its own Verify it re-runs every already-Done task's narrow Verify on the merged tree (whole-suite legs skipped; only dependency-sharing or scope-overlapping tasks). It proves Red: test-author commits alone must fail frozen Verify on an assertion, not a load/import error (else 33). Exit codes: 2 usage; 10 conflict; 20 verify; 21 cross-task regression; 30 scope; 31 provenance; 32 review; 33 Red proof; 34 base/drift (incl. main advanced on task scope: rebase integration, re-review); 35 dependency; 36 unchecked-out dependencies; 37 attempt breaker (`-aN`, N>3) or >2 implementation commits on one branch (escalate to `-a2`); `--allow-attempt-over`: human only. Sole Done writer.
+`pipeline-run` resolves the newest attempt branch and runs `merge-task.mjs`. The gate checks dependencies Done, Write scope, commit trailers ("Pipeline-Author"/"Pipeline-Role"), cherry-pick provenance, base drift, the frozen Verify, and regression of already-Done tasks, then no-ff merges and records Done. Hand merges into a primary checkout: `--no-ff`, or the Stop tier gate counts a fast-forward as this session's writes. It proves nothing about tests beyond the frozen Verify: test quality is the FINAL review's job. Exit codes: 2 usage; 10 conflict; 20 Verify; 21 regression; 30 scope; 31 provenance; 34 base/drift; 35 dependency; 36 unchecked-out dependencies; 37 attempt/rework breaker; `--allow-attempt-over`: human only.
 
-Exit 36: worktree cannot resolve a package or runner (`Cannot find package 'tsx'`, `command not found`). Environment fault: a linked worktree does not inherit `node_modules`/`.venv`. Install per lockfile and retry; never edit tests or Verify to work around it.
+The gate records pending/failed tips in shared Git refs; `plan` reports `BLOCKED_MERGE` until a new tip or explicit retry; a failed empty branch may dispatch only when no worker for that attempt exists; a pending marker always blocks. Inspect the failure, fix its cause, then rerun `pipeline-run.mjs merge`. After interruption, inspect `MERGE_HEAD` and the worktree before retry. Serialize merges: refs are not locks. Never delete a marker to bypass the gate.
+
+Exit 36: the worktree cannot resolve a package or runner (`Cannot find package 'tsx'`, `command not found`). Install per lockfile and retry; never edit tests or Verify.
+Exit 21: a replayed already-Done Verify failed. If the cause is a missing service, port, package or env var rather than a real regression, fix the environment and re-run merge; never edit the Verify command or the tests.
+
+## Finish
+1. Require all tasks Done, no blocked tasks, clean integration worktree.
+2. Capture full integration HEAD SHA; run the full suite and `Required=yes` acceptance on that SHA. In parallel, `anchasi` reviews `main...<full-SHA>` (Mode FINAL). Record commands, results, reviewer, verdict, SHA and main base. Optional aid: `r0-hotspots.mjs <change-dir> [--final <full-SHA>]` summarizes declared task metadata for R0 or FINAL; it is not a verdict.
+   The committed frozen `acceptance.md` remains the sole authority for requirements. Keep its Result/Evidence cells frozen; record results externally so the tested SHA is unchanged. Optional operator command: `node "$PIPELINE_HOME"/pipeline-run.mjs acceptance run openspec/changes/<name> --source <full-SHA> --evidence <new-external-file> --execute`. This executes repository-controlled shell code with operator privileges, unsandboxed; review every command and dependency first. Output may contain secrets. The external file must not exist or sit inside any worktree or Git directory. Each command times out after 120000 ms by default (`--timeout <ms>`, 1–3600000). It records the frozen matrix, SHA, timeout, rows, output and exit status; failures, timeouts, overflow, or drift invalidate it. The runner reports unsuccessful executions as `FAIL`, including missing dependencies; it does not infer `BLOCKED`. An operator may classify a failure as blocked separately without altering the execution record. Neither a failed nor a blocked row satisfies CP-2; fix the cause and rerun into a new file. It does not run the full suite or FINAL review.
+   Before CP-2, `node "$PIPELINE_HOME"/pipeline-run.mjs acceptance check openspec/changes/<name> --evidence <file>` checks the record against current clean integration HEAD and frozen matrix without executing commands. This checks consistency, not authenticity or semantic correctness: records can be manipulated, Git cleanliness ignores ignored files and external dependencies, and transient changes may go undetected. Independently review output, full-suite and FINAL evidence, and current state. A record never authorizes CP-2 or replaces human confirmation.
+3. For blockers, follow `templates/final-recovery.md`: amend the contract under human CP-1, then merge a new fix task through the normal gate. A repair task that overlaps a Done task's Write scope must declare `Depends on: <that task>`, or the structural check reports `SCOPE_CONFLICT`. Never reopen Done or merge an ad-hoc fix.
+4. Rerun full suite, acceptance and FINAL review at the new final SHA. Prefer the original FINAL reviewer; if unavailable, a new `anchasi` with the same profile may take over under the same rules, recording its agent id. Verify the SHA, clean tree and reviewed main base before human CP-2. Any change invalidates that evidence.
+5. After CP-2, present the cleanup list; delete/archive worktrees and branches only after human confirmation. Push needs separate confirmation.
 
 ## Recovery
 ```
+node "$PIPELINE_HOME"/pipeline-run.mjs status <change-dir>
 git log --first-parent integration/<change>
-grep -n 'Done:' openspec/changes/<change>/tasks.md
-paseo ls --label pipeline.change=<change> --json
+git show integration/<change>:openspec/changes/<change>/tasks.md | grep -n 'Done:'
+paseo ls --global --background --label pipeline.change=<change> --json
 ```
-
-Use live Paseo state, branch tips and Done lines. Never re-dispatch on a delayed notification. One Lead; if archived, resume that ID with `templates/lead-resume.md`; never archive `pipeline.change=<change>` agents before CP-2.
-
-## Finish
-1. Require all tasks Done, no blocked/failed tasks, clean integration worktree.
-2. On same final SHA, run full suite and all `Required=yes` acceptance commands; record evidence/SHA. In parallel, run one integrated Spec+Standards review via explicit Paseo profiles.
-3. Confirmed blockers only: `gaogong` fixes listed items; rerun full suite/acceptance; original reviewer rechecks fix diff once. Remaining blockers mean not delivered.
-4. Report final SHA, test/acceptance result, review findings/NITs, task SHAs. CP-2 remains human confirmation. If main moved, revalidate at new SHA.
-5. After CP-2, present cleanup list. Delete/archive only after human confirmation; push requires separate confirmation.
+Before dispatch, `plan` also checks the global agent list. Active legacy `[Pipeline]` agents without a verifiable change identity/label stop scheduling; inspect and label or close them explicitly before resuming. Unknown repository or change identity stops scheduling. Other repositories are excluded by Git common directory. Other change labels are checked via integration branches and agent worktree change directories. If absent, use `plan <change-dir> --other-change <id>` (repeatable); the label is verified, not trusted. `plan` exit 3 means unreadable or ambiguous state, not idle. Use live Paseo state, branch tips, and Done lines from `integration/<change>`. Never archive `pipeline.change=<change>` agents before CP-2.
+`plan` and `status` also exit 3 and report parser errors for invalid or empty `tasks.md`; repair the contract instead of treating that as an idle frontier.
 
 ## Hard lines
-- Lead/main session never edits business code; `chanpin` and `gaogong` write contract files only, never business code; `hanlin` writes nothing.
-- No self-review; use actual provider/model values, not profile-name assumptions.
+- The main session never edits business code; `gongbu`/`gaogong` authors write contract files only; `hanlin` and `anchasi` write nothing.
 - No manual Done/check boxes; no full-suite Verify on non-sink tasks.
-- Never treat a missing dependency as a Red result or fix it by editing tests/Verify; install in the workspace and rerun.
+- Never treat a missing dependency as a failed test or fix it by editing tests/Verify; install in the workspace and rerun.
 - No tenant/database/port/account sharing without declared isolation.

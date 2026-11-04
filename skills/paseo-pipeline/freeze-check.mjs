@@ -4,12 +4,14 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo-agents.mjs';
-import { parseTasks, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
+import { parseTasks, graphErrors, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
+import { weightedSpeedup, weightedCriticalPath, verifyScope, readsOnlyEdges, pathWithin, resolveModel, LIVE_MODEL } from './lib/schedule.mjs';
+import { runGit } from './lib/git.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
+const explain = args.includes('--explain');
 // --structural: validate the contract the authors wrote, before hanlin reviews it. The R0
 // sign-off is the output of that review, so requiring it here would deadlock the entry flow.
 const structural = args.includes('--structural');
@@ -18,14 +20,13 @@ const skipSignerCheck = args.includes('--skip-signer-check');
 const positional = args.filter((arg) => !arg.startsWith('--'));
 const changeDir = positional[0];
 if (!changeDir) {
-  console.error('Usage: freeze-check.mjs <change-dir> [--json] [--structural] [--skip-signer-check]');
+  console.error('Usage: freeze-check.mjs <change-dir> [--json] [--explain] [--structural] [--skip-signer-check]');
   process.exit(2);
 }
 
 function read(file) {
   try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
-}
-function walk(dir, out = []) {
+}function walk(dir, out = []) {
   if (!fs.existsSync(dir)) return out;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
@@ -34,6 +35,32 @@ function walk(dir, out = []) {
   }
   return out;
 }
+
+// One concrete fix per blocking rule, printed by --explain.
+const RULE_FIXES = {
+  MALFORMED_LINE: 'rewrite the task line as `- [ ] <n> T-<id> <title>` with a valid id',
+  DUPLICATE_ID: 'give every task a unique id',
+  MISSING_SCOPE: 'add a non-empty `Write scope:` of repo-relative paths',
+  MISSING_VERIFY: 'add an executable `Verify with:` command',
+  UNKNOWN_REVIEW: 'use Review: strict, standard, mechanical or deferred',
+  UNKNOWN_DEP: 'point Depends on at an existing task id',
+  SELF_DEP: 'remove the self-dependency',
+  USES_UNKNOWN: 'point Uses at an existing task id (never the task itself)',
+  CYCLE: 'break the dependency cycle into a DAG',
+  BAD_READS: 'use repo-relative paths without `..` or a leading slash',
+  MISSING_READS_PATH: 'point Reads at a path that already exists in the repository; Reads is a read-only anchor, not a file the task creates',
+  BAD_ACCEPTANCE_HEADER: 'use the seven columns Scenario, Entry, Tasks, Verify, Required, Result, Evidence in that order',
+  BAD_ACCEPTANCE_REQUIRED: 'set Required to yes or no (case-insensitive)',
+  MALFORMED_ACCEPTANCE_ROW: 'escape a literal pipe inside a cell as `\\|`, or keep one cell free of `|`; the row must have the header column count',
+  VERIFY_JUNK_LEG: 'put shell setup inside the leg it belongs to: `bash -c \'set -e; <command>\'`, or use `&&` between real commands',
+  BAD_EST: 'use Est: S, M or L',
+  BAD_INTERFACE: 'use Interface: <repo-path>[#<symbol>]',
+  BAD_KIND: 'use Kind: skeleton (or omit it)',
+  UNKNOWN_SCEN: 'claim a SCEN declared under specs/',
+  UNCLAIMED_SCEN: 'assign each declared SCEN to at least one task',
+  NO_SCEN: 'claim at least one SCEN, or mark the task Review: mechanical',
+  EMPTY_TASKS: 'write at least one parseable task line',
+};
 
 const tasksMarkdown = read(path.join(changeDir, 'tasks.md'));
 if (tasksMarkdown === null) {
@@ -44,6 +71,9 @@ if (tasksMarkdown === null) {
 
 const { tasks, errors } = parseTasks(tasksMarkdown);
 const blocking = errors.map((error) => `${error.code}${error.task ? ` ${error.task}` : ''}: ${error.message}`);
+const advisories = [];
+const fixes = new Map();
+if (blocking.length) fixes.set('CONTRACT', 'fix the field named in the message; see openspec-schema/templates/tasks.md for the exact shape');
 
 // Scenario mapping.
 const declared = new Map();
@@ -63,17 +93,20 @@ for (const [scen, file] of declared) {
   if (!claimed.has(scen)) blocking.push(`UNCLAIMED_SCEN: ${scen} (${file}) has no task`);
 }
 
-// Wave partition. Waves are planning data only; runtime dispatch follows the ready frontier.
-const waves = computeWaves(tasks);
-const sinkIds = new Set(tasks.filter((task) => !tasks.some((other) => other.depends.includes(task.id))).map((task) => task.id));
+// Dispatch-dependency wave width is a planning heuristic, not exact maximum concurrency.
+// Runtime dispatch follows the ready frontier, without wave barriers.
+const graphValid = tasks.length > 0 && graphErrors(errors).length === 0;
+const waves = graphValid ? computeWaves(tasks) : new Map();
+// A sink is a task nothing consumes. `Uses` is a merge edge too (the consumer merges
+// after the producer), so a producer read only through Uses is still not a sink; counting
+// `depends` alone falsely marked such producers as sinks and rejected their deferred review.
+const sinkIds = new Set(tasks
+  .filter((task) => !tasks.some((other) => (other.depends || []).includes(task.id) || (other.uses || []).includes(task.id)))
+  .map((task) => task.id));
 const waveList = [...waves.entries()].sort((a, b) => a[0] - b[0]).map(([wave, ids]) => ({ wave, ids }));
-const maxWidth = waveList.reduce((max, item) => Math.max(max, item.ids.length), 0);
+const maxWidth = graphValid ? waveList.reduce((max, item) => Math.max(max, item.ids.length), 0) : null;
 
-const scopesClash = (left, right) => left.scope.some((scope) => right.scope.some((other) => {
-  const a = normalizeScope(scope);
-  const b = normalizeScope(other);
-  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
-}));
+const scopesClash = (left, right) => left.scope.some((scope) => right.scope.some((other) => pathWithin(normalizeScope(scope), normalizeScope(other))));
 
 // Frontier scheduling runs any two tasks concurrently unless one transitively depends on the other,
 // so scope overlap is checked on every unordered pair, not only within a wave.
@@ -89,32 +122,143 @@ const ancestorsOf = (id, trail = new Set()) => {
   ancestors.set(id, out);
   return out;
 };
+// A Uses edge makes the consumer wait for the producer's merge, so it serialises a pair exactly
+// like Depends on does — including the skeleton exemption below.
+const orderedPair = (left, right) => ancestorsOf(left.id).has(right.id) || ancestorsOf(right.id).has(left.id)
+  || left.uses?.includes(right.id) || right.uses?.includes(left.id);
+// Walking the whole edge set matters: a task that depends on a skeleton consumer still cannot
+// start before the skeleton merged, so only a task with no path at all is a real writer race.
+const reaches = (from, target) => {
+  const stack = [...(byId.get(from)?.depends || []), ...(byId.get(from)?.uses || [])];
+  const seen = new Set();
+  while (stack.length) {
+    const id = stack.pop();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (id === target) return true;
+    const node = byId.get(id);
+    if (node) stack.push(...(node.depends || []), ...(node.uses || []));
+  }
+  return false;
+};
+const skeletonCovers = (skeleton, other) => skeleton.kind === 'skeleton' && other.id !== skeleton.id
+  && reaches(other.id, skeleton.id);
 for (let i = 0; i < tasks.length; i += 1) {
   for (let j = i + 1; j < tasks.length; j += 1) {
     const left = tasks[i];
     const right = tasks[j];
-    if (ancestorsOf(left.id).has(right.id) || ancestorsOf(right.id).has(left.id)) continue;
-    if (scopesClash(left, right)) blocking.push(`SCOPE_CONFLICT ${left.id} and ${right.id}: scopes overlap and neither depends on the other; add Depends on or split scope`);
+    if (orderedPair(left, right)) continue;
+    // The skeleton owns the interface files every consumer imports; consumers depend on it, so
+    // their overlap is serialised by the dependency rather than a hidden race.
+    if (skeletonCovers(left, right) || skeletonCovers(right, left)) continue;
+    if (scopesClash(left, right)) {
+      blocking.push(`SCOPE_CONFLICT ${left.id} and ${right.id}: scopes overlap and neither depends on the other; add Depends on or split scope`);
+      fixes.set('SCOPE_CONFLICT', 'add a Depends on edge between the pair, or give each task its own files');
+    }
+  }
+}
+
+// Uses/Reads/skeleton contract. Dispatch treats Uses as "start as soon as the interface is frozen";
+// merge still waits for the producer, so a Uses pair that writes the same files needs a real
+// Depends on edge to serialise the writers.
+const dependsBetween = (a, b) => ancestorsOf(a).has(b) || ancestorsOf(b).has(a);
+const skeletons = tasks.filter((task) => task.kind === 'skeleton');
+for (const task of tasks) {
+  for (const used of task.uses || []) {
+    if (used === task.id || !byId.has(used)) {
+      continue;
+    }
+    const target = byId.get(used);
+    if (!target.interface.length) {
+      blocking.push(`USES_WITHOUT_INTERFACE ${task.id}: Uses ${used} but ${used} declares no Interface; freeze the symbol on the producer`);
+      fixes.set('USES_WITHOUT_INTERFACE', `add Interface: <path>#<symbol> to ${used}, or use Depends on if the implementation is required`);
+    }
+    if (scopesClash(task, target) && !dependsBetween(task.id, target.id)) {
+      blocking.push(`USES_SCOPE_OVERLAP ${task.id} and ${used}: Write scopes overlap but no Depends on edge exists; Uses only skips the implementation wait`);
+      fixes.set('USES_SCOPE_OVERLAP', 'add a Depends on edge between the producer and consumer, or split the overlapping Write scope');
+    }
+  }
+  for (const entry of task.interface || []) {
+    const interfacePath = entry.split('#')[0];
+    if (!skeletons.some((skeleton) => isFileWithinScopes(interfacePath, skeleton.scope))) {
+      blocking.push(`INTERFACE_UNOWNED ${task.id}: Interface ${entry} is not inside any Kind: skeleton Write scope`);
+      fixes.set('INTERFACE_UNOWNED', 'move the interface file into a Kind: skeleton task Write scope, or declare the skeleton that owns it');
+    }
+  }
+  if (task.kind === 'skeleton' && task.review !== 'mechanical') {
+    blocking.push(`SKELETON_NOT_MECHANICAL ${task.id}: Kind: skeleton requires Review: mechanical`);
+    fixes.set('SKELETON_NOT_MECHANICAL', `set Review: mechanical on ${task.id}`);
+  }
+  if (task.review === 'deferred') {
+    if (sinkIds.has(task.id)) {
+      blocking.push(`DEFERRED_NOT_STANDARD ${task.id}: the sink cannot use Review: deferred under the compatibility rule`);
+      fixes.set('DEFERRED_NOT_STANDARD', 'use Review: standard or strict on the sink; only non-sink standard tasks may defer');
+    }
+    if (task.riskSurface.some((risk) => risk === 'persistence' || risk === 'security')) {
+      blocking.push(`DEFERRED_NOT_STANDARD ${task.id}: Risk-surface ${task.riskSurface.join(', ')} cannot use Review: deferred; mark this risk Review: strict for FINAL attention`);
+      fixes.set('DEFERRED_NOT_STANDARD', 'set Review: strict for persistence/security surfaces; deferred is only for standard tasks');
+    }
+  }
+}
+
+// Reads is a read-only anchor: it must already exist, unless another task's Write scope
+// will create it. A greenfield consumer legitimately verifies against a module a sibling
+// produces (and `merge-task` must replay it when that sibling merges), so a forward
+// reference inside a Write scope is allowed. A path that is neither on disk nor inside any
+// Write scope is a typo and still blocks; it must not silently degrade to "no anchor".
+{
+  const toplevel = gitIn(changeDir, ['rev-parse', '--show-toplevel']);
+  if (toplevel.status === 0) {
+    const repoRoot = toplevel.stdout.trim();
+    for (const task of tasks) {
+      for (const read of task.reads) {
+        if (fs.existsSync(path.join(repoRoot, read))) continue;
+        if (tasks.some((other) => isFileWithinScopes(read, other.scope))) continue;
+        blocking.push(`MISSING_READS_PATH ${task.id}: Reads ${read} does not exist in the repository`);
+      }
+    }
   }
 }
 
 // Narrow verification. A leg is narrow when its paths all sit inside the task
-// Write scope; a leg without paths must not invoke a whole-suite runner. One sink
-// may run one broad leg; final acceptance always runs on integration HEAD.
+// Write scope (or its reads-only anchors); a leg without paths must not invoke a
+// whole-suite runner. One sink may run one broad leg; final acceptance always
+// runs on integration HEAD.
+const SHELL_CONSTRUCT = /\b(?:for|while|if|case|until)\b/;
+// `set -e; cmd` and `a || exit 1` are shell setup, not verify legs. commandParts
+// splits them into legs that prove nothing; name the real cause instead of the
+// downstream VERIFY_NOT_NARROW.
+const CONTROL_LEG = /^(?:set(?:\s|$)|exit(?:\s|$)|true$|false$|do(?:\s|$)|done$|fi$|else$|then$|esac$)/;
 for (const task of tasks) {
   const legs = verifyLegs(task.verify);
   const broadLegs = legs.filter((leg) => leg.broad).length;
   // A leg must also prove something: a known test runner, or a test/spec path. `true`,
   // `echo ok` and `node src/a.mjs` pass a path-only check but verify nothing.
   const proves = (leg) => FULL_SUITE_LEG.test(leg.command) || leg.paths.some((p) => /(?:test|spec)/i.test(p));
-  const unscoped = legs.filter((leg) => !leg.broad && (!proves(leg) || leg.paths.some((path) => !isFileWithinScopes(path, task.scope))));
+  const allowed = verifyScope(task);
+  const unscoped = legs.filter((leg) => !leg.broad && (!proves(leg) || leg.paths.some((path) => !isFileWithinScopes(path, allowed))));
+  // Shell loops are legitimate (a sink iterating `scripts/specs/*.mjs`), but the
+  // leg splitter cannot see inside them; report that instead of inventing legs.
+  if (SHELL_CONSTRUCT.test(task.verify)) {
+    advisories.push(`ADVISORY_SHELL_VERIFY ${task.id}: Verify uses shell control syntax; freeze-check splits legs naively, so only whole-command checks apply`);
+  } else {
+    const junk = legs.filter((leg) => CONTROL_LEG.test(leg.command));
+    if (junk.length) {
+      blocking.push(`VERIFY_JUNK_LEG ${task.id}: ${junk.map((leg) => `"${leg.command}"`).join(', ')} is shell setup, not a verify leg`);
+    }
+    if (/\|\|/.test(task.verify)) {
+      blocking.push(`VERIFY_JUNK_LEG ${task.id}: \`||\` is split into two mandatory legs; use \`&&\` or \`bash -c '...'\``);
+    }
+  }
   if (broadLegs && !sinkIds.has(task.id)) {
     blocking.push(`VERIFY_FULL_SUITE_NON_SINK ${task.id}: full-suite command is reserved for the sole sink`);
+    fixes.set('VERIFY_FULL_SUITE_NON_SINK', 'replace the full-suite leg with a narrow test path, and leave the suite to the sink');
   }
   // A sink with no full-suite leg is just a task: its Verify must be narrow too (mechanical tasks may run any check).
   const mustBeNarrow = !sinkIds.has(task.id) || (broadLegs === 0 && task.review !== 'mechanical');
   if (mustBeNarrow && (legs.length === 0 || unscoped.length > 0 || broadLegs > 0)) {
     blocking.push(`VERIFY_NOT_NARROW ${task.id}: every Verify leg must name a test/spec path inside Write scope${unscoped.length ? ` (outside: ${unscoped.map((leg) => leg.command).join(', ')})` : ''}`);
+    fixes.set('VERIFY_NOT_NARROW', 'name a runnable test path inside Write scope or Reads, or add that anchor to Reads (Reads never authorises edits)');
   }
   if (sinkIds.has(task.id) && broadLegs > 1) {
     blocking.push(`VERIFY_TOO_BROAD ${task.id}: sole sink may run at most one full-suite leg`);
@@ -145,6 +289,26 @@ if (!designMarkdown || !/^#{2,3}\s*Impact/im.test(designMarkdown)) {
   }
 }
 
+// Baseline alignment: the author, not the R0 reviewer, must be the first reader of every
+// existing rule the package collides with. The check is advisory on purpose: whether a
+// verdict is right is semantic, so freeze-check only requires that the package records the
+// reconciliation at all. SKILL.md gates R0 on it; R0 checks the content.
+// A section runs to the next heading of the same or a shallower level: its own `###` subsections
+// are part of the body, so an alignment section written as three subsections still counts.
+const sectionBody = (markdown, heading) => {
+  if (!markdown) return null;
+  const start = markdown.match(new RegExp(`^(#{2,3})\\s*${heading}`, 'im'));
+  if (!start) return null;
+  const rest = markdown.slice(start.index + start[0].length);
+  const next = rest.search(new RegExp(`^#{1,${start[1].length}}\\s`, 'm'));
+  return (next === -1 ? rest : rest.slice(0, next)).replace(/<!--[\s\S]*?-->/g, '').trim();
+};
+// One reconciliation record per package, in the file R0 reads: `design.md` owns the verdict rows.
+// `digest.md` records the surfaces read; requiring the same table in both made one author fill it twice.
+if (!sectionBody(designMarkdown, 'Baseline Alignment')) {
+  advisories.push('ADVISORY_BASELINE_ALIGNMENT: design.md has no non-empty "Baseline Alignment" section; record the baseline specs/tests read, the verdict per rule (reuse / delta / additive) and the command or path:line that proves it before R0');
+}
+
 const fullSuiteSinks = tasks.filter((task) => verifyLegs(task.verify).some((leg) => leg.broad));
 if (fullSuiteSinks.length > 1) blocking.push(`TOO_MANY_FULL_SUITE_SINKS: ${fullSuiteSinks.map((task) => task.id).join(', ')}`);
 
@@ -153,13 +317,31 @@ if (!acceptanceMarkdown) blocking.push('MISSING_ACCEPTANCE: acceptance.md not fo
 else {
   const acceptanceScenarios = new Set();
   const requiredRows = [];
-  for (const line of acceptanceMarkdown.split(/\r?\n/)) {
-    if (/^\s*\|\s*SCEN-[A-Za-z0-9-]+\s*\|/.test(line)) {
-      const cells = line.split('|').slice(1, -1).map((cell) => cell.trim().replace(/^`|`$/g, ''));
-      if (cells.length < 6) continue;
-      acceptanceScenarios.add(cells[0].toUpperCase());
-      if (/^yes$/i.test(cells[4])) requiredRows.push(cells);
+  // A literal `|` inside a cell silently changed the column count and the old parser
+  // just skipped the row. Count against the header instead, and accept `\|`.
+  const cellsOf = (line) => line.split(/(?<!\\)\|/).slice(1, -1)
+    .map((cell) => cell.trim().replace(/\\\|/g, '|').replace(/^`|`$/g, ''));
+  const lines = acceptanceMarkdown.split(/\r?\n/);
+  const header = lines.find((line) => /^\s*\|.*\|\s*$/.test(line) && /\bScenario\b/i.test(line));
+  if (!header || cellsOf(header).join('|').toLowerCase() !== 'scenario|entry|tasks|verify|required|result|evidence') {
+    blocking.push('BAD_ACCEPTANCE_HEADER: acceptance.md needs exactly Scenario, Entry, Tasks, Verify, Required, Result, Evidence in that order');
+  }
+  const expectedColumns = header ? cellsOf(header).length : 7;
+  let rowNumber = 0;
+  for (const line of lines) {
+    rowNumber += 1;
+    if (!/^\s*\|\s*SCEN-[A-Za-z0-9-]+\s*\|/.test(line)) continue;
+    const cells = cellsOf(line);
+    if (cells.length !== expectedColumns) {
+      blocking.push(`MALFORMED_ACCEPTANCE_ROW acceptance.md:${rowNumber}: ${cells.length} cells, header has ${expectedColumns}; a literal \`|\` must be written \`\\|\``);
+      continue;
     }
+    acceptanceScenarios.add(cells[0].toUpperCase());
+    if (!/^(yes|no)$/i.test(cells[4])) {
+      blocking.push(`BAD_ACCEPTANCE_REQUIRED acceptance.md:${rowNumber}: ${cells[0]} Required must be yes or no`);
+      continue;
+    }
+    if (/^yes$/i.test(cells[4])) requiredRows.push(cells);
   }
   for (const scenario of acceptanceScenarios) {
     if (!declared.has(scenario)) blocking.push(`UNKNOWN_ACCEPTANCE_SCEN: ${scenario} is not declared`);
@@ -179,10 +361,9 @@ if (!read(path.join(changeDir, 'proposal.md'))) blocking.push('MISSING_PROPOSAL:
 // appending a new line instead of deadlocking on STALE_R0_SIGNOFF). The sha is the commit hanlin reviewed, so any contract edit
 // after it voids the sign-off. --structural skips this: it runs before the review exists.
 function gitIn(dir, gitArgs) {
-  return spawnSync('git', ['-C', dir, ...gitArgs], { encoding: 'utf8' });
+  return runGit(dir, gitArgs);
 }
 const nulList = (result) => (result.stdout || '').split('\0').filter(Boolean);
-const advisories = [];
 if (!structural) {
   const reviewMarkdown = read(path.join(changeDir, 'review.md'));
   const r0Match = reviewMarkdown ? [...reviewMarkdown.matchAll(/^R0:\s*pass\(([^@)]+)@([a-f0-9]{7,40})\)/gim)].at(-1) : undefined;
@@ -190,13 +371,13 @@ if (!structural) {
     blocking.push('MISSING_R0_SIGNOFF: review.md must contain `R0: pass(<reviewer-uuid>@<sha>)` — run hanlin R0 review before freeze');
   } else {
     // The signer must be a real Paseo agent, so a made-up uuid cannot satisfy the gate. Role is not
-    // exposed by `paseo ls`; a name without `hanlin` is only an advisory, merge-task keeps the hard
-    // reviewer-vs-author and model checks.
+    // exposed by `paseo ls`; a name without `hanlin` is only an advisory — the merge gate no longer
+    // inspects reviewer identity, so this is the only heterogeneous-R0 check.
     if (!skipSignerCheck) {
       const signer = r0Match[1].trim();
       const { agents, error } = listAgents();
       // Unreachable Paseo is advisory, not a block: it says nothing about the signer, and
-      // merge-task fails closed (exit 32) on the same lookup before anything is merged.
+      // the sign-off sha check below still proves the package did not change afterwards.
       if (error) advisories.push(`R0_SIGNER_UNVERIFIED: ${error}; signer ${signer} was not checked against Paseo`);
       else {
         const hits = findAgents(signer, agents);
@@ -215,7 +396,10 @@ if (!structural) {
       // Working tree (staged, unstaged, untracked) vs the reviewed commit; review.md is written after the review.
       const diff = gitIn(changeDir, ['diff', '--name-only', '-z', sha, '--', '.']);
       const untracked = gitIn(changeDir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.']);
-      const drift = [...new Set([...nulList(diff), ...nulList(untracked)])].filter((file) => path.basename(file) !== 'review.md');
+      // review.md is written after the review; rulings.md records accepted non-obvious
+      // decisions made during it. Neither changes the contract, so neither is drift.
+      const drift = [...new Set([...nulList(diff), ...nulList(untracked)])]
+        .filter((file) => !['review.md', 'rulings.md'].includes(path.basename(file)));
       if (diff.status !== 0) blocking.push(`STALE_R0_SIGNOFF: cannot diff contract against reviewed commit ${sha}`);
       else if (drift.length) blocking.push(`STALE_R0_SIGNOFF: contract changed after R0 reviewed ${sha}: ${drift.slice(0, 5).join(', ')} — re-run hanlin R0`);
     }
@@ -245,49 +429,94 @@ if (!structural) {
 }
 
 if (tasks.length === 0) blocking.push('EMPTY_TASKS: tasks.md parsed to zero tasks');
-// Expected speedup of running the DAG concurrently vs one task at a time. Under 1.5x the three-agent
-// chain per task and serial merges usually eat the gain; advisory only, never a reason to pad the DAG.
-const speedup = waveList.length ? Number((tasks.length / waveList.length).toFixed(2)) : 0;
-if (tasks.length >= 4 && maxWidth >= 2 && speedup < 1.5) {
-  advisories.push(`ADVISORY_LOW_SPEEDUP: ${tasks.length} tasks over critical path ${waveList.length} = ${speedup}x; compare with Tier 2 handoff before CP-1`);
-}
-// Critical chain: one longest dependency path, each edge tagged by why it exists. `scope` edges are
-// forced (shared files); `logical` edges are author choices and the only candidates for removal
-// (freeze a shared interface in design.md, then depend on the contract instead of the implementation).
-const waveOf = new Map(waveList.flatMap((item) => item.ids.map((id) => [id, item.wave])));
+// Expected speedup of running the DAG concurrently vs one task at a time, weighted by the
+// cost model in lib/schedule.mjs (hand-set defaults, overridable per call; not measured from
+// this repository). `speedup` retains the wave ratio for existing consumers; the weighted
+// estimate is advisory and does not determine the route.
+const speedup = graphValid ? Number((tasks.length / waveList.length).toFixed(2)) : null;
+const weighted = graphValid ? weightedSpeedup(tasks, LIVE_MODEL) : null;
+// Critical chain: the longest path by the same weighted cost model the scheduler uses
+// (lib/schedule.mjs); historical benchmarks use a separate model. The wave-based chain counted edges,
+// not weights, so it could point removable-edge advice at a different path. Neither path
+// is a measured makespan or accounts for coordination and merge gates.
+// Each edge is tagged by why it exists: `scope` (shared files, forced), `uses` (an
+// interface target), `reads` (only a shared read-only fixture connects the pair), or
+// `logical` (author choice; the only removable kind).
 const criticalChain = [];
-{
-  let cur = tasks.find((task) => waveOf.get(task.id) === waveList.length);
-  while (cur) {
-    const prev = byId.get(cur.depends.find((id) => waveOf.get(id) === waveOf.get(cur.id) - 1));
-    criticalChain.unshift({ id: cur.id, via: prev ? (scopesClash(prev, cur) ? 'scope' : 'logical') : null });
-    cur = prev;
+if (graphValid) {
+  const weightedChain = weightedCriticalPath(tasks, LIVE_MODEL).chain;
+  for (let index = 0; index < weightedChain.length; index += 1) {
+    const id = weightedChain[index];
+    const previous = index > 0 ? byId.get(weightedChain[index - 1]) : null;
+    const current = byId.get(id);
+    let via = null;
+    if (previous && current) {
+      if ((current.uses || []).includes(previous.id) && !(current.depends || []).includes(previous.id)) via = 'uses';
+      else if (scopesClash(previous, current)) via = 'scope';
+      else if ((previous.reads || []).length
+        && (current.reads || []).some((read) => (previous.reads || []).some((other) => pathWithin(read, other)))) via = 'reads';
+      else via = 'logical';
+    }
+    criticalChain.push({ id, via });
   }
 }
-const route = maxWidth >= 2 && tasks.length >= 4 ? 'pipeline' : 'handoff';
+const policy = resolveModel();
+if (graphValid && tasks.length >= 4 && maxWidth >= 2 && weighted < policy.minSpeedup) {
+  advisories.push(`ADVISORY_LOW_SPEEDUP: modeled ${weighted}x below advisory reference ${policy.minSpeedup}x (wave ratio ${speedup}x); compare with Tier 2 handoff before CP-1`);
+}
+// A dependency whose only shared surface is a read-only fixture is a candidate for removal:
+// `merge-task` replays every Done task whose Verify scope overlaps the changed files, so the
+// fixture is re-run against the merged tree whether or not the author serialised the pair.
+// Advisory only — dropping the edge is a contract decision the author records in design.md.
+if (graphValid) {
+  const chainIds = new Set(criticalChain.map((step) => step.id));
+  const edges = readsOnlyEdges(tasks);
+  if (edges.length) {
+    const rendered = edges.map((edge) => `${edge.task} -> ${edge.dep} (${edge.shared.join(', ')})`
+      + (chainIds.has(edge.task) && chainIds.has(edge.dep) ? ' on the critical chain' : ''));
+    advisories.push(`ADVISORY_READS_ONLY_EDGE ${rendered.join('; ')}: the pair shares only a read-only fixture and Write scopes do not overlap; merge-task replays it after either side merges. Record in design.md whether the edge is still needed before CP-1.`);
+  }
+}
+const route = graphValid ? (maxWidth >= 2 && tasks.length >= 4 ? 'pipeline' : 'handoff') : null;
+const summaryBlocking = (items) => [...new Set(items)].map((item) => {
+  const match = item.match(/^([A-Z][A-Z0-9_]*)\b(?:\s+[^:]*)?:\s*(.*)$/);
+  const code = match?.[1] ?? item;
+  return {
+    code,
+    reason: match?.[2] ?? item,
+    fix: fixes.get(code) ?? RULE_FIXES[code] ?? 'correct the contract field named in the reason and re-run freeze-check',
+  };
+});
+const explanations = summaryBlocking(blocking);
 const summary = {
   change: path.resolve(changeDir),
   tasks: tasks.length,
   waves: waveList,
   maxWidth,
-  criticalPath: waveList.length,
+  maxWidthMeaning: 'largest dispatch-dependency wave; heuristic, not exact maximum concurrency',
+  criticalPath: graphValid ? waveList.length : null,
   criticalChain,
   speedup,
+  weightedSpeedup: weighted,
+  weightedSpeedupMeaning: 'unmeasured worker implementation weights; excludes coordination and FINAL review',
   route,
   blocking: [...new Set(blocking)],
   advisories,
+  explanations,
 };
 if (json) console.log(JSON.stringify(summary, null, 2));
 else {
   console.log(`[freeze-check] ${summary.change}`);
-  console.log(`tasks=${tasks.length} waves=${waveList.length} maxWidth=${maxWidth} criticalPath=${waveList.length}`);
-  console.log(`[ROUTE] ${route}${route === 'pipeline' ? ': DAG has real concurrency' : ': no concurrency benefit; use Tier 2 handoff'}`);
-  for (const wave of waveList) console.log(`WAVE ${wave.wave}: ${wave.ids.join(', ')}`);
-  console.log(`CRITICAL ${criticalChain.map((step) => (step.via ? `-${step.via}-> ` : '') + step.id).join(' ')}`);
-  const removable = criticalChain.filter((step) => step.via === 'logical').map((step) => step.id);
-  if (removable.length) console.log(`CRITICAL_LOGICAL_EDGES into ${removable.join(', ')}: author-chosen; drop if a frozen interface in design.md lets them run in parallel`);
+  if (graphValid) {
+    console.log(`tasks=${tasks.length} waves=${waveList.length} maxWidth=${maxWidth} criticalPath=${waveList.length}`);
+    console.log('maxWidth is a wave-width heuristic, not exact maximum concurrency; weighted estimates are unmeasured.');
+    console.log(`[ROUTE] ${route}${route === 'pipeline' ? ': wave-width gate met' : ': wave-width/task-count gate not met; use Tier 2 handoff'}`);
+    for (const wave of waveList) console.log(`WAVE ${wave.wave}: ${wave.ids.join(', ')}`);
+    console.log(`CRITICAL ${criticalChain.map((step) => (step.via ? `-${step.via}-> ` : '') + step.id).join(' ')}`);
+  } else console.log(`[ROUTE] invalid: task graph invalid; fix graph errors before routing`);
   for (const item of summary.advisories) console.log(`ADVISE ${item}`);
   for (const item of summary.blocking) console.error(`BLOCK ${item}`);
+  if (explain) for (const item of summary.explanations) console.error(`EXPLAIN ${item.code}: ${item.reason}\n  fix: ${item.fix}`);
   console.log(summary.blocking.length ? `RESULT freeze rejected (${summary.blocking.length})` : 'RESULT freeze ok');
 }
 process.exit(summary.blocking.length ? 1 : 0);

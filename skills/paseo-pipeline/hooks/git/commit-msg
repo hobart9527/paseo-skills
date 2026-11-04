@@ -2,9 +2,10 @@
 # git commit-msg hook: writer commits get Pipeline-Author = $PASEO_AGENT_ID, never agent-typed.
 # Scope: only commits whose Pipeline-Role trailers are all writer roles. merge/reviewer/plain
 # commits (including merge-task's multi-author merge commit) pass untouched.
-# The stamped id is whoever runs `git commit`. A Lead committing on a sandbox-blocked child's behalf
-# MUST export PASEO_AGENT_ID=<child-full-uuid> for that commit; otherwise the author becomes the Lead
-# and merge-task exits 31. The hook cannot tell Lead from child (no Paseo lookup here), so it never guesses.
+# The stamped id is whoever runs `git commit`. The main session committing on a sandbox-blocked
+# child's behalf MUST export PASEO_AGENT_ID=<child-full-uuid> for that commit; otherwise the author
+# becomes the main session and merge-task exits 31. The hook cannot tell one from the other (no
+# Paseo lookup here), so it never guesses.
 # Install per workspace:  git config core.hooksPath "$PIPELINE_HOME/hooks/git"
 f="$1"
 roles=$(git interpret-trailers --parse "$f" | sed -n 's/^Pipeline-Role:[[:space:]]*//p' | tr 'A-Z' 'a-z')
@@ -18,6 +19,12 @@ fi
 for r in $roles; do
   case "$r" in ceshi|gongbu|gaogong|jiangzuo) ;; *) exit 0 ;; esac
 done
+# Conflict-continue cherry-pick: git runs this hook, but the original trailers are the provenance
+# merge-task verifies against the referenced commit. Preserve them instead of restamping from the
+# agent running `git cherry-pick --continue`.
+if [ -n "$PASEO_AGENT_ID" ] && grep -q 'cherry picked from commit' "$f"; then
+  exit 0
+fi
 if [ -z "$PASEO_AGENT_ID" ]; then
   echo "pipeline: PASEO_AGENT_ID is unset; refusing to author a writer commit with a guessed identity" >&2
   exit 1

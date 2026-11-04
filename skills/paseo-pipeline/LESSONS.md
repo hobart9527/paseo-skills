@@ -6,7 +6,7 @@
 
 > 历史记录：文中的 `run-state.mjs`、`reconcile.mjs`、`task-runner.mjs`、租约/账本等机制已在收敛中移除，现行做法见 `SKILL.md`。不要照搬。
 >
-> 引用前先看条目状态：**§5（contract-check）与 §8 的工具清单整节失效**（`contract-check.mjs`、`reconcile.mjs`、`hotfix.sh`、`dispatch.mjs` 均已删除，§12 记录了下架）；**§2/§3/§7 的 Task Pod、`pod/<name>`、`[ROUTE] ≥6` 已被单一 Lead 与 `freeze-check` 的 pipeline/handoff 两档取代**；**§9.5 的 exit 38 模型门禁已删**（§14.3 说明了为何 provider 不是同源判据）。§10-§14 仍是现行门禁的直接依据。
+> 引用前先看条目状态：**§5（contract-check）与 §8 的工具清单整节失效**（`contract-check.mjs`、`reconcile.mjs`、`hotfix.sh`、`dispatch.mjs` 均已删除，§12 记录了下架）；**§2/§3/§7 的 Task Pod、`pod/<name>`、`[ROUTE] ≥6` 已被单一 Lead 与 `freeze-check` 的 pipeline/handoff 两档取代**；**§9.5 的 exit 38 模型门禁已删**（§14.3 说明了为何 provider 不是同源判据）。§10-§14 仍是现行门禁的直接依据。**单一 worker 改造（2026-11-04）后，§10-§14 中关于 `ceshi` 先行 Red、逐任务审查、reviewer/model 身份门禁（exit 32/33）的记录也只作历史证据**：现行模型是「一个 worker 写测试+实现+窄 Verify+提交，门禁只做机械校验，质量由一次 FINAL 集成审查判定」。引用这些条目时先对照 `SKILL.md`。
 
 ---
 
@@ -340,14 +340,15 @@ Lead 未改写历史，开 `-a2` 分支，由原 ceshi 重提同字节测试、�
 | `freeze-check` 取**最后一条** `R0: pass(...)` | CP-1 后契约增量只能重写第一行，否则 `STALE_R0_SIGNOFF` 死锁 | 签字绑定提交 → 追加即重签，不新增语法 |
 | `freeze-check` 建议项 `CROSS_CHANGE_SCOPE_OVERLAP` | 另一 change 的 `integration/*` 已改同一批文件，到 CP-2 才撞 | 判断性信号 → **仅提示**，不改退出码 |
 | Tier 钩子：`<paseo-system>`/`<task-notification>` 只刷新快照、不提醒、不重置 `turns`/`churnReported`；linked worktree / 功能分支不注入（只看 cwd，不看 `PASEO_AGENT_ID`——人会直连 Paseo）；`assessStop` 补跨作用域核对 | Paseo 把子 agent 通知当 user 消息投递，每条都触发 `[分级提醒]`；Bash 写两个包的文件 PreToolUse 看不到 | 噪声 → 静默；跨作用域与 `assessTierGate` 同口径 |
-| Tier 钩子：`assessStop` 不将 Git 脏文件并回 `seg.files`，自动排除其他活跃会话已认领文件 | Git 脏文件累计把并发 agent / 其他会话产物算入本会话账本，导致本会话后续正常的 PreToolUse 误弹 ask | 全局状态 → 会话隔离：seg.files 仅 PreToolUse 写入，Git 差异仅当轮核对且排除其他会话认领产物 |
+| Tier 钩子：`assessStop` 的跨轮累计从 `seg.files` 改记到私有 `seg.stopFiles`（`assessTierGate` 不读、只透传）；Stop 排除其他活跃会话 `files`/`asked` 已认领的文件 | 2026-11-03 approval-hub 两个并发会话（ec169e36、b43ede9e）：Stop 把共享工作树的 Git 脏文件并进本会话 `files`，本会话后续正常 Write 被误 ask | 全局状态 → 会话隔离；Stop 的 Bash 跨轮累计保留。**局限**：两会话碰同一文件时该文件被排除，Stop 可能漏报；认领窗口取 `DEFAULT_IDLE_MS`。减速带不是沙箱，并发写入的正解仍是 worktree |
 | `commit-msg` 头注释与 `lead.md`：Lead 代提交须 `PASEO_AGENT_ID=<子 agent 全 UUID>` | Lead 替沙箱受限的子 agent 提交，作者被盖成 Lead，`merge-task` exit 31 | 仅文档：shell 钩子无 Paseo 查询，不猜角色 |
 | `reviewer.md` ARBITER：「归下游 T-k」的 OVERRULE 必须引用冻结文件中 T-k 已有该要求的原行，否则 `ESCALATE_HUMAN` | Arbiter 口头 OVERRULE 把 payee-accounts 泄漏推给 T-04/T-05，FINAL 评审随后失败 | 契约缺口 → 走 CP-1 增量，不靠口头 |
 | 模板：`standard|strict` 任务的测试须加载并执行被测代码；`readFileSync` + 正则读生产源码只许 `mechanical` | 源码文本断言「通过」但行为未证 | R0 标契约缺陷、TASK 评审按 `SPEC_VIOLATION` 阻断；**不**进 `merge-task`（§12：文本启发式不与合流门禁同级） |
 | `lead.md`：R2 复用 R1 的同一 reviewer id | R2 另起新 reviewer，丢失 R1 上下文 | 流程约定 |
-| `SKILL.md`：CP-1 遇 `ADVISORY_LOW_SPEEDUP`/`CRITICAL_LOGICAL_EDGES` 必须并列给出 Tier 2；CP-1 后任何契约变更同步 `design.md`、重跑 `--structural`，新接口/安全边界补 `hanlin` R0 | 契约在运行中被口头改动，设计文档与 R0 失效 | 流程约定 |
+| `SKILL.md`：CP-1 遇 `ADVISORY_LOW_SPEEDUP` 必须并列给出 Tier 2；可移除边（`CRITICAL` 的 `-logical->` 步、`ADVISORY_READS_ONLY_EDGE`）只给契约改边选项，不给 Tier 2；CP-1 后任何契约变更同步 `design.md`、重跑 `--structural`，新接口/安全边界补 `hanlin` R0 | 契约在运行中被口头改动，设计文档与 R0 失效；把「DAG 太窄」和「这条边可去」混成一个建议会误导路由 | 流程约定 |
 
 **一进一出**：`lead.md` 里「上限由你执行，`merge-task` 不管」一句已删，改为机制 + 提前自检；旧的「R0 取第一条」行为被取代而非并存。
+Tier 钩子一行同理：删的是 `assessStop` 把 Git 脏文件写回 `seg.files` 的路径（被 `stopFiles` 取代而非并存），没有新增门禁。
 
 **刻意没加 / 已否决**：
 - `speedup < 1.5` → 强制 handoff：标准 4 任务菱形 speedup 就是 1.33，会被一律禁止；保持建议项，只要求 CP-1 并列给出选项。

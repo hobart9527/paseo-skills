@@ -1,5 +1,6 @@
 // Minimal tasks.md parser for the converged pipeline.
 // State lives in git; this module only validates the frozen contract.
+import { dispatchDeps, mergeDeps } from './schedule.mjs';
 
 const TASK_LINE = /^\s*[-*]\s*\[([ xX])\]\s+(?:(?:\d+(?:\.\d+)*)\s+)?([A-Za-z][A-Za-z0-9]*-\d+)(?::\s*|\s+)(.*)$/;
 const FIELD_LINE = /^\s+[-*]\s+([^:]+):\s*(.*)$/;
@@ -9,8 +10,10 @@ const DONE_LINE = /^source=([0-9a-f]{7,40})\s+review=(\S+)$/;
 // Reviewer may be a full UUID or any hex prefix of it. Paseo's own `shortId` is 7
 // characters, so accepting only 8 (or 36 without prefixes) made every real shortId
 // unusable.
-const REVIEWER_ID = String.raw`mechanical|[0-9a-f]{7,40}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`;
+const REVIEWER_ID = String.raw`mechanical|deferred|[0-9a-f]{7,40}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`;
 const REVIEW_TAG = new RegExp(String.raw`^pass\((${REVIEWER_ID})@([0-9a-f]{7,40})\/([0-9a-f]{7,40})\)$`);
+export const REVIEW_MODES = ['standard', 'strict', 'mechanical', 'deferred'];
+const INTERFACE_SYMBOL = /^[^\s#]+$/;
 
 
 export function isTaskId(value) {
@@ -79,7 +82,13 @@ export function parseTasks(markdown) {
         title: title.trim(),
         checked: checked.toLowerCase() === 'x',
         depends: [],
+        uses: [],
         scope: [],
+        reads: [],
+        est: 'M',
+        kind: null,
+        interface: [],
+        riskSurface: [],
         verify: '',
         scenarios: [],
         review: 'standard',
@@ -106,8 +115,34 @@ export function parseTasks(markdown) {
     const key = keyRaw.trim().toLowerCase();
     if (!current) continue;
     if (key === 'depends on') current.depends.push(...splitList(value));
+    else if (key === 'uses') current.uses.push(...splitList(value));
     else if (key === 'write scope') current.scope.push(...splitList(value).map(normalizeScope).filter(Boolean));
-    else if (key === 'verify with') current.verify = (current.verify ? `${current.verify} ${normalizeCommand(value)}` : normalizeCommand(value)).trim();
+    else if (key === 'reads') {
+      for (const item of splitList(value)) {
+        const normalized = normalizeScope(item);
+        if (!normalized) errors.push({ code: 'BAD_READS', task: current.id, message: `bad Reads path: ${item}` });
+        else current.reads.push(normalized);
+      }
+    } else if (key === 'est') {
+      const est = value.trim().toUpperCase();
+      if (est && !['S', 'M', 'L'].includes(est)) errors.push({ code: 'BAD_EST', task: current.id, message: `Est must be S, M or L: ${value}` });
+      else if (est) current.est = est;
+    } else if (key === 'kind') {
+      const kind = value.trim().toLowerCase();
+      if (kind && kind !== 'none' && kind !== 'skeleton') errors.push({ code: 'BAD_KIND', task: current.id, message: `Kind must be skeleton or none: ${value}` });
+      else if (kind === 'skeleton') current.kind = 'skeleton';
+    } else if (key === 'interface') {
+      for (const entry of splitList(value)) {
+        const parts = entry.split('#');
+        const normalized = normalizeScope(parts[0]);
+        const symbol = parts[1] ?? '';
+        if (!normalized || parts.length > 2 || (parts.length === 2 && !INTERFACE_SYMBOL.test(symbol))) {
+          errors.push({ code: 'BAD_INTERFACE', task: current.id, message: `bad Interface entry: ${entry}` });
+        } else current.interface.push(symbol ? `${normalized}#${symbol}` : normalized);
+      }
+    } else if (key === 'risk-surface' || key === 'risk surface') {
+      current.riskSurface.push(...splitList(value.replace(/[\[\]]/g, '')).map((item) => item.toLowerCase()));
+    } else if (key === 'verify with') current.verify = (current.verify ? `${current.verify} ${normalizeCommand(value)}` : normalizeCommand(value)).trim();
     else if (key === 'scen' || key === 'scenarios') current.scenarios.push(...splitList(value));
     else if (key === 'review') current.review = value.trim().toLowerCase() || 'standard';
     else if (key === 'done') {
@@ -121,16 +156,21 @@ export function parseTasks(markdown) {
   for (const task of tasks) {
     if (task.scope.length === 0) errors.push({ code: 'MISSING_SCOPE', task: task.id, message: `${task.id} has no Write scope` });
     if (!task.verify) errors.push({ code: 'MISSING_VERIFY', task: task.id, message: `${task.id} has no Verify with` });
-    if (!['standard', 'strict', 'mechanical'].includes(task.review)) {
+    if (!REVIEW_MODES.includes(task.review)) {
       errors.push({ code: 'UNKNOWN_REVIEW', task: task.id, message: `${task.id} has unknown Review: ${task.review}` });
     }
     for (const dep of task.depends) {
       if (!ids.has(dep)) errors.push({ code: 'UNKNOWN_DEP', task: task.id, message: `${task.id} depends on unknown ${dep}` });
       if (dep === task.id) errors.push({ code: 'SELF_DEP', task: task.id, message: `${task.id} depends on itself` });
     }
+    for (const used of new Set(task.uses)) {
+      if (used === task.id || !ids.has(used)) errors.push({ code: 'USES_UNKNOWN', task: task.id, message: `Uses ${used} must name another task in this file` });
+    }
   }
 
-  const graph = new Map(tasks.map((task) => [task.id, task.depends.filter(ids.has.bind(ids))]));
+  // Every dispatch dependency is reachable through merge edges. Checking their union
+  // catches both dispatch deadlocks and cycles that only block completed merges.
+  const graph = new Map(tasks.map((task) => [task.id, mergeDeps(task).filter((id) => ids.has(id) && id !== task.id)]));
   const state = new Map([...ids].map((id) => [id, 0]));
   const visit = (id, trail = []) => {
     if (state.get(id) === 2) return;
@@ -149,7 +189,7 @@ export function parseTasks(markdown) {
 }
 
 export function graphErrors(errors) {
-  const graphCodes = new Set(['MALFORMED_LINE', 'DUPLICATE_ID', 'UNKNOWN_DEP', 'SELF_DEP', 'CYCLE']);
+  const graphCodes = new Set(['MALFORMED_LINE', 'DUPLICATE_ID', 'UNKNOWN_DEP', 'SELF_DEP', 'USES_UNKNOWN', 'CYCLE']);
   return errors.filter((error) => graphCodes.has(error.code));
 }
 
@@ -218,9 +258,10 @@ export function computeWaves(tasks) {
   const visit = (task) => {
     if (cache.has(task.id)) return cache.get(task.id);
     cache.set(task.id, 0);
-    const wave = task.depends.length === 0
+    const deps = dispatchDeps(task, tasks).filter((id) => byId.has(id));
+    const wave = deps.length === 0
       ? 1
-      : 1 + Math.max(...task.depends.filter((id) => byId.has(id)).map((id) => visit(byId.get(id))));
+      : 1 + Math.max(...deps.map((id) => visit(byId.get(id))));
     cache.set(task.id, wave);
     return wave;
   };
