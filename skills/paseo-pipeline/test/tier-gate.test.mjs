@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { assessTierGate, assessStop, takeSnapshot, logHookError, scopeKey, readDeclaredPlan } from '../lib/tier-gate.mjs';
+import { assessTierGate, assessStop, takeSnapshot, logHookError, scopeKey, readDeclaredPlan, readDeclaredPlanStatus } from '../lib/tier-gate.mjs';
 import { shouldRemind, isSystemNotification, REMINDER } from '../hooks/tier-reminder-hook.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -231,8 +231,10 @@ function runGuardHook(payload, env = {}) {
 
 test('tier-write-hook 进程：第 4 个文件输出 ask JSON，其前不输出', () => withState((dir) => {
   const root = makeRepo();
+  const transcript = path.join(dir, 'transcript');
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { content: 'TIER-PLAN: tier=1 files=src/a' } }));
   const env = { PIPELINE_TIER_GATE_STATE: dir };
-  const call = (n) => runGuardHook({ session_id: 'proc1', tool_name: 'Edit', tool_input: { file_path: path.join(root, 'src', n) } }, env);
+  const call = (n) => runGuardHook({ session_id: 'proc1', transcript_path: transcript, tool_name: 'Edit', tool_input: { file_path: path.join(root, 'src', n) } }, env);
   for (const n of ['a', 'b', 'c']) {
     const r = call(n);
     assert.equal(r.status, 0);
@@ -261,8 +263,210 @@ test('tier-write-hook 进程：声明超限时首次写入直接 deny，不落�
   const out = JSON.parse(r.stdout);
   assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
   assert.match(out.hookSpecificOutput.permissionDecisionReason, /4 个文件/);
-  // 同会话后续无声明写入不受影响：deny 的那一笔没有进账本。
-  assert.equal(runGuardHook({ ...payload, transcript_path: undefined }, { PIPELINE_TIER_GATE_STATE: dir }).stdout.trim(), '');
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { content: 'TIER-PLAN: tier=1 files=src/a' } }));
+  assert.equal(runGuardHook(payload, { PIPELINE_TIER_GATE_STATE: dir }).stdout.trim(), '');
+}));
+
+test('tier-write-hook: missing or unreadable declaration denies with distinct recovery; exemptions remain', () => withState((dir) => {
+  const root = makeRepo();
+  const transcript = path.join(dir, 'transcript');
+  const payload = { session_id: 'missing', transcript_path: transcript, tool_name: 'Write', tool_input: { file_path: path.join(root, 'src/a') } };
+  const call = (p, env = {}) => runGuardHook(p, { PIPELINE_TIER_GATE_STATE: dir, ...env });
+  const decision = (p) => JSON.parse(call(p).stdout).hookSpecificOutput;
+  const unreadable = decision(payload);
+  assert.equal(unreadable.permissionDecision, 'deny');
+  assert.match(unreadable.permissionDecisionReason, /transcript.*读取/);
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'user', message: { content: 'TIER-PLAN: tier=1 files=src/a' } }));
+  const missing = decision(payload);
+  assert.equal(missing.permissionDecision, 'deny');
+  assert.match(missing.permissionDecisionReason, /TIER-PLAN/);
+  assert.doesNotMatch(missing.permissionDecisionReason, /transcript.*读取/);
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { content: 'TIER-PLAN: tier=3 files=src/a' } }));
+  assert.equal(decision({ ...payload, permission_mode: 'bypassPermissions' }).permissionDecision, 'deny');
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { content: 'TIER-PLAN: tier=1 files=none' } }));
+  assert.equal(decision(payload).permissionDecision, 'deny');
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { content: 'TIER-PLAN: tier=1 files=src/a' } }));
+  assert.equal(call(payload).stdout.trim(), '');
+  assert.equal(call({ ...payload, transcript_path: undefined }, { PIPELINE_TIER_GATE: 'off' }).stdout.trim(), '');
+  assert.equal(call({ ...payload, session_id: '' }).stdout.trim(), '');
+  assert.equal(call({ ...payload, transcript_path: undefined, tool_input: { file_path: path.join(root, 'openspec/x') } }).stdout.trim(), '');
+  assert.equal(call({ ...payload, transcript_path: undefined, tool_input: { file_path: path.join(root, '.superpowers/x') } }).stdout.trim(), '');
+  const wt = `${root}-wt`;
+  sh(root, 'worktree', 'add', '-q', '-b', 'task/missing', wt);
+  assert.equal(call({ ...payload, transcript_path: undefined, tool_input: { file_path: path.join(wt, 'src/a') } }).stdout.trim(), '');
+}));
+
+test('tier-write-hook: current turn survives large transcript; old and invalid plans do not', () => withState((dir) => {
+  const root = makeRepo();
+  const transcript = path.join(dir, 'long.jsonl');
+  const entry = (type, content) => JSON.stringify({ type, message: { content } });
+  const plan = entry('assistant', 'TIER-PLAN: tier=1 files=src/a');
+  const payload = { session_id: 'long', transcript_path: transcript, tool_name: 'Edit', tool_input: { file_path: path.join(root, 'src/a') } };
+  const call = () => runGuardHook(payload, { PIPELINE_TIER_GATE_STATE: dir }).stdout.trim();
+  const deny = (reason) => { const result = JSON.parse(call()).hookSpecificOutput; assert.equal(result.permissionDecision, 'deny'); assert.match(result.permissionDecisionReason, reason); };
+  fs.writeFileSync(transcript, [entry('user', 'first task'), plan].join('\n'));
+  assert.equal(call(), '');
+  fs.appendFileSync(transcript, '\n' + entry('assistant', 'x'.repeat(150000)));
+  assert.equal(call(), '');
+  fs.appendFileSync(transcript, '\n' + entry('user', '<paseo-system>notification</paseo-system>'));
+  assert.equal(call(), '');
+  fs.appendFileSync(transcript, '\n' + entry('user', 'new task'));
+  deny(/TIER-PLAN/);
+  fs.appendFileSync(transcript, '\n' + entry('assistant', 'TIER-PLAN: tier=3 files=src/a'));
+  deny(/tier=3/);
+  fs.appendFileSync(transcript, '\n' + entry('assistant', 'TIER-PLAN: tier=1 files=none'));
+  deny(/files/);
+  fs.appendFileSync(transcript, '\n' + plan + '\n' + entry('user', [{ type: 'tool_result', content: 'ok' }]));
+  assert.equal(call(), '');
+}));
+
+test('tier-write-hook: commands, prose and fenced examples do not replace a real plan', () => withState((dir) => {
+  const root = makeRepo();
+  const transcript = path.join(dir, 'commands.jsonl');
+  const entry = (type, content) => JSON.stringify({ type, message: { content } });
+  const payload = { session_id: 'commands', transcript_path: transcript, tool_name: 'Edit', tool_input: { file_path: path.join(root, 'src/a') } };
+  const call = () => runGuardHook(payload, { PIPELINE_TIER_GATE_STATE: dir }).stdout.trim();
+  fs.writeFileSync(transcript, [entry('user', 'implement task'), entry('assistant', 'TIER-PLAN: tier=1 files=src/a'), entry('user', '<command-name>/status</command-name>\n<local-command-stdout>ok</local-command-stdout>'), entry('user', '/status'), entry('assistant', 'Example: TIER-PLAN: tier=2 files=src/a\n```text\nTIER-PLAN: tier=2 files=src/a\n```\n~~~\nTIER-PLAN: tier=3 files=src/a\n~~~\nExample in prose: TIER-PLAN: this is an example')].join('\n'));
+  assert.equal(call(), '');
+  fs.appendFileSync(transcript, '\n' + entry('assistant', 'TIER-PLAN: tier=2 files=src/a is only an example'));
+  assert.match(JSON.parse(call()).hookSpecificOutput.permissionDecisionReason, /TIER-PLAN 无效/);
+  fs.appendFileSync(transcript, '\n' + entry('user', 'different task'));
+  fs.appendFileSync(transcript, '\n' + entry('assistant', 'Example:\n```\nTIER-PLAN: tier=1 files=src/a\n```'));
+  assert.equal(JSON.parse(call()).hookSpecificOutput.permissionDecision, 'deny');
+  fs.appendFileSync(transcript, '\n' + entry('assistant', 'TIER-PLAN: tier=3 files=src/a'));
+  assert.match(JSON.parse(call()).hookSpecificOutput.permissionDecisionReason, /tier=3/);
+  fs.appendFileSync(transcript, '\n' + entry('assistant', 'TIER-PLAN: tier=1 files=src/a'));
+  assert.equal(call(), '');
+  fs.appendFileSync(transcript, '\n' + entry('user', '/some-skill new task'));
+  assert.equal(JSON.parse(call()).hookSpecificOutput.permissionDecision, 'deny');
+}));
+
+test('slash skill transcript resets plan; only known argument-free read-only commands retain it', () => withState((dir) => {
+  const root = makeRepo();
+  const transcript = path.join(dir, 'slash.jsonl');
+  const entry = (type, content) => JSON.stringify({ type, message: { role: type, content: [{ type: 'text', text: content }] } });
+  const plan = entry('assistant', 'TIER-PLAN: tier=1 files=src/a scope=src');
+  const payload = { session_id: 'slash', transcript_path: transcript, tool_name: 'Edit', tool_input: { file_path: path.join(root, 'src/a') } };
+  const call = () => runGuardHook(payload, { PIPELINE_TIER_GATE_STATE: dir }).stdout.trim();
+  const skill = '<command-message>implement</command-message><command-name>/implement</command-name><command-args>新任务</command-args>';
+  fs.writeFileSync(transcript, [entry('user', 'task'), plan, entry('user', skill)].join('\n'));
+  assert.equal(JSON.parse(call()).hookSpecificOutput.permissionDecision, 'deny');
+  for (const event of [
+    '<command-name>/status</command-name>\n<local-command-stdout>ok</local-command-stdout>',
+    '<command-name>/status</command-name><command-args></command-args>',
+    '<command-message>status</command-message><command-name>/status</command-name><command-args></command-args>',
+    '/status',
+  ]) {
+    fs.writeFileSync(transcript, [entry('user', 'task'), plan, entry('user', event)].join('\n'));
+    assert.equal(call(), '', event);
+  }
+  for (const event of ['<command-name>/status</command-name><command-args>do work</command-args>', '<command-message>other</command-message><command-name>/status</command-name><command-args></command-args>', '<command-name>/mystery</command-name>', '<command-message>unknown</command-message>', '/status do work', '/config', '<command-name>/status</command-name>new task']) {
+    fs.writeFileSync(transcript, [entry('user', 'task'), plan, entry('user', event)].join('\n'));
+    assert.equal(JSON.parse(call()).hookSpecificOutput.permissionDecision, 'deny', event);
+  }
+}));
+
+test('malformed declaration after files is invalid rather than missing or inherited', () => withState((dir) => {
+  const file = path.join(dir, 'invalid.jsonl');
+  const entry = (text) => JSON.stringify({ type: 'assistant', message: { content: text } });
+  fs.writeFileSync(file, [entry('TIER-PLAN: tier=1 files=src/a'), entry('TIER-PLAN: tier=1 files=src/a unmarked prose')].join('\n'));
+  assert.equal(readDeclaredPlanStatus(file).status, 'invalid');
+  fs.writeFileSync(file, entry('TIER-PLAN: tier=1 files=src/a unmarked prose'));
+  assert.equal(readDeclaredPlanStatus(file).status, 'invalid');
+}));
+
+test('real built-in command shape keeps the plan; skills and unknown arguments reset it', () => withState((dir) => {
+  const file = path.join(dir, 'ui.jsonl');
+  const entry = (type, text) => JSON.stringify({ type, message: { role: type, content: [{ type: 'text', text }] } });
+  const base = [entry('user', 'task'), entry('assistant', 'TIER-PLAN: tier=1 files=src/a')];
+  // Observed in real transcripts: message tag equals the command name, output is a later entry.
+  for (const [name, arg] of [['model', 'opus'], ['model', ''], ['compact', ''], ['theme', 'dark'], ['config', ''], ['status', '']]) {
+    const real = `<command-message>${name}</command-message>\n<command-name>/${name}</command-name>\n<command-args>${arg}</command-args>`;
+    fs.writeFileSync(file, [...base, entry('user', real), entry('user', '<local-command-stdout>ok</local-command-stdout>')].join('\n'));
+    assert.equal(readDeclaredPlanStatus(file).status, 'found', name);
+  }
+  for (const reset of [
+    '<command-message>implement</command-message><command-name>/implement</command-name><command-args>新任务</command-args>',
+    '<command-message>compact</command-message><command-name>/compact</command-name><command-args>implement task</command-args>',
+    '<command-message>theme</command-message><command-name>/theme</command-name><command-args>make it red</command-args>',
+    '<command-message>model</command-message><command-name>/model</command-name><command-args>two words</command-args>',
+    '/theme dark',
+  ]) {
+    fs.writeFileSync(file, [...base, entry('user', reset)].join('\n'));
+    assert.equal(readDeclaredPlanStatus(file).status, 'missing', reset);
+  }
+}));
+
+test('sidechain traffic neither resets nor replaces the main plan', () => withState((dir) => {
+  const file = path.join(dir, 'side.jsonl');
+  const line = (type, text, extra = {}) => JSON.stringify({ type, ...extra, message: { content: text } });
+  fs.writeFileSync(file, [
+    line('user', 'task'), line('assistant', 'TIER-PLAN: tier=1 files=src/a'),
+    line('user', 'subagent prompt', { isSidechain: true }),
+    line('assistant', 'TIER-PLAN: tier=2 files=src/x', { isSidechain: true }),
+  ].join('\n'));
+  const result = readDeclaredPlanStatus(file);
+  assert.equal(result.status, 'found');
+  assert.deepEqual(result.plan, { tier: 1, files: ['src/a'] });
+}));
+
+test('fences: indented code, unclosed examples and info-string lines never become declarations', () => withState((dir) => {
+  const file = path.join(dir, 'fence.jsonl');
+  const entry = (text) => JSON.stringify({ type: 'assistant', message: { content: text } });
+  const real = 'TIER-PLAN: tier=1 files=src/a';
+  const cases = [
+    [`${real}`, 'Example:\n    ```text\n    TIER-PLAN: tier=2 files=src/x\n    ```'],
+    [`${real}`, '    TIER-PLAN: tier=2 files=src/x'],
+    [`${real}`, 'Example:\n```\n```text\nTIER-PLAN: tier=2 files=src/x\n```\n```'],
+  ];
+  for (const [declared, example] of cases) {
+    fs.writeFileSync(file, [entry(declared), entry(example)].join('\n'));
+    assert.deepEqual(readDeclaredPlanStatus(file).plan, { tier: 1, files: ['src/a'] }, example);
+  }
+  // An unclosed fence in an earlier message must not swallow a later real declaration.
+  for (const open of ['```', '~~~']) {
+    fs.writeFileSync(file, [entry(`Example not closed:\n${open}\nTIER-PLAN: tier=1 files=src/example`), entry('TIER-PLAN: tier=1 files=src/real')].join('\n'));
+    assert.deepEqual(readDeclaredPlanStatus(file).plan, { tier: 1, files: ['src/real'] }, open);
+  }
+  // A closer may be indented.
+  fs.writeFileSync(file, entry('```\nTIER-PLAN: tier=2 files=src/x\n    ```\nTIER-PLAN: tier=1 files=src/a'));
+  assert.deepEqual(readDeclaredPlanStatus(file).plan, { tier: 1, files: ['src/a'] });
+}));
+
+test('file list: duplicates and ./ collapse; quotes, absolute paths and scope after a comma are invalid', () => withState((dir) => {
+  const file = path.join(dir, 'files.jsonl');
+  const entry = (text) => JSON.stringify({ type: 'assistant', message: { content: text } });
+  const parse = (text) => { fs.writeFileSync(file, entry(text)); return readDeclaredPlanStatus(file); };
+  assert.deepEqual(parse('TIER-PLAN: tier=1 files=src/a, src/a, ./src/a, src/b scope=src').plan, { tier: 1, files: ['src/a', 'src/b'] });
+  for (const bad of ['files=src/a,scope=src', 'files="src/a.ts","src/b.ts"', 'files=src/a.ts,"src/b.ts"', 'files=/abs/repo/packages/web/a.ts,/abs/repo/apps/api/b.ts']) {
+    assert.equal(parse(`TIER-PLAN: tier=1 ${bad}`).status, 'invalid', bad);
+  }
+}));
+
+test('malformed standalone declarations invalidate earlier plan, fenced examples do not', () => withState((dir) => {
+  const file = path.join(dir, 'typo.jsonl');
+  const entry = (text) => JSON.stringify({ type: 'assistant', message: { content: text } });
+  for (const line of ['TIER-PLAN: tiers=1 files=src/a', 'TIER-PLAN: tier = 1 files=src/a']) {
+    fs.writeFileSync(file, [entry('TIER-PLAN: tier=1 files=src/a'), entry(line)].join('\n'));
+    assert.equal(readDeclaredPlanStatus(file).status, 'invalid', line);
+    fs.writeFileSync(file, [entry('TIER-PLAN: tier=1 files=src/a'), entry(`\`\`\`text\n${line}\n\`\`\``)].join('\n'));
+    assert.equal(readDeclaredPlanStatus(file).status, 'found', line);
+  }
+}));
+
+test('tier gate does not read declarations for exempt paths', () => withState(() => {
+  const root = makeRepo();
+  const unavailable = () => { throw new Error('must not read transcript'); };
+  for (const target of [path.join(root, 'openspec/x'), path.join(root, '.superpowers/x')]) {
+    assert.equal(assessTierGate({ target, sessionId: 'lazy', loadDeclaration: unavailable }).verdict, 'allow');
+  }
+  const wt = `${root}-lazy-wt`;
+  sh(root, 'worktree', 'add', '-q', '-b', 'task/lazy', wt);
+  assert.equal(assessTierGate({ target: path.join(wt, 'src/a'), sessionId: 'lazy', loadDeclaration: unavailable }).verdict, 'allow');
+  let called = false;
+  const verdict = assessTierGate({ target: path.join(root, 'src/a'), sessionId: 'lazy', loadDeclaration: () => { called = true; return { status: 'missing' }; } });
+  assert.equal(called, true);
+  assert.equal(verdict.verdict, 'deny');
 }));
 
 test('tier-write-hook 进程：非写入工具与坏输入不干预', () => {
@@ -287,6 +491,21 @@ test('readDeclaredPlan：取最后一次声明，缺省与坏格式返回 null',
   assert.equal(readDeclaredPlan(file), null);
   fs.writeFileSync(file, JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'TIER-PLAN: tier=1 files=none scope=src' }] } }));
   assert.deepEqual(readDeclaredPlan(file), { tier: 1, files: [] });
+});
+
+test('plan tolerates spaced lists and trailing notes; bash echoes are not human boundaries', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tier-plan-'));
+  const file = path.join(dir, 'transcript.jsonl');
+  const entry = (type, content) => JSON.stringify({ type, message: { content } });
+  const plan = entry('assistant', 'TIER-PLAN: tier=1 files=src/a, src/b scope=src # narrow fix');
+  for (const declaration of ['TIER-PLAN: tier=1 files=src/a, src/b scope=src', 'TIER-PLAN: tier=1 files=src/a,src/b scope=src narrow fix', 'TIER-PLAN: tier=1 files=src/a,src/b # narrow fix']) {
+    fs.writeFileSync(file, [entry('user', 'task'), entry('assistant', declaration)].join('\n'));
+    assert.deepEqual(readDeclaredPlan(file), { tier: 1, files: ['src/a', 'src/b'] });
+  }
+  fs.writeFileSync(file, [entry('user', 'task'), plan, entry('user', '<bash-input>pwd</bash-input>'), entry('user', '<bash-stdout>/tmp</bash-stdout>')].join('\n'));
+  assert.deepEqual(readDeclaredPlan(file), { tier: 1, files: ['src/a', 'src/b'] });
+  fs.appendFileSync(file, '\n' + entry('user', 'continue'));
+  assert.equal(readDeclaredPlan(file), null);
 });
 
 test('readDeclaredPlan：只认 assistant 文本，提醒示例与工具输出不算声明', () => {

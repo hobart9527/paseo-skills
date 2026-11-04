@@ -10,11 +10,11 @@ async function main() {
   if (!WRITE_TOOLS.has(payload?.tool_name)) return;
   const target = payload?.tool_input?.file_path ?? payload?.tool_input?.notebook_path;
   if (typeof target !== 'string' || !target) return;
-  const { assessTierGate, readDeclaredPlan } = await import('../lib/tier-gate.mjs');
+  const { assessTierGate, readDeclaredPlanStatus } = await import('../lib/tier-gate.mjs');
   const verdict = assessTierGate({
     target,
     sessionId: payload.session_id,
-    declared: readDeclaredPlan(payload.transcript_path),
+    loadDeclaration: () => readDeclaredPlanStatus(payload.transcript_path),
   });
   // ask, not deny, for the running count: deny has no release path, so the model reroutes
   // through Bash. A declared plan that already exceeds Tier 1 is a routing error, so it denies.

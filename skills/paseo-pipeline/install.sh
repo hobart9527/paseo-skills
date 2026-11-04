@@ -30,7 +30,25 @@ selftest() {
   out="$(printf '%s' '{}' | node "$PIPELINE_HOME/hooks/tier-session-hook.mjs" 2>/dev/null)" || return 1
   printf '%s' "$out" | grep -q 'additionalContext' || return 1
   printf '%s' '{"session_id":"selftest","cwd":"/nonexistent"}' | node "$PIPELINE_HOME/hooks/tier-stop-hook.mjs" >/dev/null 2>&1 || return 1
-  printf '%s' '{"tool_name":"Write","tool_input":{"file_path":"/nonexistent/x"},"session_id":"selftest"}' | node "$PIPELINE_HOME/hooks/tier-write-hook.mjs" >/dev/null 2>&1
+  printf '%s' '{"tool_name":"Write","tool_input":{"file_path":"/nonexistent/x"},"session_id":"selftest"}' | node "$PIPELINE_HOME/hooks/tier-write-hook.mjs" >/dev/null 2>&1 || return 1
+  write_gate_probe
+}
+# Probe the write gate in a throwaway primary checkout: no transcript_path must deny with a
+# diagnosis, and a transcript holding a valid TIER-PLAN must allow. This proves the hook's
+# wiring only; whether the live harness sends transcript_path is a runtime fact it cannot check.
+write_gate_probe() {
+  local dir state out rc=0
+  dir="$(mktemp -d)"; state="$(mktemp -d)"
+  git -C "$dir" init -q 2>/dev/null || { rm -rf "$dir" "$state"; return 1; }
+  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"TIER-PLAN: tier=1 files=src/a.ts scope=src"}]}}' > "$dir/transcript.jsonl"
+  local payload='{"tool_name":"Write","tool_input":{"file_path":"'"$dir"'/src/a.ts"},"session_id":"selftest-gate"'
+  out="$(printf '%s' "$payload}" | PIPELINE_TIER_GATE_STATE="$state" node "$PIPELINE_HOME/hooks/tier-write-hook.mjs" 2>/dev/null)" || rc=1
+  printf '%s' "$out" | grep -q '"permissionDecision":"deny"' || rc=1
+  printf '%s' "$out" | grep -q 'transcript' || rc=1
+  out="$(printf '%s' "$payload,\"transcript_path\":\"$dir/transcript.jsonl\"}" | PIPELINE_TIER_GATE_STATE="$state" node "$PIPELINE_HOME/hooks/tier-write-hook.mjs" 2>/dev/null)" || rc=1
+  [ -z "$out" ] || rc=1
+  rm -rf "$dir" "$state"
+  return "$rc"
 }
 if [ "$MODE" = check ]; then
   SETTINGS="${HOME:-}/.claude/settings.json"
@@ -63,6 +81,7 @@ echo "Tier reminder hook command:"
 node "$PIPELINE_HOME/hooks/tier-reminder-hook.mjs" --install-help
 echo "Tier write hook command (PreToolUse, matcher Write|Edit|MultiEdit|NotebookEdit):"
 printf '%s\n' "node $PIPELINE_HOME/hooks/tier-write-hook.mjs"
+echo "Structured writes in primary checkouts require a readable transcript and TIER-PLAN; Bash writes are not intercepted. Hook failures and unsupported inputs fail open; ask is not guaranteed to prompt in bypassPermissions."
 echo "Tier session hook command (SessionStart, matcher startup|resume|compact|clear):"
 printf '%s\n' "node $PIPELINE_HOME/hooks/tier-session-hook.mjs"
 echo "Tier stop hook command (Stop):"

@@ -9,7 +9,7 @@
 // 数它们会让新任务一开工就被拦。
 //
 // 刻意保守，宁可少拦（旧 scope 闸门一致）：
-//   - 不在主 checkout 的 main/master 上（linked worktree、功能分支、游离 HEAD）→ 放行。
+//   - 不在主 checkout（linked worktree）→ 放行；主 checkout 的功能分支和游离 HEAD 仍受限。
 //     Tier 2 的 handoff 写手与 Tier 3 的 Worktree 写手天然落在这里。
 //   - 目标在仓库之外、或在 openspec/ 下 → 放行。Tier 3 的主会话要在主 checkout 写 spec 产物。
 //   - 目标在 .superpowers/（gitignore 的原型/草稿产物）下 → 放行，同属文档类产物。
@@ -61,7 +61,7 @@
 // 就知道要改 5 个文件，第 1 个写入仍必然放行，写到第 4 个才 ask，资源已经花掉。现在提醒 hook
 // 教模型在首次业务写入前输出一行 `TIER-PLAN: tier=1 files=a,b scope=a`（见 readDeclaredPlan），
 // PreToolUse 读到它就在**首次写入**时按计划判定：声明 Tier 2 却在主 checkout 原地写 → deny；
-// 声明 Tier 1 但计划超过上限或跨作用域 → deny。没有声明时退回原来的按已写文件计数（fail-open）。
+// 声明 Tier 1 但计划超过上限或跨作用域 → deny。hook 缺声明或 transcript 不可读时 deny。
 // 刻意不加独立 CLI、PostToolUse 回执、任务生命周期协议或 Bash 写命令解析器：那些是为「防绕过」
 // 造的框架，而这里缺的只是「开工前把计划喂给同一个判定函数」。
 
@@ -275,36 +275,72 @@ function churnReason(turns, threshold) {
   ].join('\n');
 }
 
-const PLAN_TAIL_BYTES = 64 * 1024;
-// 全局正则在 matchAll 里会克隆自身，模块级复用不会互相污染 lastIndex。
-// 声明必须在行首（可带缩进），否则提醒 hook 自己注入的示例也会被当成声明。
-const PLAN_LINE = /^[ \t]*TIER-PLAN:\s*tier=([12])\s+files=([^"\\\n]*)/gm;
+function planLines(text) {
+  const lines = [];
+  let fence = null;
+  for (const line of text.split('\n')) {
+    if (fence) {
+      // CommonMark: a closer is a bare run of the same fence character, any indentation.
+      const closer = line.match(/^\s*(`{3,}|~{3,})\s*$/);
+      if (closer && closer[1][0] === fence[0] && closer[1].length >= fence.length) fence = null;
+      continue;
+    }
+    const opener = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (opener) { fence = opener[1]; continue; }
+    // Four or more leading spaces (or a tab) is an indented code block, not a declaration.
+    if (/^ {0,3}TIER-PLAN:/.test(line)) lines.push(line);
+  }
+  return lines;
+}
+
+function isHumanPrompt(text) {
+  if (typeof text !== 'string' || !text.trim()) return false;
+  const readonly = /^(?:status|help|context|cost|usage)$/i;
+  const plain = text.trim().match(/^\/([\w-]+)$/);
+  if (plain && readonly.test(plain[1])) return false;
+  if (/^\s*<(?:command-name|command-message|command-args)\b/i.test(text)) {
+    const tags = [...text.matchAll(/<(command-name|command-message|command-args|local-command-stdout|local-command-caveat)>([\s\S]*?)<\/\1>/gi)];
+    const remaining = text.replace(/<(command-name|command-message|command-args|local-command-stdout|local-command-caveat)>[\s\S]*?<\/\1>/gi, '').trim();
+    const values = (name) => tags.filter((tag) => tag[1].toLowerCase() === name).map((tag) => tag[2].trim());
+    const names = values('command-name');
+    const messages = values('command-message');
+    const args = values('command-args');
+    // Real transcripts put a built-in command's output in a separate following entry, so the
+    // command entry itself has no same-block stdout. A built-in is recognised by its name and
+    // argument shape; a message tag naming anything else is a skill invocation (a new task).
+    const name = (names[0] || '').toLowerCase();
+    const arg = args[0] || '';
+    const messageOk = messages.length === 0 || (messages.length === 1 && messages[0].toLowerCase() === name.slice(1));
+    if (!remaining && names.length === 1 && messageOk && args.length <= 1) {
+      if ((readonly.test(name.slice(1)) && !arg)
+        || (name === '/model' && /^[\w./-]*$/.test(arg))
+        || (name === '/theme' && /^(?:dark|light|system)?$/i.test(arg))
+        || ((name === '/compact' || name === '/config') && !arg)) return false;
+    }
+    return true;
+  }
+  return !/^\s*<(?:paseo-system|task-notification|local-command-stdout|local-command-caveat|system-reminder|bash-input|bash-stdout|bash-stderr)\b/i.test(text);
+}
 
 /**
- * 从会话 transcript 末尾读出模型最后一次输出的机器可读分级声明：
+ * 从最近一次人类消息之后读出模型最后一次输出的机器可读分级声明：
  *   TIER-PLAN: tier=1 files=src/a.ts,src/b.ts scope=src
  * 提醒 hook 教模型在动手前输出这一行；首次业务写入时按它提前判定，而不是等写完再数。
  * 只认 assistant 文本：工具结果或注入的提醒里出现的示例不算声明。只有整段都不可解析
  * （旧格式 / 纯文本 transcript）时才回退到原始文本匹配。
- * 只读末尾 64KB；读不到、格式不完整或没有声明时返回 null，
- * 调用方退回原来的「按已写文件计数」行为（fail-open）。
+ * 人类消息是近似任务边界；纯文本旧格式无法识别边界。兼容调用方缺声明时返回 null。
  */
 export function readDeclaredPlan(transcriptPath) {
-  if (typeof transcriptPath !== 'string' || transcriptPath === '') return null;
+  return readDeclaredPlanStatus(transcriptPath).plan ?? null;
+}
+
+export function readDeclaredPlanStatus(transcriptPath) {
+  if (typeof transcriptPath !== 'string' || transcriptPath === '') return { status: 'unreadable' };
   let text;
   try {
-    const { size } = fs.statSync(transcriptPath);
-    const fd = fs.openSync(transcriptPath, 'r');
-    try {
-      const start = Math.max(0, size - PLAN_TAIL_BYTES);
-      const buffer = Buffer.alloc(size - start);
-      fs.readSync(fd, buffer, 0, buffer.length, start);
-      text = buffer.toString('utf8');
-    } finally {
-      fs.closeSync(fd);
-    }
+    text = fs.readFileSync(transcriptPath, 'utf8');
   } catch {
-    return null;
+    return { status: 'unreadable' };
   }
   const assistantText = (() => {
     const chunks = [];
@@ -314,6 +350,14 @@ export function readDeclaredPlan(transcriptPath) {
       try { entry = JSON.parse(line); } catch { continue; }
       if (!entry || typeof entry !== 'object') continue;
       parsedAny = true;
+      // Subagent traffic is not the main session's task boundary or declaration.
+      if (entry.isSidechain) continue;
+      if (entry.type === 'user' && !entry.isMeta) {
+        const content = entry.message?.content;
+        const parts = typeof content === 'string' ? [content] : Array.isArray(content)
+          ? content.filter((block) => block?.type === 'text').map((block) => block.text) : [];
+        if (parts.some(isHumanPrompt)) chunks.length = 0;
+      }
       if (entry.type !== 'assistant') continue;
       const content = entry.message?.content;
       if (typeof content === 'string') chunks.push(content);
@@ -321,16 +365,23 @@ export function readDeclaredPlan(transcriptPath) {
     }
     // 没有任何可解析的 JSON 行：兼容纯文本 transcript。有 JSON 但没有 assistant 条目时
     // 返回空串——此时任何示例都来自用户侧或工具输出，不能当声明。
-    return parsedAny ? chunks.join('\n') : text;
+    return parsedAny ? chunks : [text];
   })();
-  const matches = [...assistantText.matchAll(PLAN_LINE)];
-  if (matches.length === 0) return null;
-  const [, tier, rawFiles] = matches[matches.length - 1];
-  // 声明可能被嵌在 JSON 字符串里；scope 等后续字段不能粘进最后一个文件名。
-  const cut = rawFiles.search(/\s+\w+=/);
-  const files = (cut >= 0 ? rawFiles.slice(0, cut) : rawFiles)
-    .split(',').map((f) => f.trim()).filter((f) => f && f !== 'none');
-  return { tier: Number(tier), files };
+  // Fences are scoped to one text block, so an unclosed example cannot swallow a later declaration.
+  const matches = assistantText.flatMap(planLines);
+  if (matches.length === 0) return { status: 'missing' };
+  const line = matches[matches.length - 1];
+  const parsed = line.match(/^[ \t]*TIER-PLAN:\s*tier=(\S+)\s+files=([^\s,]+(?:\s*,\s*[^\s,]+)*)(?:\s+scope=\S+(?:\s+.*)?|\s+#.*)?\s*$/);
+  if (!parsed || !['1', '2'].includes(parsed[1])) {
+    return { status: 'invalid', reason: `声明格式或 tier 无效：${line.slice(0, 200)}` };
+  }
+  const [, tier, rawFiles] = parsed;
+  // The file list ends before scope or an explicit comment.
+  const files = [...new Set(rawFiles.split(',').map((f) => f.trim().replace(/^(?:\.\/)+/, '')).filter((f) => f && f !== 'none'))];
+  const badFile = files.find((f) => /["'`=]/.test(f) || path.isAbsolute(f));
+  if (badFile) return { status: 'invalid', reason: `files 须是不带引号的仓库相对路径（scope= 前不要加逗号）：${badFile}` };
+  const plan = { tier: Number(tier), files };
+  return files.length ? { status: 'found', plan } : { status: 'invalid', reason: '声明 files 为空或为 none', plan };
 }
 
 function planDenyReason(declared, files, scopes, limit) {
@@ -347,11 +398,11 @@ function planDenyReason(declared, files, scopes, limit) {
 /**
  * 判定一次写入。通过时把目标记入本会话账本，所以调用方每次写入只应调用一次。
  *
- * @param {{target: string, sessionId?: string, declared?: {tier: 1|2, files: string[]}}} input
- *   declared 来自 readDeclaredPlan：有它就在首次写入前按计划判定；没有就按已写文件计数。
+ * @param {{target: string, sessionId?: string, declared?: {tier: 1|2, files: string[]}, declarationStatus?: string}} input
+ *   hook 传入 declarationStatus；旧调用方未传时仍按已写文件计数。
  * @returns {{verdict: 'allow'|'ask'|'deny', reason?: string, note?: string}}
  */
-export function assessTierGate({ target, sessionId, declared }) {
+export function assessTierGate({ target, sessionId, declared, declarationStatus, declarationError, loadDeclaration }) {
   if (process.env.PIPELINE_TIER_GATE === 'off') return { verdict: 'allow', note: 'gate off' };
   if (typeof sessionId !== 'string' || sessionId === '') return { verdict: 'allow', note: 'no session id' };
   if (typeof target !== 'string' || target === '') return { verdict: 'allow', note: 'no target' };
@@ -366,6 +417,23 @@ export function assessTierGate({ target, sessionId, declared }) {
   // 可视化原型/草稿目录：gitignore 里的一次性产物（brainstorm 原型页等），
   // 不进仓库、不参与构建，与 openspec/ 同属「写多少都不算越级」的文档类产物。
   if (rel === '.superpowers' || rel.startsWith('.superpowers/')) return { verdict: 'allow', note: 'gitignored scratch artifact' };
+
+  if (typeof loadDeclaration === 'function') {
+    const result = loadDeclaration();
+    declared = result.plan;
+    declarationStatus = result.status;
+    declarationError = result.reason;
+  }
+
+  if (declarationStatus === 'unreadable') {
+    return { verdict: 'deny', reason: '[tier-gate] 无法读取会话 transcript，无法核验 TIER-PLAN。检查 hook 的 transcript_path 和读取权限，恢复后重新声明并重试；不要改用 Bash 绕过。' };
+  }
+  if (declarationStatus === 'missing') {
+    return { verdict: 'deny', reason: '[tier-gate] 未找到有效 TIER-PLAN。每条人工消息后须重新声明实际计划（包括继续修改已计数文件），例如 TIER-PLAN: tier=1 files=src/a.ts scope=src；不要改用 Bash 绕过。' };
+  }
+  if (declarationStatus === 'invalid') {
+    return { verdict: 'deny', reason: `[tier-gate] TIER-PLAN 无效：${declarationError}。请输出有效声明后重试；Tier 2 须在隔离 worktree 执行。` };
+  }
 
   // 开工前声明：首次写入就按计划判定，而不是写到第 4 个文件才反应。
   if (declared && Array.isArray(declared.files) && declared.files.length > 0) {
