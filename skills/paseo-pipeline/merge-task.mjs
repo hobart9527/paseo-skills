@@ -18,7 +18,7 @@ import { missingDependency, dependencyMessage } from './lib/toolchain.mjs';
 // `ceshi` stays accepted so branches authored before this change still carry valid
 // provenance; new work uses one of the worker roles.
 const WRITER_ROLES = new Set(['gongbu', 'gaogong', 'jiangzuo', 'ceshi']);
-const usage = 'Usage: merge-task.mjs <branch> <task-id> [<legacy-review-tag>] [--timeout ms]';
+const usage = 'Usage: merge-task.mjs <branch> <task-id> [<legacy-review-tag>] [--timeout ms] [--allow-test-infra]';
 let mergeState = null;
 function fail(message, code = 1) {
   if (mergeState) {
@@ -89,7 +89,7 @@ const timing = {};
 const startedAt = Date.now();
 // --allow-attempt-over: a human approved attempts beyond the -a3 circuit breaker.
 let parsedArgs;
-try { parsedArgs = parseOptions(process.argv.slice(2), { timeout: 'value', 'allow-attempt-over': 'boolean' }); }
+try { parsedArgs = parseOptions(process.argv.slice(2), { timeout: 'value', 'allow-attempt-over': 'boolean', 'allow-test-infra': 'boolean' }); }
 catch (error) { fail(error.message, 2); }
 const allowAttemptOver = !!parsedArgs.options['allow-attempt-over'];
 const timeoutRaw = parsedArgs.options.timeout ?? '1800000';
@@ -158,6 +158,13 @@ if (gitMaybe(['merge-base', '--is-ancestor', base, preMergeHead]).status !== 0) 
 }
 
 const files = gitMaybe(['diff', '--name-only', '-z', '--no-renames', `${base}..${tip}`]).stdout.split('\0').filter(Boolean);
+function auditTestInfra(changedFiles) {
+  return changedFiles.filter((file) => /(?:^|\/)test\/setup\//.test(file) || /(?:^|\/)(?:jest|vitest)\.config\.[^/]+$/.test(file));
+}
+const testInfra = auditTestInfra(files);
+if (testInfra.length && !parsedArgs.options['allow-test-infra']) {
+  fail(`test infrastructure changes require human approval (--allow-test-infra): ${testInfra.join(', ')}`, 38);
+}
 for (const file of files) {
   if (!isFileWithinScopes(file, task.scope)) fail(`${file} is outside ${taskId} Write scope`, 30);
 }

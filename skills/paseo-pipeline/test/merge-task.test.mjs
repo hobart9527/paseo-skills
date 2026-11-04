@@ -372,3 +372,33 @@ test('timeout accepts separate and equals forms and rejects invalid values', () 
     assert.equal(r.status, 2, `${flag}: ${r.out}`);
   }
 });
+
+test('test infrastructure requires explicit human override', () => {
+  for (const file of ['packages/web/test/setup/jsdom.ts', 'vitest.config.ts', 'nested/jest.config.js']) {
+    const f = taggedFixture(`- [ ] T-01 task\n  - Write scope: packages,vitest.config.ts,nested,src,test\n  - Verify with: ${GREEN}\n`);
+    write(f.cwd, file, 'changed');
+    write(f.cwd, 'test/a.test.mjs', PASSING_TEST);
+    write(f.cwd, 'src/a.txt', 'a');
+    git(f.cwd, 'add', '.');
+    git(f.cwd, 'commit', '-qm', `work\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
+    git(f.cwd, 'switch', '-q', `integration/${f.change}`);
+    const args = [`task/${f.change}/T-01`, 'T-01'];
+    const denied = invoke(f.cwd, args);
+    assert.equal(denied.status, 38, denied.out);
+    assert.match(denied.out, /test infrastructure changes require human approval/);
+    const allowed = invoke(f.cwd, [...args, '--allow-test-infra']);
+    assert.equal(allowed.status, 0, allowed.out);
+  }
+});
+
+test('ordinary test files do not trigger test infrastructure gate', () => {
+  const f = taggedFixture(`- [ ] T-01 task\n  - Write scope: src,test\n  - Verify with: ${GREEN}\n`);
+  write(f.cwd, 'src/a.test.ts', 'test');
+  write(f.cwd, 'test/a.test.mjs', PASSING_TEST);
+  write(f.cwd, 'src/a.txt', 'a');
+  git(f.cwd, 'add', '.');
+  git(f.cwd, 'commit', '-qm', `work\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
+  git(f.cwd, 'switch', '-q', `integration/${f.change}`);
+  const result = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01']);
+  assert.equal(result.status, 0, result.out);
+});

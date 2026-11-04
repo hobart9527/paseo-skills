@@ -31,6 +31,8 @@ selftest() {
   printf '%s' "$out" | grep -q 'additionalContext' || return 1
   printf '%s' '{"session_id":"selftest","cwd":"/nonexistent"}' | node "$PIPELINE_HOME/hooks/tier-stop-hook.mjs" >/dev/null 2>&1 || return 1
   printf '%s' '{"tool_name":"Write","tool_input":{"file_path":"/nonexistent/x"},"session_id":"selftest"}' | node "$PIPELINE_HOME/hooks/tier-write-hook.mjs" >/dev/null 2>&1 || return 1
+  out="$(printf '%s' '{"tool_name":"mcp__paseo__list_agents","tool_input":{"serverId":"self"}}' | node "$PIPELINE_HOME/hooks/tool-guard-hook.mjs" 2>/dev/null)" || return 1
+  printf '%s' "$out" | grep -q '"permissionDecision":"deny"' || return 1
   write_gate_probe
 }
 # Probe the write gate in a throwaway primary checkout: no transcript_path must deny with a
@@ -59,6 +61,7 @@ if [ "$MODE" = check ]; then
     && grep -Fq "node $PIPELINE_HOME/hooks/tier-reminder-hook.mjs" "$SETTINGS" \
     && grep -Fq "node $PIPELINE_HOME/hooks/tier-session-hook.mjs" "$SETTINGS" \
     && grep -Fq "node $PIPELINE_HOME/hooks/tier-stop-hook.mjs" "$SETTINGS" \
+    && grep -Fq "node $PIPELINE_HOME/hooks/tool-guard-hook.mjs" "$SETTINGS" \
     && selftest \
     && exit 0
   exit 1
@@ -82,6 +85,8 @@ node "$PIPELINE_HOME/hooks/tier-reminder-hook.mjs" --install-help
 echo "Tier write hook command (PreToolUse, matcher Write|Edit|MultiEdit|NotebookEdit):"
 printf '%s\n' "node $PIPELINE_HOME/hooks/tier-write-hook.mjs"
 echo "Structured writes in primary checkouts require a readable transcript and TIER-PLAN; Bash writes are not intercepted. Hook failures and unsupported inputs fail open; ask is not guaranteed to prompt in bypassPermissions."
+echo "Tool guard hook command (PreToolUse, matcher Bash|mcp__.*):"
+printf '%s\n' "node $PIPELINE_HOME/hooks/tool-guard-hook.mjs"
 echo "Tier session hook command (SessionStart, matcher startup|resume|compact|clear):"
 printf '%s\n' "node $PIPELINE_HOME/hooks/tier-session-hook.mjs"
 echo "Tier stop hook command (Stop):"

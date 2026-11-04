@@ -935,3 +935,49 @@ test('hook 异常写入 errors.log，而不是静默吞掉', () => withState((di
   assert.match(log, /probe/);
   assert.match(log, /boom/);
 }));
+
+const TOOL_GUARD = path.join(here, '..', 'hooks', 'tool-guard-hook.mjs');
+function toolGuard(payload) {
+  const result = spawnSync('node', [TOOL_GUARD], { input: JSON.stringify(payload), encoding: 'utf8', env: cleanEnv() });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout ? JSON.parse(result.stdout).hookSpecificOutput : {};
+}
+
+test('tool guard reminds only for CLI dispatch without a wait', () => {
+  const bash = (command) => toolGuard({ tool_name: 'Bash', tool_input: { command } });
+  assert.match(bash('paseo run x').additionalContext, /no completion callback/);
+  for (const command of ['paseo run --wait x', 'paseo ls', 'paseo send x; paseo wait x --timeout 540']) {
+    assert.deepEqual(bash(command), {});
+  }
+});
+
+test('tool guard rejects invalid local server IDs', () => {
+  for (const serverId of ['self', 'local', ' LOCALHOST ', '']) {
+    assert.equal(toolGuard({ tool_name: 'mcp__paseo__list_agents', tool_input: { serverId } }).permissionDecision, 'deny');
+  }
+  for (const tool_input of [{ serverId: 'srv_AdzDXaf59gwG' }, {}]) {
+    assert.deepEqual(toolGuard({ tool_name: 'mcp__paseo__list_agents', tool_input }), {});
+  }
+});
+
+test('tool guard breaks consecutive identical MCP failures', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tool-guard-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const transcript_path = path.join(dir, 'transcript.jsonl');
+  const name = 'mcp__example__call';
+  const pair = (id, input, is_error) => [
+    { message: { content: [{ type: 'tool_use', id, name, input }] } },
+    { message: { content: [{ type: 'tool_result', tool_use_id: id, is_error }] } },
+  ];
+  const run = (records, input = { a: 1, nested: { x: 1, y: 2 } }) => {
+    fs.writeFileSync(transcript_path, records.map(JSON.stringify).join('\n'));
+    return toolGuard({ tool_name: name, tool_input: input, transcript_path });
+  };
+  const input = { nested: { y: 2, x: 1 }, a: 1 };
+  const failures = [1, 2, 3].flatMap((id) => pair(String(id), input, true));
+  assert.equal(run(failures).permissionDecision, 'deny');
+  assert.deepEqual(run(failures, { a: 2 }), {});
+  assert.deepEqual(run([...failures, ...pair('4', input, false)]), {});
+  assert.deepEqual(run([...failures, ...pair('4', { a: 2 }, true)]), {});
+  assert.deepEqual(toolGuard({ tool_name: name, tool_input: input, transcript_path: path.join(dir, 'missing') }), {});
+});
