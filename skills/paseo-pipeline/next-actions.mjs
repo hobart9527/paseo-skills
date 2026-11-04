@@ -85,13 +85,13 @@ for (const ref of refs) {
   const id = ref.slice(`task/${change}/`.length).replace(/-a\d+$/, '');
   if (!tasks.some((task) => task.id === id)) continue;
   const entry = branches[id] ?? { attempts: 0, implementationCommits: 0, ownCommits: 0 };
-  // Every branch is an attempt, even one with no commits yet: `lead.md` caps a task at 3
-  // branches and `merge-task` refuses `-a4`, so counting only non-empty branches would let
+  // Every branch is an attempt, even one with no commits yet: `merge-task` caps a task at 3
+  // branches and refuses `-a4`, so counting only non-empty branches would let
   // the breaker drift from both.
   entry.attempts += 1;
   // Only this attempt's own commits count. Branching from the integration tip carries
   // every earlier merge commit, and those trailers are not this task's work: counting
-  // them made a fresh Red-only branch look implemented, so the Lead dispatched a
+  // them made a fresh Red-only branch look implemented, so the main session dispatched a
   // reviewer before the writer and the merge died at exit 31.
   const base = integrationSha ? gitMaybe(['merge-base', integrationSha, `refs/heads/${ref}`]) : null;
   const range = base ? `${base}..refs/heads/${ref}` : `refs/heads/${ref}`;

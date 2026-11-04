@@ -3,13 +3,13 @@
 # 派生自 OpenSpec 1.8.0 内置的 `spec-driven`（`@fission-ai/openspec/schemas/spec-driven/schema.yaml`）。OpenSpec schema 是**整份替换**，
 # 不是叠加，所以这里必须连 proposal/specs/design 一起保留。
 #
-# 与上游的差异（只有三处，其余逐字相同）：
+# 与上游的差异（只有五处，其余逐字相同）：
 #   1. tasks 的 instruction 与 templates/tasks.md 改成 pipeline 可解析的任务格式。
 #      上游只要求 `- [ ] X.Y 描述`，parseTasks 需要 `T-xx` 编号 + 元数据子字段；
 #      这个差距实测导致「validate --strict 通过、parseTasks 解析出 0 个任务」。
 #   2. specs 的 instruction 追加 SCEN- 编号要求（freeze-check 按编号对账）。
 #   3. 新增 acceptance 产物（冻结的业务验收矩阵，人类 CP-2 验收消费）。
-#   4. 新增 digest（chanpin 的代码库全景）与 review（hanlin 的 R0 签署）产物，
+#   4. 新增 digest（gongbu 的代码库全景）与 review（hanlin 的 R0 签署）产物，
 #      让 `openspec status` 看到 author.md / freeze-check 实际要求的全部文件。
 #   5. design 额外 requires specs：流程是 gaogong 读已提交的 spec 再写设计。
 #
@@ -158,7 +158,7 @@ artifacts:
     description: Codebase digest the design and task authors rely on
     template: digest.md
     instruction: |
-      Written by `chanpin` (templates/author.md Mode SPEC) alongside the spec.
+      Written by `gongbu` (templates/author.md) alongside the spec.
       Record, with `path:line` evidence: relevant modules, exported symbols, call sites,
       existing tests and fixtures, and baseline known failures. The design's Impact Inventory
       and every task's Write scope are checked against this, so claims without evidence
