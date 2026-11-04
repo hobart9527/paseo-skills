@@ -33,15 +33,16 @@ function readJson(file) {
 function exists(...parts) {
   return fs.existsSync(path.join(...parts));
 }
-function walkFiles(dir, depth, visit) {
+function walkFiles(dir, depth, visit, stopAtNodePackages = false) {
   if (depth > MAX_DEPTH + 2) return;
   let entries;
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  if (stopAtNodePackages && depth > 0 && entries.some((entry) => entry.isFile() && entry.name === 'package.json')) return;
   for (const entry of entries) {
     if (entry.isSymbolicLink()) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (!SKIP_DIRS.has(entry.name)) walkFiles(full, depth + 1, visit);
+      if (!SKIP_DIRS.has(entry.name)) walkFiles(full, depth + 1, visit, stopAtNodePackages);
     } else if (entry.isFile()) {
       visit(entry.name, full);
     }
@@ -117,7 +118,7 @@ function isUiPackage(dir, pkg, deps) {
   let uiSource = false;
   walkFiles(dir, 0, (name) => {
     if (/\.(?:jsx|tsx|vue|svelte)$/i.test(name)) uiSource = true;
-  });
+  }, true);
   return uiSource;
 }
 

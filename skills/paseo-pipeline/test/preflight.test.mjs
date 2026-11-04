@@ -22,6 +22,50 @@ function run(cwd, extra = []) {
   return { status: result.status, stdout: result.stdout, stderr: result.stderr, out: `${result.stdout}${result.stderr}` };
 }
 
+test('preflight: UI source belongs to its nearest package.json', () => {
+  const cwd = repo({
+    'package.json': { name: 'root', private: true, workspaces: ['packages/*'] },
+    'node_modules/.keep': '',
+    'packages/web/package.json': { name: 'web', devDependencies: { jsdom: '^24' } },
+    'packages/web/src/App.tsx': 'export default () => null;\n',
+    'packages/web/nested/package.json': { name: 'nested' },
+    'packages/web/nested/Widget.vue': '<template />\n',
+  });
+  const result = run(cwd, ['--json', '--strict']);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.packages.find((pkg) => pkg.path === '.').ui, false);
+  assert.equal(report.packages.find((pkg) => pkg.path === 'packages/web').ui, true);
+  assert.equal(report.packages.find((pkg) => pkg.path === 'packages/web/nested').ui, true);
+  assert.deepEqual(report.findings.filter((item) => item.code === 'WAVE0_BASELINE').map((item) => item.package), ['packages/web/nested']);
+  assert.equal(result.status, 1);
+});
+
+test('preflight: root UI source outside nested packages still requires DOM', () => {
+  const cwd = repo({
+    'package.json': { name: 'root', workspaces: ['packages/*'] },
+    'src/components/App.tsx': 'export default () => null;\n',
+    'packages/web/package.json': { name: 'web', devDependencies: { jsdom: '^24' } },
+    'packages/web/App.tsx': 'export default () => null;\n',
+  });
+  const report = JSON.parse(run(cwd, ['--json', '--strict']).stdout);
+  assert.equal(report.packages.find((pkg) => pkg.path === '.').ui, true);
+  assert.deepEqual(report.findings.filter((item) => item.code === 'WAVE0_BASELINE').map((item) => item.package), ['.']);
+});
+
+test('preflight: nested package UI does not make its parent UI', () => {
+  const cwd = repo({
+    'package.json': { name: 'root' },
+    'packages/parent/package.json': { name: 'parent' },
+    'packages/parent/nested/package.json': { name: 'nested', devDependencies: { jsdom: '^24' } },
+    'packages/parent/nested/App.jsx': 'export default null;\n',
+  });
+  const report = JSON.parse(run(cwd, ['--json']).stdout);
+  assert.equal(report.packages.find((pkg) => pkg.path === '.').ui, false);
+  assert.equal(report.packages.find((pkg) => pkg.path === 'packages/parent').ui, false);
+  assert.equal(report.packages.find((pkg) => pkg.path === 'packages/parent/nested').ui, true);
+  assert.equal(report.findings.some((item) => item.code === 'WAVE0_BASELINE'), false);
+});
+
 test('preflight: a UI package with no DOM environment yields a concrete WAVE0_BASELINE finding', () => {
   const cwd = repo({
     'package.json': { name: 'root', private: true, workspaces: ['packages/*'] },
