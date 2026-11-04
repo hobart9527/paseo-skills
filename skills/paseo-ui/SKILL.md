@@ -186,7 +186,7 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
 3. **改前截图**：`capture.mjs --serve '<预览命令> {port}' --port auto --out ./captures/before`。存量低分页面此步会以**退出码 3** 结束，属预期采集结果；以生成 `captures/before/capture-manifest.json` 为准，不要重试。
 4. **组装 Brief 并执行**：
    - 编码 Brief 极简三段式：**Surface Mode 声明** + **第一层胶囊 `brief-rules.md` 全文** + **路由表第二层切片绝对路径**。
-   - L-1/L-2 在 `create_workspace(isolation: "worktree", branchName: "ui/<track>-<target>")` 中执行。
+   - L-1/L-2 在 `create_workspace(isolation: "worktree", mode: "branch-off", branchName: "ui/<track>-<target>", baseBranch: "refs/heads/main", path: <主仓库路径>)` 中执行。
 5. **自动门禁闭环**：
    - `package.json` 构建与测试脚本退出码全为 0；
    - 跑改后截图 `--out ./captures/after --baseline ./captures/before/capture-manifest.json`：**`capture.mjs` 退出码必须为 0（绝对模式 CHI ≥ 90，或基线模式 CHI_after ≥ CHI_before 非退化且无新增缺陷）**。解除存量低分工程中局部快轨死锁。
@@ -223,7 +223,7 @@ node ~/.claude/skills/paseo-ui/capture.mjs <url> --out ./captures/<phase> \
 4. **★ 确认点 1**：方案与 Suggest 块呈人类拍板；确认后写入 `DESIGN.md` 与 `PRODUCT.md` 一起冻结。**Interaction Contract 矩阵随宪法冻结，作为 Stage 2 必读输入**。
 
 ### Stage 2: 独立工程编码与硬化（Build & Harden）
-1. **隔离环境**：`create_workspace(isolation: "worktree", branchName: "ui/<feature>")`。
+1. **隔离环境**：`create_workspace(isolation: "worktree", mode: "branch-off", branchName: "ui/<feature>", baseBranch: "refs/heads/main", path: <主仓库路径>)`。
 2. **改前截图**（存量页面）：编排者在 worktree 跑 `capture.mjs --serve ... --out ./captures/before`。
 3. **派发 Builder 落地**：
    - Brief 组装：**Surface Mode 声明** + **Stage 1 冻结的 Interaction Contract 矩阵** + **第一层胶囊 `brief-rules.md` 全文** + **路由表第二层切片绝对路径（总量 ≤12KB）**。

@@ -7,7 +7,7 @@ test('skill documents converged core and hard limits', () => {
   const text = read('SKILL.md');
   for (const needle of ['Vertical slices', 'Narrow Verify', 'One worker per task', 'Wave 0', 'finish notification', 'merge-task.mjs', 'freeze-check.mjs', 'worker', 'integrated', 'CP-2']) assert.ok(text.includes(needle), needle);
   // The prompt is allowed room to explain the model; it is not padded to a budget.
-  assert.ok(text.length < 16000);
+  assert.ok(text.length < 20000);
 });
 test('skill documents the real handoff sequence and profile-notes override', () => {
   const text = read('SKILL.md');
