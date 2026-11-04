@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { checklistForSurfaces } from '../lib/adversarial.mjs';
+import { checklistForSurfaces } from '../../../benchmarks/pipeline/tools/adversarial.mjs';
 
 // One call per case: every risk surface, an unknown surface, explicit `none`,
 // and a task with no Risk-surface field at all.

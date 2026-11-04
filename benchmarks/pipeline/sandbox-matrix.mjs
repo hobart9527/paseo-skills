@@ -18,7 +18,7 @@ import { SCENARIOS, renderTasks, legacyTasks, scenarioFiles } from './scenarios.
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pipeline = path.resolve(here, '../../skills/paseo-pipeline');
-const bin = (name) => path.join(pipeline, name);
+const bin = (name) => path.join(here, 'tools', name);
 const libDir = path.join(pipeline, 'lib');
 const { simulate, DEFAULT_MODEL } = await import(path.join(libDir, 'schedule.mjs'));
 const { parseTasks } = await import(path.join(libDir, 'tasks.mjs'));

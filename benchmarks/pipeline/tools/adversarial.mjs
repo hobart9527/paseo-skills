@@ -1,8 +1,8 @@
 // Fixed adversarial checklist per `Risk-surface`. Deterministic: the same declaration
-// always yields the same cases, so a review can diff attempts. `brief.mjs tester`
+// always yields the same cases, so a review can diff attempts. `brief.mjs worker`
 // renders this table into the child prompt; there is no separate ceremony script.
 
-// One entry per risk surface. Each line is a concrete case a `ceshi` test can encode,
+// One entry per risk surface. Each line is a concrete case the worker's tests can encode,
 // not a vague instruction. Order is stable so repeated runs are diff-clean.
 const CHECKLISTS = {
   persistence: [

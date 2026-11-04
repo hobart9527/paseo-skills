@@ -2,9 +2,10 @@
 # git commit-msg hook: writer commits get Pipeline-Author = $PASEO_AGENT_ID, never agent-typed.
 # Scope: only commits whose Pipeline-Role trailers are all writer roles. merge/reviewer/plain
 # commits (including merge-task's multi-author merge commit) pass untouched.
-# The stamped id is whoever runs `git commit`. A Lead committing on a sandbox-blocked child's behalf
-# MUST export PASEO_AGENT_ID=<child-full-uuid> for that commit; otherwise the author becomes the Lead
-# and merge-task exits 31. The hook cannot tell Lead from child (no Paseo lookup here), so it never guesses.
+# The stamped id is whoever runs `git commit`. The main session committing on a sandbox-blocked
+# child's behalf MUST export PASEO_AGENT_ID=<child-full-uuid> for that commit; otherwise the author
+# becomes the main session and merge-task exits 31. The hook cannot tell one from the other (no
+# Paseo lookup here), so it never guesses.
 # Install per workspace:  git config core.hooksPath "$PIPELINE_HOME/hooks/git"
 f="$1"
 roles=$(git interpret-trailers --parse "$f" | sed -n 's/^Pipeline-Role:[[:space:]]*//p' | tr 'A-Z' 'a-z')

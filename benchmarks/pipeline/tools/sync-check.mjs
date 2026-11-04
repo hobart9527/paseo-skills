@@ -4,7 +4,7 @@
 // In the task worktree: merge the integration branch with --no-commit --no-ff, run
 // the frozen Verify, then always abort the merge. The worktree is left exactly as it
 // was found, so a failed rehearsal costs nothing and reveals the conflict before the
-// Lead discovers it at merge time.
+// main session discovers it at merge time.
 //
 // Exit: 0 no conflicts and Verify passed; 2 conflicts; 3 Verify failed; 4 environment
 // fault (missing dependency, not a task failure); 1 setup/usage error.
@@ -12,10 +12,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { parseTasks } from './lib/tasks.mjs';
-import { missingDependency, dependencyMessage } from './lib/toolchain.mjs';
-import { runGit } from './lib/git.mjs';
-import { argValue, positionalArgs } from './lib/cli.mjs';
+import { parseTasks } from '../../../skills/paseo-pipeline/lib/tasks.mjs';
+import { missingDependency, dependencyMessage } from '../../../skills/paseo-pipeline/lib/toolchain.mjs';
+import { runGit } from '../../../skills/paseo-pipeline/lib/git.mjs';
+import { argValue, positionalArgs } from '../../../skills/paseo-pipeline/lib/cli.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');

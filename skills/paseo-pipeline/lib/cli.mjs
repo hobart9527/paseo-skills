@@ -46,4 +46,4 @@ export function parseOptions(args, schema) {
   return { positional, options };
 }
 
-export const planOptions = { json: 'boolean', 'worker-cap': 'value', 'writer-cap': 'value', 'reviewer-cap': 'value', 'idle-minutes': 'value', 'other-change': 'repeat' };
+export const planOptions = { json: 'boolean', 'worker-cap': 'value', 'idle-minutes': 'value', 'other-change': 'repeat' };

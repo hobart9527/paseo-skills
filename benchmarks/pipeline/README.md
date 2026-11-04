@@ -122,7 +122,7 @@ the single auditable writer that makes `merge-task` trustworthy. Decision: keep 
 serial writer; optimize the DAG (drop advisory edges) instead of the merge
 mechanism.
 
-`skills/paseo-pipeline/merge-queue.mjs` remains the read-only pre-merge probe:
+`benchmarks/pipeline/tools/merge-queue.mjs` remains the read-only pre-merge probe:
 `merge-queue.mjs <change-dir>` chains `git merge-tree` over the pending task
 branches in dependency order and reports clean merges, conflicting files, and
 waiting dependencies. It never touches a ref or the integration worktree;

@@ -5,10 +5,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseTasks, isTestPath } from './lib/tasks.mjs';
-import { checklistForSurfaces } from './lib/adversarial.mjs';
-import { gitMaybe } from './lib/git.mjs';
-import { argValue, positionalArgs } from './lib/cli.mjs';
+import { parseTasks, isTestPath } from '../../../skills/paseo-pipeline/lib/tasks.mjs';
+import { checklistForSurfaces } from './adversarial.mjs';
+import { gitMaybe } from '../../../skills/paseo-pipeline/lib/git.mjs';
+import { argValue, positionalArgs } from '../../../skills/paseo-pipeline/lib/cli.mjs';
 
 const TEMPLATES = ['author', 'worker', 'reviewer'];
 const usage = 'Usage: brief.mjs <role> --change <name> --repo <path> [--task <id>] [--base <sha>] [--json]';
@@ -30,7 +30,8 @@ if (!TEMPLATES.includes(role)) {
   process.exit(2);
 }
 const templateFile = path.join(repo, 'skills', 'paseo-pipeline', 'templates', `${role}.md`);
-const fallbackTemplate = new URL(`./templates/${role}.md`, import.meta.url);
+// The tool lives in benchmarks/pipeline/tools; the templates stay with the skill.
+const fallbackTemplate = new URL(`../../../skills/paseo-pipeline/templates/${role}.md`, import.meta.url);
 let template;
 try { template = fs.readFileSync(templateFile, 'utf8'); } catch {
   try { template = fs.readFileSync(fallbackTemplate, 'utf8'); } catch {
@@ -90,7 +91,7 @@ function worktreeFor(branch) {
   }
   return null;
 }
-// The Lead normally creates task/integration workspaces before dispatch. When they do
+// The main session normally creates task/integration workspaces before dispatch. When they do
 // not exist yet, the repository checkout is the only honest fallback: never invent a
 // workspace path.
 const integrationWorktree = worktreeFor(integrationBranch)
@@ -141,7 +142,7 @@ const dependencyStates = task
   : [];
 
 // Everything a task may not touch: every other task's Write scope, plus the frozen
-// contract (children read it; only the authors and the Lead's merge write it).
+// contract (children read it; only the authors and the integration merge write it).
 function forbiddenPaths() {
   if (!task) return [];
   const own = new Set(scopeList);

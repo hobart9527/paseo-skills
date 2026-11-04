@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Speculative merge queue: predicts which task branches merge cleanly, in what
 // order, without touching the integration worktree. `merge-task` stays the only
-// writer; this only saves the Lead from discovering a conflict after a serial
+// writer; this only saves the main session from discovering a conflict after a serial
 // merge attempt has already held the integration branch.
 //
 // It chains `git merge-tree --write-tree` through synthetic commits (unreachable
@@ -13,10 +13,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseTasks } from './lib/tasks.mjs';
-import { mergeDeps } from './lib/schedule.mjs';
-import { runGit } from './lib/git.mjs';
-import { argValue, positionalArgs } from './lib/cli.mjs';
+import { parseTasks } from '../../../skills/paseo-pipeline/lib/tasks.mjs';
+import { mergeDeps } from '../../../skills/paseo-pipeline/lib/schedule.mjs';
+import { runGit } from '../../../skills/paseo-pipeline/lib/git.mjs';
+import { argValue, positionalArgs } from '../../../skills/paseo-pipeline/lib/cli.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');

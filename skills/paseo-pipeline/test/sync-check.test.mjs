@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const script = fileURLToPath(new URL('../sync-check.mjs', import.meta.url));
+const script = fileURLToPath(new URL('../../../benchmarks/pipeline/tools/sync-check.mjs', import.meta.url));
 const env = {
   ...process.env,
   GIT_CONFIG_GLOBAL: '/dev/null',

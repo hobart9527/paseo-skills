@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-const script = path.resolve(import.meta.dirname, '..', 'merge-queue.mjs');
+const script = path.resolve(import.meta.dirname, '..', '..', '..', 'benchmarks', 'pipeline', 'tools', 'merge-queue.mjs');
 const env = {
   ...process.env,
   GIT_CONFIG_GLOBAL: '/dev/null',
