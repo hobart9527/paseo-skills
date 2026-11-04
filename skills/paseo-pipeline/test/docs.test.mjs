@@ -156,3 +156,46 @@ test('recovery documents verified other change, permission hold, empty branch an
   const skill = read('SKILL.md');
   for (const text of ['--other-change <id>', 'label is verified', 'no pending permission', 'only when no worker', 'main...<full-SHA>', 'author commits the amendment', 'exit 3']) assert.ok(skill.includes(text), text);
 });
+
+test('review guidance reflects merge metadata and independent review', () => {
+  const schema = read('openspec-schema/schema.yaml');
+  const author = read('templates/author.md');
+  const reviewer = read('templates/reviewer.md');
+  assert.match(schema, /review=worker/);
+  assert.match(schema, /Historical Done/);
+  assert.match(schema, /rejects\s+`deferred` on sinks/);
+  assert.doesNotMatch(schema, /instead of per task/);
+  assert.match(author, /missing risk label does not establish safety/);
+  assert.match(reviewer, /realistic ways each Verify could pass/);
+  assert.match(reviewer, /Script checks establish only their stated properties/);
+  assert.match(reviewer, /Lint and typecheck do not replace standards review/);
+  assert.match(reviewer, /keyboard and focus, accessibility/);
+});
+
+test('task template and schema distinguish structural exemptions from review', () => {
+  const template = read('openspec-schema/templates/tasks.md');
+  const schema = read('openspec-schema/schema.yaml');
+  assert.match(template, /review=worker/);
+  assert.match(template, /历史 `pass\(/);
+  assert.doesNotMatch(template, /review=<tag>/);
+  assert.match(template, /禁止汇点[\s\S]*使用 deferred/);
+  assert.match(template, /非汇点的 mechanical 任务也要求窄 Verify/);
+  assert.match(template, /mechanical 任务可不认领/);
+  assert.match(schema, /does not require `strict`/);
+  assert.match(schema, /`mechanical` sink may use a non-test check/);
+  assert.match(schema, /structural exemptions do not establish safety/);
+});
+
+test('docs reference the optional R0/FINAL summary tool consistently', () => {
+  for (const file of ['SKILL.md', 'templates/author.md', 'templates/reviewer.md']) assert.match(read(file), /r0-hotspots\.mjs/, file);
+  assert.match(read('templates/reviewer.md'), /--final <reviewed-full-SHA>/);
+  assert.match(read('templates/reviewer.md'), /not a substitute for/);
+});
+
+test('FINAL depth follows the diff content and R0 rulings have a record format', () => {
+  const reviewer = read('templates/reviewer.md');
+  assert.match(reviewer, /Match depth to what the diff actually changes/);
+  assert.match(reviewer, /Rendered UI/);
+  assert.match(reviewer, /Do not skip a part because its task was labelled `mechanical`/);
+  assert.match(read('SKILL.md'), /R0-<round>-<n> <BLOCKER\|NIT> <accepted\|rejected\|fixed>/);
+});

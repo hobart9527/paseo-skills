@@ -233,6 +233,7 @@ artifacts:
         - Kind: <skeleton | none>
         - Interface: <repo-relative path>[#<symbol>]
         - Review: <strict | standard | mechanical | deferred>
+        - Risk-surface: <persistence | security | other risk>[, ...]
         - Verify with: <executable command>
         - Scenarios: <SCEN-xxx-yy>[, ...]
       ```
@@ -255,18 +256,27 @@ artifacts:
         task and requires `Review: mechanical`; every `Interface:` path must sit inside
         some skeleton's Write scope.
       - `Review` is one of `strict` / `standard` / `mechanical` / `deferred`; omitting it
-        means `standard`. `deferred` is only for non-sink standard tasks: its review runs
-        once in the FINAL integrated review instead of per task. Tasks with a
-        `persistence` or `security` Risk-surface, and the sink, cannot defer.
-      - `Verify with` must be an executable command. For every non-sink task it must
-        name a test/spec path inside that task's `Write scope`; only one sink task may
-        run the full suite. Write the full invocation when the command needs env vars:
+        means `standard`. These labels do not select per-task review; all tasks receive
+        the independent FINAL integrated review. For compatibility, freeze-check rejects
+        `deferred` on sinks and on tasks declaring `persistence` or `security` Risk-surface.
+        As author guidance, mark material persistence or security risk `strict` for FINAL
+        attention. Freeze-check does not require `strict` for all such risks or validate
+        label completeness. `mechanical` is not an exemption from semantic review.
+      - `Verify with` must be runnable. Freeze-check checks command structure, not whether
+        it executes or proves the claimed behavior. Each non-sink Verify leg, including
+        for `mechanical`, must name a test/spec path within `Write scope` or `Reads`.
+        A `mechanical` sink may use a non-test check; other command checks still apply.
+        Full-suite legs are reserved for sinks, with at most one per sink. Write the full
+        invocation when the command needs env vars:
         PYTHONPATH=runtime python3 -m pytest tests/x_test.py.
       - `Scenarios` lists the `SCEN-*` ids from the spec delta that this task carries.
         Every id must exist in the spec, and every declared id must be claimed by at
-        least one task.
-      - When a task is complete, add `- Done: source=<7-hex> review=<tag>` under it.
-        The tag is `pass(<reviewer>@<tip7>/<base7>)` or `pass(mechanical@<tip7>/<base7>)`.
+        least one task. A `mechanical` task may omit a scenario and have a test-only
+        Write scope; these structural exemptions do not establish safety.
+      - The merge gate records `- Done: source=<tip7> review=worker` when a task
+        completes. `worker` records execution, not a review verdict. Historical Done
+        tags such as `pass(<reviewer>@<tip>/<base>)` remain readable; do not rewrite
+        frozen history to this format.
 
       Guidelines:
       - Group related tasks under ## numbered headings
@@ -309,14 +319,17 @@ artifacts:
       - **Tasks**: comma-separated task ids from tasks.md that carry this row.
       - **Verify**: the command or manual procedure that exercises Entry.
       - **Required**: `yes` blocks delivery; `no` is recorded but does not block.
-      - **Result**: leave `PENDING` at freeze time. Fill `PASS` during closeout.
-      - **Evidence**: leave `pending` at freeze time. Fill the evidence file path plus
-        the acceptance SHA once verified.
+      - **Result**: leave `PENDING` in the frozen matrix. Record closeout results externally.
+      - **Evidence**: leave `pending` in the frozen matrix. Record output and the full
+        source SHA in the external execution record.
 
-      Do not write `PASS` before anything ran: the matrix is filled in during
-      closeout and the recorded SHA must match the integration HEAD being accepted.
-      External dependencies that cannot be reached at freeze time are marked
-      `BLOCKED` in Result with the reason - a mock passing is not business acceptance.
+      The frozen matrix is the sole authority for requirements; the external record
+      does not replace it or authorize CP-2. Do not claim `PASS` before execution.
+      The recorded SHA must match the clean integration HEAD being accepted. Record
+      unavailable external dependencies as blocked, with the reason, in separate
+      operator notes without modifying the execution record. The runner reports failed
+      commands as FAIL; neither FAIL nor BLOCKED satisfies CP-2. A mock passing is
+      not business acceptance.
     requires:
       - specs
 

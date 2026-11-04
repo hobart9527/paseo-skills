@@ -5,8 +5,9 @@
   任务可以合流、单测可以全绿，而功能从真实入口根本走不通。
 
   冻结时（人类确认点 1）整表冻结：Result 一律 PENDING，Evidence 一律 pending。
-  收尾时（人类确认点 2 之前）逐行回填，并由
-  主会话逐行真跑并记录命令输出与验收 SHA；Required=yes 的行 Result 不是 PASS、或 Evidence 仍为 pending，CP-2 即拒绝。
+  Git 内冻结矩阵始终是验收要求的唯一权威，不回填以免改变验收 SHA。
+  收尾时（人类确认点 2 之前）在仓外独立执行记录中逐行回填 Result 和 Evidence，
+  记录原始矩阵、完整 source SHA、命令和输出；Required=yes 的行没有 PASS 和证据时 CP-2 即拒绝。
 
   行规则：
   - Scenario：必须是本 change spec delta 里声明过的 SCEN-* 编号（freeze-check 核对）。
@@ -17,9 +18,10 @@
     多步骤写进一个脚本再调用。只有 Required=no 的行允许写手工步骤（它只留档，不进入执行）。
   - Required：yes 阻断交付；no 只留档不阻断。
   - Result：PENDING / PASS / FAIL / BLOCKED / UNVERIFIED。冻结时只能写 PENDING。
-  - Evidence：证据文件路径 + 验收 SHA，收尾时回填。
+  - Evidence：执行记录中的命令输出及完整 source SHA。
 
-  外部必需依赖冻结时就接不通，要把 Result 标 BLOCKED 并写原因。
+  runner 对失败（包括缺少依赖）记录 FAIL，不自动判断 BLOCKED。操作者可在独立说明中
+  标记 BLOCKED 并记录原因，不可改写冻结矩阵或执行记录；FAIL 和 BLOCKED 均阻断 CP-2。
   mock 通过不能折算业务验收。
 -->
 
