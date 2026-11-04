@@ -212,10 +212,43 @@ test('next-actions: active legacy agent in another repository does not block', (
   assert.equal(result.status, 0, result.out);
 });
 
+test('next-actions: Done state comes from the integration branch, not a stale local copy', () => {
+  const { cwd, localEnv } = fixture();
+  const git = (...args) => spawnSync('git', args, { cwd, env: localEnv, encoding: 'utf8' });
+  // integration/c1 now records T-01 as Done; the default branch keeps the pre-merge copy.
+  git('switch', '-q', 'integration/c1');
+  const done = fs.readFileSync(path.join(cwd, 'openspec/changes/c1/tasks.md'), 'utf8')
+    .replace('- [ ] 1.2 T-01 behavior task', '- [x] 1.2 T-01 behavior task')
+    .replace('  - Scen: SCEN-X\n', '  - Scen: SCEN-X\n  - Done: source=1234567 review=worker\n');
+  fs.writeFileSync(path.join(cwd, 'openspec/changes/c1/tasks.md'), done);
+  git('add', '-A');
+  git('commit', '-qm', 'merge(T-01): record Done');
+  const result = run(cwd, localEnv);
+  assert.equal(result.status, 0, result.out);
+  assert.equal(result.json.tasksSource, 'integration');
+  // Reading the stale local copy would re-dispatch the already-Done T-01.
+  assert.deepEqual(result.json.dispatch, []);
+  assert.ok(!result.json.dispatch.some((item) => item.task === 'T-01'));
+});
+
+test('next-actions: an integration branch without tasks.md is unreadable state', () => {
+  const { cwd, localEnv } = fixture();
+  const git = (...args) => spawnSync('git', args, { cwd, env: localEnv, encoding: 'utf8' });
+  git('rm', '-q', '-r', 'openspec/changes/c1');
+  git('commit', '-qm', 'drop the contract');
+  fs.mkdirSync(path.join(cwd, 'openspec/changes/c1'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, 'openspec/changes/c1/tasks.md'), TASKS);
+  const result = run(cwd, localEnv);
+  assert.equal(result.status, 3, result.out);
+  assert.match(result.out, /tasks\.md/);
+});
+
 test('next-actions: long change uses label and short title', () => {
   const { cwd, localEnv } = fixture();
   const change = 'long-change-name-that-exceeds-sixty-characters-when-added-to-a-worker-title';
   fs.renameSync(path.join(cwd, 'openspec/changes/c1'), path.join(cwd, 'openspec/changes', change));
+  spawnSync('git', ['add', '-A'], { cwd, env: localEnv });
+  spawnSync('git', ['commit', '-qm', 'rename the change'], { cwd, env: localEnv });
   spawnSync('git', ['branch', '-m', 'integration/c1', `integration/${change}`], { cwd, env: localEnv });
   const agent = { id: 'w', name: '[Pipeline] gongbu T-01', status: 'running', cwd };
   const paseo = path.join(cwd, '.fake-bin', 'paseo');

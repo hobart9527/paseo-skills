@@ -14,6 +14,7 @@ import { parseTasks } from './lib/tasks.mjs';
 import { frontier } from './lib/frontier.mjs';
 import { runGit } from './lib/git.mjs';
 import { readMergeState } from './lib/merge-state.mjs';
+import { readTasksMarkdown } from './lib/tasks-source.mjs';
 import { parseOptions, planOptions } from './lib/cli.mjs';
 
 let parsedArgs;
@@ -36,19 +37,20 @@ const extraChanges = flags['other-change'] ?? [];
 if (extraChanges.some((value) => !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value))) {
   console.error('[next-actions] --other-change needs a change ID'); process.exit(2);
 }
-option('reviewer-cap', 1);
 const changeDir = path.resolve(positional[0] || '.');
 const change = path.basename(changeDir);
 const options = {
-  // `--writer-cap` stays accepted as an alias for an older caller.
-  workerCap: option('worker-cap', option('writer-cap', 8)),
+  workerCap: option('worker-cap', 8),
   idleMinutes: option('idle-minutes', 15),
 };
 
-const tasksFile = path.join(changeDir, 'tasks.md');
+// The integration branch owns Done state; the local copy is stale after the first merge.
 let markdown;
-try { markdown = fs.readFileSync(tasksFile, 'utf8'); } catch {
-  console.error(`[next-actions] cannot read ${tasksFile}`);
+let tasksSource;
+try {
+  ({ markdown, source: tasksSource } = readTasksMarkdown(changeDir, change));
+} catch (error) {
+  console.error(`[next-actions] cannot read tasks.md: ${error.message}`);
   process.exit(3);
 }
 const { tasks } = parseTasks(markdown);
@@ -195,7 +197,7 @@ for (const agent of allAgents) {
     process.exit(3);
   }
   if (agent.status === 'closed' || labelledIds.has(agent.id)) continue;
-  if (!agent.name.startsWith('[Pipeline]') && !/^(gongbu|gaogong|jiangzuo|hanlin|anchasi|chanpin)-/.test(agent.name)) continue;
+  if (!agent.name.startsWith('[Pipeline]') && !/^(gongbu|gaogong|jiangzuo|hanlin|anchasi)-/.test(agent.name)) continue;
   const agentRepo = commonDir(agent.cwd);
   if (agentRepo && agentRepo !== repository) continue;
   const identity = agent.name.match(/^\[Pipeline\]\s+\S+\s+\S+\s+(\S+)$/);
@@ -212,7 +214,7 @@ for (const agent of listedAgents) {
   }
   const parts = agent.name.match(/^\[Pipeline\]\s+(\S+)\s+(\S+)(?:\s+.*)?$/);
   const match = parts && /^(gongbu|gaogong|jiangzuo)$/.test(parts[1]) && /^[A-Za-z][A-Za-z0-9]*-\d+(?:-a[1-9]\d*)?$/.test(parts[2]) ? parts : null;
-  const nonWorker = parts && /^(hanlin|anchasi|gongbu|gaogong|chanpin)$/.test(parts[1]) && /^(R0|FINAL|FULL|SPEC|TASKS)$/.test(parts[2]);
+  const nonWorker = parts && /^(hanlin|anchasi|gongbu|gaogong)$/.test(parts[1]) && /^(R0|FINAL|FULL)$/.test(parts[2]);
   if (agent.status === 'closed' && !match) continue;
   const agentRepo = commonDir(agent.cwd);
   if (agentRepo && agentRepo !== repository) continue;
@@ -255,11 +257,11 @@ for (const agent of listedAgents) {
 }
 
 const result = frontier(tasks, { done, branches, agents }, options);
-const report = { change, integrationHead: integrationSha, ...result };
+const report = { change, integrationHead: integrationSha, tasksSource, ...result };
 
 if (json) console.log(JSON.stringify(report, null, 2));
 else {
-  console.log(`[next-actions] ${change}${report.integrationHead ? ` @ ${report.integrationHead.slice(0, 7)}` : ''}`);
+  console.log(`[next-actions] ${change}${report.integrationHead ? ` @ ${report.integrationHead.slice(0, 7)}` : ''} (tasks: ${tasksSource})`);
   console.log(`capacity: workers ${report.capacity.workers.used}/${report.capacity.workers.cap}`);
   for (const item of report.dispatch) console.log(`DISPATCH ${item.task}: ${item.action} — ${item.reason}`);
   for (const item of report.waiting) console.log(`WAIT ${item.task}: on ${item.on.join(', ')}`);

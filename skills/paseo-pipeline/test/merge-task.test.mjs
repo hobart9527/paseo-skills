@@ -322,20 +322,9 @@ test('main drift falls back to master and fails open when neither exists', () =>
   assert.equal(invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01']).status, 0);
 });
 
-// Same-branch rework cap: 2 worker commits per branch.
+// Same-branch rework cap: initial commit plus two retries (3 commits) per branch.
 const implCommits = (n) => Array.from({ length: n }, (_, i) => [`src/${i === 0 ? 'a' : `r${i}`}.txt`, `v${i}`]);
-test('rework cap: 2 worker commits on one branch merge', () => {
-  const f = taggedFixture(`- [ ] T-01 task\n  - Write scope: src,test\n  - Verify with: ${GREEN}\n`);
-  write(f.cwd, 'test/a.test.mjs', PASSING_TEST);
-  for (const [file, text] of implCommits(2)) {
-    write(f.cwd, file, text); git(f.cwd, 'add', '.');
-    git(f.cwd, 'commit', '-qm', `w\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
-  }
-  const tip = git(f.cwd, 'rev-parse', 'HEAD'); git(f.cwd, 'switch', '-q', `integration/${f.change}`);
-  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
-  assert.equal(r.status, 0, r.out);
-});
-test('rework cap: a 3rd worker commit is exit 37 pointing at -a2', () => {
+test('rework cap: 3 worker commits on one branch merge', () => {
   const f = taggedFixture(`- [ ] T-01 task\n  - Write scope: src,test\n  - Verify with: ${GREEN}\n`);
   write(f.cwd, 'test/a.test.mjs', PASSING_TEST);
   for (const [file, text] of implCommits(3)) {
@@ -344,8 +333,19 @@ test('rework cap: a 3rd worker commit is exit 37 pointing at -a2', () => {
   }
   const tip = git(f.cwd, 'rev-parse', 'HEAD'); git(f.cwd, 'switch', '-q', `integration/${f.change}`);
   const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
+  assert.equal(r.status, 0, r.out);
+});
+test('rework cap: a 4th worker commit is exit 37 pointing at -a2', () => {
+  const f = taggedFixture(`- [ ] T-01 task\n  - Write scope: src,test\n  - Verify with: ${GREEN}\n`);
+  write(f.cwd, 'test/a.test.mjs', PASSING_TEST);
+  for (const [file, text] of implCommits(4)) {
+    write(f.cwd, file, text); git(f.cwd, 'add', '.');
+    git(f.cwd, 'commit', '-qm', `w\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
+  }
+  const tip = git(f.cwd, 'rev-parse', 'HEAD'); git(f.cwd, 'switch', '-q', `integration/${f.change}`);
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
   assert.equal(r.status, 37, r.out);
-  assert.match(r.out, /3 commits/);
+  assert.match(r.out, /4 commits/);
   assert.match(r.out, /T-01-a2/);
 });
 test('rework cap: --allow-attempt-over bypasses it', () => {

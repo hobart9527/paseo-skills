@@ -206,10 +206,10 @@ for (const commit of commits) {
   });
   implementationCommits += 1;
 }
-// Same-branch rework cap: the worker gets at most 2 commits on one branch; a third
-// is a capability problem, not a typo. Escalate to `<T-id>-a2`.
-if (implementationCommits > 2 && !allowAttemptOver) {
-  fail(`${branch} has ${implementationCommits} commits; same-branch rework is capped at 2. Escalate to ${taskId}-a2 or pass --allow-attempt-over after human approval`, 37);
+// Same-branch rework cap: the worker gets the initial commit plus two retries (3 commits).
+// A fourth is a capability problem, not a typo. Escalate to `<T-id>-a2`.
+if (implementationCommits > 3 && !allowAttemptOver) {
+  fail(`${branch} has ${implementationCommits} commits; same-branch rework allows 3 (initial + two retries). Escalate to ${taskId}-a2 or pass --allow-attempt-over after human approval`, 37);
 }
 
 if (base !== preMergeHead) {

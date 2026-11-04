@@ -18,6 +18,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseTasks } from './lib/tasks.mjs';
+import { readTasksMarkdown } from './lib/tasks-source.mjs';
 import { runGit } from './lib/git.mjs';
 import { parseOptions, planOptions } from './lib/cli.mjs';
 
@@ -120,7 +121,12 @@ if (command === 'plan') {
   if (parsed.positional.length > 1) die('status accepts one <change-dir>');
   const dir = changeDirOf(parsed.positional[0]);
   const change = path.basename(dir);
-  const { tasks } = parseTasks(fs.readFileSync(path.join(dir, 'tasks.md'), 'utf8'));
+  // Done state is written on the integration branch; never report the stale local copy.
+  let markdown;
+  let tasksSource;
+  try { ({ markdown, source: tasksSource } = readTasksMarkdown(dir, change)); }
+  catch (error) { die(`cannot read tasks.md: ${error.message}`, 3); }
+  const { tasks } = parseTasks(markdown);
   const done = tasks.filter((task) => task.done);
   const head = runGit(undefined, ['rev-parse', '--verify', '--quiet', `refs/heads/integration/${change}`]);
   const headSha = head.status === 0 ? head.stdout.trim() : null;
@@ -128,11 +134,12 @@ if (command === 'plan') {
     console.log(JSON.stringify({
       change,
       integrationHead: headSha,
+      tasksSource,
       done: done.map((task) => task.id),
       open: tasks.filter((task) => !task.done).map((task) => task.id),
     }, null, 2));
   } else {
-    console.log(`${change}${headSha ? ` @ ${headSha.slice(0, 7)}` : ' (no integration branch)'}`);
+    console.log(`${change}${headSha ? ` @ ${headSha.slice(0, 7)}` : ''} (tasks: ${tasksSource})`);
     console.log(`done ${done.length}/${tasks.length}: ${done.map((task) => task.id).join(', ') || 'none'}`);
     for (const task of tasks.filter((item) => !item.done)) console.log(`OPEN ${task.id}: ${task.title}`);
   }

@@ -50,13 +50,14 @@ Contract steps are serial.
 5. Bootstrap dependencies per lockfile in every workspace — **including the integration worktree**, where `merge-task` runs Verify — before any Verify. A worktree is a checkout, not a clone; an uninstalled package exits 36. Install once per workspace, not per task.
 6. Run `node "$PIPELINE_HOME"/pipeline-run.mjs plan openspec/changes/<change>` and dispatch exactly the workers it lists. The main session is an event router from here: it does not edit business code and does not schedule by reasoning.
 
-After compaction or resume, re-read `tasks.md` Done lines, `git log --first-parent integration/<change>`, and `paseo ls --global --background --label pipeline.change=<change> --json` before any dispatch; summaries are not state.
+After compaction or resume, re-read Done lines from `integration/<change>` (`git show integration/<change>:openspec/changes/<change>/tasks.md`), `git log --first-parent integration/<change>`, and `paseo ls --global --background --label pipeline.change=<change> --json` before any dispatch; summaries are not state.
 
 ## Runtime
+- **Task state is the integration branch.** `merge-task` writes Done lines to `integration/<change>`; the default branch keeps the frozen contract. `plan` and `status` read `openspec/changes/<change>/tasks.md` from that branch whenever it exists, so they are safe to run from any checkout. Before CP-1 (no integration branch) they read the worktree copy. Local Done lines are evidence only if they are committed on integration.
 - `pipeline-run.mjs plan <change-dir>` is the only scheduler: `DISPATCH`/`MERGE`/`WAIT`/`ATTENTION`, worker cap 8, critical path first. Execute its list; never recompute the frontier by hand.
 - Dispatch a ready task to one worker (`templates/worker.md`) carrying its branch/workspace, frozen scope, SCENs, and Verify. The worker commits with `Pipeline-Role` and `Pipeline-Author` trailers.
 - On a worker's finish notification, verify the branch tip and run `pipeline-run.mjs merge <change-dir> <T-id>` from the integration worktree. The gate records Done; then re-run `plan`.
-- A worker that fails Verify or exceeds scope is retried on the same branch at most twice. After that, report to the human; do not silently spawn a second agent.
+- A worker that fails Verify or exceeds scope is retried on the same branch at most twice (initial commit plus two retries). After that, report to the human; do not silently spawn a second agent.
 - Circuit breaker: at most 3 attempts per task (`-a2`, `-a3`); the third attempt may finish and merge, but creating a fourth requires human approval.
 - A lost notification triggers `plan` reconciliation, never a duplicate dispatch. An inactive worker with commits and no pending permission proceeds to the normal merge gate; without commits, `BLOCKED_WORKER_RESULT` requires inspecting and resuming the worker or explicitly creating an approved new attempt.
 - Contract amendments after CP-1: the author commits the amendment on integration; a human confirms before re-running `plan`. A new interface or security boundary needs `hanlin` R0, its `R0: pass(...)` line APPENDED to `review.md` (last line wins).
@@ -75,18 +76,18 @@ Exit 21: a replayed already-Done Verify failed. If the cause is a missing servic
 ## Finish
 1. Require all tasks Done, no blocked tasks, clean integration worktree.
 2. Capture full integration HEAD SHA; run the full suite and `Required=yes` acceptance on that SHA. In parallel, `anchasi` reviews `main...<full-SHA>` (Mode FINAL). Record commands, results, reviewer, verdict, SHA and main base.
-3. For blockers, follow `templates/final-recovery.md`: amend the contract under human CP-1, then merge a new fix task through the normal gate. Never reopen Done or merge an ad-hoc fix.
-4. Rerun full suite, acceptance and FINAL review at the new final SHA. Verify the SHA, clean tree and reviewed main base before human CP-2. Any change invalidates that evidence.
+3. For blockers, follow `templates/final-recovery.md`: amend the contract under human CP-1, then merge a new fix task through the normal gate. A repair task that overlaps a Done task's Write scope must declare `Depends on: <that task>`, or the structural check reports `SCOPE_CONFLICT`. Never reopen Done or merge an ad-hoc fix.
+4. Rerun full suite, acceptance and FINAL review at the new final SHA. Prefer the original FINAL reviewer; if unavailable, a new `anchasi` with the same profile may take over under the same rules, recording its agent id. Verify the SHA, clean tree and reviewed main base before human CP-2. Any change invalidates that evidence.
 5. After CP-2, present the cleanup list; delete/archive worktrees and branches only after human confirmation. Push needs separate confirmation.
 
 ## Recovery
 ```
 node "$PIPELINE_HOME"/pipeline-run.mjs status <change-dir>
 git log --first-parent integration/<change>
-grep -n 'Done:' openspec/changes/<change>/tasks.md
+git show integration/<change>:openspec/changes/<change>/tasks.md | grep -n 'Done:'
 paseo ls --global --background --label pipeline.change=<change> --json
 ```
-Before dispatch, `plan` also checks the global agent list. Active legacy `[Pipeline]` agents without a verifiable change identity/label stop scheduling; inspect and label or close them explicitly before resuming. Unknown repository or change identity stops scheduling. Other repositories are excluded by Git common directory. Other change labels are checked via integration branches and agent worktree change directories. If absent, use `plan <change-dir> --other-change <id>` (repeatable); the label is verified, not trusted. `plan` exit 3 means unreadable or ambiguous state, not idle. Use live Paseo state, branch tips, and Done lines. Never archive `pipeline.change=<change>` agents before CP-2.
+Before dispatch, `plan` also checks the global agent list. Active legacy `[Pipeline]` agents without a verifiable change identity/label stop scheduling; inspect and label or close them explicitly before resuming. Unknown repository or change identity stops scheduling. Other repositories are excluded by Git common directory. Other change labels are checked via integration branches and agent worktree change directories. If absent, use `plan <change-dir> --other-change <id>` (repeatable); the label is verified, not trusted. `plan` exit 3 means unreadable or ambiguous state, not idle. Use live Paseo state, branch tips, and Done lines from `integration/<change>`. Never archive `pipeline.change=<change>` agents before CP-2.
 
 ## Hard lines
 - The main session never edits business code; `gongbu`/`gaogong` authors write contract files only; `hanlin` and `anchasi` write nothing.

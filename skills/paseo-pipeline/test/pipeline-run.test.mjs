@@ -115,6 +115,19 @@ test('status reports done and open tasks with the integration head', () => {
   assert.match(report.integrationHead, /^[0-9a-f]{40}$/);
 });
 
+test('status reads Done lines from the integration branch after a merge', () => {
+  const f = fixture();
+  implement(f.cwd, 'task/chg/T-01');
+  const r = run(f.cwd, f.localEnv, ['merge', path.join(f.cwd, 'openspec/changes/chg'), 'T-01']);
+  assert.equal(r.status, 0, r.out);
+  const status = run(f.cwd, f.localEnv, ['status', path.join(f.cwd, 'openspec/changes/chg'), '--json']);
+  assert.equal(status.status, 0, status.out);
+  const report = JSON.parse(status.stdout);
+  assert.equal(report.tasksSource, 'integration');
+  assert.deepEqual(report.done, ['T-01']);
+  assert.deepEqual(report.open, ['T-02']);
+});
+
 test('install-hook enables worktree config and points hooksPath at the skill hooks', () => {
   const f = fixture();
   const r = run(f.cwd, f.localEnv, ['install-hook', f.cwd]);

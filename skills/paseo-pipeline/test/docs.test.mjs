@@ -6,7 +6,8 @@ const read = (p) => fs.readFileSync(path.join(dir, p), 'utf8');
 test('skill documents converged core and hard limits', () => {
   const text = read('SKILL.md');
   for (const needle of ['Vertical slices', 'Narrow Verify', 'One worker per task', 'Wave 0', 'finish notification', 'merge-task.mjs', 'freeze-check.mjs', 'worker', 'integrated', 'CP-2']) assert.ok(text.includes(needle), needle);
-  assert.ok(text.length < 12000);
+  // The prompt is allowed room to explain the model; it is not padded to a budget.
+  assert.ok(text.length < 16000);
 });
 test('skill documents the real handoff sequence and profile-notes override', () => {
   const text = read('SKILL.md');
@@ -140,9 +141,14 @@ test('FINAL review is the only code-quality gate; the merge gate proves mechanic
 
 test('FINAL repair instructions retain gate and bind all evidence to final SHA', () => {
   const recovery = read('templates/final-recovery.md');
-  for (const requirement of ['human CP-1 approval', 'pipeline-run.mjs merge', 'frozen Verify', 'regression', 'every `Required=yes`', 'original FINAL reviewer', 'same SHA', 'before CP-2']) {
+  for (const requirement of ['human CP-1 approval', 'pipeline-run.mjs merge', 'frozen Verify', 'regression', 'every `Required=yes`', 'same SHA', 'before CP-2']) {
     assert.ok(recovery.includes(requirement), requirement);
   }
+  // A repair task overlaps the Done task it fixes; freeze-check needs the edge.
+  assert.match(recovery, /Depends on/);
+  assert.match(recovery, /SCOPE_CONFLICT/);
+  // The original reviewer may be gone; an identically profiled replacement is allowed.
+  assert.match(recovery, /new `anchasi` with the same profile/);
   assert.match(read('templates/reviewer.md'), /full SHA and verdict/);
 });
 
