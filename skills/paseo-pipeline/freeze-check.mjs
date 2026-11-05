@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo-agents.mjs';
-import { parseTasks, graphErrors, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
+import { parseTasks, graphErrors, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, legPaths, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
 import { weightedSpeedup, weightedCriticalPath, verifyScope, readsOnlyEdges, pathWithin, resolveModel, LIVE_MODEL } from './lib/schedule.mjs';
 import { runGit } from './lib/git.mjs';
 
@@ -287,7 +287,13 @@ const CLAIMABLE_FILE = /\.(?:[cm]?[jt]sx?|py|go|rs|rb|java|kt|swift|php|sh|bash)
           // Judge only what directly precedes the specifier (it may sit on the line after `from`):
           // `import fs from 'node:fs'; fs.readFileSync('x')` has `import` earlier on the line, but the
           // text right before 'x' is a call, so that is still an explicit read.
-          const prefix = body.slice(Math.max(0, match.index - 200), match.index).trimEnd();
+          // A comment between `from`/`require(` and the specifier does not change what it is.
+          let prefix = body.slice(Math.max(0, match.index - 200), match.index).trimEnd();
+          for (let stripped = true; stripped;) {
+            const next = prefix.replace(/(?:\/\*(?:(?!\*\/)[\s\S])*\*\/|\/\/[^\n]*)\s*$/, '').trimEnd();
+            stripped = next !== prefix;
+            prefix = next;
+          }
           if (/(?:^|[^\w$.])(?:from|import)$|\brequire\s*\($|\bimport\s*\($/.test(prefix)) continue;
           const resolved = raw.startsWith('.')
             ? path.relative(repoRoot, path.resolve(path.dirname(testFile), raw))
@@ -324,7 +330,17 @@ for (const task of tasks) {
   // A leg must also prove something: a known test runner, or a test/spec path. `true`,
   // `echo ok` and `node src/a.mjs` pass a path-only check but verify nothing.
   // A runner pointed only at fixture paths runs no real test either.
-  const fixtureOnly = (leg) => leg.paths.length > 0 && leg.paths.every((p) => FIXTURE_DIR.test(p));
+  // Option arguments (`--config test/fixtures/jest.config.js`) configure the run; they are not what it
+  // runs. `--test` and `--` are boolean, so the path after them is a real target.
+  const fixtureOnly = (leg) => {
+    const tokens = leg.command.split(/\s+/);
+    const targets = tokens.flatMap((token, i) => {
+      const prev = tokens[i - 1] ?? '';
+      if (/^-/.test(prev) && !/=/.test(prev) && prev !== '--' && prev !== '--test') return [];
+      return legPaths(token);
+    });
+    return targets.length > 0 && targets.every((p) => FIXTURE_DIR.test(p));
+  };
   const proves = (leg) => (FULL_SUITE_LEG.test(leg.command) && !fixtureOnly(leg)) || testScript(leg.command) || leg.paths.some(verifyTestPath);
   const allowed = verifyScope(task);
   const unscoped = legs.filter((leg) => !leg.broad && (!proves(leg) || leg.paths.some((path) => !isFileWithinScopes(path, allowed))));
@@ -374,8 +390,11 @@ if (!designMarkdown || !/^#{2,3}\s*Impact/im.test(designMarkdown)) {
 } else {
   const section = designMarkdown.split(/^#{2,3}\s*Impact/im)[1].split(/^#{1,3}\s/m)[0].replace(/<!--[\s\S]*?-->/g, '');
   const known = new Set(tasks.map((task) => task.id));
+  // UTF-16 / SHA-256 style tokens are prose, unless the project really names its tasks with that prefix.
+  const NON_TASK_TOKEN = /^(?:UTF|SHA|ISO|IEC|RFC)-\d+$/i;
+  const taskPrefixes = new Set(tasks.map((task) => task.id.replace(/-\d+$/, '').toUpperCase()));
   for (const id of new Set(section.match(/\b[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+\b/g) ?? [])) {
-    if (/^SCEN-/i.test(id) || /^(?:UTF|SHA|ISO|IEC|RFC)-\d+$/i.test(id) || !/^[A-Za-z][A-Za-z0-9]*-\d+$/.test(id)) continue;
+    if (/^SCEN-/i.test(id) || (NON_TASK_TOKEN.test(id) && !taskPrefixes.has(id.replace(/-\d+$/, '').toUpperCase())) || !/^[A-Za-z][A-Za-z0-9]*-\d+$/.test(id)) continue;
     if (!known.has(id)) blocking.push(`IMPACT_UNKNOWN_TASK ${id}: Impact Inventory names a task that is not in tasks.md`);
   }
 }

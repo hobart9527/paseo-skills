@@ -264,3 +264,36 @@ test('impact inventory ignores UTF-16 style tokens but still flags real unknown 
   const hits = run(bad).report.blocking.filter((s) => s.startsWith('IMPACT_UNKNOWN_TASK'));
   assert.deepEqual(hits.map((s) => s.split(':')[0]), ['IMPACT_UNKNOWN_TASK T-99']);
 });
+
+// ---- review blockers on e785eec ----
+
+test('a non-task token is exempt only when no task id uses its prefix', () => {
+  const rfcTasks = contract.replace(/T-0(\d)/g, 'RFC-0$1');
+  const rfcFiles = (text) => ({ ...files(rfcTasks), 'design.md': `${design}\n${text}\n`, 'acceptance.md': acceptance.replace('T-02', 'RFC-02') });
+  const typo = run(change(rfcFiles('see RFC-99')));
+  assert.ok(typo.report.blocking.some((s) => s.startsWith('IMPACT_UNKNOWN_TASK RFC-99')), typo.report.blocking.join('\n'));
+  const known = run(change(rfcFiles('see RFC-02')));
+  assert.ok(!known.report.blocking.some((s) => s.startsWith('IMPACT_UNKNOWN_TASK')));
+  const prose = run(change({ ...files(), 'design.md': `${design}\nUTF-16 and RFC-2119\n` }));
+  assert.ok(!prose.report.blocking.some((s) => s.startsWith('IMPACT_UNKNOWN_TASK')));
+});
+
+test('an option argument pointing at fixtures does not make a real suite run fixture-only', () => {
+  const base = contract.replace('Write scope: src/shared,test/shared.test.mjs', 'Write scope: src/shared,test/shared.test.mjs,test/fixtures');
+  const verdict = (cmd) => run(change(files(base.replace('node --test test/shared.test.mjs', cmd)))).report.blocking.some((s) => s.startsWith('VERIFY_NOT_NARROW T-01'));
+  assert.ok(!verdict('npm test -- --config test/fixtures/jest.config.js'));
+  // `--flag=path` carries no standalone path token, so it is a broad leg: legal on the sink only.
+  const sink = run(change(files(contract.replace('Verify with: npm test', 'Verify with: npm test -- --config=test/fixtures/jest.config.js'))));
+  assert.ok(!sink.report.blocking.some((s) => s.startsWith('VERIFY_NOT_NARROW T-04')), sink.report.blocking.join('\n'));
+  assert.ok(verdict('node --test test/fixtures/foo.test.mjs'));
+});
+
+test('a comment between from and the specifier still reads as an import', () => {
+  const dir = repoWithTests("import { setup } from /* shared setup */ './setup.mjs';\nimport { y } from // trailing\n  './setup.mjs';\nvoid setup; void y;\n");
+  fs.writeFileSync(path.join(dir, 'test/setup.mjs'), 'export const setup = 1, y = 2;\n');
+  assert.ok(!run(dir).report.blocking.some((s) => s.startsWith('TEST_FILE_UNOWNED')), run(dir).report.blocking.join('\n'));
+  fs.writeFileSync(path.join(dir, 'test/shared.test.mjs'), "import fs from 'node:fs'; fs.readFileSync('test/setup.mjs');\n");
+  assert.ok(run(dir).report.blocking.some((s) => s.startsWith('TEST_FILE_UNOWNED')));
+  fs.writeFileSync(path.join(dir, 'test/shared.test.mjs'), "import fs from\n  './setup.mjs';\nvoid fs;\n");
+  assert.ok(!run(dir).report.blocking.some((s) => s.startsWith('TEST_FILE_UNOWNED')));
+});
