@@ -287,13 +287,10 @@ const CLAIMABLE_FILE = /\.(?:[cm]?[jt]sx?|py|go|rs|rb|java|kt|swift|php|sh|bash)
           // Judge only what directly precedes the specifier (it may sit on the line after `from`):
           // `import fs from 'node:fs'; fs.readFileSync('x')` has `import` earlier on the line, but the
           // text right before 'x' is a call, so that is still an explicit read.
-          // A comment between `from`/`require(` and the specifier does not change what it is.
-          let prefix = body.slice(Math.max(0, match.index - 200), match.index).trimEnd();
-          for (let stripped = true; stripped;) {
-            const next = prefix.replace(/(?:\/\*(?:(?!\*\/)[\s\S])*\*\/|\/\/[^\n]*)\s*$/, '').trimEnd();
-            stripped = next !== prefix;
-            prefix = next;
-          }
+          // Conservative: only whitespace may precede the specifier. A comment, or a string holding
+          // `import //`, is unresolved and gets reported; a false positive costs one Write-scope line,
+          // a missed one bypasses the gate.
+          const prefix = body.slice(Math.max(0, match.index - 200), match.index).trimEnd();
           if (/(?:^|[^\w$.])(?:from|import)$|\brequire\s*\($|\bimport\s*\($/.test(prefix)) continue;
           const resolved = raw.startsWith('.')
             ? path.relative(repoRoot, path.resolve(path.dirname(testFile), raw))
@@ -332,6 +329,8 @@ for (const task of tasks) {
   // A runner pointed only at fixture paths runs no real test either.
   // Option arguments (`--config test/fixtures/jest.config.js`) configure the run; they are not what it
   // runs. `--test` and `--` are boolean, so the path after them is a real target.
+  // Known limitation: a flag value is skipped wholesale, so `node --test --test-only test/fixtures/foo.test.mjs`
+  // sees no target (targets=[]) and the fixture is treated as a real verification target. Not fixed here.
   const fixtureOnly = (leg) => {
     const tokens = leg.command.split(/\s+/);
     const targets = tokens.flatMap((token, i) => {

@@ -288,12 +288,22 @@ test('an option argument pointing at fixtures does not make a real suite run fix
   assert.ok(verdict('node --test test/fixtures/foo.test.mjs'));
 });
 
-test('a comment between from and the specifier still reads as an import', () => {
+test('a comment between from and the specifier is reported (conservative by design)', () => {
+  // The exemption only looks at whitespace directly before the specifier. A comment makes the
+  // prefix unresolvable, and guessing wrong here would let an assertion bypass the scope gate,
+  // so both specifiers below are reported. Adding the file to a Write scope is the cheap fix.
   const dir = repoWithTests("import { setup } from /* shared setup */ './setup.mjs';\nimport { y } from // trailing\n  './setup.mjs';\nvoid setup; void y;\n");
   fs.writeFileSync(path.join(dir, 'test/setup.mjs'), 'export const setup = 1, y = 2;\n');
-  assert.ok(!run(dir).report.blocking.some((s) => s.startsWith('TEST_FILE_UNOWNED')), run(dir).report.blocking.join('\n'));
-  fs.writeFileSync(path.join(dir, 'test/shared.test.mjs'), "import fs from 'node:fs'; fs.readFileSync('test/setup.mjs');\n");
-  assert.ok(run(dir).report.blocking.some((s) => s.startsWith('TEST_FILE_UNOWNED')));
+  const hits = run(dir).report.blocking.filter((s) => s.startsWith('TEST_FILE_UNOWNED'));
+  assert.ok(hits.some((s) => /test\/setup\.mjs/.test(s)), run(dir).report.blocking.join('\n'));
   fs.writeFileSync(path.join(dir, 'test/shared.test.mjs'), "import fs from\n  './setup.mjs';\nvoid fs;\n");
   assert.ok(!run(dir).report.blocking.some((s) => s.startsWith('TEST_FILE_UNOWNED')));
+});
+
+test('a keyword inside a string literal does not exempt a real read', () => {
+  // Stripping `//` as a line comment here used to expose the `import` inside the string and
+  // exempt the read. Without stripping, the text right before the specifier is a call.
+  const dir = repoWithTests("const marker = \"import //\"; fs.readFileSync('test/setup.mjs');\n");
+  fs.writeFileSync(path.join(dir, 'test/setup.mjs'), 'export const setup = true;\n');
+  assert.ok(run(dir).report.blocking.some((s) => s.startsWith('TEST_FILE_UNOWNED') && /test\/setup\.mjs/.test(s)), run(dir).report.blocking.join('\n'));
 });
