@@ -350,3 +350,17 @@ test('unresolved scope collision surfaces even when downstream tasks are waiting
   assert.equal(collisions.length, 2, JSON.stringify(report.blocked));
   assert.deepEqual(collisions.map((c) => c.task).sort(), ['T-01', 'T-02']);
 });
+
+test('ready task held by worker capacity is not falsely blocked on scope collision', () => {
+  const tasks = [
+    task({ id: 'T-01', kind: 'skeleton', scope: ['src/shared'], est: 'S' }),
+    task({ id: 'T-02', scope: ['src/feature'], est: 'S', uses: ['T-01'] }),
+    task({ id: 'T-03', scope: ['src/shared'], est: 'S', depends: ['T-02'] }),
+    task({ id: 'T-04', scope: ['src/other'], est: 'S' }),
+  ];
+  const agents = [{ id: 'w4', role: 'gongbu', task: 'T-04', status: 'running' }];
+  const report = frontier(tasks, { done: [], branches: {}, agents }, { workerCap: 1 });
+  assert.deepEqual(report.dispatch, []);
+  assert.deepEqual(report.waiting.map((w) => w.task), ['T-02', 'T-03']);
+  assert.ok(!report.blocked.some((b) => b.kind === 'BLOCKED_SCOPE_COLLISION'));
+});
