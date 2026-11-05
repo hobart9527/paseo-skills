@@ -166,11 +166,25 @@ export function frontier(tasks, state = {}, options = {}) {
   // Merges consume no worker slot; only greenfield branches and worker dispatches do.
   const dispatch = [...workerItems.slice(0, workerSlots), ...mergeItems];
 
-  if (dispatch.length === 0 && runningWorkers.length === 0 && waiting.length === 0 && mergeWaiting.length === 0) {
-    const stalled = open.filter((task) => !blocked.some((b) => b.task === task.id));
-    for (const task of stalled) {
-      const conflicting = open.filter((other) => other.id !== task.id && scopesOverlap(task, other));
-      if (conflicting.length) {
+  const unhandled = open.filter((task) => {
+    if (waiting.some((w) => w.task === task.id)) return false;
+    if (mergeWaiting.some((m) => m.task === task.id)) return false;
+    if (runningWorkers.some((agent) => agent.task === task.id)) return false;
+    if (dispatch.some((item) => item.task === task.id)) return false;
+    if (blocked.some((b) => b.task === task.id)) return false;
+    return true;
+  });
+
+  for (const task of unhandled) {
+    const conflicting = open.filter((other) => other.id !== task.id
+      && !ancestors(task.id).has(other.id) && !ancestors(other.id).has(task.id)
+      && scopesOverlap(task, other));
+    if (conflicting.length) {
+      const activeConflict = conflicting.some((other) =>
+        runningWorkers.some((agent) => agent.task === other.id)
+        || dispatch.some((item) => item.task === other.id)
+      );
+      if (!activeConflict) {
         blocked.push({
           task: task.id,
           kind: 'BLOCKED_SCOPE_COLLISION',

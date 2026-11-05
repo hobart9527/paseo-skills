@@ -332,3 +332,21 @@ test('unresolved scope deadlock surfaces as BLOCKED_SCOPE_COLLISION', () => {
   assert.ok(collision, JSON.stringify(report.blocked));
   assert.match(collision.reason, /serialize with Depends on or resolve branch collision/);
 });
+
+test('unresolved scope collision surfaces even when downstream tasks are waiting', () => {
+  const tasks = [
+    task({ id: 'T-01', scope: ['src/shared'], est: 'S' }),
+    task({ id: 'T-02', scope: ['src/shared'], est: 'S' }),
+    task({ id: 'T-03', scope: ['src/other'], est: 'S', depends: ['T-01'] }),
+  ];
+  const branches = {
+    'T-01': { attempts: 1, ownCommits: 0 },
+    'T-02': { attempts: 1, ownCommits: 0 },
+  };
+  const report = frontier(tasks, { done: [], branches, agents: [] });
+  assert.deepEqual(report.dispatch, []);
+  assert.deepEqual(report.waiting.map((w) => w.task), ['T-03']);
+  const collisions = report.blocked.filter((b) => b.kind === 'BLOCKED_SCOPE_COLLISION');
+  assert.equal(collisions.length, 2, JSON.stringify(report.blocked));
+  assert.deepEqual(collisions.map((c) => c.task).sort(), ['T-01', 'T-02']);
+});
