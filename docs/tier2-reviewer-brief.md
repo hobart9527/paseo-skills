@@ -5,7 +5,7 @@ Applies to Tier 2 only. Tier 3 (R0, FINAL, CP-1/CP-2) is governed solely by `ski
 ## Fill-in (dispatcher)
 
 - **Requirement:** `<the real requirement, not a paraphrase of the diff>`
-- **Target:** `<committed: base SHA + tip SHA | uncommitted: absolute workspace path, base SHA, frozen index list and worktree list with per-entry status/mode/fingerprint>`
+- **Target:** `<committed: base SHA + tip SHA | uncommitted: absolute workspace path, base SHA, `git status --porcelain=v2`, frozen index list and worktree list with per-entry status/mode/fingerprint, untracked and in-scope ignored files listed individually>`
 - **Review tier:** `light | heavy` (see below)
 - **Delivery evidence from implementer:** base SHA; changed-file list and in-scope check; test command, output, and the version it ran against; lint/typecheck result; known gaps.
 - **Entry points:** `<files / functions to start from>`
@@ -18,7 +18,7 @@ Read-only is task behavior, not an enforced permission. Do not edit files, creat
 
 ### Light tier
 
-Docs, config or copy only; no shared contract, persistence, concurrency, security, deletion/migration, or public interface. Read the diff and the delivery note only. Run no commands. One round; at most one fix recheck.
+Docs, config or copy only; no shared contract, persistence, concurrency, security, deletion/migration, or public interface. Read the diff and the delivery note, and read the surrounding files or authoritative sources the diff depends on when needed to verify a claim. Run no commands that execute code or tests. If a key scope cannot be verified by reading, the result is `INCOMPLETE`, not `PASS`. One round; at most one fix recheck.
 
 ### Heavy tier
 
