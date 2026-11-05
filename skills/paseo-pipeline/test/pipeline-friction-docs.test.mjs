@@ -38,3 +38,26 @@ test('every dispatch registers a reconciliation point and never duplicates the d
 test('the enlarged skill stays under the hard size cap', () => {
   assert.ok(skill.length < 20000, `SKILL.md is ${skill.length} chars`);
 });
+
+test('material human choices precede R0 without replacing CP-1', () => {
+  const entry = skill.slice(skill.indexOf('## Entry and CP-1'), skill.indexOf('## Start after CP-1'));
+  assert.ok(entry.indexOf('open questions that require human choice') < entry.indexOf('**Dispatch `hanlin`**'));
+  assert.match(entry, /materially change the contract/);
+  assert.match(entry, /Ordinary assumptions need not block/);
+  assert.match(entry, /does not replace CP-1/);
+  assert.match(entry, /max two rounds/);
+});
+
+test('R0 declares commit and external input baseline without overstating enforcement', () => {
+  const reviewer = fs.readFileSync(path.join(dir, 'templates/reviewer.md'), 'utf8');
+  const author = fs.readFileSync(path.join(dir, 'templates/author.md'), 'utf8');
+  assert.match(skill, /full reviewed commit SHA for both contract and code/);
+  assert.match(skill, /fixed snapshot.*content hash/);
+  assert.match(skill, /verify the hash before and after review/);
+  assert.match(skill, /stop and escalate rather than use a dirty or untracked copy silently/);
+  assert.match(skill, /reviewer protocol unless OS permissions enforce it/);
+  assert.match(skill, /`freeze-check` do not bind or check external snapshots/);
+  assert.match(reviewer, /unlisted worktree content/);
+  assert.match(reviewer, /task-specific risks and cross-change compatibility/);
+  assert.match(author, /material contract choices needing human decision/);
+});

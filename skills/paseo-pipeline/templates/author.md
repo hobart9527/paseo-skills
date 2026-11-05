@@ -5,7 +5,7 @@ Mode: `FULL`. Change: `<change>`. Output location: `openspec/changes/<change>/`.
 ## Shared contract
 - Read `SKILL.md` (the normative rules) and inspect relevant repository evidence; cite code claims as `path:line`. `LESSONS.md` is a 35KB historical evidence log, not a spec: consult a specific section only when a claim depends on past incidents, and never treat it as current procedure.
 - Do not edit business code. Return assumptions with a concrete verification method; mark unverifiable claims `UNVERIFIED`.
-- Report changed files, evidence, unresolved decisions, and acceptance commands. Do not invent provider/model requirements.
+- Report changed files, evidence, unresolved decisions, and acceptance commands. Distinguish material contract choices needing human decision from ordinary assumptions; state options and consequences without deciding for the human. Identify authoritative inputs and their versions, including approved design and relevant ADRs, and flag any outside the contract commit. Do not invent provider/model requirements.
 - One `gongbu` author writes the entire package. A human-approved design is optional; otherwise record assumptions from the request.
 
 ## Baseline alignment (all modes; R0 checks it first)
