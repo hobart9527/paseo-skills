@@ -58,6 +58,31 @@ test('templates avoid removed scripts and reviewer keeps current modes', () => {
   assert.doesNotMatch(read('templates/reviewer.md'), /Mode.*\bTASK\b|ARBITER/);
 });
 
+test('author brief closes assigned-workspace handoff, permission and structural-check gaps', () => {
+  const skill = read('SKILL.md');
+  for (const requirement of ['exact preflight and structural commands', 'success does not authorize later commands', 'Any required-command denial means `BLOCKED`', 'as soon as package exists', 'structural command/outcome/exit', 'Reconcile Git/evidence before R0']) {
+    assert.ok(skill.includes(requirement), requirement);
+  }
+  assert.match(skill, /`COMPLETE` requires structural success on committed content/);
+  assert.match(skill, /route\/check success is not R0\/CP-1/);
+  const author = read('templates/author.md');
+  for (const requirement of [
+    'assigned author workspace',
+    'Do not create another workspace',
+    'Before writing, resolve and read every actual template',
+    'Preflight success does not authorize `freeze-check`',
+    'exact structural-check command',
+    'After the complete initial package first exists',
+    'route separately from structural-check outcome',
+    '`COMPLETE`, `BLOCKED`, or `INCOMPLETE`',
+    'package commit SHA',
+    'Denied command report',
+    'next responsible action',
+  ]) assert.ok(author.includes(requirement), requirement);
+  assert.match(author, /COMPLETE` only when the structural check succeeded on committed package content/);
+  assert.match(author, /command: `<exact command>`; cwd: `<absolute path>`; denial: `<verbatim denial>`/);
+});
+
 test('briefs carry wait backstop, reviewer containment and minimal-contract rules', () => {
   assert.match(read('templates/reviewer.md'), /separate workspace/);
   assert.match(read('SKILL.md'), /paseo wait/);
@@ -109,8 +134,13 @@ test('schema declares the minimal artifact chain the pipeline reads, in flow ord
   assert.doesNotMatch(schema, /SKILL\.md「Entry and CP-1」/);
 });
 
-test('route=handoff at the structural check skips R0', () => {
-  assert.match(read('SKILL.md'), /`\[ROUTE\] handoff` here: skip R0/);
+test('handoff route requires complete author result and successful matching structural check', () => {
+  const skill = read('SKILL.md');
+  assert.match(skill, /Handoff route is valid only with author `COMPLETE`/);
+  assert.match(skill, /structural exit 0\/no blocks/);
+  assert.match(skill, /matching checked\/reported commit SHA/);
+  assert.match(skill, /Route alone clears no BLOCK, later failure, or Git\/evidence mismatch/);
+  assert.match(skill, /Then skip R0 and use Tier 2 `\/paseo-handoff`/);
 });
 
 test('the main session reconciles by state, never by re-dispatch', () => {
