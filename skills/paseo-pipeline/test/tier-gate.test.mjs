@@ -951,9 +951,12 @@ test('tool guard reminds only for CLI dispatch without a wait', () => {
   }
 });
 
-test('tool guard rejects invalid local server IDs', () => {
+test('tool guard strips invalid local server IDs instead of denying the call', () => {
+  // Denying lost the call and the model repeated it; stripping means "use the calling daemon".
   for (const serverId of ['self', 'local', ' LOCALHOST ', '']) {
-    assert.equal(toolGuard({ tool_name: 'mcp__paseo__list_agents', tool_input: { serverId } }).permissionDecision, 'deny');
+    const out = toolGuard({ tool_name: 'mcp__paseo__list_agents', tool_input: { serverId } });
+    assert.equal(out.permissionDecision, 'allow');
+    assert.deepEqual(out.updatedInput, {});
   }
   for (const tool_input of [{ serverId: 'srv_AdzDXaf59gwG' }, {}]) {
     assert.deepEqual(toolGuard({ tool_name: 'mcp__paseo__list_agents', tool_input }), {});

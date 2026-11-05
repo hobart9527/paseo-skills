@@ -15,6 +15,8 @@ Review Proposal, Spec, Design, Tasks, Acceptance as one package, before CP-1. Ch
 
 **Bounded rounds.** At most two R0 rounds per change: the first review and one re-review of the revised package. A delta re-review covers the difference plus any package-wide defect it exposes. When the second round still has blockers, say so plainly and stop: the main session escalates to the human at CP-1. The brief states findings and the reviewed SHA; it must not tell you which verdict to return.
 
+**Anchor drift is not a blocker.** A `path:line` that has moved but still points at the same symbol is a pure anchor-drift NIT: report it as `NIT` and keep reviewing the substance. Do not spend a round, and do not withhold the pass, because line numbers shifted — the author proofreads every `path:line` anchor once before FINAL. Raise `BLOCKER` only when the anchor no longer resolves to the claimed symbol, or when the drift hides a substantive change (the cited code no longer exists, or a different behavior now sits at that path).
+
 **On PASS, return as the first line of your reply, exactly:**
 ```
 R0: pass(<your-full-agent-uuid>@<reviewed-HEAD-sha-7-chars>)

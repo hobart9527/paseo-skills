@@ -32,7 +32,9 @@ selftest() {
   printf '%s' '{"session_id":"selftest","cwd":"/nonexistent"}' | node "$PIPELINE_HOME/hooks/tier-stop-hook.mjs" >/dev/null 2>&1 || return 1
   printf '%s' '{"tool_name":"Write","tool_input":{"file_path":"/nonexistent/x"},"session_id":"selftest"}' | node "$PIPELINE_HOME/hooks/tier-write-hook.mjs" >/dev/null 2>&1 || return 1
   out="$(printf '%s' '{"tool_name":"mcp__paseo__list_agents","tool_input":{"serverId":"self"}}' | node "$PIPELINE_HOME/hooks/tool-guard-hook.mjs" 2>/dev/null)" || return 1
-  printf '%s' "$out" | grep -q '"permissionDecision":"deny"' || return 1
+  # A placeholder host id is stripped (the call proceeds on the calling daemon), never denied.
+  printf '%s' "$out" | grep -q '"permissionDecision":"allow"' || return 1
+  printf '%s' "$out" | grep -q '"updatedInput":{}' || return 1
   write_gate_probe
 }
 # Probe the write gate in a throwaway primary checkout: no transcript_path must deny with a
