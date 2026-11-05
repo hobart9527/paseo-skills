@@ -38,3 +38,14 @@ test('every dispatch registers a reconciliation point and never duplicates the d
 test('the enlarged skill stays under the hard size cap', () => {
   assert.ok(skill.length < 20000, `SKILL.md is ${skill.length} chars`);
 });
+
+test('briefs carry verified decision context and handle checker friction without scope fabrication', () => {
+  const skill = fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8');
+  const author = fs.readFileSync(path.join(dir, 'templates/author.md'), 'utf8');
+  const reviewer = fs.readFileSync(path.join(dir, 'templates/reviewer.md'), 'utf8');
+  assert.match(skill, /confirmed decisions.*references/i);
+  assert.match(skill, /never invent ownership or dependencies/i);
+  assert.match(author, /decision coverage and unresolved conflicts/i);
+  assert.match(author, /baseline commit SHA and baseline evidence in `digest\.md`/i);
+  assert.match(reviewer, /same confirmed decisions/i);
+});

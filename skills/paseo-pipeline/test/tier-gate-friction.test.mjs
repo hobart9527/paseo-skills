@@ -254,3 +254,70 @@ test('the Tier 2 denial shows the handoff call and the tried section reminder', 
   assert.match(verdict.reason, /What was tried/i);
   assert.match(verdict.reason, /## What was tried/);
 }));
+
+test('a correction flushed after an old declaration supersedes it before judgement', () => withState((dir) => {
+  const file = path.join(dir, 'corrected.jsonl');
+  fs.writeFileSync(file, [entry('user', 'task'), plan('src/a.ts,packages/other/b.ts')].join('\n'));
+  let reads = 0;
+  const result = readDeclaredPlanStatusWithRetry(file, { attempts: 2, intervalMs: 0, onRead: () => {
+    if (++reads === 1) fs.appendFileSync(file, `\n${plan('src/a.ts')}`);
+  } });
+  assert.deepEqual(result.plan.files, ['src/a.ts']);
+}));
+
+test('latest fully flushed correction overrides an earlier cached declaration', () => withState((dir) => {
+  const file = path.join(dir, 'correction.jsonl');
+  fs.writeFileSync(file, [entry('user', 'task'), plan('src/a.ts,packages/other/b.ts')].join('\n'));
+  assert.equal(readDeclaredPlanStatusWithRetry(file, { attempts: 1 }).plan.files.length, 2);
+  fs.appendFileSync(file, `\n${plan('src/a.ts')}`);
+  assert.deepEqual(readDeclaredPlanStatusWithRetry(file, { attempts: 1 }).plan.files, ['src/a.ts']);
+}));
+
+test('an unflushed correction and no correction have identical visible transcript input', () => withState((dir) => {
+  const old = [entry('user', 'task'), plan('src/a.ts,packages/other/b.ts')].join('\n');
+  const beforeCorrection = path.join(dir, 'pending.jsonl');
+  const noCorrection = path.join(dir, 'unchanged.jsonl');
+  fs.writeFileSync(beforeCorrection, old);
+  fs.writeFileSync(noCorrection, old);
+  assert.deepEqual(readDeclaredPlanStatusWithRetry(beforeCorrection, { attempts: 1 }), readDeclaredPlanStatusWithRetry(noCorrection, { attempts: 1 }));
+  fs.appendFileSync(beforeCorrection, `\n${plan('src/a.ts')}`);
+  assert.notDeepEqual(readDeclaredPlanStatusWithRetry(beforeCorrection, { attempts: 1 }), readDeclaredPlanStatusWithRetry(noCorrection, { attempts: 1 }));
+}));
+
+// ---- retry window (review blockers on 8e9c65f) ----
+
+test('a missing declaration keeps the full t=0/100/200 ms window and finds a late flush', () => withState((dir) => {
+  const file = path.join(dir, 'late150.jsonl');
+  fs.writeFileSync(file, entry('user', 'task'));
+  const t0 = Date.now();
+  const stamps = [];
+  const none = readDeclaredPlanStatusWithRetry(file, { onRead: () => stamps.push(Date.now() - t0) });
+  assert.equal(none.status, 'missing');
+  assert.equal(stamps.length, 3, `reads at ${stamps}`);
+  assert.ok(stamps[2] >= 190, `third read at ${stamps[2]} ms`);
+  // Flush lands after read 2 (~100 ms) and before read 3 (~200 ms).
+  let reads = 0;
+  const late = readDeclaredPlanStatusWithRetry(file, { onRead: () => { if (++reads === 2) fs.appendFileSync(file, `\n${plan()}`); } });
+  assert.equal(late.status, 'found');
+  assert.equal(reads, 3);
+}));
+
+test('a found declaration gets exactly one extra re-read and keeps the result if nothing grew', () => withState((dir) => {
+  const file = path.join(dir, 'found-once.jsonl');
+  fs.writeFileSync(file, [entry('user', 'task'), plan('src/a.ts')].join('\n'));
+  let reads = 0;
+  const result = readDeclaredPlanStatusWithRetry(file, { attempts: 3, intervalMs: 0, onRead: () => { reads += 1; } });
+  assert.equal(reads, 2);
+  assert.deepEqual(result.plan.files, ['src/a.ts']);
+}));
+
+test('a shrunk transcript on re-read never replaces the current declaration', () => withState((dir) => {
+  const file = path.join(dir, 'shrink.jsonl');
+  const full = [entry('user', 'task'), plan('src/a.ts,packages/other/b.ts'), plan('src/a.ts')].join('\n');
+  fs.writeFileSync(file, full);
+  let reads = 0;
+  const result = readDeclaredPlanStatusWithRetry(file, { attempts: 3, intervalMs: 0, onRead: () => {
+    if (++reads === 1) fs.writeFileSync(file, [entry('user', 'task'), plan('src/a.ts,packages/other/b.ts')].join('\n'));
+  } });
+  assert.deepEqual(result.plan.files, ['src/a.ts']);
+}));
