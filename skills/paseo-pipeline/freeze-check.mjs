@@ -59,6 +59,7 @@ const RULE_FIXES = {
   BAD_INTERFACE: 'use Interface: <repo-path>[#<symbol>]',
   BAD_KIND: 'use Kind: skeleton (or omit it)',
   UNKNOWN_SCEN: 'claim a SCEN declared under specs/',
+  DUPLICATE_SCEN: 'give each scenario declaration a unique SCEN id and update its task claims',
   UNCLAIMED_SCEN: 'assign each declared SCEN to at least one task',
   NO_SCEN: 'claim at least one SCEN, or mark the task Review: mechanical',
   EMPTY_TASKS: 'write at least one parseable task line',
@@ -82,9 +83,41 @@ if (blocking.length) fixes.set('CONTRACT', 'fix the field named in the message; 
 // Scenario mapping.
 const declared = new Map();
 for (const file of walk(path.join(changeDir, 'specs'))) {
-  for (const line of read(file).split(/\r?\n/)) {
+  let fence = null;
+  let comment = false;
+  for (const original of read(file).split(/\r?\n/)) {
+    let line = original;
+    if (!fence) {
+      let visible = '';
+      while (line) {
+        if (comment) {
+          const end = line.indexOf('-->');
+          if (end < 0) { line = ''; break; }
+          comment = false;
+          line = line.slice(end + 3);
+        } else {
+          const start = line.indexOf('<!--');
+          if (start < 0) { visible += line; break; }
+          visible += line.slice(0, start);
+          line = line.slice(start + 4);
+          comment = true;
+        }
+      }
+      line = visible;
+    }
+    const marker = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (fence) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && /^\s*$/.test(line.slice(marker[0].length))) fence = null;
+      continue;
+    }
+    if (marker) { fence = marker[1]; continue; }
     const match = line.match(/^#{3,6}\s*Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(?:\s+.*)?$/i);
-    if (match) declared.set(match[1].toUpperCase(), path.relative(changeDir, file));
+    if (match) {
+      const id = match[1].toUpperCase();
+      const source = path.relative(changeDir, file);
+      if (declared.has(id)) blocking.push(`DUPLICATE_SCEN ${id}: declared in ${declared.get(id)} and ${source}`);
+      else declared.set(id, source);
+    }
   }
 }
 const claimed = new Map(tasks.flatMap((task) => task.scenarios.map((scen) => [scen.toUpperCase(), task.id])));
@@ -244,6 +277,12 @@ const CLAIMABLE_FILE = /\.(?:[cm]?[jt]sx?|py|go|rs|rb|java|kt|swift|php|sh|bash)
         for (const match of body.matchAll(/(['"`])((?:\.{0,2}\/)?[A-Za-z0-9_.@/-]+\.[A-Za-z0-9]+)\1/g)) {
           const raw = match[2];
           if (/^[a-z]+:\/\//i.test(raw)) continue;
+          // An import/export specifier is a dependency, not an assertion target: a shared setup
+          // module or a helper loaded for side effects is not "changed by this contract". Only
+          // explicit reads (readFileSync, loops, fixtures) claim ownership of another file.
+          const lineStart = body.lastIndexOf('\n', match.index) + 1;
+          const prefix = body.slice(lineStart, match.index).trimEnd();
+          if (/(?:^|\b)(?:import|export)\b|\bfrom\s*$|\brequire\s*\(\s*$|\bimport\s*\(\s*$/.test(prefix)) continue;
           const resolved = raw.startsWith('.')
             ? path.relative(repoRoot, path.resolve(path.dirname(testFile), raw))
             : raw.replace(/^\.\//, '');
@@ -267,12 +306,16 @@ const SHELL_CONSTRUCT = /\b(?:for|while|if|case|until)\b/;
 // splits them into legs that prove nothing; name the real cause instead of the
 // downstream VERIFY_NOT_NARROW.
 const CONTROL_LEG = /^(?:set(?:\s|$)|exit(?:\s|$)|true$|false$|do(?:\s|$)|done$|fi$|else$|then$|esac$)/;
+const verifyTestPath = (p) => isTestPath(p)
+  && (!/(?:^|\/)(?:fixtures?|testdata|__snapshots__)(?:\/|$)/i.test(p)
+    || /(?:^|\/)(?:test_[^/]+\.py|[^/]+[._](?:test|spec|e2e)\.[^/]+)$/i.test(p));
+const testScript = (command) => /^(?:(?:bash|sh)\s+)?(?:\.\/)?(?:[\w.-]+\/)*test(?:[._-][\w.-]+)?\.(?:sh|bash)(?:\s|$)/i.test(command);
 for (const task of tasks) {
   const legs = verifyLegs(task.verify);
   const broadLegs = legs.filter((leg) => leg.broad).length;
   // A leg must also prove something: a known test runner, or a test/spec path. `true`,
   // `echo ok` and `node src/a.mjs` pass a path-only check but verify nothing.
-  const proves = (leg) => FULL_SUITE_LEG.test(leg.command) || leg.paths.some((p) => /(?:test|spec)/i.test(p));
+  const proves = (leg) => FULL_SUITE_LEG.test(leg.command) || testScript(leg.command) || leg.paths.some(verifyTestPath);
   const allowed = verifyScope(task);
   const unscoped = legs.filter((leg) => !leg.broad && (!proves(leg) || leg.paths.some((path) => !isFileWithinScopes(path, allowed))));
   // Shell loops are legitimate (a sink iterating `scripts/specs/*.mjs`), but the
@@ -321,8 +364,8 @@ if (!designMarkdown || !/^#{2,3}\s*Impact/im.test(designMarkdown)) {
 } else {
   const section = designMarkdown.split(/^#{2,3}\s*Impact/im)[1].split(/^#{1,3}\s/m)[0].replace(/<!--[\s\S]*?-->/g, '');
   const known = new Set(tasks.map((task) => task.id));
-  for (const id of new Set(section.match(/\b[A-Za-z][A-Za-z0-9]*-\d+\b/g) ?? [])) {
-    if (/^SCEN-/i.test(id)) continue;
+  for (const id of new Set(section.match(/\b[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+\b/g) ?? [])) {
+    if (/^SCEN-/i.test(id) || /^UTF-8$/i.test(id) || !/^[A-Za-z][A-Za-z0-9]*-\d+$/.test(id)) continue;
     if (!known.has(id)) blocking.push(`IMPACT_UNKNOWN_TASK ${id}: Impact Inventory names a task that is not in tasks.md`);
   }
 }
