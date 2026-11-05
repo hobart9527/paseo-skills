@@ -80,7 +80,8 @@ concurrency. Two mechanisms could carry it; they are not alternatives.
 - **`/implement` (plus `/tdd` at pre-agreed seams) is the method.** Inside the
   handed-off worktree the implementing agent follows the ticket→Red→Green loop.
   Review is not part of that loop: the dispatching session runs one independent
-  reviewer after delivery (`~/.claude/CLAUDE.md`, Review closure), so `/code-review`
+  reviewer after delivery (`~/.claude/CLAUDE.md`, Review closure; reviewer-facing
+  rules and budgets in `docs/tier2-reviewer-brief.md`), so `/code-review`
   is not chained here. `to-spec`/`to-tickets` are deliberately *not*
   chained: OpenSpec already owns the contract for any change that went through
   `freeze-check`, and a second ticket tracker would duplicate that authority and
