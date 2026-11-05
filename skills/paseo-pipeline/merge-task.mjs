@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import { parseOptions } from './lib/cli.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseTasks, parseTaskLine, isFileWithinScopes, graphErrors, verifyLegs } from './lib/tasks.mjs';
+import { parseTasks, parseTaskLine, isFileWithinScopes, graphErrors, taskErrorsFor, verifyLegs } from './lib/tasks.mjs';
 import { mergeDeps, regressionReplays } from './lib/schedule.mjs';
 import { runGit } from './lib/git.mjs';
 import { writeMergeState, clearMergeState } from './lib/merge-state.mjs';
@@ -132,6 +132,8 @@ const graph = graphErrors(parsed.errors);
 if (graph.length) fail(`invalid tasks graph:\n${graph.map((x) => `${x.code}: ${x.message}`).join('\n')}`);
 const task = parsed.tasks.find((item) => item.id === taskId);
 if (!task) fail(`unknown task ${taskId}`);
+const taskErrors = taskErrorsFor(parsed.errors, taskId);
+if (taskErrors.length) fail(`invalid task ${taskId}:\n${taskErrors.map((x) => `${x.code}: ${x.message}`).join('\n')}`);
 if (task.done) fail(`${taskId} is already Done (${task.done.source}); do not re-dispatch`);
 for (const dep of mergeDeps(task)) {
   const parent = parsed.tasks.find((item) => item.id === dep);

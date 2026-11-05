@@ -402,3 +402,15 @@ test('ordinary test files do not trigger test infrastructure gate', () => {
   const result = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01']);
   assert.equal(result.status, 0, result.out);
 });
+
+test('rejects a task missing Verify with without crashing child_process', () => {
+  const f = taggedFixture(`- [ ] T-01 task\n  - Write scope: src,test\n`);
+  write(f.cwd, 'src/a.txt', 'a');
+  git(f.cwd, 'add', '.');
+  git(f.cwd, 'commit', '-qm', `work\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
+  git(f.cwd, 'switch', '-q', `integration/${f.change}`);
+  const result = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01']);
+  assert.equal(result.status, 1, result.out);
+  assert.match(result.out, /invalid task T-01/);
+  assert.match(result.out, /MISSING_VERIFY/);
+});
