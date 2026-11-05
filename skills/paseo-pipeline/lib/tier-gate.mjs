@@ -65,6 +65,19 @@
 // 刻意不加独立 CLI、PostToolUse 回执、任务生命周期协议或 Bash 写命令解析器：那些是为「防绕过」
 // 造的框架，而这里缺的只是「开工前把计划喂给同一个判定函数」。
 
+// 2026-11-05：修三类「实时判 missing、回放却 found」的误拒（真实转录 c7bbd0cb 与 95488e42）：
+//   1) 压缩摘要、技能正文以 user 角色到达，被 isHumanPrompt 当成新的人类消息清空 chunks，
+//      声明随之丢失；两者现在都不是人类边界（压缩条目另有 isCompactSummary 标记）。
+//   2) hook 读 transcript 时那一笔可能尚未 flush；readDeclaredPlanStatusWithRetry 在 missing
+//      时短重试（默认 3 次、间隔 100ms，同步 sleep），成功即用。仍然 missing 时把脱敏后的
+//      转录尾部写进 errors.log，实时判 missing 而回放 found 才有证据可查。
+//   3) 同一批并行 Edit/Write 的首个 hook 读到了完整声明，另一个读到较短的 flush；把
+//      found 的判定按「转录前缀长度 + 人类消息数」记进 stateDir，短读命中同一批时复用。
+//      人类消息前进（前缀变长且末段人类边界数量增加）即作废，不会跨任务段沿用。
+// 另外：顶层 src/ 与 test/ 是同一目录约定的两半，不是两个包。作用域规范化先尝试解析
+// monorepo 包根（packages/*、skills/* 里有同名路径时以那里为准），解析不到时把 src/test
+// 折叠成同一作用域——真正跨 packages/x 与 packages/y 仍然算两个作用域。
+
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -203,14 +216,68 @@ function turnsFromEnv() {
 
 const EXEMPT = (rel) => rel === 'openspec' || rel.startsWith('openspec/')
   || rel === '.superpowers' || rel.startsWith('.superpowers/');
+// docs/prototypes 与 docs/specs 是原型页与规格草稿：反复调整它们不是「原地改业务文件」，
+// 不应触发 Stop 的 churn 汇报。仍计入作用域/文件数判定（那是另一条规则）。
+const CHURN_EXEMPT = (rel) => EXEMPT(rel)
+  || rel === 'docs/prototypes' || rel.startsWith('docs/prototypes/')
+  || rel === 'docs/specs' || rel.startsWith('docs/specs/');
 
 // 工作区根：monorepo 的 packages/x、apps/x、services/x、crates/x、skills/x 算一个作用域，
 // 其余取顶层目录。Tier 1 的「单目录」按这里判，而不是按文件的完整路径。
 const WORKSPACE_ROOTS = new Set(['packages', 'apps', 'services', 'crates', 'skills']);
+// src 与 test 是同一约定的两半：顶层同时出现它们时视为同一作用域。用独立哨兵而不是 '.'，
+// 否则 `src/a` 与仓库根文件（README.md）也会被折叠成同一作用域，真正跨作用域的写入漏拦。
+const SOURCE_TEST_ROOTS = new Set(['src', 'test', 'tests', '__tests__', 'spec', 'e2e']);
+const SOURCE_TEST_SCOPE = '(src/test)';
 export function scopeKey(rel) {
   const parts = String(rel).split('/');
   if (parts.length > 2 && WORKSPACE_ROOTS.has(parts[0])) return `${parts[0]}/${parts[1]}`;
+  if (parts.length > 1 && SOURCE_TEST_ROOTS.has(parts[0])) return SOURCE_TEST_SCOPE;
   return parts.length > 1 ? parts[0] : '.';
+}
+
+/** 仓库里存在哪些工作区根（只读目录名，不遍历）。用于把省略了包前缀的声明路径归位。 */
+function workspaceRoots(root) {
+  try {
+    return fs.readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && WORKSPACE_ROOTS.has(entry.name))
+      .map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 声明里的 `src/a.ts` 可能省略了 `packages/x/` 前缀：能唯一解析到某个包根时用完整相对路径，
+ * 多个包根都命中（或都不命中）就保持原样，绝不猜测。`candidates` 是仓库里真实存在的
+ * `packages/x`、`skills/x` 等包根（仓库相对）。
+ */
+export function resolveScopedPath(rel, root) {
+  const value = String(rel);
+  const parts = value.split('/');
+  if (parts.length < 2 || WORKSPACE_ROOTS.has(parts[0])) return value;
+  const candidates = [];
+  for (const top of workspaceRoots(root)) {
+    try {
+      for (const entry of fs.readdirSync(path.join(root, top), { withFileTypes: true })) {
+        if (entry.isDirectory()) candidates.push(`${top}/${entry.name}`);
+      }
+    } catch {
+      // 读不到某个包根就跳过。
+    }
+  }
+  const hits = candidates.filter((dir) => {
+    try { fs.statSync(path.join(root, dir, value)); return true; } catch { return false; }
+  });
+  return hits.length === 1 ? `${hits[0]}/${value}` : value;
+}
+
+/**
+ * 声明阶段的作用域：先把省略的包前缀补回，再按 scopeKey 归并。只用于「计划是否跨作用域」，
+ * 不改变真正的写入记录（写入用的是纳入时解析出的 `rel`）。
+ */
+function declaredScopes(files, root) {
+  return [...new Set(files.map((file) => scopeKey(resolveScopedPath(file, root))))].sort();
 }
 
 /**
@@ -293,8 +360,25 @@ function planLines(text) {
   return lines;
 }
 
+export function readDeclaredPlanStatus(transcriptPath) {
+  return parseDeclaredPlan(transcriptPath).result;
+}
+
+/** Compaction summaries arrive as user-role entries; they are not a new human turn. */
+const COMPACTION_SUMMARY = /^\s*This session is being continued from a previous conversation\b/i;
+/** A loaded skill's body is injected as user role, prefixed with its base directory. */
+const SKILL_INJECTION = /^\s*Base directory for this skill:/;
+/** Entries that never count as the main session's human boundary or declaration. */
+const INJECTED_ENTRY = (entry) => entry.isCompactSummary === true || entry.isMeta === true;
+
 function isHumanPrompt(text) {
   if (typeof text !== 'string' || !text.trim()) return false;
+  // Injections that arrive as user-role entries are not a new human turn. Treating them as one
+  // wiped the declaration mid-task and then denied the write the model was already making:
+  // a compaction summary ("This session is being continued…") and a skill body ("Base directory
+  // for this skill…") were the two observed causes. Compaction entries also carry
+  // `isCompactSummary`, but some providers ship the body without the flag, so match the prefix.
+  if (COMPACTION_SUMMARY.test(text) || SKILL_INJECTION.test(text)) return false;
   const readonly = /^(?:status|help|context|cost|usage)$/i;
   const plain = text.trim().match(/^\/([\w-]+)$/);
   if (plain && readonly.test(plain[1])) return false;
@@ -334,14 +418,20 @@ export function readDeclaredPlan(transcriptPath) {
   return readDeclaredPlanStatus(transcriptPath).plan ?? null;
 }
 
-export function readDeclaredPlanStatus(transcriptPath) {
-  if (typeof transcriptPath !== 'string' || transcriptPath === '') return { status: 'unreadable' };
+/**
+ * 解析结果 + 批内复用所需的指纹：`consumed` 是本次实际读到的字节数，`boundaries` 是其中
+ * 人类消息边界的条数。前缀变长且边界数不变 = 同一批里补写的尾部；边界数增加 = 新的人类
+ * 消息，早先的 found 判定必须作废。
+ */
+function parseDeclaredPlan(transcriptPath) {
+  if (typeof transcriptPath !== 'string' || transcriptPath === '') return { result: { status: 'unreadable' }, consumed: 0, boundaries: 0 };
   let text;
   try {
     text = fs.readFileSync(transcriptPath, 'utf8');
   } catch {
-    return { status: 'unreadable' };
+    return { result: { status: 'unreadable' }, consumed: 0, boundaries: 0 };
   }
+  let boundaries = 0;
   const assistantText = (() => {
     const chunks = [];
     let parsedAny = false;
@@ -352,11 +442,11 @@ export function readDeclaredPlanStatus(transcriptPath) {
       parsedAny = true;
       // Subagent traffic is not the main session's task boundary or declaration.
       if (entry.isSidechain) continue;
-      if (entry.type === 'user' && !entry.isMeta) {
+      if (entry.type === 'user' && !INJECTED_ENTRY(entry)) {
         const content = entry.message?.content;
         const parts = typeof content === 'string' ? [content] : Array.isArray(content)
           ? content.filter((block) => block?.type === 'text').map((block) => block.text) : [];
-        if (parts.some(isHumanPrompt)) chunks.length = 0;
+        if (parts.some(isHumanPrompt)) { chunks.length = 0; boundaries += 1; }
       }
       if (entry.type !== 'assistant') continue;
       const content = entry.message?.content;
@@ -367,6 +457,11 @@ export function readDeclaredPlanStatus(transcriptPath) {
     // 返回空串——此时任何示例都来自用户侧或工具输出，不能当声明。
     return parsedAny ? chunks : [text];
   })();
+  const consumed = Buffer.byteLength(text, 'utf8');
+  return { result: declaredFromChunks(assistantText), consumed, boundaries };
+}
+
+function declaredFromChunks(assistantText) {
   // Fences are scoped to one text block, so an unclosed example cannot swallow a later declaration.
   const matches = assistantText.flatMap(planLines);
   if (matches.length === 0) return { status: 'missing' };
@@ -384,16 +479,121 @@ export function readDeclaredPlanStatus(transcriptPath) {
   return files.length ? { status: 'found', plan } : { status: 'invalid', reason: '声明 files 为空或为 none', plan };
 }
 
+// 重试：hook 读 transcript 时那一笔可能尚未 flush。同步 sleep，不改变调用方签名。
+const DECLARATION_RETRY_ATTEMPTS = 3;
+const DECLARATION_RETRY_MS = 100;
+const sleepSync = (ms) => {
+  if (!(ms > 0)) return;
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch {
+    const until = Date.now() + ms;
+    while (Date.now() < until) { /* 兜底自旋：极短，可接受 */ }
+  }
+};
+
+/** 同批 found 判定的落盘记录。只在同一个 transcript 前缀（含边界数）内复用。 */
+function batchRecordFile(transcriptPath) {
+  const raw = String(transcriptPath);
+  let hash = 0;
+  for (let i = 0; i < raw.length; i += 1) hash = (Math.imul(hash, 31) + raw.charCodeAt(i)) | 0;
+  return path.join(stateDir(), `decl-${(hash >>> 0).toString(36)}-${raw.length}.json`);
+}
+
+function readBatchRecord(transcriptPath, consumed, boundaries) {
+  try {
+    const record = JSON.parse(fs.readFileSync(batchRecordFile(transcriptPath), 'utf8'));
+    if (!record || record.path !== transcriptPath) return null;
+    // The same batch: no human boundary beyond the recorded read. A shorter prefix (the flush
+    // had not completed for this hook) or a longer tail (the same batch still writing) both
+    // count; a newly arrived human message (more boundaries) does not.
+    if (boundaries > record.boundaries) return null;
+    return record.result?.status === 'found' ? record.result : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeBatchRecord(transcriptPath, consumed, boundaries, result) {
+  try {
+    fs.mkdirSync(stateDir(), { recursive: true });
+    fs.writeFileSync(batchRecordFile(transcriptPath), JSON.stringify({ path: transcriptPath, consumed, boundaries, result }));
+  } catch {
+    // 记录失败只是少一次优化，不能影响判定。
+  }
+}
+
+/**
+ * hook 用的读取入口：短重试解决 flush 竞态，批内缓存解决并行 Edit 读到较短前缀。
+ * `attempts`/`intervalMs` 只给测试用。
+ */
+export function readDeclaredPlanStatusWithRetry(transcriptPath, { attempts = DECLARATION_RETRY_ATTEMPTS, intervalMs = DECLARATION_RETRY_MS, onRead } = {}) {
+  const read = () => { const parsed = parseDeclaredPlan(transcriptPath); onRead?.(); return parsed; };
+  let last = read();
+  for (let attempt = 1; attempt <= attempts && last.result.status === 'missing'; attempt += 1) {
+    const cached = readBatchRecord(transcriptPath, last.consumed, last.boundaries);
+    if (cached) return cached;
+    if (attempt === attempts) break;
+    sleepSync(intervalMs);
+    last = read();
+  }
+  // A found result (fresh or retried) is recorded so a parallel hook that read a shorter flush
+  // can reuse it even when the transcript file has since been truncated or re-flushed.
+  if (last.result.status === 'found') writeBatchRecord(transcriptPath, last.consumed, last.boundaries, last.result);
+  return last.result;
+}
+
+/**
+ * 最终判 missing 时把转录尾部写进 errors.log：实时判 missing、回放却 found 的根因只能靠
+ * 现场证据确认。只留 type/timestamp/内容前 120 字符，并去掉明显的密钥形态。
+ */
+export function logMissingDeclaration(transcriptPath, tailLines = 20) {
+  try {
+    let text;
+    try { text = fs.readFileSync(transcriptPath, 'utf8'); } catch (err) { text = ''; logHookError('declaration missing/unreadable', err); }
+    const redact = (value) => String(value)
+      .replace(/\b(sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{12,}|xox[baprs]-[A-Za-z0-9-]{10,})\b/g, '[redacted]')
+      .replace(/(?<=(?:token|secret|password|key|authorization)\s*[:=]\s*)[^\s"'\\]+/gi, '[redacted]')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120);
+    const tail = text.split('\n').filter(Boolean).slice(-tailLines).map((line, index) => {
+      let entry;
+      try { entry = JSON.parse(line); } catch { return `tail line ${index + 1}: <unparsed ${line.length} bytes>`; }
+      const content = entry?.message?.content;
+      const body = typeof content === 'string' ? content
+        : Array.isArray(content) ? content.map((block) => block?.text ?? block?.name ?? block?.type ?? '').join(' ') : '';
+      return `tail line ${index + 1}: type=${entry?.type ?? '?'} ts=${entry?.timestamp ?? '?'} ${redact(body)}`;
+    });
+    fs.mkdirSync(stateDir(), { recursive: true });
+    fs.appendFileSync(path.join(stateDir(), 'errors.log'),
+      `${new Date().toISOString()} declaration missing ${String(transcriptPath)}\n${tail.join('\n')}\n`);
+  } catch {
+    // 诊断日志失败不能影响判定本身。
+  }
+}
+
+
 function planDenyReason(declared, files, scopes, limit) {
   return [
     `[tier-gate] 动手前声明的计划已超出 Tier 1：${files.length} 个文件、${scopes.length} 个作用域（Tier 1 上限 ${limit} 个文件、单一作用域）。`,
     `声明：tier=${declared.tier} files=${files.join('、')}`,
     '首次写入前先选对通道，不要继续原地写：',
-    '- Tier 2：用 /paseo-handoff 或授权 worktree，把计划文件与验收命令写进交接。',
+    `- Tier 2：用 /paseo-handoff 或授权 worktree，把计划文件与验收命令写进交接（调用样例见下）。`,
     '- Tier 3：仅当冻结 DAG 有 maxWidth>=2 且任务>=4 → /paseo-pipeline。',
+    HANDOFF_SAMPLE,
     '如果只是声明写错了（实际计划更小），先输出修正后的 TIER-PLAN 声明再动手；不要改用其他方式绕过。',
   ].join('\n');
 }
+
+// 交接样例直接写进拒绝文案：只说「用 /paseo-handoff」时，模型要么原地硬撑，要么写出
+// 落不进下游上下文的交接。样例让它在被拒绝的当下就能照抄。
+const HANDOFF_SAMPLE = [
+  '调用样例：/paseo-handoff "把 <change> 交给 worktree 里的 Agent" ',
+  '（或在 Paseo 里 create_agent 到新的 worktree），交接内容至少包含：',
+  '- ## Task / ## Current state',
+  '- ## What was tried（已试过什么、为什么不通，避免下游重走死路）',
+  '- ## Decisions',
+  '- ## Acceptance criteria（含冻结的验收命令）',
+].join('\n');
 
 /**
  * 判定一次写入。通过时把目标记入本会话账本，所以调用方每次写入只应调用一次。
@@ -402,7 +602,7 @@ function planDenyReason(declared, files, scopes, limit) {
  *   hook 传入 declarationStatus；旧调用方未传时仍按已写文件计数。
  * @returns {{verdict: 'allow'|'ask'|'deny', reason?: string, note?: string}}
  */
-export function assessTierGate({ target, sessionId, declared, declarationStatus, declarationError, loadDeclaration }) {
+export function assessTierGate({ target, sessionId, declared, declarationStatus, declarationError, loadDeclaration, transcriptPath }) {
   if (process.env.PIPELINE_TIER_GATE === 'off') return { verdict: 'allow', note: 'gate off' };
   if (typeof sessionId !== 'string' || sessionId === '') return { verdict: 'allow', note: 'no session id' };
   if (typeof target !== 'string' || target === '') return { verdict: 'allow', note: 'no target' };
@@ -429,6 +629,8 @@ export function assessTierGate({ target, sessionId, declared, declarationStatus,
     return { verdict: 'deny', reason: '[tier-gate] 无法读取会话 transcript，无法核验 TIER-PLAN。检查 hook 的 transcript_path 和读取权限，恢复后重新声明并重试；不要改用 Bash 绕过。' };
   }
   if (declarationStatus === 'missing') {
+    // 现场证据：实时判 missing 而回放 found 时，errors.log 里的尾部是唯一可查的差异来源。
+    if (typeof transcriptPath === 'string' && transcriptPath) logMissingDeclaration(transcriptPath);
     return { verdict: 'deny', reason: '[tier-gate] 未找到有效 TIER-PLAN。每条人工消息后须重新声明实际计划（包括继续修改已计数文件），例如 TIER-PLAN: tier=1 files=src/a.ts scope=src；不要改用 Bash 绕过。' };
   }
   if (declarationStatus === 'invalid') {
@@ -439,7 +641,9 @@ export function assessTierGate({ target, sessionId, declared, declarationStatus,
   if (declared && Array.isArray(declared.files) && declared.files.length > 0) {
     const planned = declared.files.filter((f) => !EXEMPT(f));
     const limit = limitFromEnv();
-    const scopes = [...new Set(planned.map(scopeKey))].sort();
+    // 声明里常省略 `packages/x/` 前缀；先把能唯一解析的补回，再判作用域，避免把
+    // `src/a.ts` 与 `packages/x/src/a.ts` 当成两个作用域。
+    const scopes = declaredScopes(planned, ctx.root);
     if (declared.tier === 2) {
       return {
         verdict: 'deny',
@@ -447,7 +651,8 @@ export function assessTierGate({ target, sessionId, declared, declarationStatus,
           '[tier-gate] 你声明的是 Tier 2，但当前仍在主 checkout（main）原地写业务文件。',
           'Tier 2 必须在 /paseo-handoff 或授权 worktree 里执行，不能在主 checkout 硬撑。',
           `声明：tier=2 files=${planned.join('、')}`,
-          '先停手：把已确认的计划文件与验收命令写进交接，再在隔离环境里开工。若判断有误，先输出修正后的 TIER-PLAN 声明。',
+          '先停手：把已确认的计划文件与验收命令写进交接，再在隔离环境里开工；若判断有误，先输出修正后的 TIER-PLAN 声明。',
+          HANDOFF_SAMPLE,
         ].join('\n'),
       };
     }
@@ -469,6 +674,7 @@ export function assessTierGate({ target, sessionId, declared, declarationStatus,
 
   const limit = limitFromEnv();
   // 已触碰的作用域（含用户确认过的越线文件——它们同样在本任务段的范围内）。
+  // 记录里的路径按真实的仓库相对路径保存，scopeKey 再把顶层 src/test 归并成同一作用域。
   const known = [...new Set([...counted, ...asked])];
   const scopes = [...new Set([...known.map(scopeKey), scopeKey(rel)])].sort();
   if (known.length > 0 && scopes.length >= 2) {
@@ -644,13 +850,16 @@ export function assessStop({ cwd, sessionId }) {
   // 每轮都会引入新文件，不应被周期性打断。汇报过一次就设 churnReported，用户回话时由
   // takeSnapshot 重置；否则同一段任务每轮都打断。
   const turnLimit = turnsFromEnv();
-  const turnsAfter = round.length > 0 ? seg.turns + 1 : seg.turns;
+  // 原型页与规格草稿的反复调整不计入 churn：那正是文档类产物的正常节奏。
+  const churnRound = round.filter((rel) => !CHURN_EXEMPT(rel));
+  const turnsAfter = churnRound.length > 0 ? seg.turns + 1 : seg.turns;
   const previouslyTouched = new Set([...seg.files, ...seg.stopFiles]);
-  const fresh = round.filter((rel) => !previouslyTouched.has(rel));
-  const churnBlock = turnsAfter >= turnLimit && round.length > 0 && fresh.length === 0 && !seg.churnReported;
+  const fresh = churnRound.filter((rel) => !previouslyTouched.has(rel));
+  const churnBlock = turnsAfter >= turnLimit && churnRound.length > 0 && fresh.length === 0 && !seg.churnReported;
   const block = fileLimitBlock || scopeBlock || churnBlock;
   // 只有真的在本轮改动了业务文件才算一轮；纯阅读/纯讨论不推进计数器，也不刷新段时钟，
-  // 否则一段任务会被频繁的 Stop 永久保活，空闲重置永远不生效。
+  // 否则一段任务会被频繁的 Stop 永久保活，空闲重置永远不生效。churn 只认业务文件，
+  // docs/prototypes、docs/specs 的反复编辑不推进（但文件数与作用域判定照旧）。
   if (round.length > 0) {
     writeSegment(file, state, ctx.root, {
       // 关键：round 不进 files（PreToolUse 的账本），只进 Stop 私有的 stopFiles，避免 Git 脏文件污染后续 PreToolUse
