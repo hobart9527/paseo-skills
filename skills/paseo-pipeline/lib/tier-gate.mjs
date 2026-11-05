@@ -528,20 +528,24 @@ function writeBatchRecord(transcriptPath, consumed, boundaries, result) {
 export function readDeclaredPlanStatusWithRetry(transcriptPath, { attempts = DECLARATION_RETRY_ATTEMPTS, intervalMs = DECLARATION_RETRY_MS, onRead } = {}) {
   const read = () => { const parsed = parseDeclaredPlan(transcriptPath); onRead?.(); return parsed; };
   let last = read();
+  let foundRereads = 0;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     if (last.result.status === 'missing') {
       const cached = readBatchRecord(transcriptPath, last.consumed, last.boundaries);
       if (cached) return cached;
     }
     if (attempt === attempts) break;
+    // A missing declaration keeps the whole retry window. A found one is not final either: the model
+    // may have just emitted a correction whose entry is not flushed yet, so it gets exactly one more
+    // read; if the transcript did not grow, the current result stands.
+    if (last.result.status === 'found') {
+      if (foundRereads >= 1) break;
+      foundRereads += 1;
+    }
     sleepSync(intervalMs);
     const next = read();
-    // A found declaration is not final either: the model may have just emitted a correction whose
-    // entry has not been flushed when this hook read. Re-read once and keep the newer declaration;
-    // if the transcript did not grow, the previous result stands. This can only move the verdict
-    // toward the model's latest written plan, never toward an older, larger one.
-    if (next.consumed === last.consumed) { last = next; break; }
-    last = next;
+    // A shorter read is a truncated or re-flushed transcript; it must never select an older declaration.
+    if (next.consumed >= last.consumed) last = next;
   }
   // A found result (fresh or retried) is recorded so a parallel hook that read a shorter flush
   // can reuse it even when the transcript file has since been truncated or re-flushed.

@@ -224,3 +224,43 @@ test('side-effect import syntax alone cannot prove whether unowned code is a fix
     assert.ok(!run(dir).report.blocking.some((s) => s.startsWith('TEST_FILE_UNOWNED')));
   }
 });
+
+// ---- review blockers on 8e9c65f ----
+
+test('an import earlier on the line does not hide an explicit read of an unowned file', () => {
+  const dir = repoWithTests("import fs from 'node:fs'; fs.readFileSync('test/setup.mjs');\n");
+  fs.writeFileSync(path.join(dir, 'test/setup.mjs'), 'export const setup = true;\n');
+  assert.ok(run(dir).report.blocking.some((s) => s.startsWith('TEST_FILE_UNOWNED') && /test\/setup\.mjs/.test(s)));
+});
+
+test('a multiline import specifier on the next line is still an import, not a claim', () => {
+  const dir = repoWithTests("import fs from\n  './setup.mjs';\nexport {\n  y } from\n  './setup.mjs';\nvoid fs;\n");
+  fs.writeFileSync(path.join(dir, 'test/setup.mjs'), 'export const y = true;\n');
+  assert.ok(!run(dir).report.blocking.some((s) => s.startsWith('TEST_FILE_UNOWNED')), run(dir).report.blocking.join('\n'));
+});
+
+test('a test-named file under fixtures/ or a fixtures script cannot satisfy Verify', () => {
+  const extra = 'Write scope: src/shared,test/shared.test.mjs,test/fixtures,test/unit,test/run-all.sh';
+  const base = contract.replace('Write scope: src/shared,test/shared.test.mjs', extra);
+  const verdict = (cmd) => run(change(files(base.replace('node --test test/shared.test.mjs', cmd)))).report.blocking.some((s) => s.startsWith('VERIFY_NOT_NARROW T-01'));
+  assert.ok(verdict('node --test test/fixtures/foo.test.mjs'));
+  assert.ok(verdict('bash test/fixtures/test.sh'));
+  assert.ok(!verdict('node --test test/unit/a.test.mjs'));
+  assert.ok(!verdict('bash test/run-all.sh'));
+});
+
+test('a comment opener on a fence-opening line cannot swallow a later duplicate scenario', () => {
+  const spec = '### Scenario: SCEN-1\n```html <!--\nx\n```\n### Scenario: SCEN-1\n';
+  const result = run(change({ ...files(), 'specs/a/spec.md': spec }));
+  assert.ok(result.report.blocking.some((s) => s.startsWith('DUPLICATE_SCEN SCEN-1')), result.report.blocking.join('\n'));
+  const plain = run(change({ ...files(), 'specs/a/spec.md': '### Scenario: SCEN-1\n<!--\nnote\n-->\n### Scenario: SCEN-1\n' }));
+  assert.ok(plain.report.blocking.some((s) => s.startsWith('DUPLICATE_SCEN SCEN-1')));
+});
+
+test('impact inventory ignores UTF-16 style tokens but still flags real unknown task ids', () => {
+  const clean = change({ ...files(), 'design.md': `${design}\nUTF-16, UTF-32, SHA-256 and ISO-8601 are plain prose\n` });
+  assert.ok(!run(clean).report.blocking.some((s) => s.startsWith('IMPACT_UNKNOWN_TASK')));
+  const bad = change({ ...files(), 'design.md': `${design}\nUTF-16 and T-99\n` });
+  const hits = run(bad).report.blocking.filter((s) => s.startsWith('IMPACT_UNKNOWN_TASK'));
+  assert.deepEqual(hits.map((s) => s.split(':')[0]), ['IMPACT_UNKNOWN_TASK T-99']);
+});

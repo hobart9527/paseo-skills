@@ -82,12 +82,16 @@ if (blocking.length) fixes.set('CONTRACT', 'fix the field named in the message; 
 
 // Scenario mapping.
 const declared = new Map();
+const FENCE_MARKER = /^ {0,3}(`{3,}|~{3,})/;
 for (const file of walk(path.join(changeDir, 'specs'))) {
   let fence = null;
   let comment = false;
   for (const original of read(file).split(/\r?\n/)) {
     let line = original;
-    if (!fence) {
+    // A fence marker on the raw line wins over comment stripping: ```html <!-- opens a fence, and the
+    // comment opener inside it belongs to the fenced example, so it must not leak past the closer.
+    const rawOpens = !fence && !comment && FENCE_MARKER.test(original);
+    if (!fence && !rawOpens) {
       let visible = '';
       while (line) {
         if (comment) {
@@ -105,7 +109,7 @@ for (const file of walk(path.join(changeDir, 'specs'))) {
       }
       line = visible;
     }
-    const marker = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    const marker = line.match(FENCE_MARKER);
     if (fence) {
       if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && /^\s*$/.test(line.slice(marker[0].length))) fence = null;
       continue;
@@ -280,9 +284,11 @@ const CLAIMABLE_FILE = /\.(?:[cm]?[jt]sx?|py|go|rs|rb|java|kt|swift|php|sh|bash)
           // An import/export specifier is a dependency, not an assertion target: a shared setup
           // module or a helper loaded for side effects is not "changed by this contract". Only
           // explicit reads (readFileSync, loops, fixtures) claim ownership of another file.
-          const lineStart = body.lastIndexOf('\n', match.index) + 1;
-          const prefix = body.slice(lineStart, match.index).trimEnd();
-          if (/(?:^|\b)(?:import|export)\b|\bfrom\s*$|\brequire\s*\(\s*$|\bimport\s*\(\s*$/.test(prefix)) continue;
+          // Judge only what directly precedes the specifier (it may sit on the line after `from`):
+          // `import fs from 'node:fs'; fs.readFileSync('x')` has `import` earlier on the line, but the
+          // text right before 'x' is a call, so that is still an explicit read.
+          const prefix = body.slice(Math.max(0, match.index - 200), match.index).trimEnd();
+          if (/(?:^|[^\w$.])(?:from|import)$|\brequire\s*\($|\bimport\s*\($/.test(prefix)) continue;
           const resolved = raw.startsWith('.')
             ? path.relative(repoRoot, path.resolve(path.dirname(testFile), raw))
             : raw.replace(/^\.\//, '');
@@ -306,16 +312,20 @@ const SHELL_CONSTRUCT = /\b(?:for|while|if|case|until)\b/;
 // splits them into legs that prove nothing; name the real cause instead of the
 // downstream VERIFY_NOT_NARROW.
 const CONTROL_LEG = /^(?:set(?:\s|$)|exit(?:\s|$)|true$|false$|do(?:\s|$)|done$|fi$|else$|then$|esac$)/;
-const verifyTestPath = (p) => isTestPath(p)
-  && (!/(?:^|\/)(?:fixtures?|testdata|__snapshots__)(?:\/|$)/i.test(p)
-    || /(?:^|\/)(?:test_[^/]+\.py|[^/]+[._](?:test|spec|e2e)\.[^/]+)$/i.test(p));
-const testScript = (command) => /^(?:(?:bash|sh)\s+)?(?:\.\/)?(?:[\w.-]+\/)*test(?:[._-][\w.-]+)?\.(?:sh|bash)(?:\s|$)/i.test(command);
+// Fixture data is never a test, whatever its file is called: a `foo.test.mjs` under fixtures/ is
+// input for another test, so naming it must not satisfy Verify.
+const FIXTURE_DIR = /(?:^|\/)(?:fixtures?|testdata|__snapshots__)(?:\/|$)/i;
+const verifyTestPath = (p) => isTestPath(p) && !FIXTURE_DIR.test(p);
+const testScript = (command) => /^(?:(?:bash|sh)\s+)?(?:\.\/)?(?:[\w.-]+\/)*test(?:[._-][\w.-]+)?\.(?:sh|bash)(?:\s|$)/i.test(command)
+  && !FIXTURE_DIR.test(command.replace(/^(?:bash|sh)\s+/, '').split(/\s/)[0]);
 for (const task of tasks) {
   const legs = verifyLegs(task.verify);
   const broadLegs = legs.filter((leg) => leg.broad).length;
   // A leg must also prove something: a known test runner, or a test/spec path. `true`,
   // `echo ok` and `node src/a.mjs` pass a path-only check but verify nothing.
-  const proves = (leg) => FULL_SUITE_LEG.test(leg.command) || testScript(leg.command) || leg.paths.some(verifyTestPath);
+  // A runner pointed only at fixture paths runs no real test either.
+  const fixtureOnly = (leg) => leg.paths.length > 0 && leg.paths.every((p) => FIXTURE_DIR.test(p));
+  const proves = (leg) => (FULL_SUITE_LEG.test(leg.command) && !fixtureOnly(leg)) || testScript(leg.command) || leg.paths.some(verifyTestPath);
   const allowed = verifyScope(task);
   const unscoped = legs.filter((leg) => !leg.broad && (!proves(leg) || leg.paths.some((path) => !isFileWithinScopes(path, allowed))));
   // Shell loops are legitimate (a sink iterating `scripts/specs/*.mjs`), but the
@@ -365,7 +375,7 @@ if (!designMarkdown || !/^#{2,3}\s*Impact/im.test(designMarkdown)) {
   const section = designMarkdown.split(/^#{2,3}\s*Impact/im)[1].split(/^#{1,3}\s/m)[0].replace(/<!--[\s\S]*?-->/g, '');
   const known = new Set(tasks.map((task) => task.id));
   for (const id of new Set(section.match(/\b[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+\b/g) ?? [])) {
-    if (/^SCEN-/i.test(id) || /^UTF-8$/i.test(id) || !/^[A-Za-z][A-Za-z0-9]*-\d+$/.test(id)) continue;
+    if (/^SCEN-/i.test(id) || /^(?:UTF|SHA|ISO|IEC|RFC)-\d+$/i.test(id) || !/^[A-Za-z][A-Za-z0-9]*-\d+$/.test(id)) continue;
     if (!known.has(id)) blocking.push(`IMPACT_UNKNOWN_TASK ${id}: Impact Inventory names a task that is not in tasks.md`);
   }
 }
