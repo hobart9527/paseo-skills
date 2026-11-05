@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo-agents.mjs';
-import { parseTasks, graphErrors, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
+import { parseTasks, graphErrors, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, legPaths, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
 import { weightedSpeedup, weightedCriticalPath, verifyScope, readsOnlyEdges, pathWithin, resolveModel, LIVE_MODEL } from './lib/schedule.mjs';
 import { runGit } from './lib/git.mjs';
 
@@ -59,6 +59,7 @@ const RULE_FIXES = {
   BAD_INTERFACE: 'use Interface: <repo-path>[#<symbol>]',
   BAD_KIND: 'use Kind: skeleton (or omit it)',
   UNKNOWN_SCEN: 'claim a SCEN declared under specs/',
+  DUPLICATE_SCEN: 'give each scenario declaration a unique SCEN id and update its task claims',
   UNCLAIMED_SCEN: 'assign each declared SCEN to at least one task',
   NO_SCEN: 'claim at least one SCEN, or mark the task Review: mechanical',
   EMPTY_TASKS: 'write at least one parseable task line',
@@ -81,10 +82,46 @@ if (blocking.length) fixes.set('CONTRACT', 'fix the field named in the message; 
 
 // Scenario mapping.
 const declared = new Map();
+const FENCE_MARKER = /^ {0,3}(`{3,}|~{3,})/;
 for (const file of walk(path.join(changeDir, 'specs'))) {
-  for (const line of read(file).split(/\r?\n/)) {
+  let fence = null;
+  let comment = false;
+  for (const original of read(file).split(/\r?\n/)) {
+    let line = original;
+    // A fence marker on the raw line wins over comment stripping: ```html <!-- opens a fence, and the
+    // comment opener inside it belongs to the fenced example, so it must not leak past the closer.
+    const rawOpens = !fence && !comment && FENCE_MARKER.test(original);
+    if (!fence && !rawOpens) {
+      let visible = '';
+      while (line) {
+        if (comment) {
+          const end = line.indexOf('-->');
+          if (end < 0) { line = ''; break; }
+          comment = false;
+          line = line.slice(end + 3);
+        } else {
+          const start = line.indexOf('<!--');
+          if (start < 0) { visible += line; break; }
+          visible += line.slice(0, start);
+          line = line.slice(start + 4);
+          comment = true;
+        }
+      }
+      line = visible;
+    }
+    const marker = line.match(FENCE_MARKER);
+    if (fence) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && /^\s*$/.test(line.slice(marker[0].length))) fence = null;
+      continue;
+    }
+    if (marker) { fence = marker[1]; continue; }
     const match = line.match(/^#{3,6}\s*Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(?:\s+.*)?$/i);
-    if (match) declared.set(match[1].toUpperCase(), path.relative(changeDir, file));
+    if (match) {
+      const id = match[1].toUpperCase();
+      const source = path.relative(changeDir, file);
+      if (declared.has(id)) blocking.push(`DUPLICATE_SCEN ${id}: declared in ${declared.get(id)} and ${source}`);
+      else declared.set(id, source);
+    }
   }
 }
 const claimed = new Map(tasks.flatMap((task) => task.scenarios.map((scen) => [scen.toUpperCase(), task.id])));
@@ -244,6 +281,17 @@ const CLAIMABLE_FILE = /\.(?:[cm]?[jt]sx?|py|go|rs|rb|java|kt|swift|php|sh|bash)
         for (const match of body.matchAll(/(['"`])((?:\.{0,2}\/)?[A-Za-z0-9_.@/-]+\.[A-Za-z0-9]+)\1/g)) {
           const raw = match[2];
           if (/^[a-z]+:\/\//i.test(raw)) continue;
+          // An import/export specifier is a dependency, not an assertion target: a shared setup
+          // module or a helper loaded for side effects is not "changed by this contract". Only
+          // explicit reads (readFileSync, loops, fixtures) claim ownership of another file.
+          // Judge only what directly precedes the specifier (it may sit on the line after `from`):
+          // `import fs from 'node:fs'; fs.readFileSync('x')` has `import` earlier on the line, but the
+          // text right before 'x' is a call, so that is still an explicit read.
+          // Conservative: only whitespace may precede the specifier. A comment, or a string holding
+          // `import //`, is unresolved and gets reported; a false positive costs one Write-scope line,
+          // a missed one bypasses the gate.
+          const prefix = body.slice(Math.max(0, match.index - 200), match.index).trimEnd();
+          if (/(?:^|[^\w$.])(?:from|import)$|\brequire\s*\($|\bimport\s*\($/.test(prefix)) continue;
           const resolved = raw.startsWith('.')
             ? path.relative(repoRoot, path.resolve(path.dirname(testFile), raw))
             : raw.replace(/^\.\//, '');
@@ -267,12 +315,32 @@ const SHELL_CONSTRUCT = /\b(?:for|while|if|case|until)\b/;
 // splits them into legs that prove nothing; name the real cause instead of the
 // downstream VERIFY_NOT_NARROW.
 const CONTROL_LEG = /^(?:set(?:\s|$)|exit(?:\s|$)|true$|false$|do(?:\s|$)|done$|fi$|else$|then$|esac$)/;
+// Fixture data is never a test, whatever its file is called: a `foo.test.mjs` under fixtures/ is
+// input for another test, so naming it must not satisfy Verify.
+const FIXTURE_DIR = /(?:^|\/)(?:fixtures?|testdata|__snapshots__)(?:\/|$)/i;
+const verifyTestPath = (p) => isTestPath(p) && !FIXTURE_DIR.test(p);
+const testScript = (command) => /^(?:(?:bash|sh)\s+)?(?:\.\/)?(?:[\w.-]+\/)*test(?:[._-][\w.-]+)?\.(?:sh|bash)(?:\s|$)/i.test(command)
+  && !FIXTURE_DIR.test(command.replace(/^(?:bash|sh)\s+/, '').split(/\s/)[0]);
 for (const task of tasks) {
   const legs = verifyLegs(task.verify);
   const broadLegs = legs.filter((leg) => leg.broad).length;
   // A leg must also prove something: a known test runner, or a test/spec path. `true`,
   // `echo ok` and `node src/a.mjs` pass a path-only check but verify nothing.
-  const proves = (leg) => FULL_SUITE_LEG.test(leg.command) || leg.paths.some((p) => /(?:test|spec)/i.test(p));
+  // A runner pointed only at fixture paths runs no real test either.
+  // Option arguments (`--config test/fixtures/jest.config.js`) configure the run; they are not what it
+  // runs. `--test` and `--` are boolean, so the path after them is a real target.
+  // Known limitation: a flag value is skipped wholesale, so `node --test --test-only test/fixtures/foo.test.mjs`
+  // sees no target (targets=[]) and the fixture is treated as a real verification target. Not fixed here.
+  const fixtureOnly = (leg) => {
+    const tokens = leg.command.split(/\s+/);
+    const targets = tokens.flatMap((token, i) => {
+      const prev = tokens[i - 1] ?? '';
+      if (/^-/.test(prev) && !/=/.test(prev) && prev !== '--' && prev !== '--test') return [];
+      return legPaths(token);
+    });
+    return targets.length > 0 && targets.every((p) => FIXTURE_DIR.test(p));
+  };
+  const proves = (leg) => (FULL_SUITE_LEG.test(leg.command) && !fixtureOnly(leg)) || testScript(leg.command) || leg.paths.some(verifyTestPath);
   const allowed = verifyScope(task);
   const unscoped = legs.filter((leg) => !leg.broad && (!proves(leg) || leg.paths.some((path) => !isFileWithinScopes(path, allowed))));
   // Shell loops are legitimate (a sink iterating `scripts/specs/*.mjs`), but the
@@ -321,8 +389,11 @@ if (!designMarkdown || !/^#{2,3}\s*Impact/im.test(designMarkdown)) {
 } else {
   const section = designMarkdown.split(/^#{2,3}\s*Impact/im)[1].split(/^#{1,3}\s/m)[0].replace(/<!--[\s\S]*?-->/g, '');
   const known = new Set(tasks.map((task) => task.id));
-  for (const id of new Set(section.match(/\b[A-Za-z][A-Za-z0-9]*-\d+\b/g) ?? [])) {
-    if (/^SCEN-/i.test(id)) continue;
+  // UTF-16 / SHA-256 style tokens are prose, unless the project really names its tasks with that prefix.
+  const NON_TASK_TOKEN = /^(?:UTF|SHA|ISO|IEC|RFC)-\d+$/i;
+  const taskPrefixes = new Set(tasks.map((task) => task.id.replace(/-\d+$/, '').toUpperCase()));
+  for (const id of new Set(section.match(/\b[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+\b/g) ?? [])) {
+    if (/^SCEN-/i.test(id) || (NON_TASK_TOKEN.test(id) && !taskPrefixes.has(id.replace(/-\d+$/, '').toUpperCase())) || !/^[A-Za-z][A-Za-z0-9]*-\d+$/.test(id)) continue;
     if (!known.has(id)) blocking.push(`IMPACT_UNKNOWN_TASK ${id}: Impact Inventory names a task that is not in tasks.md`);
   }
 }

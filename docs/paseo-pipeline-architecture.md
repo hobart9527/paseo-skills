@@ -77,14 +77,18 @@ concurrency. Two mechanisms could carry it; they are not alternatives.
   and pins the acceptance command and the "stop if you exceed this" boundary. It
   deliberately does not impose a development method, and it is the only one of the
   two that is model-invocable from an orchestrating session.
-- **`/implement` (plus `/tdd` at pre-agreed seams, then `/code-review`) is the
-  method.** Inside the handed-off worktree the implementing agent follows the
-  ticket→Red→Green→review loop. `to-spec`/`to-tickets` are deliberately *not*
+- **`/implement` (plus `/tdd` at pre-agreed seams) is the method.** Inside the
+  handed-off worktree the implementing agent follows the ticket→Red→Green loop.
+  Review is not part of that loop: the dispatching session runs one independent
+  reviewer after delivery (`~/.claude/CLAUDE.md`, Review closure; reviewer-facing
+  rules and budgets in `docs/tier2-reviewer-brief.md`), so `/code-review`
+  is not chained here. `to-spec`/`to-tickets` are deliberately *not*
   chained: OpenSpec already owns the contract for any change that went through
   `freeze-check`, and a second ticket tracker would duplicate that authority and
   add an external dependency for work with `maxWidth < 2`, where a task graph buys
   nothing.
 
 So: Pipeline when there is DAG concurrency; otherwise `/paseo-handoff` carrying an
-`/implement` brief. Do not open a Pipeline for a serial change, and do not chain a
+`/implement` brief, reviewed once by the dispatching session's independent reviewer.
+Do not open a Pipeline for a serial change, and do not chain a
 parallel task graph onto a handoff — the handoff's single worktree is the boundary.

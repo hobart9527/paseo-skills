@@ -66,3 +66,14 @@ test('R0 declares commit and external input baseline without overstating enforce
   assert.match(reviewer, /task-specific risks and cross-change compatibility/);
   assert.match(author, /material contract choices needing human decision/);
 });
+
+test('briefs carry verified decision context and handle checker friction without scope fabrication', () => {
+  const skill = fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8');
+  const author = fs.readFileSync(path.join(dir, 'templates/author.md'), 'utf8');
+  const reviewer = fs.readFileSync(path.join(dir, 'templates/reviewer.md'), 'utf8');
+  assert.match(skill, /confirmed decisions.*references/i);
+  assert.match(skill, /never invent ownership or dependencies/i);
+  assert.match(author, /decision coverage and unresolved conflicts/i);
+  assert.match(author, /baseline commit SHA and baseline evidence in `digest\.md`/i);
+  assert.match(reviewer, /same confirmed decisions/i);
+});
