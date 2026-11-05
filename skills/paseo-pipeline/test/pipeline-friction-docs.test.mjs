@@ -41,7 +41,12 @@ test('the enlarged skill stays under the hard size cap', () => {
 
 test('material human choices precede R0 without replacing CP-1', () => {
   const entry = skill.slice(skill.indexOf('## Entry and CP-1'), skill.indexOf('## Start after CP-1'));
-  assert.ok(entry.indexOf('open questions that require human choice') < entry.indexOf('**Dispatch `hanlin`**'));
+  const questions = entry.indexOf('open questions that require human choice');
+  const dispatch = entry.indexOf('**Dispatch `hanlin`**');
+  assert.ok(questions >= 0, 'human choice guidance missing');
+  assert.ok(dispatch >= 0, 'R0 dispatch guidance missing');
+  assert.ok(questions < dispatch);
+  assert.match(entry, /commit the corrections with authorization and review the new SHA/);
   assert.match(entry, /materially change the contract/);
   assert.match(entry, /Ordinary assumptions need not block/);
   assert.match(entry, /does not replace CP-1/);
