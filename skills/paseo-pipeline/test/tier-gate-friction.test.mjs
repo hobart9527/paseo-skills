@@ -254,3 +254,32 @@ test('the Tier 2 denial shows the handoff call and the tried section reminder', 
   assert.match(verdict.reason, /What was tried/i);
   assert.match(verdict.reason, /## What was tried/);
 }));
+
+test('a correction flushed after an old declaration supersedes it before judgement', () => withState((dir) => {
+  const file = path.join(dir, 'corrected.jsonl');
+  fs.writeFileSync(file, [entry('user', 'task'), plan('src/a.ts,packages/other/b.ts')].join('\n'));
+  let reads = 0;
+  const result = readDeclaredPlanStatusWithRetry(file, { attempts: 2, intervalMs: 0, onRead: () => {
+    if (++reads === 1) fs.appendFileSync(file, `\n${plan('src/a.ts')}`);
+  } });
+  assert.deepEqual(result.plan.files, ['src/a.ts']);
+}));
+
+test('latest fully flushed correction overrides an earlier cached declaration', () => withState((dir) => {
+  const file = path.join(dir, 'correction.jsonl');
+  fs.writeFileSync(file, [entry('user', 'task'), plan('src/a.ts,packages/other/b.ts')].join('\n'));
+  assert.equal(readDeclaredPlanStatusWithRetry(file, { attempts: 1 }).plan.files.length, 2);
+  fs.appendFileSync(file, `\n${plan('src/a.ts')}`);
+  assert.deepEqual(readDeclaredPlanStatusWithRetry(file, { attempts: 1 }).plan.files, ['src/a.ts']);
+}));
+
+test('an unflushed correction and no correction have identical visible transcript input', () => withState((dir) => {
+  const old = [entry('user', 'task'), plan('src/a.ts,packages/other/b.ts')].join('\n');
+  const beforeCorrection = path.join(dir, 'pending.jsonl');
+  const noCorrection = path.join(dir, 'unchanged.jsonl');
+  fs.writeFileSync(beforeCorrection, old);
+  fs.writeFileSync(noCorrection, old);
+  assert.deepEqual(readDeclaredPlanStatusWithRetry(beforeCorrection, { attempts: 1 }), readDeclaredPlanStatusWithRetry(noCorrection, { attempts: 1 }));
+  fs.appendFileSync(beforeCorrection, `\n${plan('src/a.ts')}`);
+  assert.notDeepEqual(readDeclaredPlanStatusWithRetry(beforeCorrection, { attempts: 1 }), readDeclaredPlanStatusWithRetry(noCorrection, { attempts: 1 }));
+}));

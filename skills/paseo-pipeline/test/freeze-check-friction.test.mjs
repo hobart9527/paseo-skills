@@ -149,3 +149,78 @@ test('the reviewer brief treats path:line-only anchor drift as non-blocking NITs
   assert.match(reviewer, /NIT/);
   assert.match(reviewer, /proofread/i);
 });
+
+test('ordinary setup imports do not imply ownership but explicit file reads do', () => {
+  const dir = repoWithTests("import '../test/setup.mjs';\n");
+  fs.writeFileSync(path.join(dir, 'test/setup.mjs'), 'export const setup = true;\n');
+  assert.ok(!run(dir).report.blocking.some((s) => s.startsWith('TEST_FILE_UNOWNED')));
+  fs.writeFileSync(path.join(dir, 'test/shared.test.mjs'), "import fs from 'node:fs';\nfs.readFileSync('test/setup.mjs');\n");
+  assert.ok(run(dir).report.blocking.some((s) => s.startsWith('TEST_FILE_UNOWNED')));
+});
+
+test('impact inventory does not treat encoding or scenario IDs as task IDs', () => {
+  const dir = change({ ...files(), 'design.md': `${design}\nUTF-8 and SCEN-CAP-01\n` });
+  assert.ok(!run(dir).report.blocking.some((s) => s.startsWith('IMPACT_UNKNOWN_TASK')));
+});
+
+test('scenario headings inside fenced examples do not declare scenarios', () => {
+  const dir = change({ ...files(), 'specs/a/spec.md': '### Scenario: SCEN-1\n```md\n### Scenario: SCEN-FAKE\n```\n' });
+  assert.ok(!run(dir).report.blocking.some((s) => s.includes('SCEN-FAKE')));
+});
+
+test('an inspector source path does not count as test verification', () => {
+  const tasks = contract.replace('Write scope: src/shared,test/shared.test.mjs', 'Write scope: src/shared,test/shared.test.mjs,src/inspector.mjs').replace('node --test test/shared.test.mjs', 'node src/inspector.mjs');
+  const result = run(change(files(tasks)));
+  assert.ok(result.report.blocking.some((s) => s.startsWith('VERIFY_NOT_NARROW T-01')));
+});
+
+test('duplicate scenario declarations are reported', () => {
+  const dir = change({ ...files(), 'specs/b/spec.md': '### Scenario: SCEN-1\n' });
+  assert.ok(run(dir).report.blocking.some((s) => s.includes('DUPLICATE_SCEN')));
+});
+
+test('impact unknown task retains arbitrary task prefixes', () => {
+  const dir = change({ ...files(), 'design.md': `${design}\nfoo() -> TASK-7\n` });
+  assert.ok(run(dir).report.blocking.some((s) => s.startsWith('IMPACT_UNKNOWN_TASK TASK-7')));
+});
+
+test('scenario scan ignores HTML comments, preserves real duplicates and unclosed fences', () => {
+  const dir = change({ ...files(), 'specs/a/spec.md': '<!--\n### Scenario: SCEN-COMMENT\n-->\n### Scenario: SCEN-1\n~~~md\n### Scenario: SCEN-FENCED\n' });
+  const result = run(dir);
+  assert.ok(!result.report.blocking.some((s) => /SCEN-(COMMENT|FENCED)/.test(s)));
+  fs.writeFileSync(path.join(dir, 'specs/a/spec.md'), '<!-- ### Scenario: SCEN-FAKE -->\n### Scenario: SCEN-1\n<!-- comment -->\n### Scenario: SCEN-1\n');
+  const duplicate = run(dir, ['--skip-signer-check', '--explain']);
+  assert.ok(duplicate.report.blocking.some((s) => s.startsWith('DUPLICATE_SCEN')));
+  assert.match(duplicate.report.explanations.find((e) => e.code === 'DUPLICATE_SCEN').fix, /unique|duplicate/i);
+});
+
+test('verify rejects fixture data but accepts a scoped test runner script', () => {
+  const base = contract.replace('Write scope: src/shared,test/shared.test.mjs', 'Write scope: src/shared,test/shared.test.mjs,test/fixtures/input.json,scripts/test.sh');
+  const data = run(change(files(base.replace('node --test test/shared.test.mjs', 'cat test/fixtures/input.json'))));
+  assert.ok(data.report.blocking.some((s) => s.startsWith('VERIFY_NOT_NARROW T-01')));
+  const runner = run(change(files(base.replace('node --test test/shared.test.mjs', 'bash scripts/test.sh'))));
+  assert.ok(!runner.report.blocking.some((s) => s.startsWith('VERIFY_NOT_NARROW T-01')));
+});
+
+test('scenario scan closes only matching bare fences and handles inline comments', () => {
+  const spec = '<!-- fake -->\n### Scenario: SCEN-1\n````md\n```\n### Scenario: SCEN-HIDDEN\n```` trailing\n### Scenario: SCEN-STILL-HIDDEN\n````\n<!--\n```\n-->\n';
+  const result = run(change({ ...files(), 'specs/a/spec.md': spec }));
+  assert.ok(!result.report.blocking.some((s) => /SCEN-(HIDDEN|STILL-HIDDEN)/.test(s)));
+});
+
+test('fixture filenames and script arguments cannot masquerade as verification', () => {
+  const base = contract.replace('Write scope: src/shared,test/shared.test.mjs', 'Write scope: src/shared,test/shared.test.mjs,test/fixtures/input.json,scripts/test.sh');
+  for (const cmd of ['cat scripts/test.sh', 'cat test/fixtures/input.json']) {
+    const result = run(change(files(base.replace('node --test test/shared.test.mjs', cmd))));
+    assert.ok(result.report.blocking.some((s) => s.startsWith('VERIFY_NOT_NARROW T-01')), cmd);
+  }
+});
+
+test('side-effect import syntax alone cannot prove whether unowned code is a fixture or the subject', () => {
+  const body = "import '../test/setup.mjs';\n";
+  for (const content of ['globalThis.testEnvironment = true;\n', 'globalThis.observedBehavior = true;\n']) {
+    const dir = repoWithTests(body);
+    fs.writeFileSync(path.join(dir, 'test/setup.mjs'), content);
+    assert.ok(!run(dir).report.blocking.some((s) => s.startsWith('TEST_FILE_UNOWNED')));
+  }
+});
