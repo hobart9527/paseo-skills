@@ -58,12 +58,18 @@ test('templates avoid removed scripts and reviewer keeps current modes', () => {
   assert.doesNotMatch(read('templates/reviewer.md'), /Mode.*\bTASK\b|ARBITER/);
 });
 
-test('briefs carry wait backstop, reviewer containment and impact inventory rules', () => {
+test('briefs carry wait backstop, reviewer containment and minimal-contract rules', () => {
   assert.match(read('templates/reviewer.md'), /separate workspace/);
-  assert.match(read('templates/reviewer.md'), /Impact Inventory/);
-  assert.match(read('templates/author.md'), /Impact Inventory/);
   assert.match(read('SKILL.md'), /paseo wait/);
-  assert.match(read('openspec-schema/templates/design.md'), /Impact Inventory/);
+  // The minimal contract: OpenSpec native artifacts, no digest/survey tables,
+  // depth gated by the risk checklist, workers start from their packet.
+  const author = read('templates/author.md');
+  assert.match(author, /Never write a digest or a survey document/);
+  assert.match(author, /Risk checklist/);
+  assert.match(author, /Workers start from their packet/);
+  for (const brief of ['templates/author.md', 'templates/reviewer.md', 'templates/worker.md']) {
+    assert.doesNotMatch(read(brief), /Impact Inventory|Baseline Alignment/, brief);
+  }
 });
 
 test('dispatch guidance resolves live models and forbids copied examples', () => {
@@ -83,16 +89,23 @@ test('dispatch guidance resolves live models and forbids copied examples', () =>
   }
 });
 
-test('schema declares every artifact the pipeline reads, in flow order', () => {
+test('schema declares the minimal artifact chain the pipeline reads, in flow order', () => {
   const schema = read('openspec-schema/schema.yaml');
   assert.match(schema, /^name: paseo-pipeline$/m);
+  assert.match(schema, /^version: 2$/m);
   const ids = [...schema.matchAll(/^  - id: (\w+)$/gm)].map((m) => m[1]);
-  assert.deepEqual([...ids].sort(), ['acceptance', 'design', 'digest', 'proposal', 'review', 'specs', 'tasks']);
-  // design is written after the committed spec: by gaogong on the full path, or by the
-  // single FULL author together with the spec on the fast path.
+  // OpenSpec native set minus digest: proposal, specs, design (on demand), plus the
+  // pipeline additions tasks/acceptance/review.
+  assert.deepEqual([...ids].sort(), ['acceptance', 'design', 'proposal', 'review', 'specs', 'tasks']);
+  // design, when written, comes after the spec; it is optional, so `requires` orders
+  // it without demanding it (tasks requires specs only, not design).
   const design = schema.slice(schema.indexOf('  - id: design'), schema.indexOf('  - id: tasks'));
   assert.match(design, /requires:\n\s+- proposal\n\s+- specs/);
+  assert.match(design, /create only if any apply/);
+  const tasksBlock = schema.slice(schema.indexOf('  - id: tasks'), schema.indexOf('  - id: acceptance'));
+  assert.doesNotMatch(tasksBlock, /- design/);
   for (const id of ids) assert.ok(fs.existsSync(path.join(dir, 'openspec-schema', 'templates', `${id === 'specs' ? 'spec' : id}.md`)), `template for ${id}`);
+  assert.ok(!fs.existsSync(path.join(dir, 'openspec-schema', 'templates', 'digest.md')), 'digest template removed');
   assert.doesNotMatch(schema, /SKILL\.md「Entry and CP-1」/);
 });
 
@@ -198,4 +211,44 @@ test('FINAL depth follows the diff content and R0 rulings have a record format',
   assert.match(reviewer, /Rendered UI/);
   assert.match(reviewer, /Do not skip a part because its task was labelled `mechanical`/);
   assert.match(read('SKILL.md'), /R0-<round>-<n> <BLOCKER\|NIT> <accepted\|rejected\|fixed>/);
+});
+
+test('R0 has a legal exit: reviewer pass, recorded human exception, or blocking', () => {
+  const skill = read('SKILL.md');
+  // The two approval kinds are distinct and neither may be written as the other.
+  assert.match(skill, /R0: pass\(<agent-uuid>@<reviewed-sha>\)/);
+  assert.match(skill, /R0: human-accept\(@<sha>\)/);
+  assert.match(skill, /never written as a reviewer pass/);
+  // A human exception needs its own record, not just the sign-off line.
+  assert.match(skill, /approval in `run-log\.md`/);
+  assert.match(skill, /open item and reason in `rulings\.md`/);
+  // Whole-package rounds are capped; a directed repair is verified as a delta.
+  assert.match(skill, /at most two whole-package rounds/);
+  assert.match(skill, /verifies the fix diff only/);
+  assert.match(skill, /never regenerate the package by default/);
+  // NITs are recorded, not fixed, unless they change what a Verify can prove.
+  assert.match(skill, /Recorded NITs are not fixed before CP-1/);
+});
+
+test('planner output is not execution authorization', () => {
+  const skill = read('SKILL.md');
+  assert.match(skill, /not execution authorization/);
+  assert.match(skill, /human CP-1 for that exact contract commit is in `run-log\.md`/);
+  assert.match(skill, /PLANNING PREVIEW/);
+  assert.match(skill, /`frozen: false`/);
+});
+
+test('author and reviewer briefs implement bounded revision and falsifiable blocking', () => {
+  const author = read('templates/author.md');
+  assert.match(author, /Mode: `FULL \| REVISE`/);
+  assert.match(author, /Do not regenerate the package/);
+  assert.match(author, /Do not fix recorded NITs/);
+  assert.match(author, /one block per finding/);
+  assert.match(author, /Compile the approved design; do not re-solve it/);
+  const reviewer = read('templates/reviewer.md');
+  assert.match(reviewer, /falsifiable counterexample/);
+  assert.match(reviewer, /If your findings are all NITs, return the pass line/);
+  assert.match(reviewer, /delta check against your own findings/);
+  // A worker gets its task packet, not the whole contract history.
+  assert.match(read('templates/worker.md'), /Read only your packet/);
 });

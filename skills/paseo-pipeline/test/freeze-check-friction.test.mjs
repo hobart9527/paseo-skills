@@ -158,11 +158,6 @@ test('ordinary setup imports do not imply ownership but explicit file reads do',
   assert.ok(run(dir).report.blocking.some((s) => s.startsWith('TEST_FILE_UNOWNED')));
 });
 
-test('impact inventory does not treat encoding or scenario IDs as task IDs', () => {
-  const dir = change({ ...files(), 'design.md': `${design}\nUTF-8 and SCEN-CAP-01\n` });
-  assert.ok(!run(dir).report.blocking.some((s) => s.startsWith('IMPACT_UNKNOWN_TASK')));
-});
-
 test('scenario headings inside fenced examples do not declare scenarios', () => {
   const dir = change({ ...files(), 'specs/a/spec.md': '### Scenario: SCEN-1\n```md\n### Scenario: SCEN-FAKE\n```\n' });
   assert.ok(!run(dir).report.blocking.some((s) => s.includes('SCEN-FAKE')));
@@ -177,11 +172,6 @@ test('an inspector source path does not count as test verification', () => {
 test('duplicate scenario declarations are reported', () => {
   const dir = change({ ...files(), 'specs/b/spec.md': '### Scenario: SCEN-1\n' });
   assert.ok(run(dir).report.blocking.some((s) => s.includes('DUPLICATE_SCEN')));
-});
-
-test('impact unknown task retains arbitrary task prefixes', () => {
-  const dir = change({ ...files(), 'design.md': `${design}\nfoo() -> TASK-7\n` });
-  assert.ok(run(dir).report.blocking.some((s) => s.startsWith('IMPACT_UNKNOWN_TASK TASK-7')));
 });
 
 test('scenario scan ignores HTML comments, preserves real duplicates and unclosed fences', () => {

@@ -1,25 +1,30 @@
 # 全局 schema：paseo-pipeline
 #
-# 派生自 OpenSpec 1.8.0 内置的 `spec-driven`（`@fission-ai/openspec/schemas/spec-driven/schema.yaml`）。OpenSpec schema 是**整份替换**，
-# 不是叠加，所以这里必须连 proposal/specs/design 一起保留。
+# 派生自 OpenSpec 1.8.0 内置的 `spec-driven`（`@fission-ai/openspec/schemas/spec-driven/schema.yaml`）。
+# OpenSpec schema 是**整份替换**，不是叠加。基准就是上游原生产物链：proposal → specs →
+# design（按需）→ tasks；本 schema 只加流水线执行必需的最小件，并在 v2（2026-11-05
+# 最小契约收敛）删除了自造的 digest 产物与强制调查表。
 #
-# 与上游的差异（只有五处，其余逐字相同）：
+# 与上游的差异（v2）：
 #   1. tasks 的 instruction 与 templates/tasks.md 改成 pipeline 可解析的任务格式。
 #      上游只要求 `- [ ] X.Y 描述`，parseTasks 需要 `T-xx` 编号 + 元数据子字段；
 #      这个差距实测导致「validate --strict 通过、parseTasks 解析出 0 个任务」。
 #   2. specs 的 instruction 追加 SCEN- 编号要求（freeze-check 按编号对账）。
 #   3. 新增 acceptance 产物（冻结的业务验收矩阵，人类 CP-2 验收消费）。
-#   4. 新增 digest（gongbu 的代码库全景）与 review（hanlin 的 R0 签署）产物，
-#      让 `openspec status` 看到 author.md / freeze-check 实际要求的全部文件。
-#   5. design 额外 requires specs：流程是 gaogong 读已提交的 spec 再写设计。
+#   4. 新增 review 产物（hanlin 的 R0 签署），让 `openspec status` 看到
+#      freeze-check 实际要求的文件。design 保持上游语义：按需创建，
+#      `requires` 仅表达「写则在 specs 之后」，不是「必须写」。
+#   5. v2 删除 digest：代码勘察结论写在它支撑的那条规则旁边（specs/design 内，
+#      带 path:line），不再有单独的全景调查文件，也不再要求 Impact Inventory /
+#      Baseline Alignment 表。CP-2 后主规格用上游 `openspec archive` 归档。
 #
 # 升级 OpenSpec 后重跑一次冒烟探测：临时仓库里 `openspec new change x --schema paseo-pipeline`
 # → `openspec instructions tasks --change x` 应出现 T-xx 元数据 → `openspec schema validate
 # paseo-pipeline`。test/docs.test.mjs 会断言这份文件的产物清单与依赖。
 
 name: paseo-pipeline
-version: 1
-description: Paseo pipeline contract workflow - proposal → specs/digest → design → tasks/acceptance → review (R0)
+version: 2
+description: Paseo pipeline contract workflow - proposal → specs → design (on demand) → tasks/acceptance → review (R0)
 artifacts:
   - id: proposal
     generates: proposal.md
@@ -48,7 +53,7 @@ artifacts:
       behavior, so if behavior does not change, no spec should change either.
       Do not invent a requirement just to satisfy validation.
 
-      Keep it concise (1-2 pages). Focus on the "why" not the "how" -
+      Keep it concise (a few paragraphs at most). Focus on the "why" and "what" -
       implementation details belong in design.md.
 
       This is the foundation - specs, design, and tasks all build on this.
@@ -149,20 +154,14 @@ artifacts:
       have no ids is silently skipped at validation time - the change then looks
       verified when nothing was checked. Declare each id exactly once.
 
-      Specs should be testable - each scenario is a potential test case.
-    requires:
-      - proposal
+      **Shared semantics live in the scenario THEN, not in a separate document
+      (paseo-pipeline v2):** a scenario that freezes a surface two tasks share
+      (identity, idempotency, invalidation, error codes, rollback compensation)
+      states the semantics in its WHEN/THEN so a worker can implement from the
+      scenario alone. Cite `path:line` for baseline behavior next to the rule it
+      supports; do not write a separate survey document.
 
-  - id: digest
-    generates: digest.md
-    description: Codebase digest the design and task authors rely on
-    template: digest.md
-    instruction: |
-      Written by `gongbu` (templates/author.md) alongside the spec.
-      Record, with `path:line` evidence: relevant modules, exported symbols, call sites,
-      existing tests and fixtures, and baseline known failures. The design's Impact Inventory
-      and every task's Write scope are checked against this, so claims without evidence
-      are not usable. No recommendations here; those belong in design.md.
+      Specs should be testable - each scenario is a potential test case.
     requires:
       - proposal
 
@@ -179,19 +178,21 @@ artifacts:
       - Security, performance, or migration complexity
       - Ambiguity that benefits from technical decisions before coding
 
+      When none apply, skip design.md: the specs and tasks carry the change,
+      and local design is the worker's job.
+
       Sections:
       - **Context**: Only the current state and constraints needed to explain the approach. Reference the proposal for motivation instead of restating it (e.g., "See proposal.md - Why").
       - **Goals / Non-Goals**: What this design achieves and explicitly excludes. Don't restate the proposal's scope - add only design-level boundaries.
-      - **Decisions**: Key technical choices with rationale (why X over Y?). Include alternatives considered for each decision.
+      - **Decisions**: Key technical choices with rationale (why X over Y?). Include alternatives considered for each decision. Cross-task decisions (interface carriers, data ownership, audit sinks, rollback compensation) belong here, one row each, so tasks and specs can reference them.
       - **Risks / Trade-offs**: Known limitations, things that could go wrong. Format: [Risk] → Mitigation
-      - **Impact Inventory** (required by freeze-check): for each changed exported symbol/behavior list call sites, fixtures/tests that will turn red, and the owning task ID. Fixtures broken by a behavior belong to the same task as that behavior.
       - **Migration Plan**: Steps to deploy, rollback strategy (if applicable)
       - **Open Questions**: Unknowns that can safely be answered later without
         changing the specs, the approach, or the task breakdown. Omit if none.
 
       Open questions are for genuinely deferrable unknowns, not decisions you
-      skipped. If a question would change the specs, the chosen approach, or
-      the task breakdown, resolve it now - ask the user instead of guessing.
+      skipped. If a question would change the specs, the chosen approach, or the
+      task breakdown, resolve it now - ask the user instead of guessing.
 
       Focus on architecture and approach, not line-by-line implementation.
       The proposal covers why and what; design covers how. Reference the
@@ -210,9 +211,9 @@ artifacts:
     instruction: |
       Create the task list that breaks down the implementation work.
 
-      Before writing tasks, check design.md for Open Questions. If any of them
-      would change what gets built, resolve them with the user first - do not
-      bake an unstated assumption into the task list.
+      Before writing tasks, check design.md (when present) for Open Questions.
+      If any of them would change what gets built, resolve them with the user
+      first - do not bake an unstated assumption into the task list.
 
       **格式由 paseo-pipeline 的解析器 lib/tasks.mjs 定义，不是可选的风格。**
       不合格式的任务行会被判 MALFORMED_LINE，整份 tasks.md 对编排器不可见
@@ -270,8 +271,8 @@ artifacts:
         invocation when the command needs env vars:
         PYTHONPATH=runtime python3 -m pytest tests/x_test.py.
       - `Scenarios` lists the `SCEN-*` ids from the spec delta that this task carries.
-        Every id must exist in the spec, and every declared id must be claimed by at
-        least one task. A `mechanical` task may omit a scenario and have a test-only
+        Every id must exist in the spec, and every declared id must be claimed by
+        at least one task. A `mechanical` task may omit a scenario and have a test-only
         Write scope; these structural exemptions do not establish safety.
       - The merge gate records `- Done: source=<tip7> review=worker` when a task
         completes. `worker` records execution, not a review verdict. Historical Done
@@ -279,14 +280,12 @@ artifacts:
         frozen history to this format.
 
       Guidelines:
-      - Group related tasks under ## numbered headings
-      - Tasks should be small enough to complete in one session
-      - Order tasks by dependency (what must be done first?)
-
-      Each task should be verifiable - you know when it's done.
+      - Vertical slices: behavior + wiring + affected fixtures + tests together.
+      - Concurrent tasks have fully disjoint Write scopes, including test paths.
+      - Do not pad the DAG to qualify for a tier.
+      - Tasks should be small enough to complete in one session.
     requires:
       - specs
-      - design
 
   - id: acceptance
     generates: acceptance.md
@@ -341,9 +340,12 @@ artifacts:
       Written by the main session, never by the reviewer: `hanlin` is read-only and returns
       the sign-off as text. The first line must be exactly
       `R0: pass(<hanlin-agent-uuid>@<reviewed-commit-sha>)`, followed by the findings and
-      the author's responses. `freeze-check` rejects a missing sign-off, an unknown signer,
-      and any contract file changed after the reviewed commit (STALE_R0_SIGNOFF).
-      Do not write the pass line before the review ran.
+      the author's responses. When R0 stopped with blockers and the human accepted the
+      residual risk, the line is `R0: human-accept(@<reviewed-commit-sha>)`, with the
+      approval verbatim in run-log.md and each open item in rulings.md; it is an exception,
+      never a reviewer pass. `freeze-check` rejects a missing sign-off, an unknown signer,
+      and any contract file changed after the signed commit (STALE_R0_SIGNOFF).
+      Do not write a sign-off line before the review or the approval ran.
     requires:
       - tasks
       - acceptance

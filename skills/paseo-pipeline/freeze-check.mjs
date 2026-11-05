@@ -65,6 +65,7 @@ const RULE_FIXES = {
   EMPTY_TASKS: 'write at least one parseable task line',
   TEST_FILE_UNOWNED: 'add the referenced file to the Write scope of the task that changes it, or narrow the test',
   FROZEN_BEHIND_MAIN: 'rebase the contract onto the default branch (or re-verify it at its tip) and re-run R0',
+  R0_HUMAN_ACCEPT_UNRECORDED: 'record the human approval verbatim in run-log.md as `Approval: <timestamp> <words>`, or get a hanlin pass',
 };
 
 const tasksMarkdown = read(path.join(changeDir, 'tasks.md'));
@@ -357,38 +358,10 @@ for (const task of tasks) {
   }
 }
 
-// Impact inventory: exported symbols, call sites, affected fixtures and their owning task.
-const designMarkdown = read(path.join(changeDir, 'design.md'));
-if (!designMarkdown || !/^#{2,3}\s*Impact/im.test(designMarkdown)) {
-  blocking.push('MISSING_IMPACT_INVENTORY: design.md needs an "Impact Inventory" section (changed symbols, call sites, affected fixtures -> owning task)');
-} else {
-  const section = designMarkdown.split(/^#{2,3}\s*Impact/im)[1].split(/^#{1,3}\s/m)[0].replace(/<!--[\s\S]*?-->/g, '');
-  const known = new Set(tasks.map((task) => task.id));
-  for (const id of new Set(section.match(/\b[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+\b/g) ?? [])) {
-    if (/^SCEN-/i.test(id) || /^UTF-8$/i.test(id) || !/^[A-Za-z][A-Za-z0-9]*-\d+$/.test(id)) continue;
-    if (!known.has(id)) blocking.push(`IMPACT_UNKNOWN_TASK ${id}: Impact Inventory names a task that is not in tasks.md`);
-  }
-}
-
-// Baseline alignment: the author, not the R0 reviewer, must be the first reader of every
-// existing rule the package collides with. The check is advisory on purpose: whether a
-// verdict is right is semantic, so freeze-check only requires that the package records the
-// reconciliation at all. SKILL.md gates R0 on it; R0 checks the content.
-// A section runs to the next heading of the same or a shallower level: its own `###` subsections
-// are part of the body, so an alignment section written as three subsections still counts.
-const sectionBody = (markdown, heading) => {
-  if (!markdown) return null;
-  const start = markdown.match(new RegExp(`^(#{2,3})\\s*${heading}`, 'im'));
-  if (!start) return null;
-  const rest = markdown.slice(start.index + start[0].length);
-  const next = rest.search(new RegExp(`^#{1,${start[1].length}}\\s`, 'm'));
-  return (next === -1 ? rest : rest.slice(0, next)).replace(/<!--[\s\S]*?-->/g, '').trim();
-};
-// One reconciliation record per package, in the file R0 reads: `design.md` owns the verdict rows.
-// `digest.md` records the surfaces read; requiring the same table in both made one author fill it twice.
-if (!sectionBody(designMarkdown, 'Baseline Alignment')) {
-  advisories.push('ADVISORY_BASELINE_ALIGNMENT: design.md has no non-empty "Baseline Alignment" section; record the baseline specs/tests read, the verdict per rule (reuse / delta / additive) and the command or path:line that proves it before R0');
-}
+// Baseline reconciliation lives beside each rule (path:line in the spec or decision it
+// justifies) since the minimal-contract convergence; there is no digest or alignment
+// table to check here. Whether a rule actually matches the baseline is semantic: the
+// author brief makes the author the first reader of colliding rules, and R0 checks it.
 
 const fullSuiteSinks = tasks.filter((task) => verifyLegs(task.verify).some((leg) => leg.broad));
 if (fullSuiteSinks.length > 1) blocking.push(`TOO_MANY_FULL_SUITE_SINKS: ${fullSuiteSinks.map((task) => task.id).join(', ')}`);
@@ -436,26 +409,47 @@ else {
 
 if (!read(path.join(changeDir, 'proposal.md'))) blocking.push('MISSING_PROPOSAL: proposal.md not found');
 
-// R0 sign-off: hanlin must have reviewed the complete contract package before CP-1.
-// hanlin is read-only and returns `R0: pass(<uuid>@<sha>)` as text; the main session records it
-// as a line of review.md (the LAST such line counts, so a post-CP-1 contract delta is re-signed by
-// appending a new line instead of deadlocking on STALE_R0_SIGNOFF). The sha is the commit hanlin reviewed, so any contract edit
-// after it voids the sign-off. --structural skips this: it runs before the review exists.
+// R0 sign-off: the contract package must be reviewed before CP-1. Two recorded forms exist, and
+// they are not interchangeable. `R0: pass(<reviewer-uuid>@<sha>)` is an independent hanlin
+// verdict. `R0: human-accept(@<sha>)` records that the human knowingly accepted the residual risk
+// after R0 stopped with blockers; it requires the approval in run-log.md and never counts as a
+// reviewer pass. hanlin is read-only and returns its line as text; the main session records it in
+// review.md. The LAST sign-off line of either kind wins, so a post-CP-1 contract delta is re-signed
+// by appending a line instead of deadlocking, and a later reviewer pass supersedes an earlier
+// human exception. The sha is the commit that was signed, so any contract edit after it voids it.
+// --structural skips this: it runs before the review exists.
 function gitIn(dir, gitArgs) {
   return runGit(dir, gitArgs);
 }
 const nulList = (result) => (result.stdout || '').split('\0').filter(Boolean);
 if (!structural) {
   const reviewMarkdown = read(path.join(changeDir, 'review.md'));
-  const r0Match = reviewMarkdown ? [...reviewMarkdown.matchAll(/^R0:\s*pass\(([^@)]+)@([a-f0-9]{7,40})\)/gim)].at(-1) : undefined;
+  const signoffs = reviewMarkdown ? [
+    ...[...reviewMarkdown.matchAll(/^R0:\s*pass\(([^@)]+)@([a-f0-9]{7,40})\)/gim)]
+      .map((match) => ({ kind: 'pass', signer: match[1].trim(), sha: match[2], index: match.index })),
+    ...[...reviewMarkdown.matchAll(/^R0:\s*human-accept\(@([a-f0-9]{7,40})\)/gim)]
+      .map((match) => ({ kind: 'human-accept', sha: match[1], index: match.index })),
+  ].sort((a, b) => a.index - b.index) : [];
+  const r0Match = signoffs.at(-1);
   if (!r0Match) {
-    blocking.push('MISSING_R0_SIGNOFF: review.md must contain `R0: pass(<reviewer-uuid>@<sha>)` — run hanlin R0 review before freeze');
+    blocking.push('MISSING_R0_SIGNOFF: review.md must contain `R0: pass(<reviewer-uuid>@<sha>)` — run hanlin R0 review before freeze — or `R0: human-accept(@<sha>)` when the human accepted the residual risk');
+  } else if (r0Match.kind === 'human-accept') {
+    // A human exception is legitimate only when the human's words are on record; it is never
+    // rewritten as a pass, so the two approval kinds stay distinguishable after the fact.
+    const runLog = read(path.join(changeDir, 'run-log.md'));
+    if (!runLog || !/^Approval:\s*\S/m.test(runLog)) {
+      blocking.push('R0_HUMAN_ACCEPT_UNRECORDED: review.md records `R0: human-accept` but run-log.md has no `Approval:` line; record the human approval verbatim before freezing');
+    } else {
+      advisories.push(`R0_HUMAN_EXCEPTION: freeze relies on a human risk acceptance at ${r0Match.sha}, not an independent hanlin pass; the open items and reasons must be recorded in rulings.md`);
+      const rulings = read(path.join(changeDir, 'rulings.md'));
+      if (!rulings || !/^R0-\d+-/m.test(rulings)) advisories.push('R0_HUMAN_EXCEPTION_UNRULED: rulings.md has no `R0-<round>-<n>` entries; record each open item and why it was accepted');
+    }
   } else {
     // The signer must be a real Paseo agent, so a made-up uuid cannot satisfy the gate. Role is not
     // exposed by `paseo ls`; a name without `hanlin` is only an advisory — the merge gate no longer
     // inspects reviewer identity, so this is the only heterogeneous-R0 check.
     if (!skipSignerCheck) {
-      const signer = r0Match[1].trim();
+      const signer = r0Match.signer;
       const { agents, error } = listAgents();
       // Unreachable Paseo is advisory, not a block: it says nothing about the signer, and
       // the sign-off sha check below still proves the package did not change afterwards.
@@ -470,7 +464,7 @@ if (!structural) {
     }
   }
   if (r0Match && gitIn(changeDir, ['rev-parse', '--is-inside-work-tree']).status === 0) {
-    const sha = r0Match[2];
+    const sha = r0Match.sha;
     if (gitIn(changeDir, ['rev-parse', '--verify', '--quiet', `${sha}^{commit}`]).status !== 0) {
       blocking.push(`STALE_R0_SIGNOFF: reviewed commit ${sha} does not exist in this repository`);
     } else {
@@ -478,9 +472,10 @@ if (!structural) {
       const diff = gitIn(changeDir, ['diff', '--name-only', '-z', sha, '--', '.']);
       const untracked = gitIn(changeDir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.']);
       // review.md is written after the review; rulings.md records accepted non-obvious
-      // decisions made during it. Neither changes the contract, so neither is drift.
+      // decisions made during it; run-log.md records approvals and merge timings. None of
+      // them changes the contract, so none is drift.
       const drift = [...new Set([...nulList(diff), ...nulList(untracked)])]
-        .filter((file) => !['review.md', 'rulings.md'].includes(path.basename(file)));
+        .filter((file) => !['review.md', 'rulings.md', 'run-log.md'].includes(path.basename(file)));
       if (diff.status !== 0) blocking.push(`STALE_R0_SIGNOFF: cannot diff contract against reviewed commit ${sha}`);
       else if (drift.length) blocking.push(`STALE_R0_SIGNOFF: contract changed after R0 reviewed ${sha}: ${drift.slice(0, 5).join(', ')} — re-run hanlin R0`);
       // A frozen base can be valid and still predate main: the contract was written on an older

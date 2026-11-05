@@ -46,6 +46,9 @@ test('briefs carry verified decision context and handle checker friction without
   assert.match(skill, /confirmed decisions.*references/i);
   assert.match(skill, /never invent ownership or dependencies/i);
   assert.match(author, /decision coverage and unresolved conflicts/i);
-  assert.match(author, /baseline commit SHA and baseline evidence in `digest\.md`/i);
+  // Minimal contract: the author records the real baseline SHA and reads only what its
+  // rules collide with — no digest artifact exists to hold survey output.
+  assert.match(author, /Preserve the actual baseline SHA/i);
+  assert.match(author, /Read what your rules collide with, not the repository/i);
   assert.match(reviewer, /same confirmed decisions/i);
 });
