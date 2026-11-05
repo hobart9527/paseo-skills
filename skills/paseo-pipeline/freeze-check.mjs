@@ -17,10 +17,12 @@ const explain = args.includes('--explain');
 const structural = args.includes('--structural');
 // --skip-signer-check: offline escape hatch; the R0 signer uuid is then format-checked only.
 const skipSignerCheck = args.includes('--skip-signer-check');
+// --strict: promote drift advisories (currently: frozen base behind the default branch) to blocks.
+const strict = args.includes('--strict');
 const positional = args.filter((arg) => !arg.startsWith('--'));
 const changeDir = positional[0];
 if (!changeDir) {
-  console.error('Usage: freeze-check.mjs <change-dir> [--json] [--explain] [--structural] [--skip-signer-check]');
+  console.error('Usage: freeze-check.mjs <change-dir> [--json] [--explain] [--structural] [--skip-signer-check] [--strict]');
   process.exit(2);
 }
 
@@ -60,6 +62,8 @@ const RULE_FIXES = {
   UNCLAIMED_SCEN: 'assign each declared SCEN to at least one task',
   NO_SCEN: 'claim at least one SCEN, or mark the task Review: mechanical',
   EMPTY_TASKS: 'write at least one parseable task line',
+  TEST_FILE_UNOWNED: 'add the referenced file to the Write scope of the task that changes it, or narrow the test',
+  FROZEN_BEHIND_MAIN: 'rebase the contract onto the default branch (or re-verify it at its tip) and re-run R0',
 };
 
 const tasksMarkdown = read(path.join(changeDir, 'tasks.md'));
@@ -215,6 +219,40 @@ for (const task of tasks) {
         if (fs.existsSync(path.join(repoRoot, read))) continue;
         if (tasks.some((other) => isFileWithinScopes(read, other.scope))) continue;
         blocking.push(`MISSING_READS_PATH ${task.id}: Reads ${read} does not exist in the repository`);
+      }
+    }
+  }
+}
+
+// A test the contract writes may assert on files the contract does not own: a fixture, a script,
+// a config. If the assertion names a file outside every task Write scope, no task is allowed to
+// change it and the merge scope gate deadlocks later. Catch that at freeze.
+// Only existing code/shell files are claims: a greenfield module, a missing relative import, a
+// manifest or a doc cannot be resolved into an owner, so it is skipped rather than guessed.
+const CLAIMABLE_FILE = /\.(?:[cm]?[jt]sx?|py|go|rs|rb|java|kt|swift|php|sh|bash)$/i;
+{
+  const toplevel = gitIn(changeDir, ['rev-parse', '--show-toplevel']);
+  if (toplevel.status === 0) {
+    const repoRoot = toplevel.stdout.trim();
+    const seen = new Set();
+    for (const task of tasks) {
+      for (const scope of task.scope) {
+        const testFile = path.join(repoRoot, scope);
+        if (seen.has(testFile) || !isTestPath(scope) || !fs.existsSync(testFile) || !fs.statSync(testFile).isFile()) continue;
+        seen.add(testFile);
+        const body = read(testFile) ?? '';
+        for (const match of body.matchAll(/(['"`])((?:\.{0,2}\/)?[A-Za-z0-9_.@/-]+\.[A-Za-z0-9]+)\1/g)) {
+          const raw = match[2];
+          if (/^[a-z]+:\/\//i.test(raw)) continue;
+          const resolved = raw.startsWith('.')
+            ? path.relative(repoRoot, path.resolve(path.dirname(testFile), raw))
+            : raw.replace(/^\.\//, '');
+          if (!CLAIMABLE_FILE.test(resolved) || resolved.startsWith('..') || resolved.split('/').includes('node_modules')) continue;
+          if (!fs.existsSync(path.join(repoRoot, resolved))) continue;
+          if (tasks.some((other) => isFileWithinScopes(resolved, other.scope))) continue;
+          blocking.push(`TEST_FILE_UNOWNED ${task.id}: ${scope} asserts on ${resolved}, which is outside every task Write scope; add it to the owning task's Write scope or remove the assertion`);
+          fixes.set('TEST_FILE_UNOWNED', `add ${resolved} to the Write scope of the task that changes it, or narrow the test so it does not reference it`);
+        }
       }
     }
   }
@@ -402,6 +440,19 @@ if (!structural) {
         .filter((file) => !['review.md', 'rulings.md'].includes(path.basename(file)));
       if (diff.status !== 0) blocking.push(`STALE_R0_SIGNOFF: cannot diff contract against reviewed commit ${sha}`);
       else if (drift.length) blocking.push(`STALE_R0_SIGNOFF: contract changed after R0 reviewed ${sha}: ${drift.slice(0, 5).join(', ')} — re-run hanlin R0`);
+      // A frozen base can be valid and still predate main: the contract was written on an older
+      // tree, so a task's Reads/Interfaces may cite files main has since moved. That is a rebase
+      // decision for the author, not a contract defect, so it only blocks under --strict.
+      const base = ['main', 'master'].find((name) => gitIn(changeDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`]).status === 0);
+      if (base && gitIn(changeDir, ['merge-base', '--is-ancestor', sha, base]).status === 0) {
+        const behind = gitIn(changeDir, ['rev-list', '--count', `${sha}..${base}`]);
+        const count = Number.parseInt(behind.stdout.trim(), 10);
+        if (behind.status === 0 && count > 0) {
+          const message = `${base} has ${count} commit(s) since the frozen base ${sha} (git rev-list --count ${sha}..${base}); rebase the contract or re-verify it against ${base} before dispatch`;
+          if (strict) blocking.push(`FROZEN_BEHIND_MAIN: ${message}`);
+          else advisories.push(`ADVISORY_FROZEN_BEHIND: ${message}`);
+        }
+      }
     }
   }
 }
