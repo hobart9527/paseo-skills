@@ -290,3 +290,77 @@ test('next-actions rejects invalid tasks before reading Paseo state', () => {
   assert.match(direct.stderr, /CYCLE/);
   assert.equal(direct.stdout, '');
 });
+
+test('scope-overlapping tasks with commits merge sequentially rather than deadlocking', () => {
+  const tasks = [
+    task({ id: 'T-01', scope: ['src/shared'], est: 'S' }),
+    task({ id: 'T-02', scope: ['src/shared/sub'], est: 'S' }),
+  ];
+  const branches = {
+    'T-01': { attempts: 1, ownCommits: 1 },
+    'T-02': { attempts: 1, ownCommits: 1 },
+  };
+  const report = frontier(tasks, { done: [], branches, agents: [] });
+  assert.equal(report.dispatch.length > 0, true);
+  assert.equal(report.dispatch[0].action, 'merge');
+  assert.equal(report.dispatch[0].task, 'T-01');
+});
+
+test('unstarted scope-overlapping tasks do not race dispatch in the same wave', () => {
+  const tasks = [
+    task({ id: 'T-01', scope: ['src/shared'], est: 'S' }),
+    task({ id: 'T-02', scope: ['src/shared/sub'], est: 'S' }),
+  ];
+  const report = frontier(tasks, { done: [], branches: {}, agents: [] });
+  assert.deepEqual(report.dispatch.map((item) => item.task), ['T-01']);
+  assert.equal(report.dispatch[0].action, 'create-branch+dispatch-worker');
+});
+
+test('unresolved scope deadlock surfaces as BLOCKED_SCOPE_COLLISION', () => {
+  const tasks = [
+    task({ id: 'T-01', scope: ['src/shared'], est: 'S' }),
+    task({ id: 'T-02', scope: ['src/shared'], est: 'S' }),
+  ];
+  // Both have attempts but no commits and no active agents -> neither can advance
+  const branches = {
+    'T-01': { attempts: 1, ownCommits: 0 },
+    'T-02': { attempts: 1, ownCommits: 0 },
+  };
+  const report = frontier(tasks, { done: [], branches, agents: [] });
+  assert.deepEqual(report.dispatch, []);
+  const collision = report.blocked.find((b) => b.kind === 'BLOCKED_SCOPE_COLLISION');
+  assert.ok(collision, JSON.stringify(report.blocked));
+  assert.match(collision.reason, /serialize with Depends on or resolve branch collision/);
+});
+
+test('unresolved scope collision surfaces even when downstream tasks are waiting', () => {
+  const tasks = [
+    task({ id: 'T-01', scope: ['src/shared'], est: 'S' }),
+    task({ id: 'T-02', scope: ['src/shared'], est: 'S' }),
+    task({ id: 'T-03', scope: ['src/other'], est: 'S', depends: ['T-01'] }),
+  ];
+  const branches = {
+    'T-01': { attempts: 1, ownCommits: 0 },
+    'T-02': { attempts: 1, ownCommits: 0 },
+  };
+  const report = frontier(tasks, { done: [], branches, agents: [] });
+  assert.deepEqual(report.dispatch, []);
+  assert.deepEqual(report.waiting.map((w) => w.task), ['T-03']);
+  const collisions = report.blocked.filter((b) => b.kind === 'BLOCKED_SCOPE_COLLISION');
+  assert.equal(collisions.length, 2, JSON.stringify(report.blocked));
+  assert.deepEqual(collisions.map((c) => c.task).sort(), ['T-01', 'T-02']);
+});
+
+test('ready task held by worker capacity is not falsely blocked on scope collision', () => {
+  const tasks = [
+    task({ id: 'T-01', kind: 'skeleton', scope: ['src/shared'], est: 'S' }),
+    task({ id: 'T-02', scope: ['src/feature'], est: 'S', uses: ['T-01'] }),
+    task({ id: 'T-03', scope: ['src/shared'], est: 'S', depends: ['T-02'] }),
+    task({ id: 'T-04', scope: ['src/other'], est: 'S' }),
+  ];
+  const agents = [{ id: 'w4', role: 'gongbu', task: 'T-04', status: 'running' }];
+  const report = frontier(tasks, { done: [], branches: {}, agents }, { workerCap: 1 });
+  assert.deepEqual(report.dispatch, []);
+  assert.deepEqual(report.waiting.map((w) => w.task), ['T-02', 'T-03']);
+  assert.ok(!report.blocked.some((b) => b.kind === 'BLOCKED_SCOPE_COLLISION'));
+});

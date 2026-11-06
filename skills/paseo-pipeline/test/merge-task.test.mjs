@@ -322,20 +322,9 @@ test('main drift falls back to master and fails open when neither exists', () =>
   assert.equal(invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01']).status, 0);
 });
 
-// Same-branch rework cap: initial commit plus two retries (3 commits) per branch.
+// Multiple implementation commits can be one successful attempt; commit count is not retry count.
 const implCommits = (n) => Array.from({ length: n }, (_, i) => [`src/${i === 0 ? 'a' : `r${i}`}.txt`, `v${i}`]);
-test('rework cap: 3 worker commits on one branch merge', () => {
-  const f = taggedFixture(`- [ ] T-01 task\n  - Write scope: src,test\n  - Verify with: ${GREEN}\n`);
-  write(f.cwd, 'test/a.test.mjs', PASSING_TEST);
-  for (const [file, text] of implCommits(3)) {
-    write(f.cwd, file, text); git(f.cwd, 'add', '.');
-    git(f.cwd, 'commit', '-qm', `w\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
-  }
-  const tip = git(f.cwd, 'rev-parse', 'HEAD'); git(f.cwd, 'switch', '-q', `integration/${f.change}`);
-  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
-  assert.equal(r.status, 0, r.out);
-});
-test('rework cap: a 4th worker commit is exit 37 pointing at -a2', () => {
+test('four worker commits on one attempt merge without human override', () => {
   const f = taggedFixture(`- [ ] T-01 task\n  - Write scope: src,test\n  - Verify with: ${GREEN}\n`);
   write(f.cwd, 'test/a.test.mjs', PASSING_TEST);
   for (const [file, text] of implCommits(4)) {
@@ -344,19 +333,6 @@ test('rework cap: a 4th worker commit is exit 37 pointing at -a2', () => {
   }
   const tip = git(f.cwd, 'rev-parse', 'HEAD'); git(f.cwd, 'switch', '-q', `integration/${f.change}`);
   const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
-  assert.equal(r.status, 37, r.out);
-  assert.match(r.out, /4 commits/);
-  assert.match(r.out, /T-01-a2/);
-});
-test('rework cap: --allow-attempt-over bypasses it', () => {
-  const f = taggedFixture(`- [ ] T-01 task\n  - Write scope: src,test\n  - Verify with: ${GREEN}\n`);
-  write(f.cwd, 'test/a.test.mjs', PASSING_TEST);
-  for (const [file, text] of implCommits(3)) {
-    write(f.cwd, file, text); git(f.cwd, 'add', '.');
-    git(f.cwd, 'commit', '-qm', `w\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
-  }
-  const tip = git(f.cwd, 'rev-parse', 'HEAD'); git(f.cwd, 'switch', '-q', `integration/${f.change}`);
-  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base), '--allow-attempt-over']);
   assert.equal(r.status, 0, r.out);
 });
 
@@ -401,4 +377,16 @@ test('ordinary test files do not trigger test infrastructure gate', () => {
   git(f.cwd, 'switch', '-q', `integration/${f.change}`);
   const result = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01']);
   assert.equal(result.status, 0, result.out);
+});
+
+test('rejects a task missing Verify with without crashing child_process', () => {
+  const f = taggedFixture(`- [ ] T-01 task\n  - Write scope: src,test\n`);
+  write(f.cwd, 'src/a.txt', 'a');
+  git(f.cwd, 'add', '.');
+  git(f.cwd, 'commit', '-qm', `work\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
+  git(f.cwd, 'switch', '-q', `integration/${f.change}`);
+  const result = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01']);
+  assert.equal(result.status, 1, result.out);
+  assert.match(result.out, /invalid task T-01/);
+  assert.match(result.out, /MISSING_VERIFY/);
 });
