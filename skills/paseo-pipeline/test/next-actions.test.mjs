@@ -86,6 +86,19 @@ function run(cwd, localEnv) {
   return { status: result.status, out: `${result.stdout}${result.stderr}`, json: result.stdout ? JSON.parse(result.stdout) : null };
 }
 
+test('next-actions: without an integration branch the plan is a preview, not authorization', () => {
+  const { cwd, localEnv } = fixture();
+  const git = (...args) => spawnSync('git', args, { cwd, env: localEnv, encoding: 'utf8' });
+  git('switch', '-q', 'main');
+  git('branch', '-D', 'integration/c1');
+  const planned = spawnSync('node', [script, 'openspec/changes/c1', '--json'], { cwd, env: localEnv, encoding: 'utf8' });
+  assert.equal(planned.status, 0, planned.stderr);
+  assert.equal(JSON.parse(planned.stdout).frozen, false);
+  const human = spawnSync('node', [script, 'openspec/changes/c1'], { cwd, env: localEnv, encoding: 'utf8' });
+  assert.match(human.stdout, /PLANNING PREVIEW/);
+  assert.match(human.stdout, /not execution authorization/);
+});
+
 test('next-actions: integration merge commits do not count as this task\'s implementation', () => {
   const { cwd, localEnv } = fixture();
   const result = run(cwd, localEnv);
@@ -355,4 +368,18 @@ test('next-actions explains safe recovery for labelled unrecognized legacy revie
   assert.equal(result.status, 3, result.out);
   assert.match(result.out, /confirming its role is non-worker/);
   assert.match(result.out, /paseo agent update legacy --name/);
+});
+
+test('next-actions: R0-r2 and FINAL-r2 roles are recognised, UNKNOWN stages still fail closed', () => {
+  const { cwd, localEnv } = fixture();
+  const paseo = path.join(cwd, '.fake-bin', 'paseo');
+  const fake = (name, status = 'running') => fs.writeFileSync(paseo, `#!/bin/sh\nif [ "$1" = inspect ]; then printf '%s' '${JSON.stringify({ Id: 'a', Name: name, Status: status, PendingPermissions: [] })}'; else printf '%s' '${JSON.stringify([{ id: 'a', name, status, cwd }])}'; fi\n`);
+  fake('[Pipeline] hanlin R0-r2');
+  assert.equal(run(cwd, localEnv).status, 0, 'R0-r2 is a non-worker stage');
+  fake('[Pipeline] anchasi FINAL-r2');
+  assert.equal(run(cwd, localEnv).status, 0, 'FINAL-r2 is a non-worker stage');
+  fake('[Pipeline] hanlin R0-r0');
+  assert.equal(run(cwd, localEnv).status, 3, 'r0 is not a review round');
+  fake('[Pipeline] hanlin R0-r2 extra context');
+  assert.equal(run(cwd, localEnv).status, 0, 'a trailing description is still allowed');
 });

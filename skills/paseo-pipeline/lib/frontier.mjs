@@ -107,10 +107,12 @@ export function frontier(tasks, state = {}, options = {}) {
     }
     // A live worker on the same files would race. Depends-on pairs are serialised by
     // the unmet check above; Uses pairs can overlap only when freeze-check allowed it.
+    const branch = branches[task.id] || {};
+    const ownCommits = branch.ownCommits ?? (branch.attempts ? 1 : 0);
     const overlap = open.some((other) => other.id !== task.id
       && !ancestors(task.id).has(other.id) && !ancestors(other.id).has(task.id)
       && scopesOverlap(task, other)
-      && (runningWorkers.some((agent) => agent.task === other.id) || branches[other.id]));
+      && (runningWorkers.some((agent) => agent.task === other.id) || (!ownCommits && branches[other.id])));
     if (overlap) continue;
     ready.push(task);
   }
@@ -123,6 +125,7 @@ export function frontier(tasks, state = {}, options = {}) {
   const workerItems = [];
   const mergeItems = [];
   const mergeWaiting = [];
+  const dispatchedWorkerScopes = [];
   for (const task of ordered) {
     if (runningWorkers.some((agent) => agent.task === task.id)) continue;
     if (agents.some((agent) => WORKER_ROLES.has(agent.role) && agent.task === task.id && agent.pendingPermissions)) continue;
@@ -140,11 +143,15 @@ export function frontier(tasks, state = {}, options = {}) {
     // Callers that only pass {attempts, implementationCommits} keep the old meaning: a branch
     // with attempts already carries one of its own commits.
     if (!branch.attempts) {
+      if (dispatchedWorkerScopes.some((other) => scopesOverlap(task, other))) continue;
       workerItems.push({ task: task.id, action: 'create-branch+dispatch-worker', reason: 'deps Done; scope disjoint' });
+      dispatchedWorkerScopes.push(task);
     } else if (!ownCommits) {
       // The branch exists but carries no commit yet: dispatch onto it, do not create a
       // second branch (that would burn an attempt).
+      if (dispatchedWorkerScopes.some((other) => scopesOverlap(task, other))) continue;
       workerItems.push({ task: task.id, action: 'dispatch-worker', reason: 'branch present; no commit yet' });
+      dispatchedWorkerScopes.push(task);
     } else {
       // `Uses` is a merge edge: the consumer may implement as soon as the interface
       // skeleton merges, but merging before the producer is Done fails exit 35.
@@ -158,6 +165,28 @@ export function frontier(tasks, state = {}, options = {}) {
   }
   // Merges consume no worker slot; only greenfield branches and worker dispatches do.
   const dispatch = [...workerItems.slice(0, workerSlots), ...mergeItems];
+
+  if (dispatch.length === 0 && runningWorkers.length === 0 && workerItems.length === 0) {
+    const unhandled = open.filter((task) => {
+      if (waiting.some((w) => w.task === task.id)) return false;
+      if (mergeWaiting.some((m) => m.task === task.id)) return false;
+      if (blocked.some((b) => b.task === task.id)) return false;
+      return true;
+    });
+
+    for (const task of unhandled) {
+      const conflicting = open.filter((other) => other.id !== task.id
+        && !ancestors(task.id).has(other.id) && !ancestors(other.id).has(task.id)
+        && scopesOverlap(task, other));
+      if (conflicting.length) {
+        blocked.push({
+          task: task.id,
+          kind: 'BLOCKED_SCOPE_COLLISION',
+          reason: `scope overlaps with ${conflicting.map((c) => c.id).sort().join(', ')}; serialize with Depends on or resolve branch collision`,
+        });
+      }
+    }
+  }
 
   return {
     done: [...done].sort(),

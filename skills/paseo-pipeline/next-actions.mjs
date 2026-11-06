@@ -219,7 +219,8 @@ for (const agent of listedAgents) {
   }
   const parts = agent.name.match(/^\[Pipeline\]\s+(\S+)\s+(\S+)(?:\s+.*)?$/);
   const match = parts && /^(gongbu|gaogong|jiangzuo)$/.test(parts[1]) && /^[A-Za-z][A-Za-z0-9]*-\d+(?:-a[1-9]\d*)?$/.test(parts[2]) ? parts : null;
-  const nonWorker = parts && /^(hanlin|anchasi|gongbu|gaogong)$/.test(parts[1]) && /^(R0|FINAL|FULL)$/.test(parts[2]);
+  // A round suffix (`R0-r2`, `FINAL-r2`) is display only; it never changes the role.
+  const nonWorker = parts && /^(hanlin|anchasi|gongbu|gaogong)$/.test(parts[1]) && /^(R0|FINAL|FULL)(?:-r[1-9]\d*)?$/.test(parts[2]);
   if (agent.status === 'closed' && !match) continue;
   const agentRepo = commonDir(agent.cwd);
   if (agentRepo && agentRepo !== repository) continue;
@@ -262,11 +263,16 @@ for (const agent of listedAgents) {
 }
 
 const result = frontier(tasks, { done, branches, agents }, options);
-const report = { change, integrationHead: integrationSha, tasksSource, ...result };
+// The integration branch is created after CP-1, so its absence is a precise signal that the
+// contract is not frozen yet. The DAG preview is still useful before then, but a DISPATCH shown
+// here is not execution authorization: the freeze check and the recorded human CP-1 are.
+const frozen = integrationSha !== null;
+const report = { change, integrationHead: integrationSha, tasksSource, frozen, ...result };
 
 if (json) console.log(JSON.stringify(report, null, 2));
 else {
   console.log(`[next-actions] ${change}${report.integrationHead ? ` @ ${report.integrationHead.slice(0, 7)}` : ''} (tasks: ${tasksSource})`);
+  if (!frozen) console.log('PLANNING PREVIEW: no integration branch yet, so the contract is not frozen; DISPATCH lines are not execution authorization until freeze-check passes and CP-1 is recorded');
   console.log(`capacity: workers ${report.capacity.workers.used}/${report.capacity.workers.cap}`);
   for (const item of report.dispatch) console.log(`DISPATCH ${item.task}: ${item.action} — ${item.reason}`);
   for (const item of report.waiting) console.log(`WAIT ${item.task}: on ${item.on.join(', ')}`);

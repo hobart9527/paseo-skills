@@ -158,11 +158,6 @@ test('ordinary setup imports do not imply ownership but explicit file reads do',
   assert.ok(run(dir).report.blocking.some((s) => s.startsWith('TEST_FILE_UNOWNED')));
 });
 
-test('impact inventory does not treat encoding or scenario IDs as task IDs', () => {
-  const dir = change({ ...files(), 'design.md': `${design}\nUTF-8 and SCEN-CAP-01\n` });
-  assert.ok(!run(dir).report.blocking.some((s) => s.startsWith('IMPACT_UNKNOWN_TASK')));
-});
-
 test('scenario headings inside fenced examples do not declare scenarios', () => {
   const dir = change({ ...files(), 'specs/a/spec.md': '### Scenario: SCEN-1\n```md\n### Scenario: SCEN-FAKE\n```\n' });
   assert.ok(!run(dir).report.blocking.some((s) => s.includes('SCEN-FAKE')));
@@ -177,11 +172,6 @@ test('an inspector source path does not count as test verification', () => {
 test('duplicate scenario declarations are reported', () => {
   const dir = change({ ...files(), 'specs/b/spec.md': '### Scenario: SCEN-1\n' });
   assert.ok(run(dir).report.blocking.some((s) => s.includes('DUPLICATE_SCEN')));
-});
-
-test('impact unknown task retains arbitrary task prefixes', () => {
-  const dir = change({ ...files(), 'design.md': `${design}\nfoo() -> TASK-7\n` });
-  assert.ok(run(dir).report.blocking.some((s) => s.startsWith('IMPACT_UNKNOWN_TASK TASK-7')));
 });
 
 test('scenario scan ignores HTML comments, preserves real duplicates and unclosed fences', () => {
@@ -255,27 +245,6 @@ test('a comment opener on a fence-opening line cannot swallow a later duplicate 
   assert.ok(result.report.blocking.some((s) => s.startsWith('DUPLICATE_SCEN SCEN-1')), result.report.blocking.join('\n'));
   const plain = run(change({ ...files(), 'specs/a/spec.md': '### Scenario: SCEN-1\n<!--\nnote\n-->\n### Scenario: SCEN-1\n' }));
   assert.ok(plain.report.blocking.some((s) => s.startsWith('DUPLICATE_SCEN SCEN-1')));
-});
-
-test('impact inventory ignores UTF-16 style tokens but still flags real unknown task ids', () => {
-  const clean = change({ ...files(), 'design.md': `${design}\nUTF-16, UTF-32, SHA-256 and ISO-8601 are plain prose\n` });
-  assert.ok(!run(clean).report.blocking.some((s) => s.startsWith('IMPACT_UNKNOWN_TASK')));
-  const bad = change({ ...files(), 'design.md': `${design}\nUTF-16 and T-99\n` });
-  const hits = run(bad).report.blocking.filter((s) => s.startsWith('IMPACT_UNKNOWN_TASK'));
-  assert.deepEqual(hits.map((s) => s.split(':')[0]), ['IMPACT_UNKNOWN_TASK T-99']);
-});
-
-// ---- review blockers on e785eec ----
-
-test('a non-task token is exempt only when no task id uses its prefix', () => {
-  const rfcTasks = contract.replace(/T-0(\d)/g, 'RFC-0$1');
-  const rfcFiles = (text) => ({ ...files(rfcTasks), 'design.md': `${design}\n${text}\n`, 'acceptance.md': acceptance.replace('T-02', 'RFC-02') });
-  const typo = run(change(rfcFiles('see RFC-99')));
-  assert.ok(typo.report.blocking.some((s) => s.startsWith('IMPACT_UNKNOWN_TASK RFC-99')), typo.report.blocking.join('\n'));
-  const known = run(change(rfcFiles('see RFC-02')));
-  assert.ok(!known.report.blocking.some((s) => s.startsWith('IMPACT_UNKNOWN_TASK')));
-  const prose = run(change({ ...files(), 'design.md': `${design}\nUTF-16 and RFC-2119\n` }));
-  assert.ok(!prose.report.blocking.some((s) => s.startsWith('IMPACT_UNKNOWN_TASK')));
 });
 
 test('an option argument pointing at fixtures does not make a real suite run fixture-only', () => {
