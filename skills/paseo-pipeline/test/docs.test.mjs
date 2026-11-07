@@ -101,7 +101,9 @@ test('briefs carry wait backstop, reviewer containment and minimal-contract rule
   assert.match(author, /use a Wave 0 skeleton with `Interface:`\/`Uses:`/i);
   assert.match(author, /Do not create a skeleton solely for an internal signature/);
   assert.match(author, /Before tasks, write any cross-task Decisions in design, one line each naming owner and consumers/);
-  assert.match(author, /merge them, serialize with `Depends on`, or extract a `Kind: skeleton` with `Interface:` and consumer `Uses:`/);
+  assert.match(author, /would each settle the same unfrozen decision, merge them, serialize with `Depends on`, or extract a `Kind: skeleton` with `Interface:` and consumer `Uses:`/);
+  assert.match(author, /Tasks that only consume a decision already frozen in design may run concurrently/);
+  assert.match(author, /Never leave parallel tasks implementing the same decision independently/);
   assert.match(author, /producer and consumer Write scopes must be disjoint; if still overlapping, serialize with `Depends on`/);
   assert.match(author, /do any two concurrent tasks share an unfrozen decision\?/);
   assert.match(author, /Write only files under `openspec\/changes\/<change>\/`/);
