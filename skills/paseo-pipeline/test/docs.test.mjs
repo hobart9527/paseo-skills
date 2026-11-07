@@ -100,6 +100,12 @@ test('briefs carry wait backstop, reviewer containment and minimal-contract rule
   assert.match(author, /freeze its shape and required semantics once in a worker-reachable authoritative contract/);
   assert.match(author, /use a Wave 0 skeleton with `Interface:`\/`Uses:`/i);
   assert.match(author, /Do not create a skeleton solely for an internal signature/);
+  assert.match(author, /Before tasks, write any cross-task Decisions in design, one line each naming owner and consumers/);
+  assert.match(author, /merge them, serialize with `Depends on`, or extract a `Kind: skeleton` with `Interface:` and consumer `Uses:`/);
+  assert.match(author, /producer and consumer Write scopes must be disjoint; if still overlapping, serialize with `Depends on`/);
+  assert.match(author, /do any two concurrent tasks share an unfrozen decision\?/);
+  assert.match(author, /Write only files under `openspec\/changes\/<change>\/`/);
+  assert.match(author, /return `BLOCKED` with the reason; never edit any other tracked file/);
   assert.match(author, /Keep concurrent tasks' Write scopes disjoint; do not serialize independent work or invent edges/);
   const tasks = read('openspec-schema/templates/tasks.md');
   assert.match(tasks, /派发只等目标的接口（含其 skeleton 祖先），不等实现合流/);
