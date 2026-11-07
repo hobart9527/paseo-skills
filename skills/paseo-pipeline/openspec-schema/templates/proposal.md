@@ -26,4 +26,4 @@
 
 ## Impact
 
-<!-- Affected code, APIs, dependencies, systems -->
+<!-- Only material affected code, APIs, dependencies, or systems -->

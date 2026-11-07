@@ -50,8 +50,9 @@
     - `Kind: skeleton` — 接口桩任务，必须有 `Review: mechanical`，其 Write scope 必须覆盖
       所有 `Interface:` 路径。
     - `Interface: path/to/file.ts#symbol` — 本任务向 `Uses` 消费者提供的路径/符号；可逗号分隔或重复多行。
-  - Done 行：merge gate 完成任务时写入 `- Done: source=<tip7> review=worker`；worker 标记执行，
-    不是审查结论。历史 `pass(<reviewer>@<tip>/<base>)` 标签仍可读取，不必改写已冻结合同。
+  - 可选元数据（`Reads`、`Est`、`Kind`、`Interface`、`Risk-surface`）：仅在影响 Verify、调度、共享接口或风险时填写。
+  - Done 行由 merge gate 写入 `- Done: source=<tip7> review=worker`；worker 标记执行，不是审查结论。
+    历史 `pass(<reviewer>@<tip>/<base>)` 标签仍可读取，不必改写已冻结内容。
 -->
 
 ## 2. <任务组名>

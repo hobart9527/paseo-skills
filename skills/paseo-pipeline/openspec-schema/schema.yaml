@@ -54,7 +54,8 @@ artifacts:
       Do not invent a requirement just to satisfy validation.
 
       Keep it concise (a few paragraphs at most). Focus on the "why" and "what" -
-      implementation details belong in design.md.
+      implementation details belong in design.md. Skip repeated motivation and broad
+      repository surveys; cite only the relevant baseline needed to identify the change.
 
       This is the foundation - specs, design, and tasks all build on this.
     requires: []
@@ -154,14 +155,14 @@ artifacts:
       have no ids is silently skipped at validation time - the change then looks
       verified when nothing was checked. Declare each id exactly once.
 
-      **Shared semantics live in the scenario THEN, not in a separate document
-      (paseo-pipeline v2):** a scenario that freezes a surface two tasks share
-      (identity, idempotency, invalidation, error codes, rollback compensation)
-      states the semantics in its WHEN/THEN so a worker can implement from the
-      scenario alone. Cite `path:line` for baseline behavior next to the rule it
-      supports; do not write a separate survey document.
-
-      Specs should be testable - each scenario is a potential test case.
+      Specs describe observable behavior and testable outcomes, not internal DTO fields
+      or signatures. Do not invent behavior scenarios for internal-only changes or split
+      one outcome into implementation-test scenarios. Keep shared interface shape and
+      semantics in one authoritative, worker-reachable contract when concurrent tasks
+      need them; use a skeleton/Interface/Uses edge when consumers must start before
+      producer implementation is done. Keep behavior scenarios for observable semantics
+      that must hold across those tasks. Cite `path:line` only for baseline facts that
+      support a changed rule; do not write a separate survey document.
     requires:
       - proposal
 
@@ -184,7 +185,7 @@ artifacts:
       Sections:
       - **Context**: Only the current state and constraints needed to explain the approach. Reference the proposal for motivation instead of restating it (e.g., "See proposal.md - Why").
       - **Goals / Non-Goals**: What this design achieves and explicitly excludes. Don't restate the proposal's scope - add only design-level boundaries.
-      - **Decisions**: Key technical choices with rationale (why X over Y?). Include alternatives considered for each decision. Cross-task decisions (interface carriers, data ownership, audit sinks, rollback compensation) belong here, one row each, so tasks and specs can reference them.
+      - **Decisions**: Only key technical choices with rationale and alternatives. Include cross-task choices only when workers must share them; task-local choices stay with the worker.
       - **Risks / Trade-offs**: Known limitations, things that could go wrong. Format: [Risk] → Mitigation
       - **Migration Plan**: Steps to deploy, rollback strategy (if applicable)
       - **Open Questions**: Unknowns that can safely be answered later without
@@ -283,6 +284,8 @@ artifacts:
       - Vertical slices: behavior + wiring + affected fixtures + tests together.
       - Concurrent tasks have fully disjoint Write scopes, including test paths.
       - Do not pad the DAG to qualify for a tier.
+      - Keep task titles and metadata concise; include optional fields only when they
+        affect dispatch, scope, verification, shared interfaces, or risk.
       - Tasks should be small enough to complete in one session.
     requires:
       - specs

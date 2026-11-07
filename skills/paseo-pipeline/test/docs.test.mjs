@@ -86,12 +86,29 @@ test('author brief closes assigned-workspace handoff, permission and structural-
 test('briefs carry wait backstop, reviewer containment and minimal-contract rules', () => {
   assert.match(read('templates/reviewer.md'), /separate workspace/);
   assert.match(read('SKILL.md'), /paseo wait/);
-  // The minimal contract: OpenSpec native artifacts, no digest/survey tables,
-  // depth gated by the risk checklist, workers start from their packet.
+  // Keep native artifacts and gates; author only changed behavior and material risks.
   const author = read('templates/author.md');
   assert.match(author, /Never write a digest or a survey document/);
-  assert.match(author, /Risk checklist/);
-  assert.match(author, /Workers start from their packet/);
+  assert.match(author, /Depth follows behavior and risk/);
+  assert.match(author, /Acceptance records essential real-entry journeys/);
+  const schema = read('openspec-schema/schema.yaml');
+  assert.match(schema, /Specs describe observable behavior and testable outcomes, not internal DTO fields/);
+  assert.match(schema, /Do not invent behavior scenarios for internal-only changes/);
+  const reviewer = read('templates/reviewer.md');
+  const worker = read('templates/worker.md');
+  assert.match(author, /Keep scenarios for observable behavior and semantics/);
+  assert.match(author, /freeze its shape and required semantics once in a worker-reachable authoritative contract/);
+  assert.match(author, /use a Wave 0 skeleton with `Interface:`\/`Uses:`/i);
+  assert.match(author, /Do not create a skeleton solely for an internal signature/);
+  assert.match(author, /Keep concurrent tasks' Write scopes disjoint; do not serialize independent work or invent edges/);
+  const tasks = read('openspec-schema/templates/tasks.md');
+  assert.match(tasks, /派发只等目标的接口（含其 skeleton 祖先），不等实现合流/);
+  assert.match(tasks, /merge 仍要求目标 Done/);
+  assert.match(schema, /Concurrent tasks have fully disjoint Write scopes/);
+  assert.match(reviewer, /verify one authoritative contract is frozen and reachable before consumer dispatch/);
+  assert.match(reviewer, /do not require internal DTO fields or signatures to be repeated as behavioral scenarios/);
+  assert.match(reviewer, /ambiguous behavior or interface that can produce incompatible work is a BLOCKER/);
+  assert.match(worker, /If required interface shape, behavior, or a decision is missing or ambiguous, return `blocked:`/);
   for (const brief of ['templates/author.md', 'templates/reviewer.md', 'templates/worker.md']) {
     assert.doesNotMatch(read(brief), /Impact Inventory|Baseline Alignment/, brief);
   }
@@ -220,6 +237,7 @@ test('task template and schema distinguish structural exemptions from review', (
   const schema = read('openspec-schema/schema.yaml');
   assert.match(template, /review=worker/);
   assert.match(template, /历史 `pass\(/);
+  assert.match(template, /可选元数据/);
   assert.doesNotMatch(template, /review=<tag>/);
   assert.match(template, /禁止汇点[\s\S]*使用 deferred/);
   assert.match(template, /非汇点的 mechanical 任务也要求窄 Verify/);
@@ -279,6 +297,6 @@ test('author and reviewer briefs implement bounded revision and falsifiable bloc
   assert.match(reviewer, /falsifiable counterexample/);
   assert.match(reviewer, /If your findings are all NITs, return the pass line/);
   assert.match(reviewer, /delta check against your own findings/);
-  // A worker gets its task packet, not the whole contract history.
-  assert.match(read('templates/worker.md'), /Read only your packet/);
+  // A worker gets task-relevant inputs, not unrelated contract history.
+  assert.match(read('templates/worker.md'), /Read only from your packet/);
 });
