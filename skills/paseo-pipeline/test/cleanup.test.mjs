@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { executeObject } from '../lib/cleanup.mjs';
+import { executeObject, pruneSetDiff } from '../lib/cleanup.mjs';
 
 const script = fileURLToPath(new URL('../pipeline-run.mjs', import.meta.url));
 const env = {
@@ -88,12 +88,12 @@ function fixture({ tasks = TASKS_DONE, integrated = true, paseoWorkspaceFor = nu
     git(root, 'worktree', 'add', '-q', '-b', `task/${CHANGE}/${id}`, dir, integrationTip);
     worktrees[id] = dir;
   }
-  if (prunableFor) {
+  for (const id of [prunableFor].flat().filter(Boolean)) {
     // A registration whose directory is gone: stale, and only this change owns it.
-    const dir = path.join(root, '..', `${path.basename(root)}-${prunableFor}`);
-    git(root, 'worktree', 'add', '-q', '-b', `task/${CHANGE}/${prunableFor}`, dir, integrationTip);
+    const dir = path.join(root, '..', `${path.basename(root)}-${id}`);
+    git(root, 'worktree', 'add', '-q', '-b', `task/${CHANGE}/${id}`, dir, integrationTip);
     fs.rmSync(dir, { recursive: true, force: true });
-    worktrees[prunableFor] = dir;
+    worktrees[id] = dir;
   }
   git(root, 'switch', '-q', 'main');
   if (integrated) git(root, 'merge', '-q', '--ff-only', `integration/${CHANGE}`);
@@ -106,6 +106,11 @@ function fixture({ tasks = TASKS_DONE, integrated = true, paseoWorkspaceFor = nu
 
 /** Simulate a branch deleted before CP-2 without ever using `git branch -D`. */
 function dropBranch(f, branch) { git(f.root, 'update-ref', '-d', `refs/heads/${branch}`); }
+
+/** Append the `Cleanup:` record this command writes when it deletes the integration branch. */
+function recordBranchCleanup(f, sha) {
+  fs.appendFileSync(path.join(f.changeDir, 'run-log.md'), `Cleanup: branch integration/${CHANGE} git branch -d integration/${CHANGE} done @${sha}\n`);
+}
 
 function run(f, args) {
   const r = spawnSync('node', [script, ...args], { cwd: f.root, env: f.localEnv, encoding: 'utf8' });
@@ -133,6 +138,18 @@ function approve(f, objects, filter = () => true, { onIntegration = false } = {}
   // uncommitted worktree copy, so the approval exists only on the branch.
   git(f.root, 'switch', '-q', 'main');
   if (f.integrated) git(f.root, 'merge', '-q', '--ff-only', `integration/${CHANGE}`);
+}
+
+/** Paths of every prunable registration, read the same way the driver does. */
+function listWorktreePaths(f) {
+  const lines = git(f.root, 'worktree', 'list', '--porcelain').split('\n');
+  const paths = [];
+  let current = null;
+  for (const line of lines) {
+    if (line.startsWith('worktree ')) { current = { path: line.slice('worktree '.length), prunable: false }; paths.push(current); }
+    else if (current && line.startsWith('prunable')) current.prunable = true;
+  }
+  return paths.filter((item) => item.prunable).map((item) => item.path);
 }
 
 function discover(f) {
@@ -282,7 +299,7 @@ test('a re-run skips objects already recorded done', () => {
   for (const object of objects) assert.equal(object.status, 'already-done', `${object.kind} ${object.id}`);
   // Nothing was appended twice.
   const log = fs.readFileSync(path.join(f.changeDir, 'run-log.md'), 'utf8');
-  assert.equal(log.match(/^Cleanup: .* done$/gm).length, report.objects.length);
+  assert.equal(log.match(/^Cleanup: .* done(?: @[0-9a-f]+)?$/gm).length, report.objects.length);
 });
 
 test('an object already missing counts as done, not an error', () => {
@@ -343,39 +360,94 @@ test('an exactly matching command line does authorize the object', () => {
   const report = discover(f);
   const branch = report.objects.find((object) => object.kind === 'branch' && object.id === 'integration/chg');
   fs.writeFileSync(path.join(f.changeDir, 'run-log.md'),
-    `${fs.readFileSync(path.join(f.changeDir, 'run-log.md'), 'utf8')}\nApproval: 2026-11-07T00:00:00Z cleanup\nObject: integration/chg\nCommand: \`${branch.command}\`.\n`);
+    `${fs.readFileSync(path.join(f.changeDir, 'run-log.md'), 'utf8')}\nApproval: 2026-11-07T00:00:00Z cleanup\nObject: integration/chg\nCommand: ${branch.command}.\n`);
   const listing = discover(f);
   assert.equal(listing.objects.find((object) => object.kind === 'branch' && object.id === 'integration/chg').approved, true);
 });
 
-test('git worktree prune is never implicit; a stale registration needs its own approval', () => {
-  const f = fixture({ prunableFor: 'T-03' });
+test('prune objects need their own approval and never run partially', () => {
+  const f = fixture({ prunableFor: ['T-03', 'T-04', 'T-05'] });
   const report = discover(f);
-  const prune = report.objects.filter((object) => object.kind === 'worktree-prune');
-  assert.equal(prune.length, 1);
-  assert.equal(prune[0].command, 'git worktree prune');
-  assert.equal(prune[0].id, prune[0].path);
-  // Approve everything except the prune object: it must not run.
-  approve(f, report.objects, (object) => object.kind !== 'worktree-prune');
+  const prunes = report.objects.filter((object) => object.kind === 'worktree-prune');
+  assert.equal(prunes.length, 3);
+  for (const prune of prunes) {
+    assert.equal(prune.command, 'git worktree prune');
+    assert.equal(prune.id, prune.path);
+  }
+  // Approve one stale registration only: the global prune must not run at all.
+  approve(f, report.objects, (object) => object.kind !== 'worktree-prune' || object === prunes[0]);
   const r = cleanup(f, '--execute', '--json');
   assert.equal(r.status, 5, r.out);
-  const listed = JSON.parse(r.stdout).objects.find((object) => object.kind === 'worktree-prune');
-  assert.equal(listed.status, 'unapproved');
-  const registered = git(f.root, 'worktree', 'list', '--porcelain');
-  assert.match(registered, /prunable /);
-  // Other changes' stale registrations are not even offered.
-  assert.ok(!report.objects.some((object) => object.kind === 'worktree-prune' && object.id === '/tmp/not-ours'));
+  const listed = JSON.parse(r.stdout).objects.filter((object) => object.kind === 'worktree-prune');
+  assert.equal(listed.length, 3);
+  for (const prune of listed) {
+    assert.equal(prune.status, 'unapproved');
+    assert.equal(prune.approved, false);
+  }
+  assert.equal((git(f.root, 'worktree', 'list', '--porcelain').match(/prunable /g) || []).length, 3);
 });
 
-test('an approved prune runs once, after its own object is approved', () => {
-  const f = fixture({ prunableFor: 'T-03' });
+test('an approved prune runs once and records every stale registration', () => {
+  const f = fixture({ prunableFor: ['T-03', 'T-04', 'T-05'] });
   const report = discover(f);
   approve(f, report.objects);
   const r = cleanup(f, '--execute', '--json');
   assert.equal(r.status, 0, r.out);
-  const listed = JSON.parse(r.stdout).objects.find((object) => object.kind === 'worktree-prune');
-  assert.equal(listed.status, 'done');
+  const listed = JSON.parse(r.stdout).objects.filter((object) => object.kind === 'worktree-prune');
+  assert.equal(listed.length, 3);
+  for (const prune of listed) assert.equal(prune.status, 'done');
   assert.doesNotMatch(git(f.root, 'worktree', 'list', '--porcelain'), /prunable /);
+  const log = fs.readFileSync(path.join(f.changeDir, 'run-log.md'), 'utf8');
+  const records = log.split('\n').filter((line) => line.startsWith('Cleanup: worktree-prune '));
+  assert.equal(records.length, 3);
+});
+
+test('prune is withheld when the stale registration set changes after discovery', () => {
+  const f = fixture({ prunableFor: 'T-03' });
+  const report = discover(f);
+  const approved = report.objects.filter((object) => object.kind === 'worktree-prune').map((object) => object.path);
+  // A registration becomes stale between approval and execution.
+  const late = path.join(f.root, '..', `${path.basename(f.root)}-late`);
+  git(f.root, 'worktree', 'add', '-q', '-b', `task/${CHANGE}/T-06`, late, f.integrationTip);
+  fs.rmSync(late, { recursive: true, force: true });
+  const current = listWorktreePaths(f);
+  const diff = pruneSetDiff(approved, current);
+  assert.equal(diff.appeared.length, 1);
+  assert.equal(diff.appeared[0], current.find((item) => item.endsWith('-late')));
+  assert.deepEqual(diff.disappeared, []);
+  // An unchanged set is not a diff.
+  assert.deepEqual(pruneSetDiff(current, current), { appeared: [], disappeared: [] });
+});
+
+test('a registration that turns stale after approval withholds the prune end to end', () => {
+  const f = fixture({ prunableFor: 'T-03' });
+  const report = discover(f);
+  // Approve exactly what was discovered.
+  approve(f, report.objects);
+  // A second registration turns stale before execution and was never approved.
+  const late = path.join(f.root, '..', `${path.basename(f.root)}-late`);
+  git(f.root, 'worktree', 'add', '-q', '-b', `task/${CHANGE}/T-06`, late, f.integrationTip);
+  fs.rmSync(late, { recursive: true, force: true });
+  const r = cleanup(f, '--execute', '--json');
+  assert.equal(r.status, 5, r.out);
+  const prunes = JSON.parse(r.stdout).objects.filter((object) => object.kind === 'worktree-prune');
+  assert.equal(prunes.length, 2);
+  for (const prune of prunes) assert.equal(prune.status, 'unapproved');
+  assert.equal((git(f.root, 'worktree', 'list', '--porcelain').match(/prunable /g) || []).length, 2);
+  assert.doesNotMatch(fs.readFileSync(path.join(f.changeDir, 'run-log.md'), 'utf8'), /^Cleanup: worktree-prune .* done/m);
+});
+
+test('a partial prune approval runs the global prune for no one', () => {
+  const f = fixture({ prunableFor: ['T-03', 'T-04'] });
+  const report = discover(f);
+  const prunes = report.objects.filter((object) => object.kind === 'worktree-prune');
+  // One stale registration approved, one not: prune must never run.
+  approve(f, report.objects, (object) => object.kind !== 'worktree-prune' || object === prunes[0]);
+  const r = cleanup(f, '--execute');
+  assert.equal(r.status, 5, r.out);
+  assert.match(r.out, /prune withheld: not every stale registration is approved/);
+  assert.equal((git(f.root, 'worktree', 'list', '--porcelain').match(/prunable /g) || []).length, 2);
+  assert.doesNotMatch(fs.readFileSync(path.join(f.changeDir, 'run-log.md'), 'utf8'), /^Cleanup: worktree-prune .* done/m);
 });
 
 test('a stale registration owned by another change is not offered for prune', () => {
@@ -396,36 +468,97 @@ test('a background Paseo workspace still owns its worktree', () => {
   assert.ok(!report.objects.some((object) => object.kind === 'git-worktree' && fs.realpathSync(object.path) === fs.realpathSync(f.worktrees['T-01'])));
 });
 
-test('an absent integration branch refuses without --merged-at', () => {
+test('a backtick-wrapped command is literal: a trailing comma is part of the name', () => {
+  const f = fixture();
+  const report = discover(f);
+  const branch = report.objects.find((object) => object.kind === 'branch' && object.id === 'integration/chg');
+  fs.writeFileSync(path.join(f.changeDir, 'run-log.md'),
+    `${fs.readFileSync(path.join(f.changeDir, 'run-log.md'), 'utf8')}\nApproval: 2026-11-07T00:00:00Z cleanup\nObject: integration/chg\nCommand: \`${branch.command},\`\n`);
+  const listing = discover(f);
+  assert.equal(listing.objects.find((object) => object.kind === 'branch' && object.id === 'integration/chg').approved, false);
+  const r = cleanup(f, '--execute', '--json');
+  assert.equal(r.status, 5, r.out);
+  assert.ok(git(f.root, 'rev-parse', '--verify', 'refs/heads/integration/chg'));
+});
+
+test('an unquoted command may have trailing sentence punctuation stripped', () => {
+  const f = fixture();
+  const report = discover(f);
+  const branch = report.objects.find((object) => object.kind === 'branch' && object.id === 'integration/chg');
+  fs.writeFileSync(path.join(f.changeDir, 'run-log.md'),
+    `${fs.readFileSync(path.join(f.changeDir, 'run-log.md'), 'utf8')}\nApproval: 2026-11-07T00:00:00Z cleanup\nObject: integration/chg\nCommand: ${branch.command}.\n`);
+  const listing = discover(f);
+  assert.equal(listing.objects.find((object) => object.kind === 'branch' && object.id === 'integration/chg').approved, true);
+});
+
+test('an unmatched backtick makes the command line unparseable', () => {
+  const f = fixture();
+  const report = discover(f);
+  const branch = report.objects.find((object) => object.kind === 'branch' && object.id === 'integration/chg');
+  for (const value of [`\`${branch.command}`, `${branch.command}\``]) {
+    fs.writeFileSync(path.join(f.changeDir, 'run-log.md'),
+      `${fs.readFileSync(path.join(f.changeDir, 'run-log.md'), 'utf8')}\nApproval: 2026-11-07T00:00:00Z cleanup\nObject: integration/chg\nCommand: ${value}\n`);
+    const listing = discover(f);
+    assert.equal(listing.objects.find((object) => object.kind === 'branch' && object.id === 'integration/chg').approved, false, value);
+  }
+});
+
+test('an absent integration branch with no recorded tip refuses even with --merged-at', () => {
   const f = fixture();
   const report = discover(f);
   approve(f, report.objects);
   dropBranch(f, `integration/${CHANGE}`);
-  const r = cleanup(f, '--execute');
+  const r = cleanup(f, '--execute', '--merged-at', git(f.root, 'rev-parse', 'main'));
   assert.equal(r.status, 4, r.out);
-  assert.match(r.stderr, /--merged-at/);
+  assert.match(r.stderr, /no Cleanup record holds its tip/);
   assert.ok(fs.existsSync(f.worktrees['T-01']));
 });
 
-test('an absent integration branch refuses a --merged-at that is not an ancestor of base', () => {
+test('an absent integration branch refuses --merged-at main even when a tip was recorded', () => {
   const f = fixture();
   const report = discover(f);
   approve(f, report.objects);
+  const tip = git(f.root, 'rev-parse', `integration/${CHANGE}`);
+  const earlier = git(f.root, 'rev-parse', 'HEAD~1');
   dropBranch(f, `integration/${CHANGE}`);
-  const rogue = git(f.root, 'commit-tree', git(f.root, 'rev-parse', 'HEAD^{tree}'), '-p', 'HEAD', '-m', 'unlanded');
-  const r = cleanup(f, '--execute', '--merged-at', rogue);
+  recordBranchCleanup(f, tip);
+  const r = cleanup(f, '--execute', '--merged-at', earlier);
   assert.equal(r.status, 4, r.out);
-  assert.match(r.stderr, /not an ancestor of main/);
+  assert.match(r.stderr, /is not the recorded integration\/chg tip/);
   assert.ok(fs.existsSync(f.worktrees['T-01']));
 });
 
-test('an absent integration branch proceeds with an ancestor --merged-at', () => {
+test('an absent integration branch refuses a recorded tip that is not an ancestor of base', () => {
   const f = fixture();
   const report = discover(f);
   approve(f, report.objects);
-  const landed = git(f.root, 'rev-parse', 'main');
+  const unlanded = git(f.root, 'commit-tree', git(f.root, 'rev-parse', 'HEAD^{tree}'), '-p', 'HEAD', '-m', 'unlanded');
   dropBranch(f, `integration/${CHANGE}`);
-  const r = cleanup(f, '--execute', '--merged-at', landed, '--json');
+  recordBranchCleanup(f, unlanded);
+  const r = cleanup(f, '--execute', '--merged-at', unlanded);
+  assert.equal(r.status, 4, r.out);
+  assert.match(r.stderr, /is not an ancestor of main/);
+  assert.ok(fs.existsSync(f.worktrees['T-01']));
+});
+
+test('an absent integration branch proceeds with the recorded tip that is an ancestor', () => {
+  const f = fixture();
+  const report = discover(f);
+  approve(f, report.objects);
+  const tip = git(f.root, 'rev-parse', `integration/${CHANGE}`);
+  dropBranch(f, `integration/${CHANGE}`);
+  recordBranchCleanup(f, tip);
+  const r = cleanup(f, '--execute', '--merged-at', tip, '--json');
   assert.equal(r.status, 0, r.out);
   assert.ok(!fs.existsSync(f.worktrees['T-01']));
+});
+
+test('deleting the integration branch records its tip for the next run', () => {
+  const f = fixture();
+  const report = discover(f);
+  approve(f, report.objects);
+  const tip = git(f.root, 'rev-parse', `integration/${CHANGE}`);
+  assert.equal(cleanup(f, '--execute').status, 0);
+  const log = fs.readFileSync(path.join(f.changeDir, 'run-log.md'), 'utf8');
+  assert.match(log, new RegExp(`^Cleanup: branch integration/${CHANGE} git branch -d integration/${CHANGE} done @${tip}$`, 'm'));
 });

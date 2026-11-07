@@ -20,7 +20,9 @@ import { readMergeState } from './merge-state.mjs';
 
 const USAGE = 'usage: pipeline-run.mjs cleanup <change-dir> [--dry-run] [--execute] [--json] [--base <ref>] [--merged-at <sha>]';
 const TASK_ID = String.raw`[A-Za-z][A-Za-z0-9]*-\d+`;
-const RECORD = /^Cleanup:\s+(\S+)\s+(\S+)\s+(.+)\s+(done|failed|skipped)$/;
+// A `@<sha>` suffix records the deleted branch tip, so a later run can prove which commit
+// the integration branch pointed at when this command removed it.
+const RECORD = /^Cleanup:\s+(\S+)\s+(\S+)\s+(.+)\s+(done|failed|skipped)(?:\s+@([0-9a-f]{40,64}))?$/;
 
 function escapeRe(value) { return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
@@ -93,13 +95,11 @@ export function discoverObjects({ cwd, changeDir }) {
   const trees = listWorktrees(cwd);
   const prunable = trees.filter((tree) => tree.prunable);
   if (prunable.length && prunable.every((tree) => ownedBranch(tree.branch, change))) {
-    objects.push({
-      kind: 'worktree-prune',
-      id: prunable[0].path,
-      branch: null,
-      path: prunable[0].path,
-      command: 'git worktree prune',
-    });
+    // `git worktree prune` is global: it removes every stale registration at once. One object
+    // per registration keeps each approval meaningful; execution requires all of them.
+    for (const tree of prunable) {
+      objects.push({ kind: 'worktree-prune', id: tree.path, branch: null, path: tree.path, command: 'git worktree prune' });
+    }
   } else if (prunable.length) {
     const foreign = prunable.filter((tree) => !ownedBranch(tree.branch, change)).map((tree) => tree.path);
     console.warn(`[pipeline-run] not pruning stale registrations owned by other changes: ${foreign.join(', ')}`);
@@ -192,12 +192,19 @@ export function blockCommands(block) {
   for (const line of String(block || '').split(/\r?\n/)) {
     const match = line.match(/^\s*[-*]?\s*Command:\s*(.+)$/i);
     if (!match) continue;
-    // Strip surrounding backticks and trailing punctuation in either order: `` `cmd`. ``
-    // and `cmd.` both mean the same command.
-    let value = match[1].trim().replace(/[.,;:]+$/, '').trim();
-    if (value.length >= 2 && value.startsWith('`') && value.endsWith('`')) value = value.slice(1, -1);
-    value = value.trim().replace(/[.,;:]+$/, '').trim();
-    if (value) commands.push(value);
+    // A backtick-wrapped command is literal: `integration/chg,` is a different branch from
+    // `integration/chg`, and a comma is a valid ref character. Only prose may have trailing
+    // sentence punctuation stripped, and an unmatched backtick makes the line unparseable.
+    const value = match[1].trim();
+    if (value.startsWith('`') || value.endsWith('`')) {
+      if (value.length >= 2 && value.startsWith('`') && value.endsWith('`')) {
+        const inner = value.slice(1, -1);
+        if (inner) commands.push(inner);
+      }
+      continue;
+    }
+    const prose = value.replace(/[.,;:]+$/, '').trim();
+    if (prose) commands.push(prose);
   }
   return commands;
 }
@@ -218,12 +225,12 @@ export function approvalCovers(block, object) {
 
 function recordKey(kind, id) { return `${kind} ${id}`; }
 
-/** Map of `kind id` -> recorded command for every attempt with outcome `done`. */
+/** Map of `kind id` -> recorded command (and tip SHA for branches) of every `done` attempt. */
 export function doneRecords(text) {
   const done = new Map();
   for (const line of String(text || '').split(/\r?\n/)) {
     const match = line.match(RECORD);
-    if (match && match[4] === 'done') done.set(recordKey(match[1], match[2]), { kind: match[1], id: match[2], command: match[3] });
+    if (match && match[4] === 'done') done.set(recordKey(match[1], match[2]), { kind: match[1], id: match[2], command: match[3], sha: match[5] ?? null });
   }
   return done;
 }
@@ -233,10 +240,24 @@ function readWorktreeRunLog(changeDir) {
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
 }
 
-function appendRecord(changeDir, object, outcome) {
+function appendRecord(changeDir, object, outcome, sha = null) {
   const file = path.join(changeDir, 'run-log.md');
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.appendFileSync(file, `Cleanup: ${object.kind} ${object.id} ${object.command} ${outcome}\n`);
+  fs.appendFileSync(file, `Cleanup: ${object.kind} ${object.id} ${object.command} ${outcome}${sha ? ` @${sha}` : ''}\n`);
+}
+
+/**
+ * Paths that appeared or disappeared between approval and execution. `git worktree prune`
+ * acts on whatever is stale at call time, so a changed set means the human approved something
+ * other than what would be deleted.
+ */
+export function pruneSetDiff(approvedPaths, currentPaths) {
+  const approved = new Set(approvedPaths);
+  const current = new Set(currentPaths);
+  return {
+    appeared: [...current].filter((item) => !approved.has(item)),
+    disappeared: [...approved].filter((item) => !current.has(item)),
+  };
 }
 
 // ---- Execution ----
@@ -258,10 +279,13 @@ export function executeObject(object, { cwd = process.cwd() } = {}) {
   }
   if (object.kind === 'branch') {
     const ref = `refs/heads/${object.branch}`;
-    if (runGit(cwd, ['rev-parse', '--verify', '--quiet', ref]).status !== 0) return { status: 'done', detail: 'branch already gone' };
+    const tip = runGit(cwd, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+    if (tip.status !== 0) return { status: 'done', detail: 'branch already gone', sha: null };
+    const sha = tip.stdout.trim();
     const result = runGit(cwd, ['branch', '-d', object.branch]);
     if (result.status !== 0) return { status: 'failed', detail: (result.stderr || result.stdout || '').trim() || 'git branch -d refused' };
-    return { status: 'done', detail: '' };
+    // The recorded tip is what proves a later `--merged-at` is this change's merge.
+    return { status: 'done', detail: '', sha };
   }
   if (!fs.existsSync(object.path)) return { status: 'done', detail: 'already gone' };
   if (object.kind === 'git-worktree') {
@@ -278,7 +302,7 @@ export function executeObject(object, { cwd = process.cwd() } = {}) {
  * The pending-merge marker is the existing shared ref written by merge-task, read through
  * `readMergeState`; no new marker is invented.
  */
-export function checkPreconditions({ cwd, changeDir, change, objects, base, mergedAt }) {
+export function checkPreconditions({ cwd, changeDir, change, objects, base, mergedAt, done = new Map() }) {
   let markdown;
   let source;
   try { ({ markdown, source } = readTasksMarkdown(changeDir, change)); }
@@ -294,19 +318,30 @@ export function checkPreconditions({ cwd, changeDir, change, objects, base, merg
   if (runGit(cwd, ['rev-parse', '--verify', '--quiet', `${base}^{commit}`]).status !== 0) {
     return { code: 4, message: `base ${base} does not resolve` };
   }
-  // CP-2 must really have landed. An absent integration branch proves nothing — it may have
-  // been deleted before the merge — so it is a refusal unless the human names the merged SHA.
-  // A prior `Cleanup:` record does not substitute: it proves this command ran, not the merge.
+  // CP-2 must really have landed. An absent integration branch proves nothing on its own, so
+  // `--merged-at` must equal the tip recorded when this command deleted the branch: any
+  // ancestor would accept `main` itself or an unrelated commit. Without that record the merge
+  // cannot be proven at all.
   if (runGit(cwd, ['rev-parse', '--verify', '--quiet', `refs/heads/${integration}`]).status === 0) {
     if (runGit(cwd, ['merge-base', '--is-ancestor', integration, base]).status !== 0) {
       return { code: 4, message: `${integration} is not an ancestor of ${base}; CP-2 has not landed` };
     }
-  } else if (!mergedAt) {
-    return { code: 4, message: `${integration} is absent; pass --merged-at <sha> with a commit that is an ancestor of ${base} to prove CP-2 landed` };
-  } else if (runGit(cwd, ['rev-parse', '--verify', '--quiet', `${mergedAt}^{commit}`]).status !== 0) {
-    return { code: 4, message: `--merged-at ${mergedAt} does not resolve` };
-  } else if (runGit(cwd, ['merge-base', '--is-ancestor', `${mergedAt}^{commit}`, base]).status !== 0) {
-    return { code: 4, message: `--merged-at ${mergedAt} is not an ancestor of ${base}; CP-2 has not landed` };
+  } else {
+    const recorded = done.get(recordKey('branch', integration))?.sha;
+    if (!recorded) {
+      return { code: 4, message: `${integration} is absent and no Cleanup record holds its tip; the merge cannot be proven — restore the branch or delete it through this command first` };
+    }
+    if (!mergedAt) {
+      return { code: 4, message: `${integration} is absent; pass --merged-at <sha> with the recorded tip ${recorded} to prove CP-2 landed` };
+    }
+    const resolved = runGit(cwd, ['rev-parse', '--verify', '--quiet', `${mergedAt}^{commit}`]);
+    if (resolved.status !== 0) return { code: 4, message: `--merged-at ${mergedAt} does not resolve` };
+    if (resolved.stdout.trim() !== recorded) {
+      return { code: 4, message: `--merged-at ${mergedAt} is not the recorded ${integration} tip ${recorded}` };
+    }
+    if (runGit(cwd, ['merge-base', '--is-ancestor', `${mergedAt}^{commit}`, base]).status !== 0) {
+      return { code: 4, message: `--merged-at ${mergedAt} is not an ancestor of ${base}; CP-2 has not landed` };
+    }
   }
   for (const object of objects) {
     if (object.kind === 'worktree-prune') continue;
@@ -379,7 +414,7 @@ export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => conso
   let exit = 0;
   let refusal = null;
   if (execute) {
-    refusal = checkPreconditions({ cwd, changeDir, change, objects, base, mergedAt: parsed.options['merged-at'] });
+    refusal = checkPreconditions({ cwd, changeDir, change, objects, base, mergedAt: parsed.options['merged-at'], done });
     if (refusal) {
       exit = refusal.code;
       stderr(`[pipeline-run] cleanup refused: ${refusal.message}`);
@@ -388,13 +423,59 @@ export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => conso
       refusal = { message: 'no object has a matching recorded Approval; nothing may be executed' };
       stderr(`[pipeline-run] cleanup refused: ${refusal.message}`);
     } else {
+      // `git worktree prune` is all-or-nothing and global: run it only once every stale
+      // registration is approved, and record each path as done because one prune covers all.
+      const prunes = objects.filter((object) => object.kind === 'worktree-prune' && object.status !== 'already-done');
+      const pruneAllowed = prunes.length === 0 || prunes.every((object) => object.approved);
+      let pruned = false;
       for (const object of objects) {
         if (object.status === 'already-done') continue;
+        if (object.kind === 'worktree-prune') {
+          if (!pruneAllowed) {
+            // A partial approval authorizes nothing: `git worktree prune` is global.
+            object.status = 'unapproved';
+            object.approved = false;
+            object.detail = 'prune withheld: not every stale registration is approved';
+            if (!exit) exit = 5;
+            continue;
+          }
+          // One prune covers every registration; run it on the first object, then record the
+          // outcome for all of them and never invoke it again in this pass.
+          if (!pruned) {
+            pruned = true;
+            // `git worktree prune` deletes registrations discovered now, which may include one
+            // that became stale after discovery. Never prune a set the human did not approve.
+            const { appeared, disappeared } = pruneSetDiff(
+              prunes.map((prune) => prune.path),
+              listWorktrees(cwd).filter((tree) => tree.prunable).map((tree) => tree.path),
+            );
+            if (appeared.length || disappeared.length) {
+              const changes = [
+                appeared.length ? `appeared: ${appeared.join(', ')}` : '',
+                disappeared.length ? `disappeared: ${disappeared.join(', ')}` : '',
+              ].filter(Boolean).join('; ');
+              for (const prune of prunes) {
+                prune.status = 'failed';
+                prune.detail = `prune withheld, stale registrations changed (${changes}); re-run discovery and approve them`;
+              }
+              if (exit !== 5) exit = 1;
+              continue;
+            }
+            const result = executeObject(object, { cwd });
+            for (const prune of prunes) {
+              prune.status = result.status;
+              prune.detail = result.detail;
+              appendRecord(changeDir, prune, result.status);
+            }
+            if (result.status === 'failed' && exit !== 5) exit = 1;
+          }
+          continue;
+        }
         if (!object.approved) { object.status = 'unapproved'; if (!exit) exit = 5; continue; }
         const result = executeObject(object, { cwd });
         object.status = result.status;
         object.detail = result.detail;
-        appendRecord(changeDir, object, result.status);
+        appendRecord(changeDir, object, result.status, result.sha);
         if (result.status === 'failed' && exit !== 5) exit = 1;
       }
     }

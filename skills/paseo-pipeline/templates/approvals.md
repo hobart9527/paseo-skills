@@ -16,7 +16,9 @@ Use before any destructive or production step: deploy, `archive_workspace`, bran
    object only when one `Approval:` block carries both that object's id (workspace id, branch
    name or absolute host path) and an exactly equal `Command:` line; never force (`-D`,
    `--force`) and never fall back to `rm -rf`. `git worktree prune` is its own object, never
-   implicit: it would also drop stale registrations owned by other changes.
+   implicit: it would also drop stale registrations owned by other changes. It is global, so
+   it runs only when every offered `worktree-prune` object is approved; a partial approval
+   runs nothing, and a registration that appears between approval and execution withholds it.
 2. **Ask.** State what is irreversible, what is archived versus deleted, and what is pushed. Never
    bundle two object classes in one question.
 3. **Record the approval verbatim** in `openspec/changes/<change>/run-log.md`:
@@ -30,11 +32,12 @@ Use before any destructive or production step: deploy, `archive_workspace`, bran
    Execute only objects and commands the record covers; if the list or command differs, re-ask.
    `cleanup --execute` appends one record per attempted object to the worktree `run-log.md`:
    ```
-   Cleanup: <kind> <id> <command> <done|failed|skipped>
+   Cleanup: <kind> <id> <command> <done|failed|skipped>[@<full-sha>]
    ```
    A re-run skips objects already recorded `done`; a missing object counts as done. The
    record is evidence of what ran, not an approval. Approvals are read from this worktree
    file first (cleanup happens after CP-2, so committing them to integration would break the
    ancestry proof), the integration copy only when the worktree file is absent. If
-   `integration/<change>` is already gone, prove the merge with `--merged-at <sha>`.
+   `integration/<change>` is already gone, `--merged-at <sha>` must equal the tip recorded
+   on its `Cleanup: branch` done line — an unrecorded tip, or `main` itself, proves nothing.
 5. Push and history rewrite need their own approval even when cleanup was approved.
