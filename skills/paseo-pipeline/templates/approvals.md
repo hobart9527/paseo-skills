@@ -11,11 +11,12 @@ Use before any destructive or production step: deploy, `archive_workspace`, bran
    ```
    Include every object the command reaches transitively; an omitted object is a new approval.
    For CP-2 cleanup, take the list verbatim from `pipeline-run.mjs cleanup <change-dir>`
-   (`--json` for the same objects): one `paseo-workspace`, `git-worktree` or `branch` object
-   per line, each with its own exact `command`. An approval covers an object only when one
-   `Approval:` block carries both that object's id (workspace id, branch name or absolute
-   host path) and its exact command; never force (`-D`, `--force`) and never fall back to
-   `rm -rf`.
+   (`--json` for the same objects): one `paseo-workspace`, `git-worktree`, `branch` or
+   `worktree-prune` object per line, each with its own exact `command`. An approval covers an
+   object only when one `Approval:` block carries both that object's id (workspace id, branch
+   name or absolute host path) and an exactly equal `Command:` line; never force (`-D`,
+   `--force`) and never fall back to `rm -rf`. `git worktree prune` is its own object, never
+   implicit: it would also drop stale registrations owned by other changes.
 2. **Ask.** State what is irreversible, what is archived versus deleted, and what is pushed. Never
    bundle two object classes in one question.
 3. **Record the approval verbatim** in `openspec/changes/<change>/run-log.md`:
@@ -32,5 +33,8 @@ Use before any destructive or production step: deploy, `archive_workspace`, bran
    Cleanup: <kind> <id> <command> <done|failed|skipped>
    ```
    A re-run skips objects already recorded `done`; a missing object counts as done. The
-   record is evidence of what ran, not an approval.
+   record is evidence of what ran, not an approval. Approvals are read from this worktree
+   file first (cleanup happens after CP-2, so committing them to integration would break the
+   ancestry proof), the integration copy only when the worktree file is absent. If
+   `integration/<change>` is already gone, prove the merge with `--merged-at <sha>`.
 5. Push and history rewrite need their own approval even when cleanup was approved.

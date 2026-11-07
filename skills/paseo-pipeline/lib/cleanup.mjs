@@ -18,7 +18,7 @@ import { parseTasks } from './tasks.mjs';
 import { readTasksMarkdown } from './tasks-source.mjs';
 import { readMergeState } from './merge-state.mjs';
 
-const USAGE = 'usage: pipeline-run.mjs cleanup <change-dir> [--dry-run] [--execute] [--json] [--base <ref>]';
+const USAGE = 'usage: pipeline-run.mjs cleanup <change-dir> [--dry-run] [--execute] [--json] [--base <ref>] [--merged-at <sha>]';
 const TASK_ID = String.raw`[A-Za-z][A-Za-z0-9]*-\d+`;
 const RECORD = /^Cleanup:\s+(\S+)\s+(\S+)\s+(.+)\s+(done|failed|skipped)$/;
 
@@ -42,8 +42,9 @@ function listWorktrees(cwd) {
   const trees = [];
   let current = null;
   for (const line of result.stdout.split('\n')) {
-    if (line.startsWith('worktree ')) { current = { path: line.slice('worktree '.length), branch: null }; trees.push(current); }
+    if (line.startsWith('worktree ')) { current = { path: line.slice('worktree '.length), branch: null, prunable: false }; trees.push(current); }
     else if (current && line.startsWith('branch ')) current.branch = line.slice('branch '.length).replace(/^refs\/heads\//, '');
+    else if (current && (line === 'prunable' || line.startsWith('prunable '))) current.prunable = true;
   }
   return trees;
 }
@@ -54,14 +55,17 @@ function listBranches(cwd, change) {
   return result.stdout.split('\n').map((line) => line.trim()).filter(Boolean).filter((branch) => ownedBranch(branch, change));
 }
 
+// `--background` is required: the active list hides background workspaces, and a hidden but
+// owning workspace would make its worktree look manual — then `git worktree remove` would run
+// on a Paseo-owned path instead of `paseo workspace archive`.
 function listPaseoWorkspaces() {
-  const result = spawnSync('paseo', ['workspace', 'ls', '--json'], { encoding: 'utf8', timeout: 10_000 });
+  const result = spawnSync('paseo', ['workspace', 'ls', '--background', '--json'], { encoding: 'utf8', timeout: 10_000 });
   if (result.error || result.status !== 0) {
     const detail = result.error?.message || (result.stderr || '').trim();
-    return { error: `cannot read Paseo workspaces (\`paseo workspace ls --json\`${detail ? `: ${detail}` : ''})` };
+    return { error: `cannot read Paseo workspaces (\`paseo workspace ls --background --json\`${detail ? `: ${detail}` : ''})` };
   }
   let listed;
-  try { listed = JSON.parse(result.stdout); } catch { return { error: 'invalid JSON from `paseo workspace ls --json`' }; }
+  try { listed = JSON.parse(result.stdout); } catch { return { error: 'invalid JSON from `paseo workspace ls --background --json`' }; }
   if (!Array.isArray(listed)) return { error: 'invalid Paseo workspace list' };
   return { workspaces: listed };
 }
@@ -70,6 +74,10 @@ function listPaseoWorkspaces() {
  * Read-only deterministic discovery. Returns worktree objects first (in `git worktree list`
  * order), then branch objects. A worktree owned by a Paseo workspace yields exactly one
  * `paseo-workspace` object and never an extra `git-worktree` object for the same path.
+ *
+ * A stale registration (path gone) is not touched implicitly: `git worktree prune` would also
+ * prune other changes' registrations. It becomes its own `worktree-prune` object, and only
+ * when every prunable registration belongs to this change.
  */
 export function discoverObjects({ cwd, changeDir }) {
   const change = path.basename(changeDir);
@@ -82,7 +90,22 @@ export function discoverObjects({ cwd, changeDir }) {
   }
   const objects = [];
   const seen = new Set();
-  for (const tree of listWorktrees(cwd)) {
+  const trees = listWorktrees(cwd);
+  const prunable = trees.filter((tree) => tree.prunable);
+  if (prunable.length && prunable.every((tree) => ownedBranch(tree.branch, change))) {
+    objects.push({
+      kind: 'worktree-prune',
+      id: prunable[0].path,
+      branch: null,
+      path: prunable[0].path,
+      command: 'git worktree prune',
+    });
+  } else if (prunable.length) {
+    const foreign = prunable.filter((tree) => !ownedBranch(tree.branch, change)).map((tree) => tree.path);
+    console.warn(`[pipeline-run] not pruning stale registrations owned by other changes: ${foreign.join(', ')}`);
+  }
+  for (const tree of trees) {
+    if (tree.prunable) continue;
     if (!ownedBranch(tree.branch, change)) continue;
     const key = realOrResolved(tree.path);
     if (seen.has(key)) continue;
@@ -122,18 +145,25 @@ function relativeInRepo(cwd, changeDir) {
   return rel.split(path.sep).join('/');
 }
 
-/** Approvals live on the integration tip; the worktree copy is only a fallback without a branch. */
+/**
+ * One source, chosen deterministically. Cleanup runs after CP-2, so the human records the
+ * approval in the worktree run-log; committing it to integration would break the ancestry
+ * precondition. The worktree file is therefore primary and the integration copy is only the
+ * fallback when that file does not exist. Never a union.
+ * @returns {{text: string, source: 'worktree'|'integration'|'none'}}
+ */
 export function readApprovalText(cwd, changeDir, change) {
-  const ref = `refs/heads/integration/${change}`;
-  const resolved = runGit(cwd, ['rev-parse', '--verify', '--quiet', ref]);
-  if (resolved.status === 0) {
-    const rel = relativeInRepo(cwd, changeDir);
-    if (!rel) return '';
-    const shown = runGit(cwd, ['show', `${ref}:${rel}/run-log.md`]);
-    return shown.status === 0 ? shown.stdout : '';
-  }
   const file = path.join(changeDir, 'run-log.md');
-  return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+  if (fs.existsSync(file)) return { text: fs.readFileSync(file, 'utf8'), source: 'worktree' };
+  const ref = `refs/heads/integration/${change}`;
+  if (runGit(cwd, ['rev-parse', '--verify', '--quiet', ref]).status === 0) {
+    const rel = relativeInRepo(cwd, changeDir);
+    if (rel) {
+      const shown = runGit(cwd, ['show', `${ref}:${rel}/run-log.md`]);
+      if (shown.status === 0) return { text: shown.stdout, source: 'integration' };
+    }
+  }
+  return { text: '', source: 'none' };
 }
 
 /** One block per `Approval:` line, ending at the next Approval line or a blank line. */
@@ -156,11 +186,32 @@ function containsToken(text, token) {
   return new RegExp(`(^|[^A-Za-z0-9_./-])${escaped}($|[^A-Za-z0-9_./-])`).test(text);
 }
 
-/** A block covers an object only with both an identifier and the exact command in that block. */
+/** Command lines of a block (`Command: <cmd>`, backticks and trailing punctuation stripped). */
+export function blockCommands(block) {
+  const commands = [];
+  for (const line of String(block || '').split(/\r?\n/)) {
+    const match = line.match(/^\s*[-*]?\s*Command:\s*(.+)$/i);
+    if (!match) continue;
+    // Strip surrounding backticks and trailing punctuation in either order: `` `cmd`. ``
+    // and `cmd.` both mean the same command.
+    let value = match[1].trim().replace(/[.,;:]+$/, '').trim();
+    if (value.length >= 2 && value.startsWith('`') && value.endsWith('`')) value = value.slice(1, -1);
+    value = value.trim().replace(/[.,;:]+$/, '').trim();
+    if (value) commands.push(value);
+  }
+  return commands;
+}
+
+/**
+ * A block covers an object only with both an identifier token and an exactly equal command
+ * line in that same block. Substring matching would let `git branch -d integration/chg-old`
+ * authorize `git branch -d integration/chg`.
+ */
 export function approvalCovers(block, object) {
   if (!block || !object?.command) return false;
   const identifiers = [object.id, object.branch, object.path].filter((value) => typeof value === 'string' && value);
-  return identifiers.some((id) => containsToken(block, id)) && block.includes(object.command);
+  if (!identifiers.some((id) => containsToken(block, id))) return false;
+  return blockCommands(block).some((command) => command === object.command.trim());
 }
 
 // ---- Re-entrancy records (worktree run-log; never committed) ----
@@ -200,6 +251,11 @@ function paseoArchive(object) {
 
 /** Execute one approved object. A missing object counts as done, not an error. */
 export function executeObject(object, { cwd = process.cwd() } = {}) {
+  if (object.kind === 'worktree-prune') {
+    const result = runGit(cwd, ['worktree', 'prune']);
+    if (result.status !== 0) return { status: 'failed', detail: (result.stderr || result.stdout || '').trim() || 'git worktree prune failed' };
+    return { status: 'done', detail: '' };
+  }
   if (object.kind === 'branch') {
     const ref = `refs/heads/${object.branch}`;
     if (runGit(cwd, ['rev-parse', '--verify', '--quiet', ref]).status !== 0) return { status: 'done', detail: 'branch already gone' };
@@ -222,7 +278,7 @@ export function executeObject(object, { cwd = process.cwd() } = {}) {
  * The pending-merge marker is the existing shared ref written by merge-task, read through
  * `readMergeState`; no new marker is invented.
  */
-export function checkPreconditions({ cwd, changeDir, change, objects, base }) {
+export function checkPreconditions({ cwd, changeDir, change, objects, base, mergedAt }) {
   let markdown;
   let source;
   try { ({ markdown, source } = readTasksMarkdown(changeDir, change)); }
@@ -238,13 +294,22 @@ export function checkPreconditions({ cwd, changeDir, change, objects, base }) {
   if (runGit(cwd, ['rev-parse', '--verify', '--quiet', `${base}^{commit}`]).status !== 0) {
     return { code: 4, message: `base ${base} does not resolve` };
   }
-  // A missing integration branch means a previous cleanup already deleted it; that object is
-  // done, not a refusal. While it exists, CP-2 must really have landed.
-  if (runGit(cwd, ['rev-parse', '--verify', '--quiet', `refs/heads/${integration}`]).status === 0
-    && runGit(cwd, ['merge-base', '--is-ancestor', integration, base]).status !== 0) {
-    return { code: 4, message: `${integration} is not an ancestor of ${base}; CP-2 has not landed` };
+  // CP-2 must really have landed. An absent integration branch proves nothing — it may have
+  // been deleted before the merge — so it is a refusal unless the human names the merged SHA.
+  // A prior `Cleanup:` record does not substitute: it proves this command ran, not the merge.
+  if (runGit(cwd, ['rev-parse', '--verify', '--quiet', `refs/heads/${integration}`]).status === 0) {
+    if (runGit(cwd, ['merge-base', '--is-ancestor', integration, base]).status !== 0) {
+      return { code: 4, message: `${integration} is not an ancestor of ${base}; CP-2 has not landed` };
+    }
+  } else if (!mergedAt) {
+    return { code: 4, message: `${integration} is absent; pass --merged-at <sha> with a commit that is an ancestor of ${base} to prove CP-2 landed` };
+  } else if (runGit(cwd, ['rev-parse', '--verify', '--quiet', `${mergedAt}^{commit}`]).status !== 0) {
+    return { code: 4, message: `--merged-at ${mergedAt} does not resolve` };
+  } else if (runGit(cwd, ['merge-base', '--is-ancestor', `${mergedAt}^{commit}`, base]).status !== 0) {
+    return { code: 4, message: `--merged-at ${mergedAt} is not an ancestor of ${base}; CP-2 has not landed` };
   }
   for (const object of objects) {
+    if (object.kind === 'worktree-prune') continue;
     if (!object.path || !fs.existsSync(object.path)) continue;
     const status = runGit(object.path, ['status', '--porcelain']);
     if (status.error || status.status !== 0) return { code: 4, message: `cannot check ${object.path}: ${(status.stderr || status.error?.message || '').trim()}` };
@@ -281,7 +346,7 @@ function shape(object) {
  */
 export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => console.log(line), stderr = (line) => console.error(line) } = {}) {
   let parsed;
-  try { parsed = parseOptions(argv, { 'dry-run': 'boolean', execute: 'boolean', json: 'boolean', base: 'value' }); }
+  try { parsed = parseOptions(argv, { 'dry-run': 'boolean', execute: 'boolean', json: 'boolean', base: 'value', 'merged-at': 'value' }); }
   catch (error) { stderr(`[pipeline-run] ${error.message}`); return 2; }
   if (parsed.positional.length !== 1) { stderr(`[pipeline-run] cleanup needs <change-dir>\n${USAGE}`); return 2; }
   if (parsed.options['dry-run'] && parsed.options.execute) { stderr('[pipeline-run] --dry-run and --execute are mutually exclusive'); return 2; }
@@ -296,7 +361,8 @@ export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => conso
   try { objects = discoverObjects({ cwd, changeDir }).objects; }
   catch (error) { stderr(`[pipeline-run] ${error.message}`); return error.code ?? 3; }
 
-  const blocks = parseApprovalBlocks(readApprovalText(cwd, changeDir, change));
+  const approvals = readApprovalText(cwd, changeDir, change);
+  const blocks = parseApprovalBlocks(approvals.text);
   const done = doneRecords(readWorktreeRunLog(changeDir));
   for (const object of objects) {
     object.approved = blocks.some((block) => approvalCovers(block, object));
@@ -313,7 +379,7 @@ export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => conso
   let exit = 0;
   let refusal = null;
   if (execute) {
-    refusal = checkPreconditions({ cwd, changeDir, change, objects, base });
+    refusal = checkPreconditions({ cwd, changeDir, change, objects, base, mergedAt: parsed.options['merged-at'] });
     if (refusal) {
       exit = refusal.code;
       stderr(`[pipeline-run] cleanup refused: ${refusal.message}`);
@@ -331,15 +397,15 @@ export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => conso
         appendRecord(changeDir, object, result.status);
         if (result.status === 'failed' && exit !== 5) exit = 1;
       }
-      runGit(cwd, ['worktree', 'prune']);
     }
   }
 
   if (json) {
-    // The specified shape only; a refusal is visible through `exit` and stderr.
-    stdout(JSON.stringify({ change, base, objects: objects.map(shape), exit }, null, 2));
+    // The specified object fields stay; approvalSource is additive and a refusal is visible
+    // through `exit` and stderr.
+    stdout(JSON.stringify({ change, base, objects: objects.map(shape), exit, approvalSource: approvals.source }, null, 2));
   } else {
-    stdout(`${change} (base ${base})`);
+    stdout(`${change} (base ${base}, approvals from ${approvals.source})`);
     for (const object of objects) {
       const location = object.path ? ` ${object.path}` : '';
       const detail = object.detail ? ` (${object.detail})` : '';
