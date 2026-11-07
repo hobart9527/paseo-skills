@@ -465,7 +465,7 @@ if (!structural) {
     const runLog = read(path.join(changeDir, 'run-log.md'));
     const approval = new RegExp(`^Approval: R0 residual risk accepted for ${r0Match.sha}\\s*[-—:]\\s*\\S`, 'm');
     if (!runLog || !approval.test(runLog)) {
-      blocking.push(`R0_HUMAN_ACCEPT_UNRECORDED: review.md records \\`R0: human-accept(@${r0Match.sha})\\` but run-log.md has no matching \\`Approval: R0 residual risk accepted for ${r0Match.sha} — <reason>\\` line; record the human approval verbatim before freezing`);
+      blocking.push(`R0_HUMAN_ACCEPT_UNRECORDED: review.md records \`R0: human-accept(@${r0Match.sha})\` but run-log.md has no matching \`Approval: R0 residual risk accepted for ${r0Match.sha} — <reason>\` line; record the human approval verbatim before freezing`);
     } else {
       advisories.push(`R0_HUMAN_EXCEPTION: freeze relies on a human risk acceptance at ${r0Match.sha}, not an independent hanlin pass; the open items and reasons must be recorded in rulings.md`);
       const rulings = read(path.join(changeDir, 'rulings.md'));

@@ -431,7 +431,7 @@ test('R0 human-accept: a later hanlin pass wins; a later human-accept without ap
 });
 
 test('R0 human-accept: run-log.md is not contract drift', () => {
-  const { dir } = signedRepo((sha) => `R0: human-accept(@${sha})\n`);
+  const { dir, sha } = signedRepo((sha) => `R0: human-accept(@${sha})\n`);
   fs.writeFileSync(path.join(dir, 'run-log.md'), `Approval: R0 residual risk accepted for ${sha.slice(0, 7)} — accepted\n`);
   assert.deepEqual(report(dir).blocking, []);
 });
