@@ -8,6 +8,7 @@
 //   pipeline-run.mjs plan   <change-dir> [--json] [--worker-cap N] [--idle-minutes N]
 //   pipeline-run.mjs merge  <change-dir> <task-id> [--timeout=ms] [--allow-attempt-over]
 //   pipeline-run.mjs status <change-dir>
+//   pipeline-run.mjs cleanup <change-dir> [--dry-run] [--execute] [--json] [--base <ref>]
 //   pipeline-run.mjs acceptance run|check <change-dir> --evidence <file> ...
 //   pipeline-run.mjs install-hook <worktree> [<worktree>...]
 //
@@ -22,6 +23,7 @@ import { parseTasks } from './lib/tasks.mjs';
 import { readTasksMarkdown } from './lib/tasks-source.mjs';
 import { runGit } from './lib/git.mjs';
 import { parseOptions, planOptions } from './lib/cli.mjs';
+import { runCleanup } from './lib/cleanup.mjs';
 
 const HOME = path.dirname(fileURLToPath(import.meta.url));
 const [command, ...rest] = process.argv.slice(2);
@@ -119,6 +121,8 @@ if (command === 'acceptance') {
     stdio: 'inherit',
   });
   process.exit(result.status ?? 1);
+} else if (command === 'cleanup') {
+  process.exit(runCleanup(rest));
 } else if (command === 'status') {
   let parsed;
   try { parsed = parseOptions(rest, { json: 'boolean' }); } catch (error) { die(error.message); }
@@ -150,5 +154,5 @@ if (command === 'acceptance') {
     for (const task of tasks.filter((item) => !item.done)) console.log(`OPEN ${task.id}: ${task.title}`);
   }
 } else {
-  die('usage: pipeline-run.mjs plan|merge|status|acceptance <change-dir> ...', 2);
+  die('usage: pipeline-run.mjs plan|merge|status|cleanup|acceptance <change-dir> ...', 2);
 }
