@@ -22,6 +22,8 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output location: `openspec/changes/<c
 - Preflight: exact command to run before writing.
 - Structural check: exact command to run immediately after the initial package is complete.
 - Decisions, approved design (if any), and verified source references.
+- **Project constants**: how Verify runs in a fresh worktree, test commands, and directory conventions the main session already knows. This replaces rediscovery; the author must not write `openspec/config.yaml`, which belongs to the target project.
+- **Pending decisions (clarify)**: at most 5 items, each with a default, supplied by the main session before dispatch. Items with a default do not block; items without a default are asked of the human first.
 - Human approvals and any known permission constraints; do not imply preflight authorizes later commands.
 - Product decisions already settled, and the commit-bound path and version of every authoritative input, so the author discovers fewer of them mid-run. The main session sets a reconciliation point at the 30-minute mark and compares Paseo status with `git log` in the author workspace: no commit, or a newest commit older than ~10 minutes with the package incomplete, means one steer asking for a commit of the current state and a gap report. Having made a first commit does not clear the point.
 
@@ -42,12 +44,23 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output location: `openspec/changes/<c
 - Do not run the full test suite at authoring: it runs only at the sink and final acceptance (`SKILL.md` principle 5). Baseline reds: run one narrow command per changed package only when a task's Verify needs to know them.
 - Run the exact structural-check command supplied in the main-session brief as soon as the initial package exists. R0 sign-off does not exist yet. Report its command, outcome, exit code, route, waves, max width, and critical path separately. A route of `handoff` is not a check PASS. Read its `CRITICAL` line: each `-logical->` edge is yours to justify or drop (contract-first); each `-scope->` edge is forced by a shared file. Fix blocks in place and rerun; if permission is denied, use the denied-command report and stop.
 
+## Authoring order
+| Step | Artifact | Then |
+| --- | --- | --- |
+| 1 | `proposal.md` (+ `## Baseline`) | commit |
+| 2 | `specs/` — freezes the SCEN id set | commit |
+| 3 | `design.md`, only if its criteria apply | commit |
+| 4 | `tasks.md`, then `acceptance.md` | commit each |
+| 5 | structural check on the complete package | fix, rerun |
+
+Each step: write, commit with done/remaining in the message, and run `openspec validate`/`openspec status` as a mid-run check when available. No staged freeze-check exists; the structural check runs once, when the package is complete.
+
 ## Write-first budget
 Measured failure: two authors spent ~55 min each on analysis and wrote no file, because the plan lived only in thinking and was re-derived every turn. Context compaction then discarded it. The budget below is an experiment target, not a guarantee; it never lowers a gate.
 - **Clock.** Run `date` first and record the start. Check it at each commit. Anchors: first files committed by minute 10 (`proposal.md`, spec skeletons with the decisions you already hold); complete package plus the structural check by minute 20; stop at minute 25. Measured pace was about three tool calls per minute, so roughly 30 / 60 / 75 calls approximate the same anchors when no clock is at hand.
 - **Write, then verify.** Once you judge context sufficient for a rule, write it. Every later lookup must serve the rule being written, not reopen the plan. The plan lives in the files.
 - **Commit each artifact as it lands.** Put done and remaining items in the commit message so `git log` reconstructs progress after a context compaction; a summary is not state.
-- **Bounded collision checks.** Exactly four: the Requirement text you modify (quote it verbatim), the storage constraint it writes into (`CHECK`/enum/migration), existing tests inside each task's Write scope, and how each Verify runs in a fresh worktree. Read baseline files with `rg -n` and line windows; never read a multi-thousand-line file whole. If one output exceeds ~20k characters, narrow the query.
+- **Bounded collision checks.** Exactly four: the Requirement text you modify (quote it verbatim), the storage constraint it writes into (`CHECK`/enum/migration), existing tests inside each task's Write scope, and how each Verify runs in a fresh worktree. The last is answered by the brief's Project constants when supplied; check it yourself only when they are absent or a task's Verify falls outside them. Read baseline files with `rg -n` and line windows; never read a multi-thousand-line file whole. If one output exceeds ~20k characters, narrow the query.
 - **Open decisions are recorded, not resolved.** A material product choice the inputs do not settle goes in `proposal.md` as `OPEN-DECISION`: options, consequences, a recommended default. Continue on the default. Return `BLOCKED` only if the choice changes the task graph or ownership. Never decide for the human or invent behavior to close it.
 - **Dependencies.** If preflight reports `MISSING_DEPENDENCIES`, record that each affected Verify cannot run until the main session resolves it; a zero exit status is not readiness.
 - **At the stop point**, commit what exists and return `INCOMPLETE` with the gap list. Do not extend the budget on your own. Budget exhaustion is never a `COMPLETE`, and `COMPLETE` still requires the structural check to succeed on committed content.
