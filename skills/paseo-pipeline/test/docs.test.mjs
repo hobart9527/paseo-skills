@@ -149,6 +149,53 @@ test('author brief carries a write-first budget without lowering any gate', () =
   assert.doesNotMatch(author, /skip (R0|the structural check)/i);
 });
 
+test('contract authoring order freezes findings, SCEN ids and briefed constants', () => {
+  const author = read('templates/author.md');
+  const schema = read('openspec-schema/schema.yaml');
+  const proposal = read('openspec-schema/templates/proposal.md');
+  // Baseline: findings persisted as found, no survey stance.
+  assert.match(proposal, /^## Baseline$/m);
+  assert.match(proposal, /AS FOUND/);
+  assert.match(proposal, /A finding that exists only in thinking does not count/);
+  assert.match(proposal, /No survey, no alignment tables/);
+  assert.match(proposal, /^## OPEN-DECISION$/m);
+  assert.match(proposal, /options <A \| B>; consequences .*; recommended default/);
+  assert.match(schema, /\*\*Baseline \(paseo-pipeline\):\*\* add a short `## Baseline` section/);
+  assert.match(schema, /a finding that exists only\s+in thinking does not count/);
+  assert.match(schema, /no\s+survey, no alignment tables, no digest/);
+  assert.match(schema, /`## OPEN-DECISION`: options, consequences, a recommended\s+default/);
+  // SCEN freeze lives in the specs instruction.
+  const specsInstr = schema.slice(schema.indexOf('  - id: specs'), schema.indexOf('  - id: design'));
+  assert.match(specsInstr, /\*\*SCEN freeze:\*\* once the last spec file is committed, the declared SCEN id set is\s+frozen/);
+  assert.match(specsInstr, /Never renumber, rename, move or delete a declared\s+id after tasks\.md or acceptance\.md reference it; additions are allowed/);
+  assert.match(specsInstr, /same commit and be followed by the structural check/);
+  // design before tasks.
+  const tasksInstr = schema.slice(schema.indexOf('  - id: tasks'), schema.indexOf('  - id: acceptance'));
+  assert.match(tasksInstr, /When design\.md exists, write and commit it before tasks\.md; tasks reference only\s+committed SCEN ids/);
+  // Authoring order table precedes the write-first budget.
+  const order = author.indexOf('## Authoring order');
+  assert.ok(order > 0 && order < author.indexOf('## Write-first budget'));
+  const table = author.slice(order, author.indexOf('## Write-first budget'));
+  assert.match(table, /`proposal\.md` \(\+ `## Baseline`\)/);
+  assert.match(table, /`specs\/` — freezes the SCEN id set/);
+  assert.match(table, /`design\.md`, only if its criteria apply/);
+  assert.match(table, /`tasks\.md`, then `acceptance\.md`/);
+  assert.match(table, /structural check on the complete package/);
+  assert.match(table, /commit with done\/remaining in the message/);
+  assert.match(table, /`openspec validate`\/`openspec status`/);
+  assert.match(table, /No staged freeze-check exists; the structural check runs once, when the package is complete/);
+  // Main-session brief fields.
+  assert.match(author, /\*\*Project constants\*\*: how Verify runs in a fresh worktree/);
+  assert.match(author, /the author must not write `openspec\/config\.yaml`, which belongs to the target project/);
+  assert.match(author, /\*\*Pending decisions \(clarify\)\*\*: at most 5 items, each with a default/);
+  assert.match(author, /Items with a default do not block; items without a default are asked of the human first/);
+  assert.match(author, /answered by the brief's Project constants when supplied/);
+  assert.match(read('SKILL.md'), /supplies project constants and at most 5 pending decisions with defaults/);
+  // Gates untouched.
+  assert.match(author, /30-minute mark/);
+  assert.match(author, /`COMPLETE` still requires the structural check to succeed on committed content/);
+});
+
 test('dispatch guidance resolves live models and forbids copied examples', () => {
   for (const file of ['SKILL.md']) {
     const text = read(file);
