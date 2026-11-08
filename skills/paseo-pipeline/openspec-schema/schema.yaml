@@ -57,6 +57,14 @@ artifacts:
       implementation details belong in design.md. Skip repeated motivation and broad
       repository surveys; cite only the relevant baseline needed to identify the change.
 
+      **Baseline (paseo-pipeline):** add a short `## Baseline` section. Write each
+      code-reading finding there (or beside the rule in specs/design) AS FOUND, as
+      `path:line` plus one line of consequence, and commit; a finding that exists only
+      in thinking does not count. List only facts that support a changed rule - no
+      survey, no alignment tables, no digest. A material product choice the inputs do
+      not settle goes under `## OPEN-DECISION`: options, consequences, a recommended
+      default.
+
       This is the foundation - specs, design, and tasks all build on this.
     requires: []
 
@@ -163,6 +171,12 @@ artifacts:
       producer implementation is done. Keep behavior scenarios for observable semantics
       that must hold across those tasks. Cite `path:line` only for baseline facts that
       support a changed rule; do not write a separate survey document.
+
+      **SCEN freeze:** once the last spec file is committed, the declared SCEN id set is
+      frozen for downstream artifacts. Never renumber, rename, move or delete a declared
+      id after tasks.md or acceptance.md reference it; additions are allowed. An
+      unavoidable id change must update every reference (tasks.md Scenarios,
+      acceptance.md) in the same commit and be followed by the structural check.
     requires:
       - proposal
 
@@ -211,6 +225,9 @@ artifacts:
     template: tasks.md
     instruction: |
       Create the task list that breaks down the implementation work.
+
+      When design.md exists, write and commit it before tasks.md; tasks reference only
+      committed SCEN ids.
 
       Before writing tasks, check design.md (when present) for Open Questions.
       If any of them would change what gets built, resolve them with the user

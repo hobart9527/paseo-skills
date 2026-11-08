@@ -27,3 +27,17 @@
 ## Impact
 
 <!-- Only material affected code, APIs, dependencies, or systems -->
+
+## Baseline
+
+<!-- Only facts that support a changed rule. Write each code-reading finding here
+     (or beside the rule in specs/design) AS FOUND and commit: `path:line` plus one
+     line of consequence. A finding that exists only in thinking does not count.
+     No survey, no alignment tables. -->
+- `<path:line>`: <consequence for the changed rule>
+
+## OPEN-DECISION
+
+<!-- Only for a material product choice the inputs do not settle. Omit if none.
+     Continue on the recommended default; never decide for the human. -->
+- **<decision>**: options <A | B>; consequences <of each>; recommended default <A>.
