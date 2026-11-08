@@ -46,6 +46,76 @@ function walkMarkdown(dir, out = []) {
   }
   return out;
 }
+// Visible markdown lines: HTML comments contribute nothing and a fenced block is an example, not
+// prose. Both the spec scanners and the design.md scan must agree on what counts as a declaration.
+const FENCE_MARKER = /^ {0,3}(`{3,}|~{3,})/;
+function visibleLines(markdown) {
+  const out = [];
+  let fence = null;
+  let comment = false;
+  for (const original of markdown.split(/\r?\n/)) {
+    let line = original;
+    // A fence marker on the raw line wins over comment stripping: ```html <!-- opens a fence, and the
+    // comment opener inside it belongs to the fenced example, so it must not leak past the closer.
+    const rawOpens = !fence && !comment && FENCE_MARKER.test(original);
+    if (!fence && !rawOpens) {
+      let visible = '';
+      while (line) {
+        if (comment) {
+          const end = line.indexOf('-->');
+          if (end < 0) { line = ''; break; }
+          comment = false;
+          line = line.slice(end + 3);
+        } else {
+          const start = line.indexOf('<!--');
+          if (start < 0) { visible += line; break; }
+          visible += line.slice(0, start);
+          line = line.slice(start + 4);
+          comment = true;
+        }
+      }
+      line = visible;
+    }
+    const marker = line.match(FENCE_MARKER);
+    if (fence) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && /^\s*$/.test(line.slice(marker[0].length))) fence = null;
+      continue;
+    }
+    if (marker) { fence = marker[1]; continue; }
+    out.push(line);
+  }
+  return out;
+}
+const collapse = (text) => text.replace(/\s+/g, ' ').trim();
+// Body of a `### Scenario:` heading: the visible lines after it, up to the next heading of the same
+// or higher level. Trimmed, empties dropped, internal whitespace collapsed, so formatting alone is
+// not a difference but a changed assertion is.
+function scenarioBody(lines, index) {
+  const level = lines[index].match(/^(#{1,6})\s/)[1].length;
+  const body = [];
+  for (let next = index + 1; next < lines.length; next += 1) {
+    const heading = lines[next].match(/^(#{1,6})\s/);
+    if (heading && heading[1].length <= level) break;
+    const text = collapse(lines[next]);
+    if (text) body.push(text);
+  }
+  return body.join(' ');
+}
+// Every `### Scenario: SCEN-...` declared in a markdown file's visible content.
+function scanScenarios(markdown) {
+  const lines = visibleLines(markdown);
+  const found = [];
+  let section = '';
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const heading = line.match(/^##\s+(.+?)\s*$/);
+    if (heading) { section = heading[1]; continue; }
+    const match = line.match(/^#{3,6}\s*Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(.*)$/i);
+    if (!match) continue;
+    found.push({ id: match[1].toUpperCase(), title: collapse(match[2]), body: scenarioBody(lines, index), section, line: index });
+  }
+  return found;
+}
 
 // One concrete fix per blocking rule, printed by --explain.
 const RULE_FIXES = {
@@ -102,57 +172,21 @@ if (blocking.length) fixes.set('CONTRACT', 'fix the field named in the message; 
 
 // Scenario mapping.
 const declared = new Map();
-// Section (`## ...`) and heading text each id is declared under in THIS change; the cross-change
-// check below needs them to tell a legitimate MODIFIED/REMOVED re-declaration from a collision, and
-// to recognise a verbatim re-declaration shared with another change.
+// Section (`## ...`), heading text and body each id is declared under in THIS change; the
+// cross-change check below needs them to tell a legitimate MODIFIED/REMOVED re-declaration from a
+// collision, and to recognise a verbatim re-declaration shared with another change.
 const declaredSection = new Map();
 const declaredTitle = new Map();
-const FENCE_MARKER = /^ {0,3}(`{3,}|~{3,})/;
+const declaredBody = new Map();
 for (const file of walk(path.join(changeDir, 'specs'))) {
-  let fence = null;
-  let comment = false;
-  let section = '';
-  for (const original of read(file).split(/\r?\n/)) {
-    let line = original;
-    // A fence marker on the raw line wins over comment stripping: ```html <!-- opens a fence, and the
-    // comment opener inside it belongs to the fenced example, so it must not leak past the closer.
-    const rawOpens = !fence && !comment && FENCE_MARKER.test(original);
-    if (!fence && !rawOpens) {
-      let visible = '';
-      while (line) {
-        if (comment) {
-          const end = line.indexOf('-->');
-          if (end < 0) { line = ''; break; }
-          comment = false;
-          line = line.slice(end + 3);
-        } else {
-          const start = line.indexOf('<!--');
-          if (start < 0) { visible += line; break; }
-          visible += line.slice(0, start);
-          line = line.slice(start + 4);
-          comment = true;
-        }
-      }
-      line = visible;
-    }
-    const marker = line.match(FENCE_MARKER);
-    if (fence) {
-      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && /^\s*$/.test(line.slice(marker[0].length))) fence = null;
-      continue;
-    }
-    if (marker) { fence = marker[1]; continue; }
-    const heading = line.match(/^##\s+(.+?)\s*$/);
-    if (heading) { section = heading[1]; continue; }
-    const match = line.match(/^#{3,6}\s*Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(.*)$/i);
-    if (match) {
-      const id = match[1].toUpperCase();
-      const source = path.relative(changeDir, file);
-      if (declared.has(id)) blocking.push(`DUPLICATE_SCEN ${id}: declared in ${declared.get(id)} and ${source}`);
-      else {
-        declared.set(id, source);
-        declaredSection.set(id, section);
-        declaredTitle.set(id, match[2].replace(/\s+/g, ' ').trim());
-      }
+  for (const found of scanScenarios(read(file))) {
+    const source = path.relative(changeDir, file);
+    if (declared.has(found.id)) blocking.push(`DUPLICATE_SCEN ${found.id}: declared in ${declared.get(found.id)} and ${source}`);
+    else {
+      declared.set(found.id, source);
+      declaredSection.set(found.id, found.section);
+      declaredTitle.set(found.id, found.title);
+      declaredBody.set(found.id, found.body);
     }
   }
 }
@@ -169,9 +203,10 @@ for (const [scen, file] of declared) {
 // Cross-change SCEN collision. `declared` above only knows this change's own files, so a scenario id
 // another unarchived change already declares goes unnoticed and the two contracts disagree at merge.
 // Classification uses THIS change's declaration section plus the kind of external hit: a baseline id
-// may be re-declared under MODIFIED/REMOVED Requirements, while an id another change declares is a
-// collision in every case. Git history, archives and branches are out of scope: only the current
-// checkout is read, and a missing repo silently skips the check.
+// may be re-declared under MODIFIED/REMOVED Requirements, while another change's hit is a collision
+// unless both the heading text and the scenario body are identical (a verbatim re-declaration is
+// legal and mandatory for an unchanged MODIFIED scenario). Git history, archives and branches are
+// out of scope: only the current checkout is read, and a missing repo silently skips the check.
 {
   const toplevel = gitIn(changeDir, ['rev-parse', '--show-toplevel']);
   if (toplevel.status === 0) {
@@ -190,38 +225,36 @@ for (const [scen, file] of declared) {
       }
     }
     const external = new Map();
-    // Which external file declares each id, and its heading text. The section in that file decides
-    // nothing: the external side cannot know whether this change is legitimately re-declaring the id.
+    // Which external file declares each id, with its visible heading text and body. The section in
+    // that file decides nothing: the external side cannot know whether this change is legitimately
+    // re-declaring the id. Fenced examples and comments are not declarations (same helper as above).
     for (const file of sources) {
-      for (const line of read(file).split(/\r?\n/)) {
-        const match = line.match(/^#{3,6}\s*Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(.*)$/i);
-        if (!match) continue;
-        const id = match[1].toUpperCase();
-        if (!external.has(id)) external.set(id, []);
-        external.get(id).push({
+      for (const found of scanScenarios(read(file))) {
+        if (!external.has(found.id)) external.set(found.id, []);
+        external.get(found.id).push({
           file: path.relative(repoRoot, file),
           baseline: baselineFiles.has(file),
-          title: match[2].replace(/\s+/g, ' ').trim(),
+          title: found.title,
+          body: found.body,
         });
       }
     }
     for (const scen of declared.keys()) {
       // Baseline hit: allowed only when this change re-declares the id under MODIFIED/REMOVED
       // Requirements; baseline text is not compared because MODIFIED legitimately rewrites it.
-      // Change hit: a collision when the heading text diverges. A verbatim re-declaration is legal —
-      // `openspec validate` requires an unchanged MODIFIED scenario to repeat its text — so it is
-      // only an advisory about archive/merge order.
+      // Change hit: a collision when the heading text or body diverges. An identical re-declaration
+      // is legal — `openspec validate` requires an unchanged MODIFIED scenario to repeat its text —
+      // so it is only an advisory about archive/merge order.
       const currentAllowed = /^(?:MODIFIED|REMOVED) Requirements$/i.test(declaredSection.get(scen) || '');
+      const same = (hit) => hit.title === (declaredTitle.get(scen) || '') && hit.body === (declaredBody.get(scen) || '');
       const hits = external.get(scen) || [];
-      const collision = hits.find((hit) => (hit.baseline
-        ? !currentAllowed
-        : hit.title !== (declaredTitle.get(scen) || '')));
+      const collision = hits.find((hit) => (hit.baseline ? !currentAllowed : !same(hit)));
       if (collision) {
         blocking.push(`COLLIDING_SCEN ${scen}: already declared in ${collision.file}`);
         fixes.set('COLLIDING_SCEN', 'choose a new SCEN id, or re-declare a baseline id under MODIFIED/REMOVED Requirements in this change');
       }
       for (const hit of hits) {
-        if (!hit.baseline && hit.title === (declaredTitle.get(scen) || '')) {
+        if (!hit.baseline && same(hit)) {
           advisories.push(`ADVISORY_SHARED_SCEN ${scen}: ${hit.file} declares the same scenario text; confirm archive/merge order with that change before CP-1`);
         }
       }
@@ -565,12 +598,17 @@ else {
   for (const [scen, file] of declared) {
     if (!acceptanceScenarios.has(scen)) blocking.push(`UNACCEPTED_SCEN ${scen} (${file}): every declared SCEN needs an acceptance row`);
   }
-  // A row's Tasks cell must name at least one task that actually claims that SCEN.
+  // Ownership is checked per row, not on the union across rows: a Required=no row naming the real
+  // owner must not excuse a Required=yes row that assigns the scenario to a task which does not
+  // claim it. Applied to every row that lists ids — a Tasks cell means "these tasks carry this
+  // scenario" whatever the Required value, and Required=no rows name owners too.
   for (const [scen, rows] of rowsByScen) {
     const union = new Set(rows.flatMap((row) => row.ids));
     const claims = claimsByScen.get(scen);
-    if (claims && union.size && ![...union].some((id) => claims.has(id))) {
-      blocking.push(`UNOWNED_ACCEPTANCE_SCEN ${scen}: none of ${[...union].join(', ')} claims it in tasks.md Scenarios`);
+    for (const row of rows) {
+      if (claims && row.ids.length && !row.ids.some((id) => claims.has(id))) {
+        blocking.push(`UNOWNED_ACCEPTANCE_SCEN ${scen}: none of ${row.ids.join(', ')} claims it in tasks.md Scenarios`);
+      }
     }
     // ... and every task claiming a SCEN must appear in that SCEN's Tasks cell, so a
     // second owner cannot be silently dropped from acceptance.
@@ -592,10 +630,13 @@ else {
 {
   const designMarkdown = read(path.join(changeDir, 'design.md'));
   if (designMarkdown) {
-    const decisions = new Set([...designMarkdown.matchAll(/^\s*[-*]\s*\*\*(D-\d+)\b/gm)].map((match) => match[1]));
+    // Only visible prose counts: the scaffold's HTML comment explains the rule with an example task
+    // id, and a fenced example is not a claim about this package.
+    const designVisible = visibleLines(designMarkdown).join('\n');
+    const decisions = new Set([...designVisible.matchAll(/^\s*[-*]\s*\*\*(D-\d+)\b/gm)].map((match) => match[1]));
     for (const task of tasks) {
       const pattern = new RegExp(`(^|[^A-Za-z0-9_-])${task.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])`);
-      if (pattern.test(designMarkdown)) {
+      if (pattern.test(designVisible)) {
         blocking.push(`DESIGN_NAMES_TASK ${task.id}: design.md must not name task ids; name decisions and let tasks.md declare Implements:`);
       }
       for (const decision of task.implements) {

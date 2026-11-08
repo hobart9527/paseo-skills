@@ -943,14 +943,29 @@ test('UNACCEPTED_TASK_SCEN: every claiming task must appear in that SCEN\'s Task
 });
 
 // A repo with SCEN ids already declared outside `aligned()`: the baseline spec and one other change.
-function repoWith(id, { baselineSection = 'Requirements', otherSection = 'MODIFIED Requirements', ownSection = 'MODIFIED Requirements', ownTitle = 'shared behavior', otherTitle = 'other behavior' } = {}) {
-  const dir = aligned({ 'specs/a/spec.md': `${ownSection === 'none' ? '' : `## ${ownSection}\n`}### Scenario: SCEN-1${ownTitle ? ` ${ownTitle}` : ''}\n` });
+// `ownBody`/`otherBody` are the scenario lines under the heading, so a test can diverge the body
+// while keeping the heading text identical.
+function repoWith(id, {
+  baselineSection = 'Requirements',
+  otherSection = 'MODIFIED Requirements',
+  ownSection = 'MODIFIED Requirements',
+  ownTitle = 'shared behavior',
+  otherTitle = 'other behavior',
+  ownBody = 'WHEN a\nTHEN b\n',
+  otherBody = 'WHEN a\nTHEN b\n',
+  otherFile = null,
+} = {}) {
+  const dir = aligned({ 'specs/a/spec.md': `${ownSection === 'none' ? '' : `## ${ownSection}\n`}### Scenario: SCEN-1${ownTitle ? ` ${ownTitle}` : ''}\n${ownBody}` });
   const sh = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
   sh('init', '-q', '-b', 'main');
   fs.mkdirSync(path.join(dir, 'openspec/specs/cap'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'openspec/specs/cap/spec.md'), `## ${baselineSection}\n### Scenario: ${id} baseline\n`);
   fs.mkdirSync(path.join(dir, 'openspec/changes/other/specs/cap'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'openspec/changes/other/specs/cap/spec.md'), `## ${otherSection}\n### Scenario: ${id}${otherTitle ? ` ${otherTitle}` : ''}\n`);
+  if (otherFile !== null) {
+    fs.writeFileSync(path.join(dir, 'openspec/changes/other/specs/cap/spec.md'), otherFile);
+  } else {
+    fs.writeFileSync(path.join(dir, 'openspec/changes/other/specs/cap/spec.md'), `## ${otherSection}\n### Scenario: ${id}${otherTitle ? ` ${otherTitle}` : ''}\n${otherBody}`);
+  }
   return dir;
 }
 
@@ -971,6 +986,75 @@ test('ADVISORY_SHARED_SCEN: another change re-declaring the same heading text is
   assert.equal(result.status, 0, JSON.stringify(codes(result)));
   assert.doesNotMatch(codes(result).join('\n'), /COLLIDING_SCEN/);
   assert.match(JSON.parse(result.stdout).advisories.join('\n'), /^ADVISORY_SHARED_SCEN SCEN-1: openspec\/changes\/other\/specs\/cap\/spec\.md declares the same scenario text; confirm archive\/merge order with that change before CP-1$/m);
+});
+
+test('COLLIDING_SCEN: identical heading but a different body still blocks', () => {
+  const dir = repoWith('SCEN-1', {
+    otherSection: 'MODIFIED Requirements',
+    ownTitle: 'shared behavior',
+    otherTitle: 'shared behavior',
+    ownBody: 'WHEN a\nTHEN b\n',
+    otherBody: 'WHEN a\nTHEN c\n',
+  });
+  const result = run(dir, ['--structural', '--skip-signer-check']);
+  assert.equal(result.status, 1);
+  assert.match(codes(result).join('\n'), /^COLLIDING_SCEN SCEN-1: already declared in openspec\/changes\/other\/specs\/cap\/spec\.md$/m);
+  assert.doesNotMatch(JSON.parse(result.stdout).advisories.join('\n'), /ADVISORY_SHARED_SCEN SCEN-1/);
+});
+
+test('COLLIDING_SCEN: an external declaration inside a fence or comment is not a declaration', () => {
+  // The id and a *divergent* title sit only inside a fenced example / a comment: nothing claims the
+  // id, so there is no collision. If fences or comments were scanned, the divergent title would block.
+  for (const text of [
+    '## MODIFIED Requirements\n```markdown\n### Scenario: SCEN-1 old meaning\n```\n',
+    '## MODIFIED Requirements\n<!--\n### Scenario: SCEN-1 old meaning\n-->\n',
+  ]) {
+    const dir = repoWith('SCEN-1', { otherFile: text, ownBody: '', otherTitle: 'shared behavior' });
+    const result = run(dir, ['--structural', '--skip-signer-check']);
+    assert.equal(result.status, 0, `${text}: ${JSON.stringify(codes(result))}`);
+    assert.doesNotMatch(codes(result).join('\n'), /COLLIDING_SCEN/);
+  }
+  // The same divergent heading outside the fence is a real declaration and blocks.
+  const dir = repoWith('SCEN-1', { otherFile: '## MODIFIED Requirements\n```markdown\n### Scenario: SCEN-1 old meaning\n```\n### Scenario: SCEN-1 old meaning\n' });
+  const result = run(dir, ['--structural', '--skip-signer-check']);
+  assert.equal(result.status, 1);
+  assert.match(codes(result).join('\n'), /^COLLIDING_SCEN SCEN-1: already declared in openspec\/changes\/other\/specs\/cap\/spec\.md$/m);
+});
+
+test('DESIGN_NAMES_TASK: an HTML comment naming a task id is not prose', () => {
+  // The scaffold's comment explains the rule with an example id; keeping it must not block.
+  const commented = run(aligned({ 'design.md': '## Decisions\n<!-- 绝不写任务 ID（T-01 之类） -->\n- **D-01 shared helper** 影响模块/路径: src/shared\n- **D-02 wiring** 影响模块/路径: src/app.mjs\n' }));
+  assert.equal(commented.status, 0, JSON.stringify(codes(commented)));
+  assert.doesNotMatch(codes(commented).join('\n'), /DESIGN_NAMES_TASK/);
+  // The same id in visible prose still blocks.
+  const visible = run(aligned({ 'design.md': '## Decisions\n- **D-01 shared helper**\n  - Owner: T-01\n- **D-02 wiring**\n' }));
+  assert.equal(visible.status, 1);
+  assert.match(codes(visible).join('\n'), /^DESIGN_NAMES_TASK T-01:/m);
+});
+
+test('UNOWNED_ACCEPTANCE_SCEN: a Required=no owner row cannot excuse a wrong Required=yes row', () => {
+  // T-01 claims SCEN-1 and T-02 claims SCEN-2. The Required=yes SCEN-1 row names only T-02; a second
+  // Required=no SCEN-1 row names the real owner T-01, so a union across rows contained the owner and
+  // the old check stayed silent.
+  const tasks = `- [ ] 1.1 T-01 shared
+  - Write scope: src/shared,test/shared.test.mjs
+  - Verify with: node --test test/shared.test.mjs
+  - Scen: SCEN-1
+- [ ] 1.2 T-02 other
+  - Depends on: T-01
+  - Write scope: src/app.mjs,test/other.test.mjs
+  - Verify with: npm test
+  - Scen: SCEN-2`;
+  const result = run(change({
+    'tasks.md': tasks, 'proposal.md': 'x', 'design.md': design, 'review.md': REVIEW,
+    'specs/a/spec.md': '### Scenario: SCEN-1\n### Scenario: SCEN-2\n',
+    'acceptance.md': table('| SCEN-1 | CLI | T-02 | node -e "0" | yes | PENDING | pending |\n| SCEN-1 | CLI | T-01 | node -e "0" | no | PENDING | pending |\n| SCEN-2 | CLI | T-02 | node -e "0" | yes | PENDING | pending |'),
+  }));
+  assert.equal(result.status, 1);
+  const blocking = codes(result).join('\n');
+  assert.match(blocking, /^UNOWNED_ACCEPTANCE_SCEN SCEN-1: none of T-02 claims it in tasks\.md Scenarios$/m);
+  // The Required=no row naming the real owner is fine, so only the divergent yes row is named.
+  assert.doesNotMatch(blocking, /none of T-01 claims it/);
 });
 
 test('COLLIDING_SCEN: a baseline id re-declared under MODIFIED or REMOVED Requirements in this change passes', () => {
