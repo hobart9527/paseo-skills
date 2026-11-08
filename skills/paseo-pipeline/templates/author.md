@@ -53,6 +53,8 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output location: `openspec/changes/<c
 | 4 | `tasks.md`, then `acceptance.md` | commit each |
 | 5 | structural check on the complete package | fix, rerun |
 
+Before step 2 assigns ids, run one `rg` over scenario headings in baseline `openspec/specs/**` and other changes' `openspec/changes/*/specs/**`, choose ids outside that set, then commit as the frozen set.
+
 Each step: write, commit with done/remaining in the message, and run `openspec validate`/`openspec status` as a mid-run check when available. No staged freeze-check exists; the first structural check runs when the package is complete, and failures are fixed and rerun until it succeeds or a required command is denied.
 
 ## Write-first budget

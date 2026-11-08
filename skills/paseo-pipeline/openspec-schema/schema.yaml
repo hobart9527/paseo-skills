@@ -177,6 +177,10 @@ artifacts:
       id after tasks.md or acceptance.md reference it; additions are allowed. An
       unavoidable id change must update every reference (tasks.md Scenarios,
       acceptance.md) in the same commit and be followed by the structural check.
+      Before assigning ids, list the ids already declared in baseline `openspec/specs/**`
+      and in every other `openspec/changes/*/specs/**` with one `rg` over scenario
+      headings only, choose new ids outside that set, and only then commit the specs as
+      the frozen set.
     requires:
       - proposal
 

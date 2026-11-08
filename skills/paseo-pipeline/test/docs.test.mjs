@@ -176,6 +176,8 @@ test('contract authoring order freezes findings, SCEN ids and briefed constants'
   assert.match(specsInstr, /\*\*SCEN freeze:\*\* once the last spec file is committed, the declared SCEN id set is\s+frozen/);
   assert.match(specsInstr, /Never renumber, rename, move or delete a declared\s+id after tasks\.md or acceptance\.md reference it; additions are allowed/);
   assert.match(specsInstr, /same commit and be followed by the structural check/);
+  // Id collision precheck before freezing.
+  assert.match(specsInstr, /Before\s+assigning\s+ids,\s+list\s+the\s+ids\s+already\s+declared\s+in\s+baseline\s+`openspec\/specs\/\*\*`\s+and\s+in\s+every\s+other\s+`openspec\/changes\/\*\/specs\/\*\*`\s+with\s+one\s+`rg`\s+over\s+scenario\s+headings\s+only,\s+choose\s+new\s+ids\s+outside\s+that\s+set,\s+and\s+only\s+then\s+commit\s+the\s+specs\s+as\s+the\s+frozen\s+set/);
   // design before tasks.
   const tasksInstr = schema.slice(schema.indexOf('  - id: tasks'), schema.indexOf('  - id: acceptance'));
   assert.match(tasksInstr, /When design\.md exists, write and commit it before tasks\.md; tasks reference only\s+committed SCEN ids/);
@@ -191,6 +193,7 @@ test('contract authoring order freezes findings, SCEN ids and briefed constants'
   assert.match(table, /commit with done\/remaining in the message/);
   assert.match(table, /`openspec validate`\/`openspec status`/);
   assert.match(table, /No staged freeze-check exists; the first structural check runs when the package is complete, and failures are fixed and rerun until it succeeds or a required command is denied/);
+  assert.match(table, /Before\s+step\s+2\s+assigns\s+ids,\s+run\s+one\s+`rg`\s+over\s+scenario\s+headings\s+in\s+baseline\s+`openspec\/specs\/\*\*`\s+and\s+other\s+changes'\s+`openspec\/changes\/\*\/specs\/\*\*`,\s+choose\s+ids\s+outside\s+that\s+set,\s+then\s+commit\s+as\s+the\s+frozen\s+set/);
   // Main-session brief fields.
   assert.match(author, /\*\*Project constants\*\*: how Verify runs in a fresh worktree/);
   assert.match(author, /the author must not write `openspec\/config\.yaml`, which belongs to the target project/);
