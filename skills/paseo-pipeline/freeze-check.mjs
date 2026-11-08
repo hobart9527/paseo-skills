@@ -73,7 +73,7 @@ const RULE_FIXES = {
   UNOWNED_ACCEPTANCE_SCEN: 'list a task that claims this SCEN in tasks.md Scenarios',
   UNACCEPTED_SCEN: 'add an acceptance row for every declared SCEN',
   UNACCEPTED_TASK_SCEN: 'list the claiming task id in that scenario\'s acceptance row Tasks cell',
-  COLLIDING_SCEN: 'choose a new SCEN id, or declare the existing id under MODIFIED/REMOVED Requirements',
+  COLLIDING_SCEN: 'choose a new SCEN id, or re-declare a baseline id under MODIFIED/REMOVED Requirements in this change',
   SINK_TEST_ONLY: 'give the sink the assembly/wiring file it wires in its Write scope, not only tests',
   DESIGN_NAMES_TASK: 'name decisions and affected modules in design.md; let tasks.md declare Implements:',
   UNKNOWN_DECISION: 'add a decision heading (e.g. `- **D-01 <title>**` under `## Decisions`) in design.md',
@@ -102,10 +102,14 @@ if (blocking.length) fixes.set('CONTRACT', 'fix the field named in the message; 
 
 // Scenario mapping.
 const declared = new Map();
+// Section (`## ...`) each id is declared under in THIS change; the cross-change check below needs it
+// to tell a legitimate MODIFIED/REMOVED re-declaration from a collision.
+const declaredSection = new Map();
 const FENCE_MARKER = /^ {0,3}(`{3,}|~{3,})/;
 for (const file of walk(path.join(changeDir, 'specs'))) {
   let fence = null;
   let comment = false;
+  let section = '';
   for (const original of read(file).split(/\r?\n/)) {
     let line = original;
     // A fence marker on the raw line wins over comment stripping: ```html <!-- opens a fence, and the
@@ -135,12 +139,14 @@ for (const file of walk(path.join(changeDir, 'specs'))) {
       continue;
     }
     if (marker) { fence = marker[1]; continue; }
+    const heading = line.match(/^##\s+(.+?)\s*$/);
+    if (heading) { section = heading[1]; continue; }
     const match = line.match(/^#{3,6}\s*Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(?:\s+.*)?$/i);
     if (match) {
       const id = match[1].toUpperCase();
       const source = path.relative(changeDir, file);
       if (declared.has(id)) blocking.push(`DUPLICATE_SCEN ${id}: declared in ${declared.get(id)} and ${source}`);
-      else declared.set(id, source);
+      else { declared.set(id, source); declaredSection.set(id, section); }
     }
   }
 }
@@ -156,16 +162,18 @@ for (const [scen, file] of declared) {
 
 // Cross-change SCEN collision. `declared` above only knows this change's own files, so a scenario id
 // another unarchived change already declares goes unnoticed and the two contracts disagree at merge.
-// Re-declaring an existing id under MODIFIED/REMOVED Requirements is legitimate (it updates that
-// requirement); any other declaration is a collision. Git history, archives and branches are out of
-// scope: only the current checkout is read, and a missing repo silently skips the check.
+// Classification uses THIS change's declaration section plus the kind of external hit: a baseline id
+// may be re-declared under MODIFIED/REMOVED Requirements, while an id another change declares is a
+// collision in every case. Git history, archives and branches are out of scope: only the current
+// checkout is read, and a missing repo silently skips the check.
 {
   const toplevel = gitIn(changeDir, ['rev-parse', '--show-toplevel']);
   if (toplevel.status === 0) {
     const repoRoot = toplevel.stdout.trim();
     const realOr = (value) => { try { return fs.realpathSync(value); } catch { return path.resolve(value); } };
     const current = realOr(changeDir);
-    const sources = walkMarkdown(path.join(repoRoot, 'openspec', 'specs'));
+    const baselineFiles = new Set(walkMarkdown(path.join(repoRoot, 'openspec', 'specs')));
+    const sources = [...baselineFiles];
     const changesRoot = path.join(repoRoot, 'openspec', 'changes');
     if (fs.existsSync(changesRoot)) {
       for (const entry of fs.readdirSync(changesRoot, { withFileTypes: true })) {
@@ -176,26 +184,26 @@ for (const [scen, file] of declared) {
       }
     }
     const external = new Map();
+    // Which external file declares each id. The section in that file decides nothing: the external
+    // side cannot know whether this change is legitimately re-declaring the id.
     for (const file of sources) {
-      // A re-declaration under MODIFIED/REMOVED Requirements keeps the id; only an ADDED (or
-      // unlabelled) declaration collides.
-      let section = '';
       for (const line of read(file).split(/\r?\n/)) {
-        const heading = line.match(/^##\s+(.+?)\s*$/);
-        if (heading) { section = heading[1]; continue; }
         const match = line.match(/^#{3,6}\s*Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(?:\s+.*)?$/i);
         if (!match) continue;
         const id = match[1].toUpperCase();
         if (!external.has(id)) external.set(id, []);
-        external.get(id).push({ file: path.relative(repoRoot, file), allowed: /^(?:MODIFIED|REMOVED) Requirements$/i.test(section) });
+        external.get(id).push({ file: path.relative(repoRoot, file), baseline: baselineFiles.has(file) });
       }
     }
     for (const scen of declared.keys()) {
-      const hits = external.get(scen) || [];
-      const collision = hits.find((hit) => !hit.allowed);
+      // Baseline hit: allowed only when this change re-declares the id under MODIFIED/REMOVED
+      // Requirements. Change hit: always a collision — two in-flight changes cannot both own one id,
+      // whatever section either side uses.
+      const currentAllowed = /^(?:MODIFIED|REMOVED) Requirements$/i.test(declaredSection.get(scen) || '');
+      const collision = (external.get(scen) || []).find((hit) => !hit.baseline || !currentAllowed);
       if (collision) {
         blocking.push(`COLLIDING_SCEN ${scen}: already declared in ${collision.file}`);
-        fixes.set('COLLIDING_SCEN', 'choose a new SCEN id, or declare the existing id under MODIFIED/REMOVED Requirements');
+        fixes.set('COLLIDING_SCEN', 'choose a new SCEN id, or re-declare a baseline id under MODIFIED/REMOVED Requirements in this change');
       }
     }
   }

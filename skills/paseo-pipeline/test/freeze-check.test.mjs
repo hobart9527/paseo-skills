@@ -942,19 +942,44 @@ test('UNACCEPTED_TASK_SCEN: every claiming task must appear in that SCEN\'s Task
   assert.match(codes(result).join('\n'), /^UNACCEPTED_TASK_SCEN T-01: SCEN-1 is claimed but no acceptance row lists T-01$/m);
 });
 
-test('COLLIDING_SCEN: another change declaring the id blocks; MODIFIED/REMOVED re-declaration is allowed', () => {
-  const colliding = aligned();
-  const sh = (...args) => execFileSync('git', ['-C', colliding, ...args], { encoding: 'utf8' }).trim();
+// A repo with SCEN ids already declared outside `aligned()`: the baseline spec and one other change.
+function repoWith(id, { baselineSection = 'Requirements', otherSection = 'MODIFIED Requirements', ownSection = 'MODIFIED Requirements' } = {}) {
+  const dir = aligned({ 'specs/a/spec.md': `${ownSection === 'none' ? '' : `## ${ownSection}\n`}### Scenario: SCEN-1\n` });
+  const sh = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
   sh('init', '-q', '-b', 'main');
-  fs.mkdirSync(path.join(colliding, 'openspec/changes/other/specs/cap'), { recursive: true });
-  fs.writeFileSync(path.join(colliding, 'openspec/changes/other/specs/cap/spec.md'), '## ADDED Requirements\n### Scenario: SCEN-1 other\n');
-  const blocked = run(colliding, ['--structural', '--skip-signer-check']);
-  assert.equal(blocked.status, 1);
-  assert.match(codes(blocked).join('\n'), /^COLLIDING_SCEN SCEN-1: already declared in openspec\/changes\/other\/specs\/cap\/spec\.md$/m);
-  // A MODIFIED re-declaration updates the same requirement, so it is not a collision.
-  fs.writeFileSync(path.join(colliding, 'openspec/changes/other/specs/cap/spec.md'), '## MODIFIED Requirements\n### Scenario: SCEN-1 other\n');
-  const allowed = run(colliding, ['--structural', '--skip-signer-check']);
-  assert.equal(allowed.status, 0, JSON.stringify(codes(allowed)));
+  fs.mkdirSync(path.join(dir, 'openspec/specs/cap'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'openspec/specs/cap/spec.md'), `## ${baselineSection}\n### Scenario: ${id} baseline\n`);
+  fs.mkdirSync(path.join(dir, 'openspec/changes/other/specs/cap'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'openspec/changes/other/specs/cap/spec.md'), `## ${otherSection}\n### Scenario: ${id} other\n`);
+  return dir;
+}
+
+test('COLLIDING_SCEN: another change declaring the id blocks whatever section either side uses', () => {
+  for (const otherSection of ['MODIFIED Requirements', 'ADDED Requirements']) {
+    const dir = repoWith('SCEN-1', { otherSection });
+    const result = run(dir, ['--structural', '--skip-signer-check']);
+    assert.equal(result.status, 1, otherSection);
+    assert.match(codes(result).join('\n'), /^COLLIDING_SCEN SCEN-1: already declared in openspec\/changes\/other\/specs\/cap\/spec\.md$/m, otherSection);
+  }
+});
+
+test('COLLIDING_SCEN: a baseline id re-declared under MODIFIED or REMOVED Requirements in this change passes', () => {
+  for (const ownSection of ['MODIFIED Requirements', 'REMOVED Requirements']) {
+    const dir = repoWith('SCEN-1', { otherSection: 'none', ownSection });
+    fs.rmSync(path.join(dir, 'openspec/changes/other'), { recursive: true, force: true });
+    const result = run(dir, ['--structural', '--skip-signer-check']);
+    assert.equal(result.status, 0, `${ownSection}: ${JSON.stringify(codes(result))}`);
+  }
+});
+
+test('COLLIDING_SCEN: a baseline id re-declared under ADDED (or no section) is still a collision', () => {
+  for (const ownSection of ['ADDED Requirements', 'none']) {
+    const dir = repoWith('SCEN-1', { otherSection: 'none', ownSection });
+    fs.rmSync(path.join(dir, 'openspec/changes/other'), { recursive: true, force: true });
+    const result = run(dir, ['--structural', '--skip-signer-check']);
+    assert.equal(result.status, 1, ownSection);
+    assert.match(codes(result).join('\n'), /^COLLIDING_SCEN SCEN-1: already declared in openspec\/specs\/cap\/spec\.md$/m, ownSection);
+  }
 });
 
 test('SINK_TEST_ONLY: a sink whose whole Write scope is tests is rejected', () => {
