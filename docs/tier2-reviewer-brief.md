@@ -14,11 +14,11 @@ Applies to Tier 2 only. Tier 3 (R0, FINAL, CP-1/CP-2) is governed solely by `ski
 
 Read-only is task behavior, not an enforced permission. Do not edit files, create commits, or change workspace state. Any write voids your verdict.
 
-**One pass covers:** requirements; correctness and failure paths; whether tests would fail on a wrong implementation; relevant repository standards. Do not redo machine checks already supplied (scope, tests, lint) unless you have a concrete suspicion. Do not rerun the full suite by default.
+**Your verdict is against the Requirement field above, not against all problems in the diff.** **One pass covers:** requirements; correctness and failure paths; whether tests would fail on a wrong implementation; relevant repository standards. Do not redo machine checks already supplied (scope, tests, lint) unless you have a concrete suspicion. Do not rerun the full suite by default.
 
 ### Light tier
 
-Docs, config or copy only; no shared contract, persistence, concurrency, security, deletion/migration, or public interface. Read the diff and the delivery note, and read the surrounding files or authoritative sources the diff depends on when needed to verify a claim. Run no commands that execute code or tests. If a key scope cannot be verified by reading, the result is `INCOMPLETE`, not `PASS`. One round; at most one fix recheck.
+Docs, config or copy only; no shared contract, persistence, concurrency, security, deletion/migration, or public interface. Read the diff and the delivery note, and read the surrounding files or authoritative sources the diff depends on when needed to verify a claim. Run no commands that execute code or tests. If a key scope cannot be verified by reading, the result is `INCOMPLETE`, not `PASS`. One round; at most one fix recheck (per delivery, see Caps).
 
 ### Heavy tier
 
@@ -29,15 +29,24 @@ Budget (initial values, to be calibrated from real runs):
 - First round: about 40 Bash calls. On reaching it, report your current conclusion.
 - About 10 minutes in and still running: send one unsolicited progress message. Soft checkpoint, not a stop and not a new timer. Report important findings as soon as confirmed.
 - Fix rechecks: at most 2, each limited to the incremental diff and affected behavior. Still blocked after the 2nd recheck: stop and report to the human; no 3rd round.
+- Caps are per delivery, not per session (see Caps).
 - Exceeding the budget unfinished is `INCOMPLETE`, never an auto-pass.
 
 ### Blocking standard
 
 A `BLOCKER` states: location (`path:line`), triggering input or state in realistic use, wrong result, impact, violated requirement. A purely theoretical issue, or an inherent limit of a heuristic, is a known limitation or `NIT`, not a blocker. A second finding of the same defect class is reported as one root cause, not enumerated. Unverified key scope is `INCOMPLETE`; an unverified risk is never reported as pass.
 
+### Routing
+
+Every finding belongs to one class. `DEVIATION`: violates the Requirement or a named standard, with a counterexample; the implementer fixes it and it blocks. `REQUIREMENT_GAP`: the Requirement does not define it but a realistic wrong outcome exists; the human decides (amend the requirement or accept the risk), never a fix loop. `ENHANCEMENT`: violates nothing stated; non-blocking, report as `NIT`. Only `DEVIATION` is a `BLOCKER`.
+
+### Caps (per delivery)
+
+At most 2 reviewer agents and 4 verdicts in total for one delivery. A replacement reviewer inherits all prior findings and the budget does not reset. A defect class confirmed fixed stays closed; reopening needs new evidence. Escalate to the human, with both verdicts side by side, when the same defect class is blocked in two consecutive rounds, or when an independent PASS conflicts with an assigned reviewer's BLOCKED on the same class. Do not start another round.
+
 ### Recheck
 
-Same reviewer, same session. Check the fix diff and affected behavior; do not restart unrelated review. The verdict binds to the new version (SHA or frozen lists).
+Same reviewer, same session (a replacement reads the prior findings first). Check the fix diff and affected behavior; do not restart unrelated review. The verdict binds to the new version (SHA or frozen lists).
 
 ## Output
 
