@@ -1030,6 +1030,39 @@ test('ENTRY_OWNER_UNCLAIMED: one-char and long extensions still resolve', () => 
   assert.match(codes(long).join('\n'), /^ENTRY_OWNER_UNCLAIMED SCEN-1 acceptance\.md:3: Entry config\/application\.properties is written by T-02/m);
 });
 
+test('ENTRY_OWNER_UNCLAIMED: a leading ./ and a #fragment do not hide the entry file', () => {
+  const tasks = splitEntry.map((task) => (task.includes('T-02 task')
+    ? task.replace('src/form/ExpenseBillForm.tsx', 'src/main.c')
+    : task));
+  for (const entry of ['./src/main.c', '././src/main.c', '`./src/main.c`', 'src/main.c#main', './src/main.c#main']) {
+    const result = entryRun(tasks, splitRow('T-01', entry));
+    assert.equal(result.status, 1, entry);
+    assert.match(codes(result).join('\n'), /^ENTRY_OWNER_UNCLAIMED SCEN-1 acceptance\.md:3: Entry (?:\.\/)*src\/main\.c is written by T-02/m, entry);
+  }
+  // The owner that does write it still passes with the same spellings.
+  const owned = [
+    entryTask('T-01', { scope: 'src/main.c,test/t-01.test.mjs', scen: 'SCEN-1' }),
+    entryTask('T-02', { scope: 'src/form/ExpenseLine.tsx,test/t-02.test.mjs', scen: 'SCEN-2' }),
+  ];
+  assert.equal(entryRun(owned, splitRow('T-01', './src/main.c#main')).status, 0);
+  // Fragments and globs on non-file words stay out of the check.
+  assert.equal(entryRun(splitEntry, splitRow('T-01', '#main')).status, 0);
+  assert.equal(entryRun(splitEntry, splitRow('T-01', 'src/**/*.ts')).status, 0);
+});
+
+test('BAD_ACCEPTANCE_TASKS: a comma-only Tasks cell is a placeholder, only a truly empty cell derives', () => {
+  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW };
+  for (const cell of [',', ' , ', ',,', 'TBD,', ', ,']) {
+    for (const required of ['no', 'yes']) {
+      const result = run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | ${cell} | node -e "0" | ${required} | PENDING | pending |\n| SCEN-1 | CLI | T-01 | node -e "0" | yes | PENDING | pending |`) }));
+      assert.equal(result.status, 1, `${JSON.stringify(cell)} ${required}`);
+      assert.match(codes(result).join('\n'), /^BAD_ACCEPTANCE_TASKS acceptance\.md:3 SCEN-1:/m, `${JSON.stringify(cell)} ${required}`);
+    }
+  }
+  const empty = run(change({ ...files, 'acceptance.md': table('| SCEN-1 | CLI |  | node -e "0" | yes | PENDING | pending |') }));
+  assert.equal(empty.status, 0, empty.stdout);
+});
+
 // A repo with SCEN ids already declared outside `aligned()`: the baseline spec and one other change.
 // `ownBody`/`otherBody` are the scenario lines under the heading, so a test can diverge the body
 // while keeping the heading text identical.
