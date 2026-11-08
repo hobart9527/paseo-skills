@@ -360,3 +360,29 @@ Tier 钩子一行同理：删的是 `assessStop` 把 Git 脏文件写回 `seg.fi
 - 改 `~/.paseo/config.json`（`shangshu` 模型、Codex 可写根）：用户明确排除，不在本仓库范围。
 
 **限制**：`PASEO_AGENT_ID` 在真实 agent 进程内的取值、以及 Paseo 通知的 `<paseo-system>` 前缀形态，均按本次收到的通知样本实现，未在其他 Paseo 版本验证。
+
+## 17. 2026-11-09 评审不收敛：FINAL 从「找全缺陷」改为「契约符合性裁决」
+
+三个评审循环都没有收敛，签名相同：每轮整体重扫，常换新 reviewer，没有轮次上限，没有出口（2026-11-05..08 实测）。
+
+| 案例 | 实测 | 根因 |
+| --- | --- | --- |
+| approval-hub `first-party-invoice-management` | FINAL 12 轮，串行修复任务 T-08..T-19（每个 `Depends on` 前一个），约 18h；各轮新 blocker 7,2,4,3,1,·,1,2,·,·,·,1；第 12 轮越出范围，人工临时 OVERRULE。R0-1-B3 早已指出 T-06 无法满足 FPI-12，T-07 的 14 条验收仍全绿，直到 FINAL 第 8 轮才补 T-16 | 后期 blocker 多为契约缺口（税额精度、归一化、占用规则），不是代码偏差；Verify 预言太弱，错误实现也能过 |
+| approval-hub `unified-file-and-parser-infrastructure` | 15 任务 Done，FINAL 3 轮，每次修复引发 1-2 轮完整增量 R0；停在 FINAL BLOCKED，28.5h 后主线 0 行 | FINAL 无上限无出口；增量 R0 做成整包评审 |
+| paseo-skills Tier 2 `pipeline-cleanup` | 5 个 reviewer、9 次裁决全 BLOCKED、0 PASS，11h16m 后放弃；blocker 在同一缺陷族的 6 处移动。`fix-restore`：同类措辞 blocker 4 轮，而独立复检 PASS，无规则可解 | 「最多 2 次复检」按会话计，换 reviewer 即清零 |
+
+文本根因：`final-recovery.md` 旧步骤 5 写「再发现 blocker 则重复步骤 3-5」（无上限）；`reviewer.md` 称 FINAL 为「唯一代码质量门」，等于无界搜索；R0 有 2 轮上限与 `R0: human-accept`，FINAL 两者皆无；`tier2-reviewer-brief.md` 的复检上限按会话计。
+
+规则变更（按层归属，评审只验证、不生产质量）：
+- FINAL = 符合性裁决：矩阵（SCEN / 验收行 / 命名标准 × MET|NOT_MET|UNVERIFIABLE）；blocker 必须挂到矩阵行并带反例，挂不上即非 blocker；同类缺陷一轮算一个根因。
+- 至多 2 轮（全量 + 增量）；之后人工三选一：`FINAL: human-accept(@<sha>)`（与 R0 对称）、契约级重开（增量 R0 + CP-1）、终止。删除「重复步骤 3-5」。
+- 发现分流并记入 `review.md` 台账：DEVIATION → 修复任务；CONTRACT_GAP → 人工（增量 R0 + CP-1 或接受风险）；ENHANCEMENT → backlog。已确认修复的缺陷类关闭，重开需新证据；换 reviewer 继承台账与预算。
+- 一轮的 DEVIATION 合为一个修复波，按域并行；仅在彼此 scope 重叠时才互相 `Depends on`（对 Done 任务的依赖照旧，不破坏 `SCOPE_CONFLICT`）。CP-1 可预授权「1 个 FINAL 修复波、≤N 任务、仅 DEVIATION」；所有批准绑定 SHA。
+- R0 新增预言检查：每个 SCEN 须写明 Verify 走的真实入口（非夹具/孤立模块），以及错误实现如何使该 Verify 失败，缺失即 BLOCKER。契约后增量 R0 只对父 SHA 做增量，1 轮。
+- Tier 2：裁决对照 brief 的 **Requirement**；上限按交付计（≤2 个 reviewer、≤4 次裁决），换 reviewer 不重置；同类缺陷连续两轮，或独立 PASS 与指派 reviewer 的 BLOCKED 冲突，即并列两份裁决交人工。
+
+**评审健康度指标**（下次复盘直接对照）：FINAL 轮数 ≤2；blocker 100% 挂矩阵行；FINAL 中 CONTRACT_GAP 占比 → 0（每个都是 R0 盲点，回灌 R0 清单）；最长串行修复链 ≤2；循环内人工批准 ≤2。
+
+**刻意没加**：没有 FINAL/CP-2 解析器（`FINAL: human-accept` 与 R0 同为记录约定，CP-2 由人核对）；不加 per-task reviewer，合流门禁仍是机械的。
+
+**限制**：以上为规则文本，未经新一轮真实运行验证；预授权额度 N 与 Tier 2 上限为初值，待实测校准。

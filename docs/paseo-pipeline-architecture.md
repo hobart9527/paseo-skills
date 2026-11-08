@@ -37,7 +37,7 @@ flowchart TB
 | Author | gongbu | auto | the whole contract package in one pass | contract files only |
 | R0 reviewer / arbiter | hanlin | auto-review | one package review before CP-1; one-turn ruling | no |
 | Worker | gongbu / gaogong / jiangzuo | auto | tests + implementation + narrow Verify + commit for one task | task scope |
-| FINAL reviewer | anchasi | auto-review | the single integrated Spec + Standards review | no |
+| FINAL reviewer | anchasi | auto-review | the single integrated conformance verdict (matrix vs frozen SCEN, acceptance, named standards; max 2 rounds) | no |
 | Fixer | gaogong | auto-review | narrow repair of a confirmed FINAL blocker | narrow scope |
 
 `ceshi` (test author) and `shangshu` (Lead) are retired. A legacy branch may still carry a `ceshi` commit and `merge-task` accepts it for merge compatibility; no process dispatches either role. Model heterogeneity is now a gate property, not a merge gate: the pipeline requires the author, R0 reviewer, and FINAL reviewer to be different providers/models from each other, and resolves that with `list_profiles` at dispatch time. `merge-task.mjs` no longer inspects reviewer or model identity — it checks the mechanical facts only.
