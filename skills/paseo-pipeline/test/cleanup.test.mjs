@@ -345,6 +345,29 @@ test('the integration copy is the fallback only when the worktree run-log is abs
   assert.ok(!fs.existsSync(f.worktrees['T-01']));
 });
 
+test('integration-fallback approvals survive a partial failure that creates the worktree file', () => {
+  const f = fixture();
+  const report = discover(f);
+  approve(f, report.objects, () => true, { onIntegration: true });
+  fs.rmSync(path.join(f.changeDir, 'run-log.md'));
+  // T-02's branch moves past integration, so `git branch -d` refuses and the run is partial.
+  git(f.worktrees['T-02'], 'commit', '-q', '--allow-empty', '-m', 'unmerged work');
+  const first = cleanup(f, '--execute', '--json');
+  assert.equal(first.status, 1, first.out);
+  // The first run created the worktree run-log; the integration approvals were seeded into it.
+  assert.ok(fs.existsSync(path.join(f.changeDir, 'run-log.md')));
+  const recorded = fs.readFileSync(path.join(f.changeDir, 'run-log.md'), 'utf8')
+    .match(new RegExp(`^Cleanup: branch integration/${CHANGE} .* done @([0-9a-f]+)$`, 'm'))[1];
+  const second = cleanup(f, '--execute', '--merged-at', recorded, '--json');
+  // The retry still sees the branch approval instead of exiting 5 with everything unapproved.
+  assert.equal(second.status, 1, second.out);
+  const listed = JSON.parse(second.stdout);
+  assert.equal(listed.approvalSource, 'worktree');
+  const branch = listed.objects.find((object) => object.kind === 'branch' && object.id === 'task/chg/T-02');
+  assert.notEqual(branch.status, 'unapproved');
+  assert.equal(JSON.parse(second.stdout).exit, 1);
+});
+
 test('a command with a trailing comma authorizes nothing, quoted or not', () => {
   const f = fixture();
   const report = discover(f);
@@ -415,6 +438,41 @@ test('an approval block missing Object or Command authorizes nothing', () => {
   assert.equal(discover(f).objects.find((object) => object.id === 'integration/chg').approved, false);
   approveRaw(f, ['Object: integration/chg']);
   assert.equal(discover(f).objects.find((object) => object.id === 'integration/chg').approved, false);
+});
+
+test('an empty, whitespace-only or backtick-only field authorizes nothing', () => {
+  const f = fixture();
+  const report = discover(f);
+  const branch = report.objects.find((object) => object.id === 'integration/chg');
+  const cases = [
+    ['Object: integration/chg', 'Object:', `Command: ${branch.command}`],
+    ['Object: integration/chg', 'Object:    ', `Command: ${branch.command}`],
+    ['Object: integration/chg', 'Object: ``', `Command: ${branch.command}`],
+    ['Object: integration/chg', `Command: ${branch.command}`, 'Command:'],
+  ];
+  for (const lines of cases) {
+    approveRaw(f, lines);
+    const listed = discover(f).objects.find((object) => object.id === 'integration/chg');
+    assert.equal(listed.approved, false, lines.join(' | '));
+    const r = cleanup(f, '--execute', '--json');
+    assert.equal(r.status, 5, r.out);
+    assert.equal(JSON.parse(r.stdout).objects.find((object) => object.id === 'integration/chg').status, 'unapproved');
+    assert.ok(git(f.root, 'rev-parse', '--verify', 'refs/heads/integration/chg'));
+  }
+});
+
+test('a workspace object is authorized by its workspace id alone', () => {
+  const f = fixture({ paseoWorkspaceFor: 'T-01' });
+  const report = discover(f);
+  const workspace = report.objects.find((object) => object.kind === 'paseo-workspace');
+  assert.equal(workspace.id, 'wks_t01');
+  // Its branch and its path are not aliases for the archive.
+  for (const alias of [workspace.branch, workspace.path]) {
+    approveRaw(f, [`Object: ${alias}`, `Command: ${workspace.command}`]);
+    assert.equal(discover(f).objects.find((object) => object.id === 'wks_t01').approved, false, alias);
+  }
+  approveRaw(f, [`Object: ${workspace.id}`, `Command: ${workspace.command}`]);
+  assert.equal(discover(f).objects.find((object) => object.id === 'wks_t01').approved, true);
 });
 
 test('the old free-text approval form authorizes nothing', () => {
@@ -568,6 +626,45 @@ test('an unmatched backtick makes the field unparseable', () => {
     // An unmatched backtick on the Object line is just as unparseable.
     approveRaw(f, [`Object: \`integration/chg`, `Command: ${branch.command}`]);
     assert.equal(discover(f).objects.find((object) => object.id === 'integration/chg').approved, false, value);
+  }
+});
+
+/** Move the change directory the way `openspec archive` does, without touching git history. */
+function archiveChange(f) {
+  const archived = path.join(f.root, 'openspec', 'changes', 'archive', `2026-11-08-${CHANGE}`);
+  fs.mkdirSync(path.dirname(archived), { recursive: true });
+  fs.renameSync(f.changeDir, archived);
+  return archived;
+}
+
+test('an archived change directory exits 3 and names both remedies', () => {
+  const f = fixture();
+  const archived = archiveChange(f);
+  const r = run(f, ['cleanup', archived, '--execute']);
+  assert.equal(r.status, 3, r.out);
+  assert.match(r.stderr, /looks archived/);
+  assert.match(r.stderr, /openspec archive/);
+  assert.match(r.stderr, /--change <name>/);
+  // Nothing ran.
+  assert.ok(fs.existsSync(f.worktrees['T-01']));
+});
+
+test('--change <name> lets cleanup run from the archived directory', () => {
+  const f = fixture();
+  const archived = archiveChange(f);
+  assert.equal(run(f, ['cleanup', archived, '--change', CHANGE, '--json']).status, 0);
+  // The approval was written before archiving; the archived file still holds it.
+  approve({ ...f, changeDir: archived }, JSON.parse(run(f, ['cleanup', archived, '--change', CHANGE, '--json']).stdout).objects);
+  const r = run(f, ['cleanup', archived, '--change', CHANGE, '--execute', '--json']);
+  assert.equal(r.status, 0, r.out);
+  assert.ok(!fs.existsSync(f.worktrees['T-01']));
+});
+
+test('--change is validated and rejects a name that is not a bare change name', () => {
+  const f = fixture();
+  for (const value of ['../chg', '2026-11-08-chg/../x', ' bad', '']) {
+    const r = run(f, ['cleanup', f.changeDir, '--change', value, '--json']);
+    assert.equal(r.status, 2, `${value}: ${r.out}`);
   }
 });
 

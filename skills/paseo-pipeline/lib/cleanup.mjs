@@ -19,7 +19,8 @@ import { parseTasks } from './tasks.mjs';
 import { readTasksMarkdown } from './tasks-source.mjs';
 import { readMergeState } from './merge-state.mjs';
 
-const USAGE = 'usage: pipeline-run.mjs cleanup <change-dir> [--dry-run] [--execute] [--json] [--base <ref>] [--merged-at <sha>]';
+const USAGE = 'usage: pipeline-run.mjs cleanup <change-dir> [--dry-run] [--execute] [--json] [--base <ref>] [--merged-at <sha>] [--change <name>]';
+const CHANGE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const TASK_ID = String.raw`[A-Za-z][A-Za-z0-9]*-\d+`;
 // A `@<sha>` suffix records the deleted branch tip, so a later run can prove which commit
 // the integration branch pointed at when this command removed it.
@@ -93,8 +94,7 @@ function listPaseoWorkspaces() {
  * <path>` clears just that registration without force, so it needs its own approval like any
  * other object. A registration owned by another change is never offered.
  */
-export function discoverObjects({ cwd, changeDir }) {
-  const change = path.basename(changeDir);
+export function discoverObjects({ cwd, changeDir, change }) {
   const paseo = listPaseoWorkspaces();
   if (paseo.error) throw Object.assign(new Error(paseo.error), { code: 3 });
   const byPath = new Map();
@@ -187,8 +187,7 @@ export function parseApprovalBlocks(text) {
   return blocks;
 }
 
-const OBJECT_LINE = /^\s*Object:\s*(.+)$/;
-const COMMAND_LINE = /^\s*Command:\s*(.+)$/;
+const FIELD_LINE = /^\s*(Object|Command)\s*:(.*)$/;
 
 /**
  * The literal value of one field line, or null when it is unparseable. Only whitespace around
@@ -197,29 +196,34 @@ const COMMAND_LINE = /^\s*Command:\s*(.+)$/;
  */
 function literalValue(raw) {
   const value = raw.trim();
+  if (!value) return null;
   if (value.startsWith('`') || value.endsWith('`')) {
     if (value.length < 2 || !value.startsWith('`') || !value.endsWith('`')) return null;
-    return value.slice(1, -1);
+    return value.slice(1, -1) || null;
   }
   return value;
 }
 
 /**
  * Parse one block into its `Object:` and `Command:` values. Anything ambiguous is fail-closed:
- * a missing or unparseable field, or more than one `Object:`/`Command:` line, yields empty
- * lists, so the block authorizes nothing.
+ * a field line is matched by its prefix, so an empty, whitespace-only, backtick-only or
+ * unmatched-backtick value is malformed rather than skipped, and any malformed field, a missing
+ * field, or a duplicate `Object:`/`Command:` line makes the whole block authorize nothing.
  * @returns {{objects: string[], commands: string[]}}
  */
 export function parseApprovalBlock(block) {
   const objects = [];
   const commands = [];
+  let malformed = false;
   for (const line of String(block || '').split(/\r?\n/)) {
-    const object = line.match(OBJECT_LINE);
-    if (object) { const value = literalValue(object[1]); if (value) objects.push(value); continue; }
-    const command = line.match(COMMAND_LINE);
-    if (command) { const value = literalValue(command[1]); if (value) commands.push(value); }
+    const field = line.match(FIELD_LINE);
+    if (!field) continue;
+    const value = literalValue(field[2]);
+    if (value === null) { malformed = true; continue; }
+    if (field[1] === 'Object') objects.push(value);
+    else commands.push(value);
   }
-  if (objects.length !== 1 || commands.length !== 1) return { objects: [], commands: [] };
+  if (malformed || objects.length !== 1 || commands.length !== 1) return { objects: [], commands: [] };
   return { objects, commands };
 }
 
@@ -234,8 +238,9 @@ export function approvalCovers(block, object) {
   if (!block || !object?.command) return false;
   const { objects, commands } = parseApprovalBlock(block);
   if (objects.length !== 1 || commands.length !== 1) return false;
-  const identifiers = [object.id, object.branch, object.path].filter((value) => typeof value === 'string' && value);
-  if (!identifiers.includes(objects[0])) return false;
+  // The id alone is the identity: workspace id, worktree path or branch name. Accepting any
+  // alias would let a path or branch line authorize a Paseo archive.
+  if (objects[0] !== object.id) return false;
   return commands[0] === object.command;
 }
 
@@ -312,7 +317,23 @@ export function checkPreconditions({ cwd, changeDir, change, objects, base, merg
   let markdown;
   let source;
   try { ({ markdown, source } = readTasksMarkdown(changeDir, change)); }
-  catch (error) { return { code: 4, message: `cannot read tasks.md: ${error.message}` }; }
+  catch (error) {
+    // After `openspec archive` the directory lives under `archive/`, a path the integration
+    // branch never had. The frozen contract still sits at its pre-archive location there,
+    // which the operator-supplied change name reconstructs without guessing at the date prefix.
+    const preArchive = path.join(path.dirname(path.dirname(changeDir)), change);
+    const top = runGit(cwd, ['rev-parse', '--show-toplevel']);
+    if (preArchive === changeDir || top.status !== 0) return { code: 4, message: `cannot read tasks.md: ${error.message}` };
+    // The pre-archive path itself is gone, so resolve its existing parent and rejoin the name;
+    // that also settles the /var vs /private/var difference on macOS.
+    const resolved = path.join(realOrResolved(path.dirname(preArchive)), path.basename(preArchive));
+    const rel = path.relative(realOrResolved(top.stdout.trim()), resolved);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return { code: 4, message: `cannot read tasks.md: ${error.message}` };
+    const shown = runGit(cwd, ['show', `refs/heads/integration/${change}:${rel.split(path.sep).join('/')}/tasks.md`]);
+    if (shown.status !== 0) return { code: 4, message: `cannot read tasks.md: ${error.message}` };
+    markdown = shown.stdout;
+    source = 'integration';
+  }
   const { tasks, errors } = parseTasks(markdown);
   if (!tasks.length) errors.push({ code: 'EMPTY_TASKS', message: 'tasks.md parsed to zero tasks' });
   if (errors.length) {
@@ -386,19 +407,34 @@ function shape(object) {
  */
 export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => console.log(line), stderr = (line) => console.error(line) } = {}) {
   let parsed;
-  try { parsed = parseOptions(argv, { 'dry-run': 'boolean', execute: 'boolean', json: 'boolean', base: 'value', 'merged-at': 'value' }); }
+  try { parsed = parseOptions(argv, { 'dry-run': 'boolean', execute: 'boolean', json: 'boolean', base: 'value', 'merged-at': 'value', change: 'value' }); }
   catch (error) { stderr(`[pipeline-run] ${error.message}`); return 2; }
   if (parsed.positional.length !== 1) { stderr(`[pipeline-run] cleanup needs <change-dir>\n${USAGE}`); return 2; }
   if (parsed.options['dry-run'] && parsed.options.execute) { stderr('[pipeline-run] --dry-run and --execute are mutually exclusive'); return 2; }
   const changeDir = path.resolve(parsed.positional[0]);
   if (!fs.existsSync(path.join(changeDir, 'tasks.md'))) { stderr(`[pipeline-run] no tasks.md in ${changeDir}`); return 3; }
-  const change = path.basename(changeDir);
+  let change = parsed.options.change;
+  if (change !== undefined && !CHANGE_NAME.test(change)) {
+    stderr(`[pipeline-run] --change ${change} is not a valid change name`);
+    return 2;
+  }
+  // `openspec archive` moves the change to `openspec/changes/archive/<date>-<change>/`, so a
+  // basename there is not the change name. Never strip that prefix: require the operator.
+  if (change === undefined) {
+    const archived = path.basename(path.dirname(changeDir)) === 'archive'
+      && /^\d{4}-\d{2}-\d{2}-.+$/.test(path.basename(changeDir));
+    if (archived) {
+      stderr(`[pipeline-run] ${changeDir} looks archived; run cleanup before \`openspec archive\`, or pass --change <name>`);
+      return 3;
+    }
+    change = path.basename(changeDir);
+  }
   const base = parsed.options.base ?? 'main';
   const execute = !!parsed.options.execute;
   const json = !!parsed.options.json;
 
   let objects;
-  try { objects = discoverObjects({ cwd, changeDir }).objects; }
+  try { objects = discoverObjects({ cwd, changeDir, change }).objects; }
   catch (error) { stderr(`[pipeline-run] ${error.message}`); return error.code ?? 3; }
 
   const approvals = readApprovalText(cwd, changeDir, change);
@@ -428,6 +464,21 @@ export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => conso
       refusal = { message: 'no object has a matching recorded Approval; nothing may be executed' };
       stderr(`[pipeline-run] cleanup refused: ${refusal.message}`);
     } else {
+      // Approvals read from the integration branch exist only there, but the first run's own
+      // `Cleanup:` records create the worktree file, which then becomes the primary source and
+      // hides them. Seed it before executing so a retry sees the same approvals.
+      if (approvals.source === 'integration') {
+        try { fs.writeFileSync(path.join(changeDir, 'run-log.md'), approvals.text, { flag: 'wx' }); }
+        catch (error) {
+          if (error.code !== 'EEXIST') {
+            stderr(`[pipeline-run] cannot seed the worktree run-log from integration: ${error.message}`);
+            return 3;
+          }
+          const seeded = readApprovalText(cwd, changeDir, change);
+          approvals.text = seeded.text;
+          approvals.source = seeded.source;
+        }
+      }
       for (const object of objects) {
         if (object.status === 'already-done') continue;
         if (!object.approved) { object.status = 'unapproved'; if (!exit) exit = 5; continue; }

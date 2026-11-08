@@ -13,24 +13,24 @@ Use before any destructive or production step: deploy, `archive_workspace`, bran
    For CP-2 cleanup, take the list verbatim from `pipeline-run.mjs cleanup <change-dir>`
    (`--json` for the same objects): one `paseo-workspace`, `git-worktree` or `branch` object
    per line, each with its own exact `command`. An object is covered only by its own
-   `Approval:` block naming exactly one `Object:` (workspace id, branch name or absolute host
-   path) and one exactly equal `Command:`. A stale registration whose directory is gone is an
-   ordinary `git-worktree` object removed individually with `git worktree remove <path>`; a
-   dirty or locked worktree refuses, and that refusal is reported as failed, never forced
-   (`-D`, `--force`) and never replaced with `rm -rf`.
+   `Approval:` block naming exactly one `Object:` (the object's `id` as printed, never its
+   branch or path) and one exactly equal `Command:`. A stale registration whose directory is
+   gone is an ordinary `git-worktree` object removed individually with `git worktree remove
+   <path>`; a dirty or locked worktree refuses, and that refusal is reported as failed, never
+   forced (`-D`, `--force`) and never replaced with `rm -rf`.
 2. **Ask.** State what is irreversible, what is archived versus deleted, and what is pushed. Never
    bundle two object classes in one question.
 3. **Record the approval verbatim** in `openspec/changes/<change>/run-log.md`, one block per
    object:
    ```
    Approval: <ISO timestamp> <the user's words, unedited>
-   Object: <exact id, branch or path copied from step 1>
+   Object: <the object's exact id copied from step 1>
    Command: <the exact command>
    ```
    Do not paraphrase, translate or compress the user's words. `Object:` and `Command:` are
    compared literally: surrounding whitespace is ignored and matching backticks are stripped,
-   nothing else. A block with more than one `Object:` or `Command:` line, or with either line
-   missing, authorizes nothing.
+   nothing else. A block with more than one `Object:` or `Command:` line, or with an empty or
+   unparseable one, authorizes nothing.
 4. **File wins.** After compaction or resume, re-read `run-log.md` instead of trusting the summary.
    Execute only objects and commands the record covers; if the list or command differs, re-ask.
    `cleanup --execute` appends one record per attempted object to the worktree `run-log.md`:
@@ -40,7 +40,9 @@ Use before any destructive or production step: deploy, `archive_workspace`, bran
    A re-run skips objects already recorded `done`. The record is evidence of what ran, not an
    approval. Approvals are read from this worktree
    file first (cleanup happens after CP-2, so committing them to integration would break the
-   ancestry proof), the integration copy only when the worktree file is absent. If
+   ancestry proof), the integration copy only when the worktree file is absent. Under
+   `--execute` that fallback text is copied into the worktree file before anything runs, so a
+   retry still sees the approvals instead of only the first run's `Cleanup:` records. If
    `integration/<change>` is already gone, `--merged-at <sha>` must equal the tip recorded
    on its `Cleanup: branch` done line — an unrecorded tip, or `main` itself, proves nothing.
 5. Push and history rewrite need their own approval even when cleanup was approved.
