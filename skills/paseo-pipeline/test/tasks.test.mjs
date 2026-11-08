@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseTasks, parseTaskLine, computeWaves, isFileWithinScopes, parseReviewTag, isTestPath, verifyLegs } from '../lib/tasks.mjs';
+import { normalizeScope, parseTasks, parseTaskLine, computeWaves, isFileWithinScopes, parseReviewTag, isTestPath, verifyLegs } from '../lib/tasks.mjs';
 
 const md = `
 - [ ] 1.1 T-01 contract
@@ -189,4 +189,17 @@ test('graph validation rejects cycles across Depends on and Uses merge edges', a
   const indirect = make('Depends on: T-02', 'Uses: T-03')
     + '- [ ] T-03 third\n  - Depends on: T-01\n  - Write scope: src/c\n  - Verify with: true\n';
   assert.ok(graphErrors(parseTasks(indirect).errors).some((error) => error.code === 'CYCLE'));
+});
+
+test('normalizeScope strips leading ./ segments and keeps its rejections', () => {
+  assert.equal(normalizeScope('./src/a'), 'src/a');
+  assert.equal(normalizeScope('././src/a'), 'src/a');
+  assert.equal(normalizeScope('.//src//a/'), 'src/a');
+  assert.equal(normalizeScope('src/a'), 'src/a');
+  assert.equal(normalizeScope('/src/a'), null);
+  assert.equal(normalizeScope('./../a'), null);
+  assert.equal(normalizeScope('src/../a'), null);
+  assert.equal(normalizeScope('./'), null);
+  assert.equal(normalizeScope(''), null);
+  assert.equal(isFileWithinScopes('./src/main.c', ['src/main.c']), true);
 });
