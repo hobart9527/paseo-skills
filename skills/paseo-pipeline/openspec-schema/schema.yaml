@@ -294,7 +294,9 @@ artifacts:
         it executes or proves the claimed behavior. Each non-sink Verify leg, including
         for `mechanical`, must name a test/spec path within `Write scope` or `Reads`.
         A `mechanical` sink may use a non-test check; other command checks still apply.
-        Full-suite legs are reserved for sinks, with at most one per sink. Write the full
+        A sink may run one full-suite leg per package/runner it must regress; list each
+        package suite explicitly (e.g. `npm --prefix packages/server test`) rather than
+        hiding them in a wrapper script. Write the full
         invocation when the command needs env vars:
         PYTHONPATH=runtime python3 -m pytest tests/x_test.py.
       - `Scenarios` lists the `SCEN-*` ids from the spec delta that this task carries.

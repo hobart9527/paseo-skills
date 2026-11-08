@@ -482,8 +482,9 @@ const CLAIMABLE_FILE = /\.(?:[cm]?[jt]sx?|py|go|rs|rb|java|kt|swift|php|sh|bash)
 
 // Narrow verification. A leg is narrow when its paths all sit inside the task
 // Write scope (or its reads-only anchors); a leg without paths must not invoke a
-// whole-suite runner. One sink may run one broad leg; final acceptance always
-// runs on integration HEAD.
+// whole-suite runner. A sink may run one full-suite leg per package/runner it
+// regresses (a monorepo sink runs each package suite explicitly); final acceptance
+// always runs on integration HEAD.
 const SHELL_CONSTRUCT = /\b(?:for|while|if|case|until)\b/;
 // `set -e; cmd` and `a || exit 1` are shell setup, not verify legs. commandParts
 // splits them into legs that prove nothing; name the real cause instead of the
@@ -540,12 +541,8 @@ for (const task of tasks) {
     blocking.push(`VERIFY_NOT_NARROW ${task.id}: every Verify leg must name a test/spec path inside Write scope${unscoped.length ? ` (outside: ${unscoped.map((leg) => leg.command).join(', ')})` : ''}`);
     fixes.set('VERIFY_NOT_NARROW', 'name a runnable test path inside Write scope or Reads, or add that anchor to Reads (Reads never authorises edits)');
   }
-  if (sinkIds.has(task.id) && broadLegs > 1) {
-    blocking.push(`VERIFY_TOO_BROAD ${task.id}: sole sink may run at most one full-suite leg`);
-  }
-  if (sinkIds.has(task.id) && broadLegs === 1 && unscoped.length > 0) {
-    blocking.push(`VERIFY_TOO_BROAD ${task.id}: combine full-suite and narrow checks on separate tasks/acceptance`);
-  }
+  // A sink may mix full-suite legs (one per package) with narrow checks; broad-free sinks
+  // still fall under VERIFY_NOT_NARROW above like any other task.
 }
 // Vertical slices: behavior tasks must claim a SCEN and own production code, not only tests.
 for (const task of tasks) {

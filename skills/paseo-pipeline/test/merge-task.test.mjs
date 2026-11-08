@@ -282,6 +282,23 @@ test('a merge that regresses an already-Done task is exit 21 and leaves the tree
   assert.equal(git(f.cwd, 'status', '--porcelain'), '');
 });
 
+test('a prefix suite on an already-Done task is skipped and only its narrow leg replays', () => {
+  // Prior T-00 mixes a package full suite with a narrow test. `npm` itself does not exist in
+  // this fixture, so replaying that leg would fail; the narrow leg passes. This pins the
+  // working-directory parse feeding merge's broad-leg skip.
+  const tasks = '- [x] T-00 prior\n  - Write scope: test/prior.test.mjs\n  - Reads: src/poison.txt\n  - Review: mechanical\n  - Verify with: npm --prefix packages/a test && node --test test/prior.test.mjs\n  - Done: source=abcdef1 review=worker\n- [ ] T-01 target\n  - Write scope: src,test\n  - Verify with: node --test test/a.test.mjs\n';
+  const f = taggedFixture(tasks);
+  write(f.cwd, 'test/prior.test.mjs', `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\ntest('legacy', () => { assert.equal(fs.existsSync('src/poison.txt'), false); });\n`);
+  write(f.cwd, 'test/a.test.mjs', PASSING_TEST);
+  write(f.cwd, 'src/a.txt', 'a');
+  git(f.cwd, 'add', '.');
+  git(f.cwd, 'commit', '-qm', `w\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
+  const tip = git(f.cwd, 'rev-parse', 'HEAD'); git(f.cwd, 'switch', '-q', `integration/${f.change}`);
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
+  assert.equal(r.status, 0, r.out);
+  assert.match(fs.readFileSync(path.join(f.cwd, `openspec/changes/${f.change}/run-log.md`), 'utf8'), /"replayed":1/);
+});
+
 test('attempt breaker: -a4 is exit 37 unless a human approved it', () => {
   const f = fixture();
   git(f.cwd, 'branch', '-m', `task/${f.change}/T-01`, `task/${f.change}/T-01-a4`);

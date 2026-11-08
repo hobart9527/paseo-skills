@@ -85,6 +85,19 @@ test('verify legs: paths decide narrowness, not runner names', () => {
   assert.deepEqual(verifyLegs('go test ./pkg/a').map((leg) => leg.paths), [['pkg/a']]);
 });
 
+test('verify legs: a working-directory option scopes the runner instead of naming a target', () => {
+  // `--prefix <dir>` and friends move the runner into a package; the package itself is not
+  // the test target, so a bare `test` under them is the package's whole suite.
+  for (const command of ['npm --prefix packages/server test', 'pnpm -C packages/x test', 'yarn --cwd packages/x test', 'npm --prefix=packages/server test']) {
+    assert.deepEqual(verifyLegs(command).map((leg) => ({ paths: leg.paths, broad: leg.broad })), [{ paths: [], broad: true }], command);
+  }
+  // Remaining relative paths resolve against the working directory, so the leg stays narrow.
+  assert.deepEqual(verifyLegs('npm --prefix packages/web test -- test/a.test.ts').map((leg) => ({ paths: leg.paths, broad: leg.broad })),
+    [{ paths: ['packages/web/test/a.test.ts'], broad: false }]);
+  assert.deepEqual(verifyLegs('pnpm --dir=packages/x test src/a.test.ts').map((leg) => ({ paths: leg.paths, broad: leg.broad })),
+    [{ paths: ['packages/x/src/a.test.ts'], broad: false }]);
+});
+
 test('official task template is parser-compatible', () => {
   const { tasks, errors } = parseTasks('- [ ] 1.1 T-01 contract\n  - Depends on: none\n  - Write scope: src/a,test/a.test.mjs\n  - Verify with: `node --test test/a.test.mjs`\n');
   assert.deepEqual(errors, []);

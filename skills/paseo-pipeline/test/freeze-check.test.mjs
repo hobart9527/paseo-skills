@@ -382,6 +382,20 @@ test('sink without a full-suite leg must still have a narrow Verify', () => {
   assert.equal(result.status, 1);
   assert.match(result.stdout, /VERIFY_NOT_NARROW T-04/);
 });
+test('sink may run one full suite per package and mix in narrow legs', () => {
+  // A monorepo sink regresses each package's whole suite explicitly; neither leg names a
+  // test path, so both parse as broad.
+  const twoSuites = freezeOf(sinkContract('npm --prefix packages/a test && npm --prefix packages/b test'));
+  assert.equal(twoSuites.status, 0, twoSuites.stdout);
+  const mixed = freezeOf(sinkContract('npm --prefix packages/a test && node --test test/sink.test.mjs'));
+  assert.equal(mixed.status, 0, mixed.stdout);
+});
+test('a working-directory option does not hide a package suite from the sink rules', () => {
+  // T-02 becomes a second full suite beside the sink's `npm test`.
+  const result = freezeOf(contract.replace('node --test test/alpha.test.mjs', 'npm --prefix packages/a test'));
+  assert.match(result.stdout, /VERIFY_FULL_SUITE_NON_SINK T-02/);
+  assert.match(result.stdout, /TOO_MANY_FULL_SUITE_SINKS: T-02, T-04/);
+});
 test('mechanical sink may run a non-test check', () => {
   const result = freezeOf(sinkContract('rg -c done docs/x.md', '  - Review: mechanical\n'));
   assert.equal(result.status, 0, result.stdout);

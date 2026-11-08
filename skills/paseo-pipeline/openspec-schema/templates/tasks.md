@@ -32,7 +32,8 @@
     安全风险标为 strict；freeze-check 不强制所有此类任务为 strict，也不验证风险标签是否完整。
     mechanical 不代表安全，也不免除语义审查。
   - Verify with：非汇点必须点名本任务 Write scope 或 Reads 内的测试/spec 路径；
-    全量套件只允许一个汇点任务运行。需要环境变量就写全调用：
+    全量套件只允许汇点任务运行，汇点可以按包/runner 各跑一个全量腿（monorepo 就逐包显式列出，
+    不要藏进包装脚本）。需要环境变量就写全调用：
     PYTHONPATH=runtime python3 -m pytest tests/x_test.py
     带路径即为窄跑（`pytest tests/x_test.py`、`pnpm test src/a.test.ts`、`go test ./pkg/a`）；
     不带路径的 `pytest`、`npm test`、`go test ./...` 判为全量，只能出现在汇点。
