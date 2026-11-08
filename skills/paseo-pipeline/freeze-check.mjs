@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo-agents.mjs';
 import { parseTasks, graphErrors, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, legPaths, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
-import { weightedSpeedup, weightedCriticalPath, verifyScope, readsOnlyEdges, pathWithin, resolveModel, LIVE_MODEL } from './lib/schedule.mjs';
+import { dispatchDeps, weightedSpeedup, weightedCriticalPath, verifyScope, readsOnlyEdges, pathWithin, resolveModel, LIVE_MODEL } from './lib/schedule.mjs';
 import { runGit } from './lib/git.mjs';
 
 const args = process.argv.slice(2);
@@ -50,7 +50,7 @@ const RULE_FIXES = {
   USES_UNKNOWN: 'point Uses at an existing task id (never the task itself)',
   CYCLE: 'break the dependency cycle into a DAG',
   BAD_READS: 'use repo-relative paths without `..` or a leading slash',
-  MISSING_READS_PATH: 'point Reads at a path that already exists in the repository; Reads is a read-only anchor, not a file the task creates',
+  MISSING_READS_PATH: 'point Reads at an existing path or one covered by a task Write scope; separately verify readiness and content',
   BAD_ACCEPTANCE_HEADER: 'use the seven columns Scenario, Entry, Tasks, Verify, Required, Result, Evidence in that order',
   BAD_ACCEPTANCE_REQUIRED: 'set Required to yes or no (case-insensitive)',
   MALFORMED_ACCEPTANCE_ROW: 'escape a literal pipe inside a cell as `\\|`, or keep one cell free of `|`; the row must have the header column count',
@@ -205,6 +205,18 @@ for (let i = 0; i < tasks.length; i += 1) {
 // Depends on edge to serialise the writers.
 const dependsBetween = (a, b) => ancestorsOf(a).has(b) || ancestorsOf(b).has(a);
 const skeletons = tasks.filter((task) => task.kind === 'skeleton');
+const dispatchAncestors = (task) => {
+  const seen = new Set();
+  const stack = dispatchDeps(task, tasks);
+  while (stack.length) {
+    const id = stack.pop();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const node = byId.get(id);
+    if (node) stack.push(...dispatchDeps(node, tasks));
+  }
+  return seen;
+};
 for (const task of tasks) {
   for (const used of task.uses || []) {
     if (used === task.id || !byId.has(used)) {
@@ -214,6 +226,14 @@ for (const task of tasks) {
     if (!target.interface.length) {
       blocking.push(`USES_WITHOUT_INTERFACE ${task.id}: Uses ${used} but ${used} declares no Interface; freeze the symbol on the producer`);
       fixes.set('USES_WITHOUT_INTERFACE', `add Interface: <path>#<symbol> to ${used}, or use Depends on if the implementation is required`);
+    }
+    const ready = dispatchAncestors(task);
+    for (const entry of target.interface) {
+      const owners = skeletons.filter((skeleton) => isFileWithinScopes(entry.split('#')[0], skeleton.scope));
+      if (owners.length && !owners.some((owner) => ready.has(owner.id))) {
+        blocking.push(`INTERFACE_NOT_READY ${task.id}: Uses ${used} but Interface ${entry} has no skeleton owner in its dispatch dependencies`);
+        fixes.set('INTERFACE_NOT_READY', 'connect the actual skeleton owner to dispatch readiness, or use Depends on when implementation is required');
+      }
     }
     if (scopesClash(task, target) && !dependsBetween(task.id, target.id)) {
       blocking.push(`USES_SCOPE_OVERLAP ${task.id} and ${used}: Write scopes overlap but no Depends on edge exists; Uses only skips the implementation wait`);
@@ -243,11 +263,8 @@ for (const task of tasks) {
   }
 }
 
-// Reads is a read-only anchor: it must already exist, unless another task's Write scope
-// will create it. A greenfield consumer legitimately verifies against a module a sibling
-// produces (and `merge-task` must replay it when that sibling merges), so a forward
-// reference inside a Write scope is allowed. A path that is neither on disk nor inside any
-// Write scope is a typo and still blocks; it must not silently degrade to "no anchor".
+// A scope permits a forward reference but does not establish file existence or readiness.
+// Authors and R0 must check that each worker can complete its Verify in its own branch.
 {
   const toplevel = gitIn(changeDir, ['rev-parse', '--show-toplevel']);
   if (toplevel.status === 0) {

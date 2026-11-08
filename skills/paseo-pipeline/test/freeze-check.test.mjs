@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { dispatchDeps, mergeDeps } from '../lib/schedule.mjs';
+import { parseTasks } from '../lib/tasks.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 // Signer lookup needs a live Paseo; fixtures that only exercise the contract rules skip it.
@@ -539,6 +541,40 @@ test('INTERFACE_UNOWNED blocks an Interface outside every skeleton scope', () =>
   assert.match(result.stdout, /INTERFACE_UNOWNED T-01/);
 });
 
+test('Uses blocks when interface owner is disconnected from actual dispatch', () => {
+  const tasks = scheduleContract
+    .replace('  - Uses: T-00\n  - Write scope: src/alpha', '  - Interface: src/iface/form.ts#useDraft\n  - Write scope: src/alpha')
+    .replace('  - Uses: T-00\n  - Write scope: src/beta', '  - Uses: T-01\n  - Write scope: src/beta');
+  const result = freezeStructural(tasks);
+  const parsed = parseTasks(tasks).tasks;
+  const consumer = parsed.find((task) => task.id === 'T-02');
+  assert.deepEqual(dispatchDeps(consumer, parsed), []);
+  assert.deepEqual(mergeDeps(consumer), ['T-01']);
+  assert.match(result.stdout, /INTERFACE_NOT_READY T-02/);
+});
+
+test('Uses accepts a target skeleton and a transitively ready skeleton owner', () => {
+  assert.equal(freezeStructural(scheduleContract).status, 0);
+  const transitive = scheduleContract
+    .replace('  - Uses: T-00\n  - Write scope: src/alpha', '  - Depends on: T-00\n  - Interface: src/iface/form.ts#useDraft\n  - Write scope: src/alpha')
+    .replace('  - Uses: T-00\n  - Write scope: src/beta', '  - Uses: T-01\n  - Write scope: src/beta');
+  const parsed = parseTasks(transitive).tasks;
+  const consumer = parsed.find((task) => task.id === 'T-02');
+  assert.deepEqual(dispatchDeps(consumer, parsed), ['T-00']);
+  assert.deepEqual(mergeDeps(consumer), ['T-01']);
+  assert.equal(freezeStructural(transitive).status, 0);
+});
+
+test('Uses accepts a skeleton reached through another dispatch dependency', () => {
+  const tasks = scheduleContract
+    .replace('  - Uses: T-00\n  - Write scope: src/alpha', '  - Interface: src/iface/form.ts#useDraft\n  - Write scope: src/alpha')
+    .replace('  - Uses: T-00\n  - Write scope: src/beta', '  - Uses: T-01\n  - Depends on: T-04\n  - Write scope: src/beta')
+    .concat('\n- [ ] 1.5 T-04 intermediary\n  - Depends on: T-00\n  - Write scope: src/mid,test/mid.test.mjs\n  - Review: mechanical\n  - Verify with: node --test test/mid.test.mjs\n');
+  const parsed = parseTasks(tasks).tasks;
+  assert.deepEqual(dispatchDeps(parsed.find((task) => task.id === 'T-02'), parsed), ['T-04']);
+  assert.equal(freezeStructural(tasks).status, 0);
+});
+
 test('SKELETON_NOT_MECHANICAL blocks a skeleton that needs per-task review', () => {
   const bad = scheduleContract.replace('  - Review: mechanical\n  - Verify with: node --test test/iface.test.mjs', '  - Review: standard\n  - Verify with: node --test test/iface.test.mjs');
   const result = freezeStructural(bad);
@@ -684,7 +720,7 @@ test('Reads must name a path that already exists in the repository', () => {
 });
 
 test('Reads may forward-reference a path another task writes, but not a typo', () => {
-  // T-01 reads src/poison.txt before T-02 has written it: legal, because T-02 owns it.
+  // The task owns this future file; scope permits the reference, not proof it will exist.
   const forward = contract
     .replace('Write scope: src/shared,test/shared.test.mjs', 'Write scope: src/shared,test/shared.test.mjs,src/poison.txt')
     .replace('  - Scen: SCEN-1\n- [ ] 1.2', '  - Reads: src/poison.txt\n  - Scen: SCEN-1\n- [ ] 1.2');
@@ -694,6 +730,18 @@ test('Reads may forward-reference a path another task writes, but not a typo', (
   const typo = change({ 'tasks.md': forward.replace('Reads: src/poison.txt', 'Reads: src/posion.txt'), 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
   execFileSync('git', ['init', '-q'], { cwd: typo });
   assert.match(run(typo, ['--structural', '--skip-signer-check']).stdout, /MISSING_READS_PATH T-01/);
+});
+
+test('future sibling Verify input is structurally allowed, not proven ready', () => {
+  const tasks = scheduleContract
+    .replace('Write scope: src/alpha,test/alpha.test.mjs', 'Write scope: src/alpha,test/alpha.test.mjs,test/future.test.mjs')
+    .replace('  - Review: deferred\n  - Verify with: node --test test/beta.test.mjs', '  - Reads: test/future.test.mjs\n  - Review: deferred\n  - Verify with: node --test test/future.test.mjs');
+  const dir = change(scheduleFiles(tasks));
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  const parsed = parseTasks(tasks).tasks;
+  assert.deepEqual(dispatchDeps(parsed.find((task) => task.id === 'T-02'), parsed), ['T-00']);
+  assert.equal(run(dir, ['--structural', '--skip-signer-check']).status, 0);
+  assert.equal(fs.existsSync(path.join(dir, 'test/future.test.mjs')), false);
 });
 
 test('no digest artifact is required and none is checked', () => {

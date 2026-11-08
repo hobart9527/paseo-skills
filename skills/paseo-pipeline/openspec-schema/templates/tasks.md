@@ -42,10 +42,12 @@
     且每个声明的编号至少被一个任务认领 —— 由 freeze-check 双向核对。mechanical 任务可不认领
     场景，也可只写测试路径；这些结构豁免不证明任务没有行为风险。
   - 可选调度字段（全部参与 freeze-check，写错分别报 BAD_READS / BAD_EST / BAD_INTERFACE / BAD_KIND）：
-    - `Uses: T-03, T-05` — 消费边。派发只等目标的接口（含其 skeleton 祖先），不等实现合流；
+    - `Uses: T-03, T-05` — 消费边。派发等待目标及其依赖链中的 skeleton，不等目标实现合流；
       merge 仍要求目标 Done。目标必须声明 `Interface:`，且若两者 Write scope 重叠则还必须有 `Depends on`。
+      Interface 的 skeleton owner 必须是消费者实际派发依赖；scope 只表示所有权，不证明文件或内容已提交。
     - `Reads: path/a, path/b` — 只读锚点：Verify 可以跑这些路径，但它们不算 Write scope，
       不参与 scope 冲突，也不授权改源码。
+      worker 完成自身任务后必须能在自己的分支跑通 Verify；首次 Verify 允许 red。若最终 Verify 确需其他任务未来的文件或行为，使用 `Depends on`；merge 重跑不能代替 worker Verify。已有 baseline 文件、自建文件或仅用于回归的 Reads 不应自动加依赖。静态检查不证明文件存在、内容正确、权限可用或已提交。
     - `Est: S|M|L` — 工期权重，缺省 M。
     - `Kind: skeleton` — 接口桩任务，必须有 `Review: mechanical`，其 Write scope 必须覆盖
       所有 `Interface:` 路径。

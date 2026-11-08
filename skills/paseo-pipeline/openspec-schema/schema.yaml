@@ -248,12 +248,17 @@ artifacts:
         paths, no `..` escaping the repo root.
       - `Depends on` must name task IDs that exist in this file; no self-dependency,
         no cycles.
-      - `Uses` is a consumer edge: dispatch starts once the target's frozen interface
-        (and its skeleton ancestors) exist, while merge still waits for the target's
-        Done. A `Uses` target must declare `Interface:`; a `Uses` pair with overlapping
+      - `Uses` is a consumer edge: dispatch waits for the target's skeleton ancestors,
+        while merge still waits for the target's Done. A `Uses` target must declare
+        `Interface:` and an owning skeleton must be a dispatch dependency of the consumer;
+        scope alone does not prove the file or its contents were committed. A pair with overlapping
         Write scopes also needs a real `Depends on` edge.
       - `Reads` lists paths a Verify leg may execute against without writing them. It
-        never joins scope-conflict checks and never authorises source edits.
+        never joins scope-conflict checks and never authorises source edits. Ensure final
+        worker Verify can pass in its own branch: use `Depends on` if it needs another
+        task's future file or behavior. Initial Verify may be red. Existing baseline files,
+        task-created files and optional regression reads do not by themselves require an edge.
+        Structural checks cannot prove existence, correct content, access or a commit.
       - `Est` is `S`, `M` or `L` (default `M`). `Kind: skeleton` marks the interface-stub
         task and requires `Review: mechanical`; every `Interface:` path must sit inside
         some skeleton's Write scope.

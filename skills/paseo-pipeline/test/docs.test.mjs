@@ -110,7 +110,7 @@ test('briefs carry wait backstop, reviewer containment and minimal-contract rule
   assert.match(author, /return `BLOCKED` with the reason; never edit any other tracked file/);
   assert.match(author, /Keep concurrent tasks' Write scopes disjoint; do not serialize independent work or invent edges/);
   const tasks = read('openspec-schema/templates/tasks.md');
-  assert.match(tasks, /派发只等目标的接口（含其 skeleton 祖先），不等实现合流/);
+  assert.match(tasks, /派发等待目标及其依赖链中的 skeleton，不等目标实现合流/);
   assert.match(tasks, /merge 仍要求目标 Done/);
   assert.match(schema, /Concurrent tasks have fully disjoint Write scopes/);
   assert.match(reviewer, /verify one authoritative contract is frozen and reachable before consumer dispatch/);
@@ -307,4 +307,21 @@ test('author and reviewer briefs implement bounded revision and falsifiable bloc
   assert.match(reviewer, /delta check against your own findings/);
   // A worker gets task-relevant inputs, not unrelated contract history.
   assert.match(read('templates/worker.md'), /Read only from your packet/);
+});
+
+test('contract guidance distinguishes structural coverage from worker readiness', () => {
+  const author = read('templates/author.md');
+  const reviewer = read('templates/reviewer.md');
+  const worker = read('templates/worker.md');
+  const schema = read('openspec-schema/schema.yaml');
+  const tasks = read('openspec-schema/templates/tasks.md');
+  assert.match(author, /data migration\/persistence schema, credentials\/security\/audit, cross-task identity\/idempotency, external protocol\/vendor, and destructive\/rollback/);
+  assert.match(author, /first Verify may be red/);
+  assert.match(author, /merge replay cannot rescue/);
+  assert.match(reviewer, /future sibling's file or behavior/);
+  assert.match(reviewer, /optional regression read/);
+  assert.match(worker, /Before delivery it must run and pass in your branch/);
+  assert.match(schema, /owning skeleton must be a dispatch dependency/);
+  assert.match(schema, /Structural checks cannot prove existence/);
+  assert.match(tasks, /静态检查不证明文件存在/);
 });
