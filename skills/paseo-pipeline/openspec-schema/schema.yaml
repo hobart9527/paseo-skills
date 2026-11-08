@@ -315,7 +315,9 @@ artifacts:
       owner's Write scope or created by it, since an existing test that already passes and
       never calls the code under change cannot carry the SCEN; and every field, symbol or
       route a task or design names is confirmed once with `rg` in the tree (or in a file
-      the task creates), with design.md Owner ids matching tasks.md.
+      the task creates); design.md names decisions (`D-01`) and affected modules only,
+      never task ids; tasks declare `Implements:` decision ids, and every id must exist
+      in design.md.
 
       Guidelines:
       - Vertical slices: behavior + wiring + affected fixtures + tests together.

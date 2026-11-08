@@ -18,6 +18,7 @@
   - Review: strict
   - Verify with: node --test path/to/file.test.mjs
   - Scenarios: SCEN-CAP-01
+  - Implements: D-01
 
 <!--
   字段规则（解析器强制执行，写错就是 MALFORMED_LINE / MISSING_SCOPE / UNKNOWN_* 报错）：
@@ -41,7 +42,7 @@
   - Scenarios：本任务承载的 spec 场景编号（SCEN-*）。编号必须在本 change 的 spec 里声明过，
     且每个声明的编号至少被一个任务认领 —— 由 freeze-check 双向核对。mechanical 任务可不认领
     场景，也可只写测试路径；这些结构豁免不证明任务没有行为风险。
-  - 可选调度字段（全部参与 freeze-check，写错分别报 BAD_READS / BAD_EST / BAD_INTERFACE / BAD_KIND）：
+  - 可选调度字段（全部参与 freeze-check，写错分别报 BAD_READS / BAD_EST / BAD_INTERFACE / BAD_KIND / BAD_IMPLEMENTS）：
     - `Uses: T-03, T-05` — 消费边。派发等待目标及其依赖链中的 skeleton，不等目标实现合流；
       merge 仍要求目标 Done。目标必须声明 `Interface:`，且若两者 Write scope 重叠则还必须有 `Depends on`。
       Interface 的 skeleton owner 必须是消费者实际派发依赖；scope 只表示所有权，不证明文件或内容已提交。
@@ -52,6 +53,9 @@
     - `Kind: skeleton` — 接口桩任务，必须有 `Review: mechanical`，其 Write scope 必须覆盖
       所有 `Interface:` 路径。
     - `Interface: path/to/file.ts#symbol` — 本任务向 `Uses` 消费者提供的路径/符号；可逗号分隔或重复多行。
+    - `Implements: D-01, D-02` — 本任务落实的 design.md 决策编号。design.md 只写决策
+      （`- **D-01 <标题>**`）与影响模块，不写任务 ID；任务在这里反指决策，每个编号必须在
+      design.md 有对应决策标题（freeze-check 核对 DESIGN_NAMES_TASK / UNKNOWN_DECISION）。
   - 可选元数据（`Reads`、`Est`、`Kind`、`Interface`、`Risk-surface`）：仅在影响 Verify、调度、共享接口或风险时填写。
   - Done 行由 merge gate 写入 `- Done: source=<tip7> review=worker`；worker 标记执行，不是审查结论。
     历史 `pass(<reviewer>@<tip>/<base>)` 标签仍可读取，不必改写已冻结内容。
