@@ -354,7 +354,7 @@ test('FINAL is capped at two rounds with a mandatory three-way human exit mirror
   const skill = read('SKILL.md');
   assert.match(skill, /`FINAL: human-accept\(@<sha>\)`/);
   assert.match(skill, /`Approval: FINAL residual risk accepted for <sha> — <reason>`/);
-  assert.match(skill, /reopen once at contract level \(delta R0 \+ CP-1, one wave, one delta round\), or terminate/);
+  assert.match(skill, /reopen once at contract level \(delta R0 \+ CP-1, one wave, one reopen delta round\), or terminate/);
 });
 
 test('FINAL repairs are batched, parallel by domain, SHA-bound, with one pre-authorizable wave', () => {
@@ -378,7 +378,7 @@ test('FINAL cannot loop or pass on missing evidence: UNVERIFIABLE escalates, reo
   const recovery = read('templates/final-recovery.md');
   assert.match(recovery, /After round 2 with any NOT_MET or UNVERIFIABLE row, the human must choose one/);
   assert.match(recovery, /missing evidence for an UNVERIFIABLE row .* that is not a repair task/);
-  assert.match(recovery, /exactly one repair wave and one more delta round/);
+  assert.match(recovery, /exactly one repair wave and one reopen delta round/);
   assert.match(recovery, /\(b\) can be chosen at most once per change/);
   assert.match(recovery, /only \(a\) or \(c\) remain/);
   assert.doesNotMatch(recovery, /new repair wave whose re-review is again delta only/);
@@ -391,13 +391,13 @@ test('FINAL cannot loop or pass on missing evidence: UNVERIFIABLE escalates, reo
 test('FINAL evidence binds to the reviewed SHA; record commits touch only three files', () => {
   const recovery = read('templates/final-recovery.md');
   assert.match(recovery, /Evidence binds to the reviewed code SHA/);
-  assert.match(recovery, /only record commits touching nothing but `openspec\/changes\/<change>\/\{review\.md,rulings\.md,run-log\.md\}`/);
+  assert.match(recovery, /record commits, touching nothing but `openspec\/changes\/<change>\/\{review\.md,rulings\.md,run-log\.md\}`/);
   assert.match(recovery, /git diff --name-only <reviewed-sha>\.\.HEAD/);
-  assert.match(recovery, /any other path invalidates the evidence/);
-  assert.match(recovery, /differs only by such record commits/);
+  assert.match(recovery, /lists only those files/);
+  assert.match(recovery, /Only then make record commits/);
   assert.doesNotMatch(recovery, /verify integration HEAD still equals the recorded SHA,/);
   assert.match(read('templates/reviewer.md'), /record commits only/);
-  assert.match(read('SKILL.md'), /later commits may touch only `review\.md`, `rulings\.md`, `run-log\.md`/);
+  assert.match(read('SKILL.md'), /Later commits touch only `review\.md`, `rulings\.md`, `run-log\.md`/);
 });
 
 test('pre-authorization is a recorded human approval applied to a named amendment SHA', () => {
@@ -409,6 +409,37 @@ test('pre-authorization is a recorded human approval applied to a named amendmen
   assert.match(recovery, /without that line naming the amendment SHA, dispatch is not authorized/);
   assert.match(recovery, /needs fresh human CP-1 for its SHA/);
   assert.doesNotMatch(recovery, /repair tasks need no per-task re-freeze approval/);
+});
+
+test('acceptance check runs at the reviewed SHA before record commits, not at the record HEAD', () => {
+  const recovery = read('templates/final-recovery.md');
+  assert.match(recovery, /while integration HEAD equals the reviewed SHA and before any record commit, run `acceptance check`/);
+  assert.match(recovery, /log its command, exit status and the reviewed SHA in `run-log\.md`/);
+  assert.match(recovery, /logged check is bound to the reviewed SHA/);
+  assert.match(recovery, /do not re-run `acceptance check` at the record HEAD/);
+  assert.match(recovery, /Any other path invalidates the evidence: redo it at the new SHA/);
+  assert.match(read('SKILL.md'), /run at the reviewed SHA, before record commits/);
+  // The checker really binds to HEAD, which is why the sequence matters.
+  assert.match(read('acceptance-run.mjs'), /record\.sourceSha !== sha/);
+});
+
+test('pre-authorization exception is named wherever amendments need approval', () => {
+  const skill = read('SKILL.md');
+  assert.match(skill, /a human confirms, or a recorded pre-authorization covers it \(`final-recovery\.md`\), before `plan`/);
+  assert.match(skill, /amend under CP-1 or recorded pre-authorization/);
+  assert.doesNotMatch(skill, /amend under human CP-1/);
+  assert.doesNotMatch(skill, /a human confirms before re-running `plan`/);
+  assert.match(read('templates/final-recovery.md'), /unless covered by a pre-authorization \(below\)/);
+});
+
+test('the reopen delta round is named consistently outside the two-round count', () => {
+  const recovery = read('templates/final-recovery.md');
+  assert.match(recovery, /plus one reopen delta round only if \(b\) is chosen/);
+  assert.match(recovery, /one reopen delta round \(the only round beyond the two\)/);
+  assert.match(recovery, /remains after the reopen delta round/);
+  assert.match(read('templates/reviewer.md'), /plus one reopen delta round if the human reopens at contract level/);
+  assert.match(read('SKILL.md'), /one wave, one reopen delta round\)/);
+  assert.doesNotMatch(recovery, /one more delta round/);
 });
 
 test('R0 checks the Verify oracle and amendment R0 is delta-only', () => {
