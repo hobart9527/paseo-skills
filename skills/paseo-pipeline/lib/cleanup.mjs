@@ -2,8 +2,9 @@
 //
 // Discovery is read-only: it lists the Paseo workspaces, Git worktrees and branches this
 // change owns, with the exact command that would touch each. `--execute` runs an object only
-// when one `Approval:` block of run-log.md contains both its identifier and its exact command,
-// and records every attempt so a re-run skips what is already done.
+// when its own `Approval:` block of run-log.md carries one `Object:` line equal to the object's
+// identifier and one `Command:` line equal to its command, compared literally, and records
+// every attempt so a re-run skips what is already done.
 //
 // Nothing here force-deletes: Paseo archives its own worktrees, manual worktrees use
 // `git worktree remove` without --force, and branches use `-d`. A refusal is a safe failure,
@@ -57,6 +58,17 @@ function listBranches(cwd, change) {
   return result.stdout.split('\n').map((line) => line.trim()).filter(Boolean).filter((branch) => ownedBranch(branch, change));
 }
 
+/**
+ * The Paseo workspace that owns a worktree path, if any. A stale registration's directory is
+ * gone, so `realpath` cannot identify it; only a literal path match against the workspace cwd
+ * can, and a workspace whose cwd string differs from the registration path stays unrecognized.
+ */
+function ownedWorkspace(byPath, target) {
+  const direct = byPath.get(path.resolve(target));
+  if (direct) return direct;
+  try { return byPath.get(fs.realpathSync(target)); } catch { return undefined; }
+}
+
 // `--background` is required: the active list hides background workspaces, and a hidden but
 // owning workspace would make its worktree look manual — then `git worktree remove` would run
 // on a Paseo-owned path instead of `paseo workspace archive`.
@@ -77,9 +89,9 @@ function listPaseoWorkspaces() {
  * order), then branch objects. A worktree owned by a Paseo workspace yields exactly one
  * `paseo-workspace` object and never an extra `git-worktree` object for the same path.
  *
- * A stale registration (path gone) is not touched implicitly: `git worktree prune` would also
- * prune other changes' registrations. It becomes its own `worktree-prune` object, and only
- * when every prunable registration belongs to this change.
+ * A stale registration (path gone) is an ordinary `git-worktree` object: `git worktree remove
+ * <path>` clears just that registration without force, so it needs its own approval like any
+ * other object. A registration owned by another change is never offered.
  */
 export function discoverObjects({ cwd, changeDir }) {
   const change = path.basename(changeDir);
@@ -88,29 +100,23 @@ export function discoverObjects({ cwd, changeDir }) {
   const byPath = new Map();
   for (const workspace of paseo.workspaces) {
     if (typeof workspace?.cwd !== 'string' || typeof workspace?.workspaceId !== 'string') continue;
+    byPath.set(path.resolve(workspace.cwd), workspace);
     byPath.set(realOrResolved(workspace.cwd), workspace);
   }
   const objects = [];
   const seen = new Set();
   const trees = listWorktrees(cwd);
   const prunable = trees.filter((tree) => tree.prunable);
-  if (prunable.length && prunable.every((tree) => ownedBranch(tree.branch, change))) {
-    // `git worktree prune` is global: it removes every stale registration at once. One object
-    // per registration keeps each approval meaningful; execution requires all of them.
-    for (const tree of prunable) {
-      objects.push({ kind: 'worktree-prune', id: tree.path, branch: null, path: tree.path, command: 'git worktree prune' });
-    }
-  } else if (prunable.length) {
+  if (prunable.length && !prunable.every((tree) => ownedBranch(tree.branch, change))) {
     const foreign = prunable.filter((tree) => !ownedBranch(tree.branch, change)).map((tree) => tree.path);
-    console.warn(`[pipeline-run] not pruning stale registrations owned by other changes: ${foreign.join(', ')}`);
+    console.warn(`[pipeline-run] not touching stale registrations owned by other changes: ${foreign.join(', ')}`);
   }
   for (const tree of trees) {
-    if (tree.prunable) continue;
     if (!ownedBranch(tree.branch, change)) continue;
     const key = realOrResolved(tree.path);
     if (seen.has(key)) continue;
     seen.add(key);
-    const workspace = byPath.get(key);
+    const workspace = ownedWorkspace(byPath, tree.path);
     if (workspace) {
       objects.push({
         kind: 'paseo-workspace',
@@ -122,7 +128,7 @@ export function discoverObjects({ cwd, changeDir }) {
     } else {
       objects.push({
         kind: 'git-worktree',
-        id: tree.branch,
+        id: tree.path,
         branch: tree.branch,
         path: tree.path,
         command: `git worktree remove ${tree.path}`,
@@ -181,44 +187,56 @@ export function parseApprovalBlocks(text) {
   return blocks;
 }
 
-function containsToken(text, token) {
-  const escaped = escapeRe(token);
-  return new RegExp(`(^|[^A-Za-z0-9_./-])${escaped}($|[^A-Za-z0-9_./-])`).test(text);
-}
+const OBJECT_LINE = /^\s*Object:\s*(.+)$/;
+const COMMAND_LINE = /^\s*Command:\s*(.+)$/;
 
-/** Command lines of a block (`Command: <cmd>`, backticks and trailing punctuation stripped). */
-export function blockCommands(block) {
-  const commands = [];
-  for (const line of String(block || '').split(/\r?\n/)) {
-    const match = line.match(/^\s*[-*]?\s*Command:\s*(.+)$/i);
-    if (!match) continue;
-    // A backtick-wrapped command is literal: `integration/chg,` is a different branch from
-    // `integration/chg`, and a comma is a valid ref character. Only prose may have trailing
-    // sentence punctuation stripped, and an unmatched backtick makes the line unparseable.
-    const value = match[1].trim();
-    if (value.startsWith('`') || value.endsWith('`')) {
-      if (value.length >= 2 && value.startsWith('`') && value.endsWith('`')) {
-        const inner = value.slice(1, -1);
-        if (inner) commands.push(inner);
-      }
-      continue;
-    }
-    const prose = value.replace(/[.,;:]+$/, '').trim();
-    if (prose) commands.push(prose);
+/**
+ * The literal value of one field line, or null when it is unparseable. Only whitespace around
+ * the value is trimmed; backticks are removed only when they wrap the whole value. Everything
+ * else stays byte-for-byte: no tokenizing, no punctuation stripping, no case folding.
+ */
+function literalValue(raw) {
+  const value = raw.trim();
+  if (value.startsWith('`') || value.endsWith('`')) {
+    if (value.length < 2 || !value.startsWith('`') || !value.endsWith('`')) return null;
+    return value.slice(1, -1);
   }
-  return commands;
+  return value;
 }
 
 /**
- * A block covers an object only with both an identifier token and an exactly equal command
- * line in that same block. Substring matching would let `git branch -d integration/chg-old`
- * authorize `git branch -d integration/chg`.
+ * Parse one block into its `Object:` and `Command:` values. Anything ambiguous is fail-closed:
+ * a missing or unparseable field, or more than one `Object:`/`Command:` line, yields empty
+ * lists, so the block authorizes nothing.
+ * @returns {{objects: string[], commands: string[]}}
+ */
+export function parseApprovalBlock(block) {
+  const objects = [];
+  const commands = [];
+  for (const line of String(block || '').split(/\r?\n/)) {
+    const object = line.match(OBJECT_LINE);
+    if (object) { const value = literalValue(object[1]); if (value) objects.push(value); continue; }
+    const command = line.match(COMMAND_LINE);
+    if (command) { const value = literalValue(command[1]); if (value) commands.push(value); }
+  }
+  if (objects.length !== 1 || commands.length !== 1) return { objects: [], commands: [] };
+  return { objects, commands };
+}
+
+/**
+ * A block covers an object only when it names exactly one object and one command, and both
+ * equal this object's own values under `===`. There is no tokenizing or substring matching:
+ * `integration/chg,` and `integration/chg` are different names, and one block authorizes one
+ * object. A free-text block of the old shape has no `Object:`/`Command:` lines, so it matches
+ * nothing.
  */
 export function approvalCovers(block, object) {
   if (!block || !object?.command) return false;
+  const { objects, commands } = parseApprovalBlock(block);
+  if (objects.length !== 1 || commands.length !== 1) return false;
   const identifiers = [object.id, object.branch, object.path].filter((value) => typeof value === 'string' && value);
-  if (!identifiers.some((id) => containsToken(block, id))) return false;
-  return blockCommands(block).some((command) => command === object.command.trim());
+  if (!identifiers.includes(objects[0])) return false;
+  return commands[0] === object.command;
 }
 
 // ---- Re-entrancy records (worktree run-log; never committed) ----
@@ -246,20 +264,6 @@ function appendRecord(changeDir, object, outcome, sha = null) {
   fs.appendFileSync(file, `Cleanup: ${object.kind} ${object.id} ${object.command} ${outcome}${sha ? ` @${sha}` : ''}\n`);
 }
 
-/**
- * Paths that appeared or disappeared between approval and execution. `git worktree prune`
- * acts on whatever is stale at call time, so a changed set means the human approved something
- * other than what would be deleted.
- */
-export function pruneSetDiff(approvedPaths, currentPaths) {
-  const approved = new Set(approvedPaths);
-  const current = new Set(currentPaths);
-  return {
-    appeared: [...current].filter((item) => !approved.has(item)),
-    disappeared: [...approved].filter((item) => !current.has(item)),
-  };
-}
-
 // ---- Execution ----
 
 function paseoArchive(object) {
@@ -270,13 +274,11 @@ function paseoArchive(object) {
   return { status: 'done', detail: '' };
 }
 
-/** Execute one approved object. A missing object counts as done, not an error. */
+/**
+ * Execute one approved object. A branch already gone is done; a stale registration is removed
+ * individually, and a missing Paseo workspace is still archived so its record does not linger.
+ */
 export function executeObject(object, { cwd = process.cwd() } = {}) {
-  if (object.kind === 'worktree-prune') {
-    const result = runGit(cwd, ['worktree', 'prune']);
-    if (result.status !== 0) return { status: 'failed', detail: (result.stderr || result.stdout || '').trim() || 'git worktree prune failed' };
-    return { status: 'done', detail: '' };
-  }
   if (object.kind === 'branch') {
     const ref = `refs/heads/${object.branch}`;
     const tip = runGit(cwd, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
@@ -287,13 +289,17 @@ export function executeObject(object, { cwd = process.cwd() } = {}) {
     // The recorded tip is what proves a later `--merged-at` is this change's merge.
     return { status: 'done', detail: '', sha };
   }
-  if (!fs.existsSync(object.path)) return { status: 'done', detail: 'already gone' };
+  // A stale registration is the normal case where its path is gone, and a missing Paseo
+  // workspace still needs its archive record cleared.
+  if (object.kind === 'paseo-workspace') return paseoArchive(object);
   if (object.kind === 'git-worktree') {
+    if (!fs.existsSync(object.path) && !runGit(cwd, ['worktree', 'list', '--porcelain']).stdout.includes(`worktree ${object.path}\n`)) {
+      return { status: 'done', detail: 'registration already gone' };
+    }
     const result = runGit(cwd, ['worktree', 'remove', object.path]);
     if (result.status !== 0) return { status: 'failed', detail: (result.stderr || result.stdout || '').trim() || 'git worktree remove refused' };
     return { status: 'done', detail: '' };
   }
-  if (object.kind === 'paseo-workspace') return paseoArchive(object);
   return { status: 'failed', detail: `unknown object kind: ${object.kind}` };
 }
 
@@ -344,7 +350,6 @@ export function checkPreconditions({ cwd, changeDir, change, objects, base, merg
     }
   }
   for (const object of objects) {
-    if (object.kind === 'worktree-prune') continue;
     if (!object.path || !fs.existsSync(object.path)) continue;
     const status = runGit(object.path, ['status', '--porcelain']);
     if (status.error || status.status !== 0) return { code: 4, message: `cannot check ${object.path}: ${(status.stderr || status.error?.message || '').trim()}` };
@@ -423,54 +428,8 @@ export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => conso
       refusal = { message: 'no object has a matching recorded Approval; nothing may be executed' };
       stderr(`[pipeline-run] cleanup refused: ${refusal.message}`);
     } else {
-      // `git worktree prune` is all-or-nothing and global: run it only once every stale
-      // registration is approved, and record each path as done because one prune covers all.
-      const prunes = objects.filter((object) => object.kind === 'worktree-prune' && object.status !== 'already-done');
-      const pruneAllowed = prunes.length === 0 || prunes.every((object) => object.approved);
-      let pruned = false;
       for (const object of objects) {
         if (object.status === 'already-done') continue;
-        if (object.kind === 'worktree-prune') {
-          if (!pruneAllowed) {
-            // A partial approval authorizes nothing: `git worktree prune` is global.
-            object.status = 'unapproved';
-            object.approved = false;
-            object.detail = 'prune withheld: not every stale registration is approved';
-            if (!exit) exit = 5;
-            continue;
-          }
-          // One prune covers every registration; run it on the first object, then record the
-          // outcome for all of them and never invoke it again in this pass.
-          if (!pruned) {
-            pruned = true;
-            // `git worktree prune` deletes registrations discovered now, which may include one
-            // that became stale after discovery. Never prune a set the human did not approve.
-            const { appeared, disappeared } = pruneSetDiff(
-              prunes.map((prune) => prune.path),
-              listWorktrees(cwd).filter((tree) => tree.prunable).map((tree) => tree.path),
-            );
-            if (appeared.length || disappeared.length) {
-              const changes = [
-                appeared.length ? `appeared: ${appeared.join(', ')}` : '',
-                disappeared.length ? `disappeared: ${disappeared.join(', ')}` : '',
-              ].filter(Boolean).join('; ');
-              for (const prune of prunes) {
-                prune.status = 'failed';
-                prune.detail = `prune withheld, stale registrations changed (${changes}); re-run discovery and approve them`;
-              }
-              if (exit !== 5) exit = 1;
-              continue;
-            }
-            const result = executeObject(object, { cwd });
-            for (const prune of prunes) {
-              prune.status = result.status;
-              prune.detail = result.detail;
-              appendRecord(changeDir, prune, result.status);
-            }
-            if (result.status === 'failed' && exit !== 5) exit = 1;
-          }
-          continue;
-        }
         if (!object.approved) { object.status = 'unapproved'; if (!exit) exit = 5; continue; }
         const result = executeObject(object, { cwd });
         object.status = result.status;

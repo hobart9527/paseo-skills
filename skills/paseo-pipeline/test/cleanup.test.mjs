@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { executeObject, pruneSetDiff } from '../lib/cleanup.mjs';
+import { executeObject } from '../lib/cleanup.mjs';
 
 const script = fileURLToPath(new URL('../pipeline-run.mjs', import.meta.url));
 const env = {
@@ -68,7 +68,7 @@ const TASKS_OPEN = `- [x] 1.1 T-01 task\n  - Write scope: src,test\n  - Verify w
  * main checkout is never itself a cleanup object. `integrated: true` fast-forwards main to
  * integration, which is what CP-2 landing looks like.
  */
-function fixture({ tasks = TASKS_DONE, integrated = true, paseoWorkspaceFor = null, background = false, prunableFor = null } = {}) {
+function fixture({ tasks = TASKS_DONE, integrated = true, paseoWorkspaceFor = null, background = false, staleFor = null } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cleanup-'));
   const changeDir = path.join(root, 'openspec', 'changes', CHANGE);
   write(root, `openspec/changes/${CHANGE}/proposal.md`, 'p\n');
@@ -83,23 +83,27 @@ function fixture({ tasks = TASKS_DONE, integrated = true, paseoWorkspaceFor = nu
   git(root, 'commit', '-q', '--allow-empty', '-m', 'integration tip');
   const integrationTip = git(root, 'rev-parse', 'HEAD');
   const worktrees = {};
+  // git prints real paths (/private/var on macOS); objects use exactly what git prints.
+  const registeredPath = (dir) => spawnSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], { env, encoding: 'utf8' }).stdout.trim();
   for (const id of ['T-01', 'T-02']) {
     const dir = path.join(root, '..', `${path.basename(root)}-${id}`);
     git(root, 'worktree', 'add', '-q', '-b', `task/${CHANGE}/${id}`, dir, integrationTip);
-    worktrees[id] = dir;
+    worktrees[id] = registeredPath(dir);
   }
-  for (const id of [prunableFor].flat().filter(Boolean)) {
+  for (const id of [staleFor].flat().filter(Boolean)) {
     // A registration whose directory is gone: stale, and only this change owns it.
     const dir = path.join(root, '..', `${path.basename(root)}-${id}`);
     git(root, 'worktree', 'add', '-q', '-b', `task/${CHANGE}/${id}`, dir, integrationTip);
+    worktrees[id] = registeredPath(dir);
     fs.rmSync(dir, { recursive: true, force: true });
-    worktrees[id] = dir;
   }
   git(root, 'switch', '-q', 'main');
   if (integrated) git(root, 'merge', '-q', '--ff-only', `integration/${CHANGE}`);
   const workspaces = [];
   if (paseoWorkspaceFor) {
-    workspaces.push({ workspaceId: `wks_${paseoWorkspaceFor.toLowerCase().replace('-', '')}`, isolation: 'worktree', background, cwd: fs.realpathSync(worktrees[paseoWorkspaceFor]) });
+    // Paseo reports the path it created; matching is literal, so use the path git prints for
+    // the registration. A removed directory can only be matched by that literal string.
+    workspaces.push({ workspaceId: `wks_${paseoWorkspaceFor.toLowerCase().replace('-', '')}`, isolation: 'worktree', background, cwd: worktrees[paseoWorkspaceFor] });
   }
   return { root, changeDir, worktrees, integrationTip, integrated, localEnv: fakePaseo(root, root, workspaces) };
 }
@@ -120,11 +124,14 @@ function run(f, args) {
 const cleanup = (f, ...flags) => run(f, ['cleanup', f.changeDir, ...flags]);
 
 /**
- * Record approvals the way a human does after CP-2: in the worktree run-log, uncommitted.
- * `onIntegration` writes only to the integration-branch copy instead (fallback path).
+ * Record approvals the way a human does after CP-2: in the worktree run-log, uncommitted,
+ * one literal `Approval:` block per object. `onIntegration` writes only to the
+ * integration-branch copy instead (fallback path).
  */
 function approve(f, objects, filter = () => true, { onIntegration = false } = {}) {
-  const block = objects.filter(filter).map((object) => `Approval: 2026-11-07T00:00:00Z clean up ${object.id}\nObject: ${object.id} ${object.path ?? ''}\nCommand: ${object.command}\n`).join('\n');
+  const block = objects.filter(filter)
+    .map((object) => `Approval: 2026-11-07T00:00:00Z clean up ${object.id}\nObject: ${object.id}\nCommand: ${object.command}\n`)
+    .join('\n');
   const file = path.join(f.changeDir, 'run-log.md');
   if (!onIntegration) {
     fs.writeFileSync(file, `${fs.readFileSync(file, 'utf8')}\n${block}`);
@@ -140,16 +147,15 @@ function approve(f, objects, filter = () => true, { onIntegration = false } = {}
   if (f.integrated) git(f.root, 'merge', '-q', '--ff-only', `integration/${CHANGE}`);
 }
 
-/** Paths of every prunable registration, read the same way the driver does. */
-function listWorktreePaths(f) {
-  const lines = git(f.root, 'worktree', 'list', '--porcelain').split('\n');
-  const paths = [];
-  let current = null;
-  for (const line of lines) {
-    if (line.startsWith('worktree ')) { current = { path: line.slice('worktree '.length), prunable: false }; paths.push(current); }
-    else if (current && line.startsWith('prunable')) current.prunable = true;
-  }
-  return paths.filter((item) => item.prunable).map((item) => item.path);
+/** Append one approval block to the worktree run-log with raw field lines. */
+function approveRaw(f, lines) {
+  const file = path.join(f.changeDir, 'run-log.md');
+  fs.writeFileSync(file, `${fs.readFileSync(file, 'utf8')}\nApproval: 2026-11-07T00:00:00Z cleanup\n${lines.join('\n')}\n`);
+}
+
+/** True when git still has a registration for `targetPath`. */
+function registered(f, targetPath) {
+  return git(f.root, 'worktree', 'list', '--porcelain').split('\n').includes(`worktree ${targetPath}`);
 }
 
 function discover(f) {
@@ -164,8 +170,8 @@ test('cleanup lists objects read-only by default and with --dry-run', () => {
   assert.equal(defaultRun.status, 0, defaultRun.out);
   assert.equal(dryRun.status, 0, dryRun.out);
   assert.equal(defaultRun.stdout, dryRun.stdout);
-  assert.match(defaultRun.stdout, /git-worktree task\/chg\/T-01/);
-  assert.match(defaultRun.stdout, /git-worktree task\/chg\/T-02/);
+  assert.match(defaultRun.stdout, new RegExp(`git-worktree ${f.worktrees['T-01'].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  assert.match(defaultRun.stdout, new RegExp(`git-worktree ${f.worktrees['T-02'].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
   assert.match(defaultRun.stdout, /branch integration\/chg -> git branch -d integration\/chg/);
   // Listing never touches anything.
   for (const id of ['T-01', 'T-02']) assert.ok(fs.existsSync(f.worktrees[id]), id);
@@ -223,11 +229,11 @@ test('--execute refuses an object whose approval block lacks its exact command',
 test('an approval covering one object never covers another object of the same kind', () => {
   const f = fixture();
   const report = discover(f);
-  const onlyFirst = report.objects.filter((object) => object.id === 'task/chg/T-01');
+  const onlyFirst = report.objects.filter((object) => object.id === f.worktrees['T-01']);
   approve(f, onlyFirst);
   const r = cleanup(f, '--execute');
   assert.equal(r.status, 5, r.out);
-  assert.match(r.out, /\[unapproved\] git-worktree task\/chg\/T-02/);
+  assert.match(r.out, new RegExp(`\\[unapproved\\] git-worktree ${f.worktrees['T-02'].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
   assert.ok(fs.existsSync(f.worktrees['T-02']));
 });
 
@@ -302,13 +308,16 @@ test('a re-run skips objects already recorded done', () => {
   assert.equal(log.match(/^Cleanup: .* done(?: @[0-9a-f]+)?$/gm).length, report.objects.length);
 });
 
-test('an object already missing counts as done, not an error', () => {
+test('a missing registration is done, not an error', () => {
   const f = fixture();
   const report = discover(f);
   approve(f, report.objects);
-  const object = report.objects.find((item) => item.kind === 'git-worktree' && item.id === 'task/chg/T-01');
-  const result = executeObject(object, { cwd: f.root });
-  assert.equal(result.status, 'done');
+  const object = report.objects.find((item) => item.kind === 'git-worktree' && item.id === f.worktrees['T-01']);
+  // The first call removes the registration; the second finds it gone and still reports done.
+  assert.equal(executeObject(object, { cwd: f.root }).status, 'done');
+  const again = executeObject(object, { cwd: f.root });
+  assert.equal(again.status, 'done');
+  assert.equal(again.detail, 'registration already gone');
 });
 
 test('approvals in the worktree run-log are the live authority after CP-2', () => {
@@ -336,127 +345,198 @@ test('the integration copy is the fallback only when the worktree run-log is abs
   assert.ok(!fs.existsSync(f.worktrees['T-01']));
 });
 
-test('approval commands must match exactly, not as a substring of a longer branch', () => {
+test('a command with a trailing comma authorizes nothing, quoted or not', () => {
   const f = fixture();
   const report = discover(f);
   const branch = report.objects.find((object) => object.kind === 'branch' && object.id === 'integration/chg');
   assert.equal(branch.command, 'git branch -d integration/chg');
-  // A block naming the right branch token but a longer command must not authorize it.
-  fs.writeFileSync(path.join(f.changeDir, 'run-log.md'),
-    `${fs.readFileSync(path.join(f.changeDir, 'run-log.md'), 'utf8')}\nApproval: 2026-11-07T00:00:00Z cleanup old\nObject: integration/chg integration/chg-old\nCommand: git branch -d integration/chg-old\n`);
-  const listing = discover(f);
-  const listed = listing.objects.find((object) => object.kind === 'branch' && object.id === 'integration/chg');
-  assert.equal(listed.approved, false);
-  const r = cleanup(f, '--execute', '--json');
-  assert.equal(r.status, 5, r.out);
-  const listedAfter = JSON.parse(r.stdout).objects.find((object) => object.kind === 'branch' && object.id === 'integration/chg');
-  assert.equal(listedAfter.status, 'unapproved');
-  assert.equal(listedAfter.approved, false);
-  assert.ok(git(f.root, 'rev-parse', '--verify', 'refs/heads/integration/chg'));
+  for (const value of [`${branch.command},`, `\`${branch.command},\``]) {
+    approveRaw(f, [`Object: integration/chg`, `Command: ${value}`]);
+    const listing = discover(f);
+    assert.equal(listing.objects.find((object) => object.id === 'integration/chg').approved, false, value);
+    const r = cleanup(f, '--execute', '--json');
+    assert.equal(r.status, 5, r.out);
+    const listedAfter = JSON.parse(r.stdout).objects.find((object) => object.id === 'integration/chg');
+    assert.equal(listedAfter.status, 'unapproved', value);
+    assert.equal(listedAfter.approved, false, value);
+    assert.ok(git(f.root, 'rev-parse', '--verify', 'refs/heads/integration/chg'));
+  }
 });
 
-test('an exactly matching command line does authorize the object', () => {
+test('an exact Object and Command line authorizes the object', () => {
   const f = fixture();
   const report = discover(f);
   const branch = report.objects.find((object) => object.kind === 'branch' && object.id === 'integration/chg');
-  fs.writeFileSync(path.join(f.changeDir, 'run-log.md'),
-    `${fs.readFileSync(path.join(f.changeDir, 'run-log.md'), 'utf8')}\nApproval: 2026-11-07T00:00:00Z cleanup\nObject: integration/chg\nCommand: ${branch.command}.\n`);
+  approveRaw(f, ['Object: integration/chg', `Command: ${branch.command}`]);
   const listing = discover(f);
-  assert.equal(listing.objects.find((object) => object.kind === 'branch' && object.id === 'integration/chg').approved, true);
+  assert.equal(listing.objects.find((object) => object.id === 'integration/chg').approved, true);
+  // A fully quoted pair is the same value.
+  approveRaw(f, ['Object: `integration/chg`', `Command: \`${branch.command}\``]);
+  assert.equal(discover(f).objects.find((object) => object.id === 'integration/chg').approved, true);
 });
 
-test('prune objects need their own approval and never run partially', () => {
-  const f = fixture({ prunableFor: ['T-03', 'T-04', 'T-05'] });
+test('stale paths that differ by a trailing comma are distinct objects', () => {
+  const f = fixture({ staleFor: ['T-03', 'T-04'] });
   const report = discover(f);
-  const prunes = report.objects.filter((object) => object.kind === 'worktree-prune');
-  assert.equal(prunes.length, 3);
-  for (const prune of prunes) {
-    assert.equal(prune.command, 'git worktree prune');
-    assert.equal(prune.id, prune.path);
-  }
-  // Approve one stale registration only: the global prune must not run at all.
-  approve(f, report.objects, (object) => object.kind !== 'worktree-prune' || object === prunes[0]);
+  const staleObjects = report.objects.filter((object) => object.kind === 'git-worktree' && !fs.existsSync(object.path));
+  assert.equal(staleObjects.length, 2);
+  const first = staleObjects[0];
+  const commaPath = `${first.path},`;
+  // Approve a path that differs from the real one only by a trailing comma: nothing.
+  approveRaw(f, [`Object: ${commaPath}`, `Command: ${first.command}`]);
+  assert.equal(discover(f).objects.find((object) => object.id === first.id).approved, false);
+  // Approving one of the two leaves the other unapproved and untouched.
+  approve(f, [first]);
   const r = cleanup(f, '--execute', '--json');
   assert.equal(r.status, 5, r.out);
-  const listed = JSON.parse(r.stdout).objects.filter((object) => object.kind === 'worktree-prune');
-  assert.equal(listed.length, 3);
-  for (const prune of listed) {
-    assert.equal(prune.status, 'unapproved');
-    assert.equal(prune.approved, false);
-  }
-  assert.equal((git(f.root, 'worktree', 'list', '--porcelain').match(/prunable /g) || []).length, 3);
+  const listed = JSON.parse(r.stdout).objects.filter((object) => staleObjects.some((stale) => stale.id === object.id));
+  assert.equal(listed.length, 2);
+  assert.equal(listed.find((object) => object.id === first.id).status, 'done');
+  assert.equal(listed.find((object) => object.id !== first.id).status, 'unapproved');
+  assert.ok(!registered(f, first.path));
+  assert.equal((git(f.root, 'worktree', 'list', '--porcelain').match(/prunable /g) || []).length, 1);
 });
 
-test('an approved prune runs once and records every stale registration', () => {
-  const f = fixture({ prunableFor: ['T-03', 'T-04', 'T-05'] });
+test('an approval block with two Object lines or two Command lines authorizes nothing', () => {
+  const f = fixture();
   const report = discover(f);
+  const branch = report.objects.find((object) => object.id === 'integration/chg');
+  approveRaw(f, ['Object: integration/chg', 'Object: integration/chg', `Command: ${branch.command}`]);
+  assert.equal(discover(f).objects.find((object) => object.id === 'integration/chg').approved, false);
+  approveRaw(f, ['Object: integration/chg', `Command: ${branch.command}`, `Command: ${branch.command}`]);
+  assert.equal(discover(f).objects.find((object) => object.id === 'integration/chg').approved, false);
+});
+
+test('an approval block missing Object or Command authorizes nothing', () => {
+  const f = fixture();
+  const report = discover(f);
+  const branch = report.objects.find((object) => object.id === 'integration/chg');
+  approveRaw(f, [`Command: ${branch.command}`]);
+  assert.equal(discover(f).objects.find((object) => object.id === 'integration/chg').approved, false);
+  approveRaw(f, ['Object: integration/chg']);
+  assert.equal(discover(f).objects.find((object) => object.id === 'integration/chg').approved, false);
+});
+
+test('the old free-text approval form authorizes nothing', () => {
+  const f = fixture();
+  const report = discover(f);
+  const branch = report.objects.find((object) => object.id === 'integration/chg');
+  approveRaw(f, ['Objects: integration/chg', `Command: ${branch.command}`]);
+  assert.equal(discover(f).objects.find((object) => object.id === 'integration/chg').approved, false);
+  // Prose naming the object and command in one line is not a literal block either.
+  approveRaw(f, [`Object: please delete integration/chg with ${branch.command}`, `Command: ${branch.command}`]);
+  assert.equal(discover(f).objects.find((object) => object.id === 'integration/chg').approved, false);
+  const r = cleanup(f, '--execute');
+  assert.equal(r.status, 5, r.out);
+  assert.ok(git(f.root, 'rev-parse', '--verify', 'refs/heads/integration/chg'));
+});
+
+test('a stale registration is an ordinary git-worktree object with a per-path command', () => {
+  const f = fixture({ staleFor: ['T-03', 'T-04'] });
+  const report = discover(f);
+  const stale = report.objects.filter((object) => object.kind === 'git-worktree' && !fs.existsSync(object.path));
+  assert.equal(stale.length, 2);
+  for (const object of stale) {
+    assert.equal(object.command, `git worktree remove ${object.path}`);
+    assert.ok(!fs.existsSync(object.path));
+  }
+  // No global operation is ever offered: every command is scoped to one object.
+  assert.ok(!report.objects.some((object) => !/^(git worktree remove |paseo workspace archive |git branch -d )/.test(object.command)));
+});
+
+test('an approved stale registration is removed individually', () => {
+  const f = fixture({ staleFor: 'T-03' });
+  const report = discover(f);
+  const stale = report.objects.find((object) => object.kind === 'git-worktree' && !fs.existsSync(object.path));
   approve(f, report.objects);
   const r = cleanup(f, '--execute', '--json');
   assert.equal(r.status, 0, r.out);
-  const listed = JSON.parse(r.stdout).objects.filter((object) => object.kind === 'worktree-prune');
-  assert.equal(listed.length, 3);
-  for (const prune of listed) assert.equal(prune.status, 'done');
-  assert.doesNotMatch(git(f.root, 'worktree', 'list', '--porcelain'), /prunable /);
-  const log = fs.readFileSync(path.join(f.changeDir, 'run-log.md'), 'utf8');
-  const records = log.split('\n').filter((line) => line.startsWith('Cleanup: worktree-prune '));
-  assert.equal(records.length, 3);
+  const listed = JSON.parse(r.stdout).objects.find((object) => object.id === stale.id);
+  assert.equal(listed.status, 'done');
+  assert.ok(!registered(f, stale.path));
+  assert.match(fs.readFileSync(path.join(f.changeDir, 'run-log.md'), 'utf8'), /^Cleanup: git-worktree .* done$/m);
 });
 
-test('prune is withheld when the stale registration set changes after discovery', () => {
-  const f = fixture({ prunableFor: 'T-03' });
+test('two stale registrations: only the approved one is removed', () => {
+  const f = fixture({ staleFor: ['T-03', 'T-04'] });
   const report = discover(f);
-  const approved = report.objects.filter((object) => object.kind === 'worktree-prune').map((object) => object.path);
-  // A registration becomes stale between approval and execution.
-  const late = path.join(f.root, '..', `${path.basename(f.root)}-late`);
-  git(f.root, 'worktree', 'add', '-q', '-b', `task/${CHANGE}/T-06`, late, f.integrationTip);
-  fs.rmSync(late, { recursive: true, force: true });
-  const current = listWorktreePaths(f);
-  const diff = pruneSetDiff(approved, current);
-  assert.equal(diff.appeared.length, 1);
-  assert.equal(diff.appeared[0], current.find((item) => item.endsWith('-late')));
-  assert.deepEqual(diff.disappeared, []);
-  // An unchanged set is not a diff.
-  assert.deepEqual(pruneSetDiff(current, current), { appeared: [], disappeared: [] });
-});
-
-test('a registration that turns stale after approval withholds the prune end to end', () => {
-  const f = fixture({ prunableFor: 'T-03' });
-  const report = discover(f);
-  // Approve exactly what was discovered.
-  approve(f, report.objects);
-  // A second registration turns stale before execution and was never approved.
-  const late = path.join(f.root, '..', `${path.basename(f.root)}-late`);
-  git(f.root, 'worktree', 'add', '-q', '-b', `task/${CHANGE}/T-06`, late, f.integrationTip);
-  fs.rmSync(late, { recursive: true, force: true });
+  const stale = report.objects.filter((object) => object.kind === 'git-worktree' && !fs.existsSync(object.path));
+  approve(f, report.objects, (object) => object.id !== stale[1].id);
   const r = cleanup(f, '--execute', '--json');
   assert.equal(r.status, 5, r.out);
-  const prunes = JSON.parse(r.stdout).objects.filter((object) => object.kind === 'worktree-prune');
-  assert.equal(prunes.length, 2);
-  for (const prune of prunes) assert.equal(prune.status, 'unapproved');
-  assert.equal((git(f.root, 'worktree', 'list', '--porcelain').match(/prunable /g) || []).length, 2);
-  assert.doesNotMatch(fs.readFileSync(path.join(f.changeDir, 'run-log.md'), 'utf8'), /^Cleanup: worktree-prune .* done/m);
+  const listed = JSON.parse(r.stdout).objects.filter((object) => object.kind === 'git-worktree');
+  assert.equal(listed.find((object) => object.id === stale[0].id).status, 'done');
+  assert.equal(listed.find((object) => object.id === stale[1].id).status, 'unapproved');
+  assert.ok(!registered(f, stale[0].path));
+  assert.ok(registered(f, stale[1].path));
 });
 
-test('a partial prune approval runs the global prune for no one', () => {
-  const f = fixture({ prunableFor: ['T-03', 'T-04'] });
+test('a dirty worktree refuses without force', () => {
+  const f = fixture();
+  write(f.worktrees['T-02'], 'dirty.txt', 'x');
   const report = discover(f);
-  const prunes = report.objects.filter((object) => object.kind === 'worktree-prune');
-  // One stale registration approved, one not: prune must never run.
-  approve(f, report.objects, (object) => object.kind !== 'worktree-prune' || object === prunes[0]);
+  const object = report.objects.find((item) => item.id === f.worktrees['T-02']);
+  // Executed directly, the object fails; the command never carries --force.
+  const result = executeObject(object, { cwd: f.root });
+  assert.equal(result.status, 'failed');
+  assert.doesNotMatch(object.command, /--force/);
+  assert.ok(fs.existsSync(f.worktrees['T-02']));
+  // End to end, the precondition refuses before anything runs and names the worktree.
+  approve(f, report.objects);
   const r = cleanup(f, '--execute');
-  assert.equal(r.status, 5, r.out);
-  assert.match(r.out, /prune withheld: not every stale registration is approved/);
-  assert.equal((git(f.root, 'worktree', 'list', '--porcelain').match(/prunable /g) || []).length, 2);
-  assert.doesNotMatch(fs.readFileSync(path.join(f.changeDir, 'run-log.md'), 'utf8'), /^Cleanup: worktree-prune .* done/m);
+  assert.equal(r.status, 4, r.out);
+  assert.match(r.stderr, /worktree is not clean/);
+  assert.ok(fs.existsSync(f.worktrees['T-02']));
 });
 
-test('a stale registration owned by another change is not offered for prune', () => {
+test('a stale registration owned by a Paseo workspace is archived, never removed by git', () => {
+  const f = fixture({ staleFor: 'T-03', paseoWorkspaceFor: 'T-03' });
+  const report = discover(f);
+  const owned = report.objects.filter((object) => object.kind === 'paseo-workspace');
+  assert.equal(owned.length, 1);
+  assert.equal(owned[0].id, 'wks_t03');
+  assert.equal(owned[0].command, 'paseo workspace archive wks_t03');
+  assert.equal(owned[0].path, f.worktrees['T-03']);
+  assert.ok(!report.objects.some((object) => object.path === owned[0].path && object.kind === 'git-worktree'));
+  // The directory is gone, but the Paseo record must still be archived.
+  approve(f, report.objects);
+  const r = cleanup(f, '--execute', '--json');
+  const listed = JSON.parse(r.stdout).objects.find((object) => object.kind === 'paseo-workspace');
+  assert.equal(listed.status, 'done', r.out);
+  assert.ok(!registered(f, owned[0].path));
+});
+
+test('two stale registrations on one branch are two distinct objects', () => {
+  const f = fixture();
+  const secondDir = path.join(f.root, '..', `${path.basename(f.root)}-T-01b`);
+  git(f.root, 'worktree', 'add', '-q', '-f', secondDir, 'task/chg/T-01');
+  const second = spawnSync('git', ['-C', secondDir, 'rev-parse', '--show-toplevel'], { env, encoding: 'utf8' }).stdout.trim();
+  fs.rmSync(secondDir, { recursive: true, force: true });
+  const first = f.worktrees['T-01'];
+  fs.rmSync(first, { recursive: true, force: true });
+  const report = discover(f);
+  const stale = report.objects.filter((object) => object.kind === 'git-worktree' && !fs.existsSync(object.path));
+  assert.deepEqual(stale.map((object) => object.id).sort(), [first, second].sort());
+  assert.equal(new Set(stale.map((object) => object.command)).size, 2);
+  // Approving one removes only that registration; the other stays.
+  approve(f, report.objects, (object) => object.id !== first);
+  const r = cleanup(f, '--execute', '--json');
+  assert.equal(r.status, 5, r.out);
+  const listed = JSON.parse(r.stdout).objects.filter((object) => stale.some((item) => item.id === object.id));
+  assert.equal(listed.find((object) => object.id === second).status, 'done');
+  assert.equal(listed.find((object) => object.id === first).status, 'unapproved');
+  assert.ok(!registered(f, second));
+  assert.ok(registered(f, first));
+});
+
+test('a stale registration owned by another change is never offered', () => {
   const f = fixture();
   const foreign = path.join(f.root, '..', `${path.basename(f.root)}-foreign`);
   git(f.root, 'worktree', 'add', '-q', '-b', 'feature/other', foreign);
   fs.rmSync(foreign, { recursive: true, force: true });
   const report = discover(f);
-  assert.ok(!report.objects.some((object) => object.kind === 'worktree-prune'));
+  assert.ok(!report.objects.some((object) => object.path === foreign));
+  assert.ok(!report.objects.some((object) => !/^(git worktree remove |paseo workspace archive |git branch -d )/.test(object.command)));
 });
 
 test('a background Paseo workspace still owns its worktree', () => {
@@ -468,38 +548,26 @@ test('a background Paseo workspace still owns its worktree', () => {
   assert.ok(!report.objects.some((object) => object.kind === 'git-worktree' && fs.realpathSync(object.path) === fs.realpathSync(f.worktrees['T-01'])));
 });
 
-test('a backtick-wrapped command is literal: a trailing comma is part of the name', () => {
+test('backtick-wrapped and unquoted values are the same literal command', () => {
   const f = fixture();
   const report = discover(f);
   const branch = report.objects.find((object) => object.kind === 'branch' && object.id === 'integration/chg');
-  fs.writeFileSync(path.join(f.changeDir, 'run-log.md'),
-    `${fs.readFileSync(path.join(f.changeDir, 'run-log.md'), 'utf8')}\nApproval: 2026-11-07T00:00:00Z cleanup\nObject: integration/chg\nCommand: \`${branch.command},\`\n`);
-  const listing = discover(f);
-  assert.equal(listing.objects.find((object) => object.kind === 'branch' && object.id === 'integration/chg').approved, false);
-  const r = cleanup(f, '--execute', '--json');
-  assert.equal(r.status, 5, r.out);
-  assert.ok(git(f.root, 'rev-parse', '--verify', 'refs/heads/integration/chg'));
+  for (const value of [branch.command, `\`${branch.command}\``]) {
+    approveRaw(f, ['Object: integration/chg', `Command: ${value}`]);
+    assert.equal(discover(f).objects.find((object) => object.id === 'integration/chg').approved, true, value);
+  }
 });
 
-test('an unquoted command may have trailing sentence punctuation stripped', () => {
-  const f = fixture();
-  const report = discover(f);
-  const branch = report.objects.find((object) => object.kind === 'branch' && object.id === 'integration/chg');
-  fs.writeFileSync(path.join(f.changeDir, 'run-log.md'),
-    `${fs.readFileSync(path.join(f.changeDir, 'run-log.md'), 'utf8')}\nApproval: 2026-11-07T00:00:00Z cleanup\nObject: integration/chg\nCommand: ${branch.command}.\n`);
-  const listing = discover(f);
-  assert.equal(listing.objects.find((object) => object.kind === 'branch' && object.id === 'integration/chg').approved, true);
-});
-
-test('an unmatched backtick makes the command line unparseable', () => {
+test('an unmatched backtick makes the field unparseable', () => {
   const f = fixture();
   const report = discover(f);
   const branch = report.objects.find((object) => object.kind === 'branch' && object.id === 'integration/chg');
   for (const value of [`\`${branch.command}`, `${branch.command}\``]) {
-    fs.writeFileSync(path.join(f.changeDir, 'run-log.md'),
-      `${fs.readFileSync(path.join(f.changeDir, 'run-log.md'), 'utf8')}\nApproval: 2026-11-07T00:00:00Z cleanup\nObject: integration/chg\nCommand: ${value}\n`);
-    const listing = discover(f);
-    assert.equal(listing.objects.find((object) => object.kind === 'branch' && object.id === 'integration/chg').approved, false, value);
+    approveRaw(f, ['Object: integration/chg', `Command: ${value}`]);
+    assert.equal(discover(f).objects.find((object) => object.id === 'integration/chg').approved, false, value);
+    // An unmatched backtick on the Object line is just as unparseable.
+    approveRaw(f, [`Object: \`integration/chg`, `Command: ${branch.command}`]);
+    assert.equal(discover(f).objects.find((object) => object.id === 'integration/chg').approved, false, value);
   }
 });
 

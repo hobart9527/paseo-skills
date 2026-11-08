@@ -11,31 +11,34 @@ Use before any destructive or production step: deploy, `archive_workspace`, bran
    ```
    Include every object the command reaches transitively; an omitted object is a new approval.
    For CP-2 cleanup, take the list verbatim from `pipeline-run.mjs cleanup <change-dir>`
-   (`--json` for the same objects): one `paseo-workspace`, `git-worktree`, `branch` or
-   `worktree-prune` object per line, each with its own exact `command`. An approval covers an
-   object only when one `Approval:` block carries both that object's id (workspace id, branch
-   name or absolute host path) and an exactly equal `Command:` line; never force (`-D`,
-   `--force`) and never fall back to `rm -rf`. `git worktree prune` is its own object, never
-   implicit: it would also drop stale registrations owned by other changes. It is global, so
-   it runs only when every offered `worktree-prune` object is approved; a partial approval
-   runs nothing, and a registration that appears between approval and execution withholds it.
+   (`--json` for the same objects): one `paseo-workspace`, `git-worktree` or `branch` object
+   per line, each with its own exact `command`. An object is covered only by its own
+   `Approval:` block naming exactly one `Object:` (workspace id, branch name or absolute host
+   path) and one exactly equal `Command:`. A stale registration whose directory is gone is an
+   ordinary `git-worktree` object removed individually with `git worktree remove <path>`; a
+   dirty or locked worktree refuses, and that refusal is reported as failed, never forced
+   (`-D`, `--force`) and never replaced with `rm -rf`.
 2. **Ask.** State what is irreversible, what is archived versus deleted, and what is pushed. Never
    bundle two object classes in one question.
-3. **Record the approval verbatim** in `openspec/changes/<change>/run-log.md`:
+3. **Record the approval verbatim** in `openspec/changes/<change>/run-log.md`, one block per
+   object:
    ```
    Approval: <ISO timestamp> <the user's words, unedited>
-   Objects: <ids/branches/paths copied from step 1>
+   Object: <exact id, branch or path copied from step 1>
    Command: <the exact command>
    ```
-   Do not paraphrase, translate or compress the user's words.
+   Do not paraphrase, translate or compress the user's words. `Object:` and `Command:` are
+   compared literally: surrounding whitespace is ignored and matching backticks are stripped,
+   nothing else. A block with more than one `Object:` or `Command:` line, or with either line
+   missing, authorizes nothing.
 4. **File wins.** After compaction or resume, re-read `run-log.md` instead of trusting the summary.
    Execute only objects and commands the record covers; if the list or command differs, re-ask.
    `cleanup --execute` appends one record per attempted object to the worktree `run-log.md`:
    ```
    Cleanup: <kind> <id> <command> <done|failed|skipped>[@<full-sha>]
    ```
-   A re-run skips objects already recorded `done`; a missing object counts as done. The
-   record is evidence of what ran, not an approval. Approvals are read from this worktree
+   A re-run skips objects already recorded `done`. The record is evidence of what ran, not an
+   approval. Approvals are read from this worktree
    file first (cleanup happens after CP-2, so committing them to integration would break the
    ancestry proof), the integration copy only when the worktree file is absent. If
    `integration/<change>` is already gone, `--merged-at <sha>` must equal the tip recorded
