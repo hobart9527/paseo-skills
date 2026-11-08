@@ -305,12 +305,105 @@ test('the worker brief escalates instead of widening scope or guessing', () => {
   assert.match(read('templates/worker.md'), /Never edit tests or the Verify command/);
 });
 
-test('FINAL review is the only code-quality gate; the merge gate proves mechanics', () => {
+test('FINAL is a bounded conformance verdict; the merge gate proves mechanics', () => {
   const skill = read('SKILL.md');
   assert.match(skill, /test quality is the FINAL review's job/);
   const reviewer = read('templates/reviewer.md');
-  assert.match(reviewer, /only code-quality gate/);
+  assert.doesNotMatch(reviewer, /only code-quality gate/);
   assert.match(reviewer, /none had a per-task reviewer/);
+  assert.match(reviewer, /contract-conformance verdict, not an open search/);
+  assert.match(reviewer, /conformance matrix/);
+  assert.match(reviewer, /`MET \| NOT_MET \| UNVERIFIABLE`/);
+  assert.match(reviewer, /A BLOCKER must attach to a matrix row/);
+  assert.match(reviewer, /Cannot attach to a row ⇒ not a blocker/);
+  assert.match(reviewer, /Round 2 is delta only/);
+  assert.match(reviewer, /At most two rounds per change/);
+  assert.match(reviewer, /CONTRACT_GAP/);
+  assert.match(reviewer, /ENHANCEMENT/);
+  assert.match(reviewer, /only label NOT_MET rows/);
+  assert.match(skill, /Bounded FINAL.*max two rounds/);
+});
+
+test('FINAL findings are ledgered and routed by class; ledger survives SHAs and reviewers', () => {
+  const reviewer = read('templates/reviewer.md');
+  assert.match(reviewer, /Finding ledger/);
+  assert.match(reviewer, /`review\.md`/);
+  assert.match(reviewer, /F-<n> <matrix row> <DEVIATION\|CONTRACT_GAP\|ENHANCEMENT> <open\|fixed@<sha>\|closed\|accepted\|rejected>/);
+  assert.match(reviewer, /ledger carries across SHAs and reviewers/);
+  assert.match(reviewer, /confirmed fixed is closed; reopening it needs new evidence/);
+  assert.match(reviewer, /replacement reviewer reads the ledger first and inherits the budget/);
+  const recovery = read('templates/final-recovery.md');
+  assert.match(recovery, /Only DEVIATION .* enters a repair task/);
+  assert.match(recovery, /CONTRACT_GAP goes to the human/);
+  assert.match(recovery, /ENHANCEMENT goes to the backlog/);
+  const skill = read('SKILL.md');
+  assert.match(skill, /DEVIATION → one batched repair wave/);
+  assert.match(skill, /CONTRACT_GAP → human/);
+});
+
+test('FINAL is capped at two rounds with a mandatory three-way human exit mirroring R0', () => {
+  const recovery = read('templates/final-recovery.md');
+  assert.doesNotMatch(recovery, /repeat steps 3-5/);
+  assert.match(recovery, /at most 2 FINAL rounds per change/);
+  assert.match(recovery, /round 1 full, round 2 delta/);
+  assert.match(recovery, /`FINAL: human-accept\(@<sha>\)` in `review\.md`/);
+  assert.match(recovery, /`Approval: FINAL residual risk accepted for <sha> — <reason>` in `run-log\.md`/);
+  assert.match(recovery, /\(b\) reopen at contract level — delta R0 \+ CP-1/);
+  assert.match(recovery, /\(c\) terminate the change/);
+  assert.match(recovery, /no fourth default/);
+  const skill = read('SKILL.md');
+  assert.match(skill, /`FINAL: human-accept\(@<sha>\)`/);
+  assert.match(skill, /`Approval: FINAL residual risk accepted for <sha> — <reason>`/);
+  assert.match(skill, /reopen at contract level \(delta R0 \+ CP-1\), or terminate/);
+});
+
+test('FINAL repairs are batched, parallel by domain, SHA-bound, with one pre-authorizable wave', () => {
+  const recovery = read('templates/final-recovery.md');
+  assert.match(recovery, /One round's DEVIATIONs become one amendment and one repair wave/);
+  assert.match(recovery, /split by domain into parallel tasks/);
+  assert.match(recovery, /Repairs depend on each other only when their own scopes overlap/);
+  assert.match(recovery, /SCOPE_CONFLICT/);
+  assert.match(recovery, /up to 1 FINAL repair wave of ≤N tasks, DEVIATION only/);
+  assert.match(recovery, /Every approval binds to a SHA in `run-log\.md`/);
+  assert.match(recovery, /"approach only" approval is not one/);
+  assert.match(recovery, /one `anchasi` session for all FINAL rounds/);
+  assert.match(recovery, /reads the ledger first/);
+  assert.match(recovery, /reason for replacement is recorded/);
+});
+
+test('R0 checks the Verify oracle and amendment R0 is delta-only', () => {
+  const reviewer = read('templates/reviewer.md');
+  assert.match(reviewer, /\*\*Oracle check\.\*\*/);
+  assert.match(reviewer, /real entry its Verify exercises/);
+  assert.match(reviewer, /not a fixture or an isolated module/);
+  assert.match(reviewer, /how a wrong implementation would make that Verify fail/);
+  assert.match(reviewer, /Verify a wrong or unwired implementation would still pass, is a BLOCKER/);
+  assert.match(reviewer, /delta-only against its parent SHA, one round/);
+  // Existing R0 rules keep working.
+  assert.match(reviewer, /At most two whole-package R0 rounds per change/);
+  assert.match(reviewer, /R0: pass\(<your-full-agent-uuid>@<reviewed-HEAD-sha-7-chars>\)/);
+});
+
+test('Tier 2 brief is requirement-anchored with per-delivery caps and escalation', () => {
+  const brief = fs.readFileSync(path.join(dir, '..', '..', 'docs', 'tier2-reviewer-brief.md'), 'utf8');
+  assert.match(brief, /verdict is against the Requirement field above, not against all problems in the diff/);
+  assert.match(brief, /DEVIATION/);
+  assert.match(brief, /REQUIREMENT_GAP/);
+  assert.match(brief, /ENHANCEMENT/);
+  assert.match(brief, /Only `DEVIATION` is a `BLOCKER`/);
+  assert.match(brief, /At most 2 reviewer agents and 4 verdicts in total for one delivery/);
+  assert.match(brief, /inherits all prior findings and the budget does not reset/);
+  assert.match(brief, /same defect class is blocked in two consecutive rounds/);
+  assert.match(brief, /independent PASS conflicts with an assigned reviewer's BLOCKED/);
+  assert.match(brief, /both verdicts side by side/);
+});
+
+test('LESSONS records the review-convergence redesign with health metrics', () => {
+  const lessons = read('LESSONS.md');
+  assert.match(lessons, /2026-11-09/);
+  assert.match(lessons, /FINAL 12 轮/);
+  assert.match(lessons, /评审健康度指标/);
+  assert.match(lessons, /FINAL 轮数 ≤2/);
 });
 
 test('FINAL repair instructions retain gate and bind all evidence to final SHA', () => {
@@ -322,7 +415,7 @@ test('FINAL repair instructions retain gate and bind all evidence to final SHA',
   assert.match(recovery, /Depends on/);
   assert.match(recovery, /SCOPE_CONFLICT/);
   // The original reviewer may be gone; an identically profiled replacement is allowed.
-  assert.match(recovery, /new `anchasi` with the same profile/);
+  assert.match(recovery, /same profile/);
   assert.match(read('templates/reviewer.md'), /full SHA and verdict/);
 });
 
