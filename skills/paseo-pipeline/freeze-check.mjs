@@ -102,9 +102,11 @@ if (blocking.length) fixes.set('CONTRACT', 'fix the field named in the message; 
 
 // Scenario mapping.
 const declared = new Map();
-// Section (`## ...`) each id is declared under in THIS change; the cross-change check below needs it
-// to tell a legitimate MODIFIED/REMOVED re-declaration from a collision.
+// Section (`## ...`) and heading text each id is declared under in THIS change; the cross-change
+// check below needs them to tell a legitimate MODIFIED/REMOVED re-declaration from a collision, and
+// to recognise a verbatim re-declaration shared with another change.
 const declaredSection = new Map();
+const declaredTitle = new Map();
 const FENCE_MARKER = /^ {0,3}(`{3,}|~{3,})/;
 for (const file of walk(path.join(changeDir, 'specs'))) {
   let fence = null;
@@ -141,12 +143,16 @@ for (const file of walk(path.join(changeDir, 'specs'))) {
     if (marker) { fence = marker[1]; continue; }
     const heading = line.match(/^##\s+(.+?)\s*$/);
     if (heading) { section = heading[1]; continue; }
-    const match = line.match(/^#{3,6}\s*Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(?:\s+.*)?$/i);
+    const match = line.match(/^#{3,6}\s*Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(.*)$/i);
     if (match) {
       const id = match[1].toUpperCase();
       const source = path.relative(changeDir, file);
       if (declared.has(id)) blocking.push(`DUPLICATE_SCEN ${id}: declared in ${declared.get(id)} and ${source}`);
-      else { declared.set(id, source); declaredSection.set(id, section); }
+      else {
+        declared.set(id, source);
+        declaredSection.set(id, section);
+        declaredTitle.set(id, match[2].replace(/\s+/g, ' ').trim());
+      }
     }
   }
 }
@@ -184,26 +190,40 @@ for (const [scen, file] of declared) {
       }
     }
     const external = new Map();
-    // Which external file declares each id. The section in that file decides nothing: the external
-    // side cannot know whether this change is legitimately re-declaring the id.
+    // Which external file declares each id, and its heading text. The section in that file decides
+    // nothing: the external side cannot know whether this change is legitimately re-declaring the id.
     for (const file of sources) {
       for (const line of read(file).split(/\r?\n/)) {
-        const match = line.match(/^#{3,6}\s*Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(?:\s+.*)?$/i);
+        const match = line.match(/^#{3,6}\s*Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(.*)$/i);
         if (!match) continue;
         const id = match[1].toUpperCase();
         if (!external.has(id)) external.set(id, []);
-        external.get(id).push({ file: path.relative(repoRoot, file), baseline: baselineFiles.has(file) });
+        external.get(id).push({
+          file: path.relative(repoRoot, file),
+          baseline: baselineFiles.has(file),
+          title: match[2].replace(/\s+/g, ' ').trim(),
+        });
       }
     }
     for (const scen of declared.keys()) {
       // Baseline hit: allowed only when this change re-declares the id under MODIFIED/REMOVED
-      // Requirements. Change hit: always a collision — two in-flight changes cannot both own one id,
-      // whatever section either side uses.
+      // Requirements; baseline text is not compared because MODIFIED legitimately rewrites it.
+      // Change hit: a collision when the heading text diverges. A verbatim re-declaration is legal —
+      // `openspec validate` requires an unchanged MODIFIED scenario to repeat its text — so it is
+      // only an advisory about archive/merge order.
       const currentAllowed = /^(?:MODIFIED|REMOVED) Requirements$/i.test(declaredSection.get(scen) || '');
-      const collision = (external.get(scen) || []).find((hit) => !hit.baseline || !currentAllowed);
+      const hits = external.get(scen) || [];
+      const collision = hits.find((hit) => (hit.baseline
+        ? !currentAllowed
+        : hit.title !== (declaredTitle.get(scen) || '')));
       if (collision) {
         blocking.push(`COLLIDING_SCEN ${scen}: already declared in ${collision.file}`);
         fixes.set('COLLIDING_SCEN', 'choose a new SCEN id, or re-declare a baseline id under MODIFIED/REMOVED Requirements in this change');
+      }
+      for (const hit of hits) {
+        if (!hit.baseline && hit.title === (declaredTitle.get(scen) || '')) {
+          advisories.push(`ADVISORY_SHARED_SCEN ${scen}: ${hit.file} declares the same scenario text; confirm archive/merge order with that change before CP-1`);
+        }
       }
     }
   }

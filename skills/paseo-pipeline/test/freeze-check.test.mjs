@@ -943,24 +943,34 @@ test('UNACCEPTED_TASK_SCEN: every claiming task must appear in that SCEN\'s Task
 });
 
 // A repo with SCEN ids already declared outside `aligned()`: the baseline spec and one other change.
-function repoWith(id, { baselineSection = 'Requirements', otherSection = 'MODIFIED Requirements', ownSection = 'MODIFIED Requirements' } = {}) {
-  const dir = aligned({ 'specs/a/spec.md': `${ownSection === 'none' ? '' : `## ${ownSection}\n`}### Scenario: SCEN-1\n` });
+function repoWith(id, { baselineSection = 'Requirements', otherSection = 'MODIFIED Requirements', ownSection = 'MODIFIED Requirements', ownTitle = 'shared behavior', otherTitle = 'other behavior' } = {}) {
+  const dir = aligned({ 'specs/a/spec.md': `${ownSection === 'none' ? '' : `## ${ownSection}\n`}### Scenario: SCEN-1${ownTitle ? ` ${ownTitle}` : ''}\n` });
   const sh = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
   sh('init', '-q', '-b', 'main');
   fs.mkdirSync(path.join(dir, 'openspec/specs/cap'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'openspec/specs/cap/spec.md'), `## ${baselineSection}\n### Scenario: ${id} baseline\n`);
   fs.mkdirSync(path.join(dir, 'openspec/changes/other/specs/cap'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'openspec/changes/other/specs/cap/spec.md'), `## ${otherSection}\n### Scenario: ${id} other\n`);
+  fs.writeFileSync(path.join(dir, 'openspec/changes/other/specs/cap/spec.md'), `## ${otherSection}\n### Scenario: ${id}${otherTitle ? ` ${otherTitle}` : ''}\n`);
   return dir;
 }
 
-test('COLLIDING_SCEN: another change declaring the id blocks whatever section either side uses', () => {
+test('COLLIDING_SCEN: another change declaring the id with different heading text blocks whatever section either side uses', () => {
   for (const otherSection of ['MODIFIED Requirements', 'ADDED Requirements']) {
     const dir = repoWith('SCEN-1', { otherSection });
     const result = run(dir, ['--structural', '--skip-signer-check']);
     assert.equal(result.status, 1, otherSection);
     assert.match(codes(result).join('\n'), /^COLLIDING_SCEN SCEN-1: already declared in openspec\/changes\/other\/specs\/cap\/spec\.md$/m, otherSection);
   }
+});
+
+test('ADVISORY_SHARED_SCEN: another change re-declaring the same heading text is advisory only', () => {
+  // `openspec validate` requires an unchanged MODIFIED scenario to be repeated verbatim, so the
+  // author cannot avoid reusing the id; whitespace differences still count as identical.
+  const dir = repoWith('SCEN-1', { otherSection: 'MODIFIED Requirements', ownTitle: 'shared   behavior', otherTitle: ' shared behavior ' });
+  const result = run(dir, ['--structural', '--skip-signer-check']);
+  assert.equal(result.status, 0, JSON.stringify(codes(result)));
+  assert.doesNotMatch(codes(result).join('\n'), /COLLIDING_SCEN/);
+  assert.match(JSON.parse(result.stdout).advisories.join('\n'), /^ADVISORY_SHARED_SCEN SCEN-1: openspec\/changes\/other\/specs\/cap\/spec\.md declares the same scenario text; confirm archive\/merge order with that change before CP-1$/m);
 });
 
 test('COLLIDING_SCEN: a baseline id re-declared under MODIFIED or REMOVED Requirements in this change passes', () => {
