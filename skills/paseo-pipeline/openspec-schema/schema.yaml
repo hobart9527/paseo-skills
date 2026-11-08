@@ -352,7 +352,12 @@ artifacts:
       and the owners are derived from the `Scenarios` claims in `tasks.md` (recommended
       default); fill it only to split owners across rows. A non-empty `Tasks` cell may
       list only tasks that claim that scenario in `tasks.md` `Scenarios`, and the union
-      of all rows for a scenario must name every task that claims it. Several rows may
+      of all rows for a scenario must name every task that claims it. When `Entry` names
+      a file that a task in this change writes, a row owner must write it or depend on
+      the task that does (`freeze-check` reports `ENTRY_OWNER_UNCLAIMED`); when several
+      components share one assembly file, let the assembler claim the user-facing
+      scenarios, or add a Wave 0 `Kind: skeleton` that pre-wires the entry with stubs and
+      have the components `Uses` it (see the shared-assembly pattern in the author brief). Several rows may
       split the owners; no single row needs all of them.
 
       Format is fixed because `CP-2 human acceptance review`

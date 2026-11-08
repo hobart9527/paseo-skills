@@ -573,9 +573,11 @@ const fullSuiteSinks = tasks.filter((task) => verifyLegs(task.verify).some((leg)
 if (fullSuiteSinks.length > 1) blocking.push(`TOO_MANY_FULL_SUITE_SINKS: ${fullSuiteSinks.map((task) => task.id).join(', ')}`);
 
 // Entry cells mix prose with a real entry point, so a check has to pull the file-shaped tokens
-// out. Route, CLI and prose entries have no extension and are left to R0.
+// out. Route, CLI and prose entries have no extension and are left to R0. Extensions run from
+// one char (`main.c`) to long compound forms (`application.properties`); the extension must
+// contain a letter so version-like numbers (`1.5`) are not read as files.
 const entryFileTokens = (cell) => cell.split(/[\s,;()]+/).map((word) => word.replace(/^[`'"]+|[`'"]+$/g, '').replace(/[.:]+$/, ''))
-  .filter((word) => /^[^`'"]*\.[A-Za-z0-9]{2,6}$/.test(word) && !word.includes('*'));
+  .filter((word) => /^[^`'"]*\.[A-Za-z0-9]{1,12}$/.test(word) && /[A-Za-z]/.test(word.split('.').pop()) && !word.includes('*'));
 // Write scopes are directories or files; a short entry like `ExpenseBillForm.tsx` names the file
 // without its directory, so match it as a path suffix too. No repo lookup: the tasks.md scope is
 // the only authority here, which keeps the check independent of the worktree.
@@ -626,9 +628,10 @@ else {
     const required = /^yes$/i.test(cells[4]);
     // An empty cell means "derive the owners from tasks.md": the task list is then a
     // hand-maintained duplicate of the Scenarios column and drifts (D4: 10 of 34 blocks).
-    // A non-task token is still an error; it is not an intentional omission.
+    // A non-task token is still an error on every row; it is not an intentional omission, and
+    // deriving owners from it would silently paper over a placeholder like `TBD`.
     const bad = listed.filter((item) => !isTaskId(item));
-    if (required && bad.length) {
+    if (bad.length) {
       blocking.push(`BAD_ACCEPTANCE_TASKS acceptance.md:${rowNumber} ${cells[0]}: Tasks token ${bad.join(', ')} is not a task id`);
     }
     for (const id of ids) {

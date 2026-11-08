@@ -896,6 +896,10 @@ test('BAD_ACCEPTANCE_TASKS: an empty Tasks cell derives its owners, a non-task t
   const bad = run(change({ ...files, 'acceptance.md': table('| SCEN-1 | CLI | T-01 and T-02 | node -e "0" | yes | PENDING | pending |') }));
   assert.equal(bad.status, 1);
   assert.match(codes(bad).join('\n'), /^BAD_ACCEPTANCE_TASKS acceptance\.md:3 SCEN-1: Tasks token T-01 and T-02 is not a task id$/m);
+  // A placeholder on a Required=no row must not silently derive owners either.
+  const placeholder = run(change({ ...files, 'acceptance.md': table('| SCEN-1 | CLI | TBD | node -e "0" | no | PENDING | pending |\n| SCEN-1 | CLI | T-01 | node -e "0" | yes | PENDING | pending |') }));
+  assert.equal(placeholder.status, 1);
+  assert.match(codes(placeholder).join('\n'), /^BAD_ACCEPTANCE_TASKS acceptance\.md:3 SCEN-1: Tasks token TBD is not a task id$/m);
 });
 
 test('UNKNOWN_ACCEPTANCE_TASK: a Tasks cell naming a task absent from tasks.md is rejected', () => {
@@ -1010,6 +1014,20 @@ test('ENTRY_OWNER_UNCLAIMED: a skeleton that pre-wires the Entry satisfies the c
 test('ENTRY_OWNER_UNCLAIMED: entries without a file token or without a writer are left to R0', () => {
   assert.equal(entryRun(splitEntry, splitRow('T-01', 'GET /api/expenses')).status, 0);
   assert.equal(entryRun(splitEntry, splitRow('T-01', 'src/legacy/Unchanged.tsx')).status, 0);
+  // A version-like number in prose is not a file path.
+  assert.equal(entryRun(splitEntry, splitRow('T-01', 'timeout 1.5 s')).status, 0);
+});
+
+test('ENTRY_OWNER_UNCLAIMED: one-char and long extensions still resolve', () => {
+  const tasks = splitEntry.map((task) => (task.includes('T-02 task')
+    ? task.replace('src/form/ExpenseBillForm.tsx', 'src/main.c,config/application.properties')
+    : task));
+  const short = entryRun(tasks, splitRow('T-01', '`src/main.c`'));
+  assert.equal(short.status, 1);
+  assert.match(codes(short).join('\n'), /^ENTRY_OWNER_UNCLAIMED SCEN-1 acceptance\.md:3: Entry src\/main\.c is written by T-02/m);
+  const long = entryRun(tasks, splitRow('T-01', 'config/application.properties'));
+  assert.equal(long.status, 1);
+  assert.match(codes(long).join('\n'), /^ENTRY_OWNER_UNCLAIMED SCEN-1 acceptance\.md:3: Entry config\/application\.properties is written by T-02/m);
 });
 
 // A repo with SCEN ids already declared outside `aligned()`: the baseline spec and one other change.

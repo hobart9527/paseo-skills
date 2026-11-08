@@ -14,11 +14,12 @@
     每个声明过的场景至少一行；多行可以共用 Entry 和 Verify，也可以复用已有测试，
     不要求为每个场景新写测试。
   - Entry：真实入口 —— HTTP 路由、UI 路径、CLI 命令，或让能力可达的装配点。不是内部函数。
+    写的是本 change 某个任务会写的文件时，行所有者必须写它或依赖写它的任务（freeze-check 报
+    ENTRY_OWNER_UNCLAIMED）；多个组件共用一个装配文件时，让装配任务认领用户可见场景，或加
+    Wave 0 `Kind: skeleton` 预接线并让组件 `Uses` 它（见 author brief 的 shared-assembly 模式）。
   - Tasks：承载这一行的任务 ID，逗号分隔。留空则从 tasks.md 的 Scenarios 认领自动推导（推荐默认）；
     填了就只能列在 tasks.md 的 Scenarios 里认领了该场景的任务。同一场景多行可以分摊，
     但所有行的并集必须覆盖全部认领者，单行不必列全；填值只用于把所有者分摊到多行。
-    无论留空还是填写，Entry 是文件路径时，行所有者必须写这个文件，或经由 Depends on/Uses
-    到达写它的任务（freeze-check 报 ENTRY_OWNER_UNCLAIMED）。
   - Verify：真正跑一遍 Entry 的**单条可执行命令**。收尾由主会话逐条真跑并留证；命令必须是单条可执行语句：
     自然语言、手工步骤、以 `!` 开头的取反写法都会被拒。预期失败（如退出码 1）写成 `sh -c '! node x.mjs'`；
     多步骤写进一个脚本再调用。只有 Required=no 的行允许写手工步骤（它只留档，不进入执行）。
