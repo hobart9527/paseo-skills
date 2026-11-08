@@ -1026,6 +1026,36 @@ test('COLLIDING_SCEN: an external declaration inside a fence or comment is not a
   assert.match(codes(result).join('\n'), /^COLLIDING_SCEN SCEN-1: already declared in openspec\/changes\/other\/specs\/cap\/spec\.md$/m);
 });
 
+test('COLLIDING_SCEN: a differing fenced payload in the body is a collision, not a verbatim share', () => {
+  const ownBody = 'WHEN client posts the payload\nTHEN server accepts it\n```json\n{"allowed": true}\n```\n';
+  const otherBody = 'WHEN client posts the payload\nTHEN server accepts it\n```json\n{"allowed": false}\n```\n';
+  const dir = repoWith('SCEN-1', { otherSection: 'MODIFIED Requirements', ownTitle: 'shared contract', otherTitle: 'shared contract', ownBody, otherBody });
+  const result = run(dir, ['--structural', '--skip-signer-check']);
+  assert.equal(result.status, 1);
+  assert.match(codes(result).join('\n'), /^COLLIDING_SCEN SCEN-1: already declared in openspec\/changes\/other\/specs\/cap\/spec\.md$/m);
+});
+
+test('COLLIDING_SCEN: a body differing only in interior whitespace is a collision', () => {
+  // A literal's spacing is meaningful; collapsing it would hide a changed value.
+  const dir = repoWith('SCEN-1', {
+    otherSection: 'MODIFIED Requirements', ownTitle: 'shared contract', otherTitle: 'shared contract',
+    ownBody: 'WHEN POST /api/x?n=a  b\nTHEN ok\n', otherBody: 'WHEN POST /api/x?n=a b\nTHEN ok\n',
+  });
+  const result = run(dir, ['--structural', '--skip-signer-check']);
+  assert.equal(result.status, 1);
+  assert.match(codes(result).join('\n'), /^COLLIDING_SCEN SCEN-1: already declared in openspec\/changes\/other\/specs\/cap\/spec\.md$/m);
+});
+
+test('ADVISORY_SHARED_SCEN: trailing whitespace and blank lines alone are not a difference', () => {
+  const dir = repoWith('SCEN-1', {
+    otherSection: 'MODIFIED Requirements', ownTitle: 'shared contract', otherTitle: 'shared contract',
+    ownBody: 'WHEN a   \nTHEN b\n\n\n', otherBody: 'WHEN a\nTHEN b\n',
+  });
+  const result = run(dir, ['--structural', '--skip-signer-check']);
+  assert.equal(result.status, 0, JSON.stringify(codes(result)));
+  assert.match(JSON.parse(result.stdout).advisories.join('\n'), /^ADVISORY_SHARED_SCEN SCEN-1: openspec\/changes\/other\/specs\/cap\/spec\.md declares the same scenario text/m);
+});
+
 test('DESIGN_NAMES_TASK: an HTML comment naming a task id is not prose', () => {
   // The scaffold's comment explains the rule with an example id; keeping it must not block.
   const commented = run(aligned({ 'design.md': '## Decisions\n<!-- 绝不写任务 ID（T-01 之类） -->\n- **D-01 shared helper** 影响模块/路径: src/shared\n- **D-02 wiring** 影响模块/路径: src/app.mjs\n' }));
@@ -1154,6 +1184,31 @@ test('BAD_ACCEPTANCE_TASKS: a non-task token in the Tasks cell is named', () => 
   }));
   assert.equal(result.status, 1);
   assert.match(codes(result).join('\n'), /^BAD_ACCEPTANCE_TASKS acceptance\.md:3 SCEN-1: Tasks token T-02 \(integration\) is not a task id$/m);
+});
+
+test('the scaffold templates produce a package that passes its own gate without design.md', () => {
+  // A template that its own gate rejects costs the author a round. This is the shape of test that
+  // catches that class (it would have caught B1, B7 and B8 before they shipped): copy the real
+  // templates, fill in only the placeholders, and require RESULT freeze ok.
+  const templates = path.join(root, 'openspec-schema', 'templates');
+  const readTemplate = (name) => fs.readFileSync(path.join(templates, name), 'utf8');
+  const tasks = readTemplate('tasks.md')
+    .replaceAll('path/to/file.mjs', 'src/app.mjs')
+    .replaceAll('path/to/file.test.mjs', 'test/app.test.mjs')
+    .replaceAll('path/to/a.mjs', 'src/api.mjs')
+    .replaceAll('path/to/a.test.mjs', 'test/api.test.mjs');
+  const acceptance = readTemplate('acceptance.md')
+    .replace('| `<跑一遍该入口的命令或步骤>` |', '| node --test test/app.test.mjs |')
+    .replace('| `<命令或步骤>` |', '| node --test test/api.test.mjs |');
+  const dir = change({
+    'proposal.md': readTemplate('proposal.md'),
+    'specs/cap/spec.md': '## ADDED Requirements\n\n### Scenario: SCEN-CAP-01 the app starts\n\nWHEN invoked\nTHEN it runs\n\n### Scenario: SCEN-CAP-02 the api answers\n\nWHEN called\nTHEN it answers\n',
+    'tasks.md': tasks,
+    'acceptance.md': acceptance,
+  });
+  const result = run(dir, ['--structural', '--skip-signer-check']);
+  assert.equal(result.status, 0, `${codes(result).join('\n')}\n---\n${result.stdout}`);
+  assert.equal(JSON.parse(result.stdout).blocking.length, 0);
 });
 
 test('SINK_TEST_ONLY: a sink whose whole Write scope is tests is rejected', () => {

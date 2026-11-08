@@ -219,8 +219,8 @@ test('task design self-checks scenario ownership, falsifiable Verify and named s
     ['Verify can fail', /Verify can fail: the owner's Verify runs a test that exercises that entry or function and would fail before the change[^\n]*Write scope \(or created by it\)[^\n]*cannot carry the SCEN\./,
       /owner's Verify runs a test that exercises\s+that entry or function and would fail before the change[\s\S]*?Write scope or created by it[\s\S]*?never calls the code under change cannot carry the SCEN/],
     // Names exist: every named symbol checked with rg; design names decisions, tasks name decisions.
-    ['names exist', /Names exist: confirm each field, symbol or route a task or design names once with `rg` in the tree \(or in a file the task creates\); design\.md names decisions \(`D-01`\) and affected modules only, never task ids; tasks declare `Implements:` decision ids, and every id must exist in design\.md\./,
-      /confirmed once with `rg` in the tree[\s\S]*?design\.md names decisions \(`D-01`\) and affected modules only,\s+never task ids; tasks declare `Implements:` decision ids, and every id must exist\s+in design\.md/],
+    ['names exist', /Names exist: confirm each field, symbol or route a task or design names once with `rg` in the tree \(or in a file the task creates\); design\.md names decisions \(`D-01`\) and affected modules only, never task ids; when design\.md exists, tasks declare `Implements:` decision ids and every id must exist in design\.md; with no design\.md there are no decision ids, so omit `Implements:` \(it is optional in the tasks template\)\./,
+      /confirmed once with `rg` in the tree[\s\S]*?design\.md names decisions \(`D-01`\) and affected modules only,\s+never task ids; when design\.md exists, tasks declare `Implements:` decision ids and\s+every id must exist in design\.md; when it does not exist, omit `Implements:`\s+because there are no decision ids to reference/],
   ];
   for (const [name, authorRe, schemaRe] of clauses) {
     assert.match(taskDesign, authorRe, `author.md: ${name}`);

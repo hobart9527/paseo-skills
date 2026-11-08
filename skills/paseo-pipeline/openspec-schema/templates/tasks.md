@@ -18,7 +18,6 @@
   - Review: strict
   - Verify with: node --test path/to/file.test.mjs
   - Scenarios: SCEN-CAP-01
-  - Implements: D-01
 
 <!--
   字段规则（解析器强制执行，写错就是 MALFORMED_LINE / MISSING_SCOPE / UNKNOWN_* 报错）：
@@ -53,9 +52,10 @@
     - `Kind: skeleton` — 接口桩任务，必须有 `Review: mechanical`，其 Write scope 必须覆盖
       所有 `Interface:` 路径。
     - `Interface: path/to/file.ts#symbol` — 本任务向 `Uses` 消费者提供的路径/符号；可逗号分隔或重复多行。
-    - `Implements: D-01, D-02` — 本任务落实的 design.md 决策编号。design.md 只写决策
-      （`- **D-01 <标题>**`）与影响模块，不写任务 ID；任务在这里反指决策，每个编号必须在
-      design.md 有对应决策标题（freeze-check 核对 DESIGN_NAMES_TASK / UNKNOWN_DECISION）。
+    - `Implements: D-01, D-02` — 本任务落实的 design.md 决策编号。**仅在存在 design.md 时填写**：
+      design.md 是可选的，没有 design.md 就没有决策标题，写了 Implements 会被判 UNKNOWN_DECISION。
+      design.md 只写决策（`- **D-01 <标题>**`）与影响模块，不写任务 ID；任务在这里反指决策，
+      每个编号必须在 design.md 有对应决策标题（freeze-check 核对 DESIGN_NAMES_TASK / UNKNOWN_DECISION）。
   - 可选元数据（`Reads`、`Est`、`Kind`、`Interface`、`Risk-surface`）：仅在影响 Verify、调度、共享接口或风险时填写。
   - Done 行由 merge gate 写入 `- Done: source=<tip7> review=worker`；worker 标记执行，不是审查结论。
     历史 `pass(<reviewer>@<tip>/<base>)` 标签仍可读取，不必改写已冻结内容。

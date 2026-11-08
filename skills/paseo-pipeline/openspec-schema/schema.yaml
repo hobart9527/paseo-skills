@@ -316,8 +316,9 @@ artifacts:
       never calls the code under change cannot carry the SCEN; and every field, symbol or
       route a task or design names is confirmed once with `rg` in the tree (or in a file
       the task creates); design.md names decisions (`D-01`) and affected modules only,
-      never task ids; tasks declare `Implements:` decision ids, and every id must exist
-      in design.md.
+      never task ids; when design.md exists, tasks declare `Implements:` decision ids and
+      every id must exist in design.md; when it does not exist, omit `Implements:`
+      because there are no decision ids to reference.
 
       Guidelines:
       - Vertical slices: behavior + wiring + affected fixtures + tests together.

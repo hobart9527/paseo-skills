@@ -49,11 +49,15 @@ function walkMarkdown(dir, out = []) {
 // Visible markdown lines: HTML comments contribute nothing and a fenced block is an example, not
 // prose. Both the spec scanners and the design.md scan must agree on what counts as a declaration.
 const FENCE_MARKER = /^ {0,3}(`{3,}|~{3,})/;
+// Returns `{ text, rawIndex }` so a caller can recover the raw line behind a visible one: the
+// scenario comparison needs the raw body, while the declaration scan needs the visible heading.
 function visibleLines(markdown) {
   const out = [];
   let fence = null;
   let comment = false;
-  for (const original of markdown.split(/\r?\n/)) {
+  const raw = markdown.split(/\r?\n/);
+  for (let rawIndex = 0; rawIndex < raw.length; rawIndex += 1) {
+    const original = raw[rawIndex];
     let line = original;
     // A fence marker on the raw line wins over comment stripping: ```html <!-- opens a fence, and the
     // comment opener inside it belongs to the fenced example, so it must not leak past the closer.
@@ -82,17 +86,24 @@ function visibleLines(markdown) {
       continue;
     }
     if (marker) { fence = marker[1]; continue; }
-    out.push(line);
+    out.push({ text: line, rawIndex });
   }
   return out;
 }
 const collapse = (text) => text.replace(/\s+/g, ' ').trim();
-// Body of a `### Scenario:` heading: the visible lines after it, up to the next heading of the same
-// or higher level. Trimmed, empties dropped, internal whitespace collapsed, so formatting alone is
-// not a difference but a changed assertion is.
-function scenarioBody(lines, index) {
-  // Not a heading (or no line): there is no scenario body to compare, never a crash. The caller
-  // matches headings, but this runs over arbitrary repository text, so it must not rely on that.
+// Body of a `### Scenario:` heading AS COMPARED for the verbatim exemption. This is deliberately a
+// different function from the declaration scan below: discovery reads visible content (fenced
+// examples and comments are not declarations), while a comparison of two declarations must keep
+// everything a reader would compare. It reads the RAW lines, keeps fenced payloads, and only
+//   1. normalizes line endings (CRLF -> LF) and strips trailing whitespace on each line,
+//   2. drops leading and trailing blank lines,
+// so a body that differs in trailing whitespace or blank lines compares equal, but one that differs
+// in a fenced payload or in interior whitespace (e.g. a literal's spacing) does not. Leading
+// indentation is preserved on purpose: indentation can be significant inside a fenced block, so it
+// is not normalized away. Do not fold this into `visibleLines`.
+function comparedBody(markdown, index) {
+  const lines = markdown.split(/\r?\n/);
+  // Not a heading (or no line): there is no scenario body to compare, never a crash.
   const self = (lines[index] || '').match(/^(#{1,6})\s/);
   if (!self) return '';
   const level = self[1].length;
@@ -100,25 +111,25 @@ function scenarioBody(lines, index) {
   for (let next = index + 1; next < lines.length; next += 1) {
     const heading = lines[next].match(/^(#{1,6})\s/);
     if (heading && heading[1].length <= level) break;
-    const text = collapse(lines[next]);
-    if (text) body.push(text);
+    body.push(lines[next].replace(/\s+$/, ''));
   }
-  return body.join(' ');
+  while (body.length && !body[0]) body.shift();
+  while (body.length && !body[body.length - 1]) body.pop();
+  return body.join('\n');
 }
 // Every `### Scenario: SCEN-...` declared in a markdown file's visible content.
 function scanScenarios(markdown) {
-  const lines = visibleLines(markdown);
+  const entries = visibleLines(markdown);
   const found = [];
   let section = '';
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const heading = line.match(/^##\s+(.+?)\s*$/);
+  for (const { text, rawIndex } of entries) {
+    const heading = text.match(/^##\s+(.+?)\s*$/);
     if (heading) { section = heading[1]; continue; }
     // CommonMark only treats `### ` as an ATX heading when whitespace follows the hashes, so
-    // `####Scenario:` is ordinary text — the same test `scenarioBody` applies to its boundaries.
-    const match = line.match(/^#{3,6}\s+Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(.*)$/i);
+    // `####Scenario:` is ordinary text.
+    const match = text.match(/^#{3,6}\s+Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(.*)$/i);
     if (!match) continue;
-    found.push({ id: match[1].toUpperCase(), title: collapse(match[2]), body: scenarioBody(lines, index), section, line: index });
+    found.push({ id: match[1].toUpperCase(), title: collapse(match[2]), body: comparedBody(markdown, rawIndex), section, line: rawIndex });
   }
   return found;
 }
@@ -650,7 +661,7 @@ else {
   } else {
     // Only visible prose counts: the scaffold's HTML comment explains the rule with an example task
     // id, and a fenced example is not a claim about this package.
-    const designVisible = visibleLines(designMarkdown).join('\n');
+    const designVisible = visibleLines(designMarkdown).map((entry) => entry.text).join('\n');
     const decisions = new Set([...designVisible.matchAll(/^\s*[-*]\s*\*\*(D-\d+)\b/gm)].map((match) => match[1]));
     for (const task of tasks) {
       const pattern = new RegExp(`(^|[^A-Za-z0-9_-])${task.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])`);
