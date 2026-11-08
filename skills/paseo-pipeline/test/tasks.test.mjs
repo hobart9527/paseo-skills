@@ -109,6 +109,11 @@ test('verify legs: a working-directory option scopes the runner instead of namin
   assert.deepEqual(verifyLegs('npm --prefix packages/web test -- ../../x.test.ts').map((leg) => leg.paths), [['x.test.ts']]);
   // One more level escapes the repo root; the path stays unresolved so the scope gate rejects it.
   assert.deepEqual(verifyLegs('npm --prefix packages/web test -- ../../../x.test.ts').map((leg) => leg.paths), [['../../../x.test.ts']]);
+  // `--prefix .` is the repo root: the target still normalizes, and one level up escapes.
+  assert.deepEqual(verifyLegs('npm --prefix . test -- packages/web/../shared/test/a.test.ts').map((leg) => leg.paths), [['packages/shared/test/a.test.ts']]);
+  assert.deepEqual(verifyLegs('npm --prefix . test -- ../x/test/a.test.ts').map((leg) => leg.paths), [['../x/test/a.test.ts']]);
+  // Without any working-directory option, paths normalize the same way.
+  assert.deepEqual(verifyLegs('node --test packages/web/../shared/test/a.test.ts').map((leg) => leg.paths), [['packages/shared/test/a.test.ts']]);
 });
 
 test('official task template is parser-compatible', () => {

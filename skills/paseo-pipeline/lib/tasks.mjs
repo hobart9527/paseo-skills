@@ -273,8 +273,10 @@ function normalizeRelativeDir(value) {
 
 /** Resolve a leg path against its working directory; an escaping or absolute path stays as written. */
 function resolveLegPath(cwd, path) {
-  if (!cwd || path.startsWith('/')) return path;
-  return normalizeRelativeDir(`${cwd}/${path}`) ?? path;
+  if (path.startsWith('/')) return path;
+  // `cwd` is `null` without the option and `''` for `--prefix .`; both mean the repo root,
+  // which still normalizes `a/../b`. Only a non-empty working directory is prefixed.
+  return normalizeRelativeDir(cwd ? `${cwd}/${path}` : path) ?? path;
 }
 
 function legWorkingDirectory(part) {
@@ -302,7 +304,7 @@ export function verifyLegs(value) {
     // directory is not mistaken for the target of the run.
     const tokens = command.split(/\s+/);
     const scoped = strip.length ? tokens.filter((_, i) => !strip.includes(i)).join(' ') : command;
-    const paths = [...new Set(legPaths(scoped).map((path) => (cwd === null ? path : resolveLegPath(cwd, path))))];
+    const paths = [...new Set(legPaths(scoped).map((path) => resolveLegPath(cwd, path)))];
     return { command, paths, broad: paths.length === 0 && FULL_SUITE_LEG.test(scoped) };
   });
 }

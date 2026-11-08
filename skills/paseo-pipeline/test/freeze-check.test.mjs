@@ -398,6 +398,14 @@ test('a dotted or parent-relative prefix resolves to a narrow leg inside Write s
   const result = freezeOf(tasks);
   assert.doesNotMatch(result.stdout, /VERIFY_NOT_NARROW T-02/, result.stdout);
 });
+test('a repo-root prefix still normalizes its parent-relative target', () => {
+  // `--prefix .` is the repo root; `packages/web/../shared/test/a.test.ts` must resolve to
+  // `packages/shared/test/a.test.ts` for the scope gate to see it inside Write scope.
+  const tasks = contract.replace('Write scope: src/alpha,test/alpha.test.mjs', 'Write scope: packages/shared/test,test/alpha.test.mjs')
+    .replace('node --test test/alpha.test.mjs', 'npm --prefix . test -- packages/web/../shared/test/a.test.ts');
+  const result = freezeOf(tasks);
+  assert.doesNotMatch(result.stdout, /VERIFY_NOT_NARROW T-02/, result.stdout);
+});
 test('a working-directory option does not hide a package suite from the sink rules', () => {
   // T-02 becomes a second full suite beside the sink's `npm test`.
   const result = freezeOf(contract.replace('node --test test/alpha.test.mjs', 'npm --prefix packages/a test'));
