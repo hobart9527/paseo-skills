@@ -206,6 +206,28 @@ test('contract authoring order freezes findings, SCEN ids and briefed constants'
   assert.match(author, /`COMPLETE` still requires the structural check to succeed on committed content/);
 });
 
+test('task design self-checks scenario ownership, falsifiable Verify and named symbols', () => {
+  const author = read('templates/author.md');
+  const schema = read('openspec-schema/schema.yaml');
+  const taskDesign = author.slice(author.indexOf('## Task design'), author.indexOf('## Decision Context'));
+  const tasksInstr = schema.slice(schema.indexOf('  - id: tasks'), schema.indexOf('  - id: acceptance'));
+  const clauses = [
+    // Entry owned: the observed entry sits in the owning task's Write scope (or a Depends on edge), not beside it.
+    ['entry owned', /Entry owned: the entry point named for the SCEN in acceptance\.md[^\n]*Write scope, or the owner `Depends on` the task that owns it[^\n]*does not stand in for it\./,
+      /entry point named for the SCEN in acceptance\.md[\s\S]*?inside the owner's Write scope,\s+or the owner `Depends on` the task that owns it[\s\S]*?does not stand in for it/],
+    // Verify can fail: the test exercises the entry and would be red before the change.
+    ['Verify can fail', /Verify can fail: the owner's Verify runs a test that exercises that entry or function and would fail before the change[^\n]*Write scope \(or created by it\)[^\n]*cannot carry the SCEN\./,
+      /owner's Verify runs a test that exercises\s+that entry or function and would fail before the change[\s\S]*?Write scope or created by it[\s\S]*?never calls the code under change cannot carry the SCEN/],
+    // Names exist: every named symbol checked with rg, and Owner ids agree.
+    ['names exist', /Names exist: confirm each field, symbol or route a task or design names once with `rg` in the tree \(or in a file the task creates\), and design\.md Owner ids match tasks\.md\./,
+      /confirmed once with `rg` in the tree[\s\S]*?design\.md Owner ids matching tasks\.md/],
+  ];
+  for (const [name, authorRe, schemaRe] of clauses) {
+    assert.match(taskDesign, authorRe, `author.md: ${name}`);
+    assert.match(tasksInstr, schemaRe, `schema tasks instruction: ${name}`);
+  }
+});
+
 test('dispatch guidance resolves live models and forbids copied examples', () => {
   for (const file of ['SKILL.md']) {
     const text = read(file);

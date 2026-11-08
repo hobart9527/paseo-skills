@@ -306,6 +306,17 @@ artifacts:
         tags such as `pass(<reviewer>@<tip>/<base>)` remain readable; do not rewrite
         frozen history to this format.
 
+      Before committing tasks.md, self-check every SCEN against its owning task and fix
+      the task, not the check: the entry point named for the SCEN in acceptance.md (where
+      the outcome is observed, e.g. the submit handler) is inside the owner's Write scope,
+      or the owner `Depends on` the task that owns it, and a component or unit test beside
+      the entry does not stand in for it; the owner's Verify runs a test that exercises
+      that entry or function and would fail before the change, with the test file in the
+      owner's Write scope or created by it, since an existing test that already passes and
+      never calls the code under change cannot carry the SCEN; and every field, symbol or
+      route a task or design names is confirmed once with `rg` in the tree (or in a file
+      the task creates), with design.md Owner ids matching tasks.md.
+
       Guidelines:
       - Vertical slices: behavior + wiring + affected fixtures + tests together.
       - Concurrent tasks have fully disjoint Write scopes, including test paths.
