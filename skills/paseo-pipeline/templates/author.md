@@ -3,7 +3,7 @@
 Mode: `FULL | REVISE`. Change: `<change>`. Output location: `openspec/changes/<change>/`.
 
 ## Shared contract
-- Read `SKILL.md` (the normative rules); cite code claims as `path:line`. `LESSONS.md` is a 35KB historical evidence log, not a spec: consult a specific section only when a claim depends on past incidents, and never treat it as current procedure.
+- Read `SKILL.md` (the normative rules; the `Entry and CP-1` section governs this stage); cite code claims as `path:line`. `LESSONS.md` is a 35KB historical evidence log, not a spec: consult a specific section only when a claim depends on past incidents, and never treat it as current procedure. Do not read `freeze-check`, parser or scheduler source to learn the rules: the schema templates and the structural check's own output are the feedback.
 - Work in the assigned author workspace and change directory only. Do not create another workspace, recursively hand off, or reroute an already-assigned author task. If instructions conflict or the assigned workspace is unusable, stop and return `BLOCKED` with the conflict; do not improvise a route.
 - Before writing, resolve and read every actual template referenced by `openspec-schema/schema.yaml` for artifacts this change needs. The schema's template list, not this brief's examples, defines the applicable templates.
 - Run supplied read-only preflight before writing. Any required-command denial means stop: report exact command, cwd, denial, next action; do not retry through another tool, shell, or workspace. Preflight success does not authorize `freeze-check`; its denial is also `BLOCKED`.
@@ -23,12 +23,13 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output location: `openspec/changes/<c
 - Structural check: exact command to run immediately after the initial package is complete.
 - Decisions, approved design (if any), and verified source references.
 - Human approvals and any known permission constraints; do not imply preflight authorizes later commands.
+- Product decisions already settled, and the commit-bound path and version of every authoritative input, so the author discovers fewer of them mid-run. The main session sets a reconciliation point at the 30-minute mark: no package commit by then means one steer asking for a commit of the current state and a gap report.
 
 ## Denied command report
 `BLOCKED` — command: `<exact command>`; cwd: `<absolute path>`; denial: `<verbatim denial>`; next responsible action: `<who must authorize or run it>`. Do not seek an alternate invocation to bypass the denial.
 
 ## Mode FULL — single author (`gongbu`, fast path)
-- Input: the approved request, any human-approved design document, and repository context. Write the package directly to OpenSpec files and commit — one pass, one commit is fine. Do not return text for the main session to re-type.
+- Input: the approved request, any human-approved design document, and repository context. Write the package directly to OpenSpec files and commit as each artifact lands (see Write-first budget). Do not return text for the main session to re-type.
 - Main-session authorization must identify the target workspace, baseline, `PIPELINE_HOME`, and exact commands; do not infer them from another checkout or create a workspace.
 - **The package is the OpenSpec native set, no more: `proposal.md`, `specs/<capability>/spec.md` deltas (SCEN-numbered scenarios), `tasks.md`, `acceptance.md`. Create `design.md` only when one of its criteria applies (cross-cutting change, new dependency/data model, security/performance/migration complexity, real ambiguity); otherwise skip it — task-local design is the worker's job. Never write a digest or a survey document; a code-reading conclusion lives beside the rule it supports, as `path:line` in the spec or decision it justifies.**
 - Compile the approved design; do not re-solve it. When a design document exists, the package is its execution form: record conflicts with the current code, freeze the cross-task interfaces and constraints, slice the tasks, and map requirements to scenarios. Do not reopen the chosen technical route, re-narrate approved background, or write behaviour for which this change has no producer.
@@ -40,6 +41,16 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output location: `openspec/changes/<c
 - Acceptance records essential real-entry journeys, not a second list of unit tests or every spec scenario. Preserve required rows for delivery-critical behavior.
 - Do not run the full test suite at authoring: it runs only at the sink and final acceptance (`SKILL.md` principle 5). Baseline reds: run one narrow command per changed package only when a task's Verify needs to know them.
 - Run the exact structural-check command supplied in the main-session brief as soon as the initial package exists. R0 sign-off does not exist yet. Report its command, outcome, exit code, route, waves, max width, and critical path separately. A route of `handoff` is not a check PASS. Read its `CRITICAL` line: each `-logical->` edge is yours to justify or drop (contract-first); each `-scope->` edge is forced by a shared file. Fix blocks in place and rerun; if permission is denied, use the denied-command report and stop.
+
+## Write-first budget
+Measured failure: two authors spent ~55 min each on analysis and wrote no file, because the plan lived only in thinking and was re-derived every turn. Context compaction then discarded it. The budget below is an experiment target, not a guarantee; it never lowers a gate.
+- **Clock.** Run `date` first and record the start. Check it at each commit. Anchors: first files committed by minute 10 (`proposal.md`, spec skeletons with the decisions you already hold); complete package plus the structural check by minute 20; stop at minute 25. About three tool calls per minute is typical, so roughly 25 / 50 / 70 calls is the same budget when no clock is at hand.
+- **Write, then verify.** Once you judge context sufficient for a rule, write it. Every later lookup must serve the rule being written, not reopen the plan. The plan lives in the files.
+- **Commit each artifact as it lands.** Put done and remaining items in the commit message so `git log` reconstructs progress after a context compaction; a summary is not state.
+- **Bounded collision checks.** Exactly four: the Requirement text you modify (quote it verbatim), the storage constraint it writes into (`CHECK`/enum/migration), existing tests inside each task's Write scope, and how each Verify runs in a fresh worktree. Read baseline files with `rg -n` and line windows; never read a multi-thousand-line file whole. If one output exceeds ~20k characters, narrow the query.
+- **Open decisions are recorded, not resolved.** A material product choice the inputs do not settle goes in `proposal.md` as `OPEN-DECISION`: options, consequences, a recommended default. Continue on the default. Return `BLOCKED` only if the choice changes the task graph or ownership. Never decide for the human or invent behavior to close it.
+- **Dependencies.** If preflight reports `MISSING_DEPENDENCIES`, record that each affected Verify cannot run until the main session resolves it; a zero exit status is not readiness.
+- **At the stop point**, commit what exists and return `INCOMPLETE` with the gap list. Do not extend the budget on your own. Budget exhaustion is never a `COMPLETE`, and `COMPLETE` still requires the structural check to succeed on committed content.
 
 ## Mode REVISE — bounded repair after R0
 
@@ -65,7 +76,7 @@ Optional read-only aid: `node "$PIPELINE_HOME"/r0-hotspots.mjs openspec/changes/
 
 ## Decision Context
 
-Use confirmed decisions supplied in the brief and verify cited references exist. Record decision coverage and unresolved conflicts in existing artifacts or the return envelope; do not invent an ADR or present assumptions as approved decisions. Trace key new cross-layer paths end to end with evidence proportionate to their risk; explicitly escalate unverified claims or conflicts. Preserve the actual baseline SHA and assess relevant drift before relying on its evidence. Never fabricate scope or DAG edges to satisfy a checker; capture a minimal reproduction and escalate when reasonable investigation cannot resolve a suspected false positive.
+Use confirmed decisions supplied in the brief and verify cited references exist. Record decision coverage and unresolved conflicts in existing artifacts or the return envelope; do not invent an ADR or present assumptions as approved decisions. Trace a new cross-layer path end to end only where it touches persistence, security, an external boundary or a shared semantic, and stop once the evidence supports the rule; explicitly escalate unverified claims or conflicts as `UNVERIFIED` or `OPEN-DECISION` instead of widening the search. Preserve the actual baseline SHA and assess relevant drift before relying on its evidence. Never fabricate scope or DAG edges to satisfy a checker; capture a minimal reproduction and escalate when reasonable investigation cannot resolve a suspected false positive.
 
 ## Return envelope
 `status` (`COMPLETE` / `BLOCKED` / `INCOMPLETE`), `mode`, absolute workspace, baseline SHA, package commit SHA, changed paths, evidence, decision coverage, unresolved conflicts, assumptions/unverified, task count, max width, route, exact structural-check command/outcome/exit code, blockers, and next responsible action. `COMPLETE` only when the structural check succeeded on committed package content. If blocked by permission denial, include exact command, cwd, verbatim denial, and who must authorize/run it; do not claim route as check success. In `REVISE` mode add: one block per finding (ID, location, affected SCENs/tasks/Verify, evidence, not changed), new commits, and the new reviewed SHA.

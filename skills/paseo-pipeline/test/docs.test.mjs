@@ -122,6 +122,28 @@ test('briefs carry wait backstop, reviewer containment and minimal-contract rule
   }
 });
 
+test('author brief carries a write-first budget without lowering any gate', () => {
+  const author = read('templates/author.md');
+  assert.match(author, /## Write-first budget/);
+  assert.match(author, /Run `date` first and record the start/);
+  assert.match(author, /first files committed by minute 10/);
+  assert.match(author, /stop at minute 25/);
+  assert.match(author, /Commit each artifact as it lands/);
+  assert.match(author, /a summary is not state/);
+  assert.match(author, /Exactly four: the Requirement text you modify/);
+  assert.match(author, /never read a multi-thousand-line file whole/);
+  assert.match(author, /`OPEN-DECISION`: options, consequences, a recommended default/);
+  assert.match(author, /Never decide for the human/);
+  assert.match(author, /`MISSING_DEPENDENCIES`/);
+  assert.match(author, /Budget exhaustion is never a `COMPLETE`/);
+  assert.match(author, /Do not read `freeze-check`, parser or scheduler source/);
+  assert.match(author, /30-minute mark/);
+  // The budget must not displace the gates or the single-author topology.
+  assert.match(author, /`COMPLETE` still requires the structural check to succeed on committed content/);
+  assert.match(author, /One `gongbu` author writes the entire package/);
+  assert.doesNotMatch(author, /skip (R0|the structural check)/i);
+});
+
 test('dispatch guidance resolves live models and forbids copied examples', () => {
   for (const file of ['SKILL.md']) {
     const text = read(file);
