@@ -348,9 +348,11 @@ artifacts:
 
       Every `SCEN-*` declared in the change's spec delta needs at least one row;
       rows may share an Entry and Verify and may reuse an existing test, so a
-      scenario does not require a new test of its own. A row's `Tasks` cell may list
-      only tasks that claim that scenario in `tasks.md` `Scenarios`, and the union of
-      all rows for a scenario must name every task that claims it. Several rows may
+      scenario does not require a new test of its own. Leave a row's `Tasks` cell empty
+      and the owners are derived from the `Scenarios` claims in `tasks.md` (recommended
+      default); fill it only to split owners across rows. A non-empty `Tasks` cell may
+      list only tasks that claim that scenario in `tasks.md` `Scenarios`, and the union
+      of all rows for a scenario must name every task that claims it. Several rows may
       split the owners; no single row needs all of them.
 
       Format is fixed because `CP-2 human acceptance review`
