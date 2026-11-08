@@ -321,7 +321,10 @@ artifacts:
       because there are no decision ids to reference.
 
       Guidelines:
-      - Vertical slices: behavior + wiring + affected fixtures + tests together.
+      - Vertical slices: behavior + wiring + affected fixtures + tests together. A final
+        integration verification task may write tests only when the entry it verifies is
+        owned upstream; freeze-check reports that sink shape as an advisory, not as proof
+        of a missing owner. Do not fabricate a production path to satisfy the checker.
       - Concurrent tasks have fully disjoint Write scopes, including test paths.
       - Do not pad the DAG to qualify for a tier.
       - Keep task titles and metadata concise; include optional fields only when they

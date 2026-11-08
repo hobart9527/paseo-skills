@@ -90,21 +90,20 @@ function visibleLines(markdown) {
   }
   return out;
 }
-const collapse = (text) => text.replace(/\s+/g, ' ').trim();
 // Body of a `### Scenario:` heading AS COMPARED for the verbatim exemption. This is deliberately a
 // different function from the declaration scan below: discovery reads visible content (fenced
 // examples and comments are not declarations), while a comparison of two declarations must keep
-// everything a reader would compare. It reads the RAW lines, keeps fenced payloads, and only
+// everything a reader would compare. Comparison is conservative CONTENT IDENTITY, not Markdown
+// rendering equivalence. It reads the RAW lines, keeps fenced payloads, and only
 //   1. ends the body at the next VISIBLE heading of the same or higher level — a `#` line inside a
 //      fenced payload or an HTML comment is content, not the end of the scenario,
-//   2. normalizes line endings (CRLF -> LF) and strips trailing whitespace on each line,
-//   3. reduces each fence delimiter line to one canonical `~~~`: content matters, delimiter style
-//      (``` vs ~~~, info string) does not,
-//   4. drops leading and trailing blank lines,
-// so a body that differs in trailing whitespace, blank lines or fence style compares equal, but one
-// that differs in a fenced payload, in comment content, or in interior whitespace (e.g. a literal's
-// spacing) does not. Leading indentation is preserved on purpose: indentation can be significant
-// inside a fenced block, so it is not normalized away. Do not fold this into `visibleLines`.
+//   2. normalizes line endings (CRLF -> LF); the split below does that and nothing else,
+//   3. drops leading and trailing EMPTY lines (a whitespace-only line is content, not empty),
+// and normalizes nothing else: per-line trailing whitespace, interior whitespace, indentation,
+// fence delimiters, fence info strings, and comment/payload content all take part in the
+// comparison. A ``` vs ~~~ pair, or a nested fence whose inner info string changed, is therefore a
+// collision: reuse copies the authoritative text instead of regenerating it. Do not fold this into
+// `visibleLines`.
 function comparedBody(markdown, index, visible = visibleLines(markdown)) {
   const raw = markdown.split(/\r?\n/);
   // Not a heading (or no line): there is no scenario body to compare, never a crash.
@@ -119,12 +118,9 @@ function comparedBody(markdown, index, visible = visibleLines(markdown)) {
     if (heading && heading[1].length <= level) { boundary = entry.rawIndex; break; }
   }
   const body = [];
-  for (let next = index + 1; next < boundary; next += 1) {
-    const line = raw[next].replace(/\s+$/, '');
-    body.push(FENCE_MARKER.test(line) ? '~~~' : line);
-  }
-  while (body.length && !body[0]) body.shift();
-  while (body.length && !body[body.length - 1]) body.pop();
+  for (let next = index + 1; next < boundary; next += 1) body.push(raw[next]);
+  while (body.length && body[0] === '') body.shift();
+  while (body.length && body[body.length - 1] === '') body.pop();
   return body.join('\n');
 }
 // Every `### Scenario: SCEN-...` declared in a markdown file's visible content.
@@ -139,7 +135,11 @@ function scanScenarios(markdown) {
     // `####Scenario:` is ordinary text.
     const match = text.match(/^#{3,6}\s+Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(.*)$/i);
     if (!match) continue;
-    found.push({ id: match[1].toUpperCase(), title: collapse(match[2]), body: comparedBody(markdown, rawIndex, entries), section, line: rawIndex });
+    // The heading/title separator is the only whitespace a title comparison ignores; internal and
+    // trailing whitespace stay part of the title, so two headings that differ there are not the
+    // same declaration.
+    const title = match[2].replace(/^[ \t]+/, '');
+    found.push({ id: match[1].toUpperCase(), title, body: comparedBody(markdown, rawIndex, entries), section, line: rawIndex });
   }
   return found;
 }
@@ -171,7 +171,6 @@ const RULE_FIXES = {
   UNACCEPTED_SCEN: 'add an acceptance row for every declared SCEN',
   UNACCEPTED_TASK_SCEN: 'list the claiming task id in that scenario\'s acceptance row Tasks cell',
   COLLIDING_SCEN: 'choose a new SCEN id, or re-declare a baseline id under MODIFIED/REMOVED Requirements in this change',
-  SINK_TEST_ONLY: 'give the sink the assembly/wiring file it wires in its Write scope, not only tests',
   DESIGN_NAMES_TASK: 'name decisions and affected modules in design.md; let tasks.md declare Implements:',
   UNKNOWN_DECISION: 'add a decision heading (e.g. `- **D-01 <title>**` under `## Decisions`) in design.md',
   UNKNOWN_SCEN: 'claim a SCEN declared under specs/',
@@ -232,8 +231,10 @@ for (const [scen, file] of declared) {
 // Classification uses THIS change's declaration section plus the kind of external hit: a baseline id
 // may be re-declared under MODIFIED/REMOVED Requirements, while another change's hit is a collision
 // unless both the heading text and the scenario body are identical (a verbatim re-declaration is
-// legal and mandatory for an unchanged MODIFIED scenario). Git history, archives and branches are
-// out of scope: only the current checkout is read, and a missing repo silently skips the check.
+// legal and mandatory for an unchanged MODIFIED scenario). Identity is byte equality of the compared
+// title and body — conservative content identity, not Markdown rendering equivalence. Git history,
+// archives and branches are out of scope: only the current checkout is read, and a missing repo
+// silently skips the check.
 {
   const toplevel = gitIn(changeDir, ['rev-parse', '--show-toplevel']);
   if (toplevel.status === 0) {
@@ -547,10 +548,12 @@ for (const task of tasks) {
 }
 // Vertical slices: behavior tasks must claim a SCEN and own production code, not only tests.
 for (const task of tasks) {
-  // A sink is the assembly/wiring point: when every card task writes its own leaf component, a sink
-  // that owns only test files leaves no task owning the point that wires them together.
+  // A test-only sink is not proof of a missing assembly owner: the DAG sink is defined by graph
+  // edges, not by who wires the pieces together. Upstream behavior slices may already own the real
+  // production entry, and a final integration verification task may legitimately write tests only.
+  // A block here would force a fabricated production path, so this is an advisory for R0 to judge.
   if (sinkIds.has(task.id) && task.scope.length && task.scope.every((scope) => isTestPath(scope))) {
-    blocking.push(`SINK_TEST_ONLY ${task.id}: sink Write scope has only test paths; the sink must own the assembly/wiring file`);
+    advisories.push(`ADVISORY_SINK_TEST_ONLY ${task.id}: sink Write scope has only test paths; check that an upstream scenario task owns the assembly/wiring entry and that this sink's integration verification is legitimate test-only work`);
   }
   if (task.review === 'mechanical') continue;
   if (!task.scenarios.length) blocking.push(`NO_SCEN ${task.id}: non-mechanical task must claim at least one SCEN (or be Review: mechanical)`);

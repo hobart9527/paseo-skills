@@ -985,12 +985,23 @@ test('COLLIDING_SCEN: another change declaring the id with different heading tex
 
 test('ADVISORY_SHARED_SCEN: another change re-declaring the same heading text is advisory only', () => {
   // `openspec validate` requires an unchanged MODIFIED scenario to be repeated verbatim, so the
-  // author cannot avoid reusing the id; whitespace differences still count as identical.
-  const dir = repoWith('SCEN-1', { otherSection: 'MODIFIED Requirements', ownTitle: 'shared   behavior', otherTitle: ' shared behavior ' });
+  // author cannot avoid reusing the id. Only the separator after `SCEN-1` is trimmed; the title
+  // itself is compared byte for byte.
+  const dir = repoWith('SCEN-1', { otherSection: 'MODIFIED Requirements', ownTitle: 'shared behavior', otherTitle: ' shared behavior' });
   const result = run(dir, ['--structural', '--skip-signer-check']);
   assert.equal(result.status, 0, JSON.stringify(codes(result)));
   assert.doesNotMatch(codes(result).join('\n'), /COLLIDING_SCEN/);
   assert.match(JSON.parse(result.stdout).advisories.join('\n'), /^ADVISORY_SHARED_SCEN SCEN-1: openspec\/changes\/other\/specs\/cap\/spec\.md declares the same scenario text; confirm archive\/merge order with that change before CP-1$/m);
+});
+
+test('COLLIDING_SCEN: heading text that differs in internal whitespace is not the same declaration', () => {
+  // A title is content, not prose to be normalized: collapsing runs of spaces made these two titles
+  // compare equal, so a genuinely different heading was exempted from the collision check.
+  const dir = repoWith('SCEN-1', { otherSection: 'MODIFIED Requirements', ownTitle: 'shared   behavior', otherTitle: 'shared behavior' });
+  const result = run(dir, ['--structural', '--skip-signer-check']);
+  assert.equal(result.status, 1, JSON.stringify(codes(result)));
+  assert.match(codes(result).join('\n'), /^COLLIDING_SCEN SCEN-1: already declared in openspec\/changes\/other\/specs\/cap\/spec\.md$/m);
+  assert.doesNotMatch(JSON.parse(result.stdout).advisories.join('\n'), /ADVISORY_SHARED_SCEN SCEN-1/);
 });
 
 test('COLLIDING_SCEN: identical heading but a different body still blocks', () => {
@@ -1062,16 +1073,39 @@ test('COLLIDING_SCEN: a body does not end at a # line inside an HTML comment', (
   assert.match(codes(result).join('\n'), /^COLLIDING_SCEN SCEN-1: already declared in openspec\/changes\/other\/specs\/cap\/spec\.md$/m);
 });
 
-test('ADVISORY_SHARED_SCEN: the fence delimiter style is not part of the body', () => {
-  // Same prose and payload, backticks in one change and tildes in the other: a reader would call
-  // this the same scenario, and a MODIFIED re-declaration must be able to stay verbatim.
+test('COLLIDING_SCEN: the fence delimiter style is part of the body', () => {
+  // Same prose and payload, backticks in one change and tildes in the other. Delimiter normalization
+  // was one more piece of equivalence the checker guessed at; content identity means a reuse copies
+  // the authoritative text instead of regenerating it in whatever fence style is handy.
   const dir = repoWith('SCEN-1', {
     otherSection: 'MODIFIED Requirements', ownTitle: 'shared contract', otherTitle: 'shared contract',
     ownBody: 'WHEN a\n```\npayload\n```\nTHEN b\n', otherBody: 'WHEN a\n~~~\npayload\n~~~\nTHEN b\n',
   });
   const result = run(dir, ['--structural', '--skip-signer-check']);
+  assert.equal(result.status, 1, JSON.stringify(codes(result)));
+  assert.match(codes(result).join('\n'), /^COLLIDING_SCEN SCEN-1: already declared in openspec\/changes\/other\/specs\/cap\/spec\.md$/m);
+  assert.doesNotMatch(JSON.parse(result.stdout).advisories.join('\n'), /ADVISORY_SHARED_SCEN SCEN-1/);
+});
+
+test('COLLIDING_SCEN: a nested fence with a different inner info string is a collision', () => {
+  // The reviewer's final blocker: a 4-backtick outer fence holds a ```json example in one change and
+  // a ```yaml example in the other. Both are single delimiter lines by the old rule, so both were
+  // reduced to `~~~` and the payload's language marker stopped being compared.
+  const ownBody = 'WHEN the example renders\n````markdown\n```json\n{"allowed": true}\n```\n````\nTHEN it is shown\n';
+  const otherBody = 'WHEN the example renders\n````markdown\n```yaml\n{"allowed": true}\n```\n````\nTHEN it is shown\n';
+  const dir = repoWith('SCEN-1', { otherSection: 'MODIFIED Requirements', ownTitle: 'shared contract', otherTitle: 'shared contract', ownBody, otherBody });
+  const result = run(dir, ['--structural', '--skip-signer-check']);
+  assert.equal(result.status, 1, JSON.stringify(codes(result)));
+  assert.match(codes(result).join('\n'), /^COLLIDING_SCEN SCEN-1: already declared in openspec\/changes\/other\/specs\/cap\/spec\.md$/m);
+});
+
+test('ADVISORY_SHARED_SCEN: an exactly identical body with a nested fence stays advisory', () => {
+  // Positive control for the test above: identity, not the presence of a nested fence, is what
+  // decides. The two sides are byte-identical here.
+  const body = 'WHEN the example renders\n````markdown\n```json\n{"allowed": true}\n```\n````\nTHEN it is shown\n';
+  const dir = repoWith('SCEN-1', { otherSection: 'MODIFIED Requirements', ownTitle: 'shared contract', otherTitle: 'shared contract', ownBody: body, otherBody: body });
+  const result = run(dir, ['--structural', '--skip-signer-check']);
   assert.equal(result.status, 0, JSON.stringify(codes(result)));
-  assert.doesNotMatch(codes(result).join('\n'), /COLLIDING_SCEN/);
   assert.match(JSON.parse(result.stdout).advisories.join('\n'), /^ADVISORY_SHARED_SCEN SCEN-1: openspec\/changes\/other\/specs\/cap\/spec\.md declares the same scenario text/m);
 });
 
@@ -1086,10 +1120,24 @@ test('COLLIDING_SCEN: a body differing only in interior whitespace is a collisio
   assert.match(codes(result).join('\n'), /^COLLIDING_SCEN SCEN-1: already declared in openspec\/changes\/other\/specs\/cap\/spec\.md$/m);
 });
 
-test('ADVISORY_SHARED_SCEN: trailing whitespace and blank lines alone are not a difference', () => {
+test('COLLIDING_SCEN: per-line trailing whitespace is part of the body', () => {
+  // The last normalization removed besides line endings and leading/trailing blank lines. Markdown
+  // uses two trailing spaces as a hard line break and a trailing backslash is content too, so
+  // stripping them made two different bodies compare equal.
   const dir = repoWith('SCEN-1', {
     otherSection: 'MODIFIED Requirements', ownTitle: 'shared contract', otherTitle: 'shared contract',
-    ownBody: 'WHEN a   \nTHEN b\n\n\n', otherBody: 'WHEN a\nTHEN b\n',
+    ownBody: 'WHEN a  \nTHEN b\n', otherBody: 'WHEN a\nTHEN b\n',
+  });
+  const result = run(dir, ['--structural', '--skip-signer-check']);
+  assert.equal(result.status, 1, JSON.stringify(codes(result)));
+  assert.match(codes(result).join('\n'), /^COLLIDING_SCEN SCEN-1: already declared in openspec\/changes\/other\/specs\/cap\/spec\.md$/m);
+});
+
+test('ADVISORY_SHARED_SCEN: leading and trailing blank lines alone are not a difference', () => {
+  // The one boundary exception that is safe: blank lines outside the body carry no content.
+  const dir = repoWith('SCEN-1', {
+    otherSection: 'MODIFIED Requirements', ownTitle: 'shared contract', otherTitle: 'shared contract',
+    ownBody: '\n\nWHEN a\nTHEN b\n\n\n', otherBody: 'WHEN a\nTHEN b\n',
   });
   const result = run(dir, ['--structural', '--skip-signer-check']);
   assert.equal(result.status, 0, JSON.stringify(codes(result)));
@@ -1251,14 +1299,60 @@ test('the scaffold templates produce a package that passes its own gate without 
   assert.equal(JSON.parse(result.stdout).blocking.length, 0);
 });
 
-test('SINK_TEST_ONLY: a sink whose whole Write scope is tests is rejected', () => {
+test('ADVISORY_SINK_TEST_ONLY: a test-only sink is an advisory, not proof of a missing owner', () => {
+  // The sink is a DAG property (nothing consumes it), not proof that it owns assembly. Here T-01 is
+  // an upstream behavior task that owns the real production entry, and T-04 is a final mechanical
+  // integration check that legitimately writes only tests. The old check blocked this shape, which
+  // pushed authors to invent a production path just to satisfy the gate.
+  const tasks = `- [ ] 1.1 T-01 behavior
+  - Write scope: src/shared.mjs,test/shared.test.mjs
+  - Verify with: node --test test/shared.test.mjs
+  - Scen: SCEN-1
+- [ ] 1.2 T-04 integration
+  - Depends on: T-01
+  - Write scope: test/integration.test.mjs
+  - Review: mechanical
+  - Verify with: npm test`;
   const result = run(change({
-    'tasks.md': contract.replace('Write scope: src/sink.mjs,test/sink.test.mjs', 'Write scope: test/sink.test.mjs'),
-    'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW,
-    'acceptance.md': acceptance,
+    'tasks.md': tasks, 'proposal.md': 'x', 'review.md': REVIEW,
+    'acceptance.md': table('| SCEN-1 | CLI | T-01 | node -e "0" | yes | PENDING | pending |'),
+    'specs/a/spec.md': '### Scenario: SCEN-1\n',
   }));
+  assert.equal(result.status, 0, JSON.stringify(codes(result)));
+  assert.deepEqual(codes(result), []);
+  assert.match(JSON.parse(result.stdout).advisories.join('\n'), /^ADVISORY_SINK_TEST_ONLY T-04: sink Write scope has only test paths; check that an upstream scenario task owns the assembly\/wiring entry and that this sink's integration verification is legitimate test-only work$/m);
+});
+
+test('the sink advisory is evidence to check, not a closure proof, and behavior-only-test scopes still block', () => {
+  // The advisory text must not claim the shape is safe; and a non-sink behavior task whose whole
+  // scope is tests is still a hard block, so the advisory did not weaken the vertical-slice rule.
+  const testOnlyBehavior = `- [ ] 1.1 T-01 shared
+  - Write scope: test/shared.test.mjs
+  - Verify with: node --test test/shared.test.mjs
+  - Scen: SCEN-1
+- [ ] 1.2 T-02 sink
+  - Depends on: T-01
+  - Write scope: src/app.mjs,test/sink.test.mjs
+  - Verify with: npm test
+  - Scen: SCEN-1`;
+  const dir = change({
+    'tasks.md': testOnlyBehavior, 'proposal.md': 'x', 'review.md': REVIEW,
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node -e "0" | yes | PENDING | pending |'),
+    'specs/a/spec.md': '### Scenario: SCEN-1\n',
+  });
+  const result = run(dir);
   assert.equal(result.status, 1);
-  assert.match(codes(result).join('\n'), /^SINK_TEST_ONLY T-04: sink Write scope has only test paths; the sink must own the assembly\/wiring file$/m);
+  const blocking = codes(result).join('\n');
+  assert.match(blocking, /^FIXTURE_ONLY_TASK T-01:/m);
+  assert.doesNotMatch(blocking, /SINK_TEST_ONLY/);
+  // And an invalid graph is still rejected regardless of the sink shape.
+  const cycle = change({
+    'tasks.md': `- [ ] 1.1 T-01 a\n  - Depends on: T-02\n  - Write scope: src/a,test/a.test.mjs\n  - Verify with: node --test test/a.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.2 T-02 b\n  - Depends on: T-01\n  - Write scope: src/b,test/b.test.mjs\n  - Verify with: node --test test/b.test.mjs\n  - Scen: SCEN-1`,
+    'proposal.md': 'x', 'review.md': REVIEW,
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node -e "0" | yes | PENDING | pending |'),
+    'specs/a/spec.md': '### Scenario: SCEN-1\n',
+  });
+  assert.match(codes(run(cycle)).join('\n'), /^CYCLE/m);
 });
 
 test('DESIGN_NAMES_TASK: design.md naming a declared task id is rejected', () => {

@@ -356,6 +356,9 @@ test('task template and schema distinguish structural exemptions from review', (
   assert.match(template, /禁止汇点[\s\S]*使用 deferred/);
   assert.match(template, /非汇点的 mechanical 任务也要求窄 Verify/);
   assert.match(template, /mechanical 任务可不认领/);
+  // A test-only sink is an advisory to check, not proof that no task owns the wiring.
+  assert.match(schema, /advisory, not as proof/);
+  assert.match(read('templates/author.md'), /advisory for R0 rather than proof of a missing owner/);
   assert.match(schema, /does not require `strict`/);
   assert.match(schema, /`mechanical` sink may use a non-test check/);
   assert.match(schema, /structural exemptions do not establish safety/);
