@@ -182,6 +182,24 @@ function relativeInRepo(cwd, changeDir) {
 }
 
 /**
+ * Repository identity for a directory: its realpath-normalized common Git directory, or null.
+ * `--git-common-dir` is shared by every worktree of one repository and differs for every other
+ * repository. A nested repository or submodule is a different repository even though its path
+ * lies inside another one's toplevel, which is why path containment cannot answer this.
+ */
+function repoIdentity(dir) {
+  const absolute = runGit(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  if (!absolute.error && absolute.status === 0 && absolute.stdout.trim()) {
+    return realOrResolved(absolute.stdout.trim());
+  }
+  // Older Git has no `--path-format` and prints the common dir relative to `dir`.
+  const relative = runGit(dir, ['rev-parse', '--git-common-dir']);
+  if (relative.error || relative.status !== 0 || !relative.stdout.trim()) return null;
+  const value = relative.stdout.trim();
+  return realOrResolved(path.isAbsolute(value) ? value : path.join(dir, value));
+}
+
+/**
  * One source, chosen deterministically. Cleanup runs after CP-2, so the human records the
  * approval in the worktree run-log; committing it to integration would break the ancestry
  * precondition. The worktree file is therefore primary and the integration copy is only the
@@ -492,10 +510,19 @@ export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => conso
   // Done tasks and approvals to delete *this* repository's branches. The repository the
   // operator invoked the command in is the only one it may act on, so bind the two here and
   // before discovery. Resolving `cwd` from `changeDir` would invert that direction.
-  const top = repoTop(cwd);
-  if (!top) { stderr(`[pipeline-run] cannot determine the repository for ${cwd}`); return 3; }
-  if (!relativeToTop(top, changeDir)) {
-    stderr(`[pipeline-run] ${changeDir} is not inside the repository this command acts on (${realOrResolved(top)}); run cleanup from that repository's checkout and pass its own change directory`);
+  //
+  // Identity, not path containment: a nested repository or submodule sits inside this
+  // repository's toplevel yet has its own common Git directory, so a containment check passes
+  // it and would let the nested checkout's contract authorize deletions here. Equality of the
+  // common directory is the question that actually distinguishes repositories, so it replaces
+  // the containment gate rather than joining it: containment would also refuse this same
+  // repository's own linked worktrees, and branch refs are shared across them.
+  const acting = repoIdentity(cwd);
+  if (!acting) { stderr(`[pipeline-run] cannot determine the repository ${cwd} acts on`); return 3; }
+  const target = repoIdentity(changeDir);
+  if (!target) { stderr(`[pipeline-run] cannot determine the repository for ${changeDir}`); return 3; }
+  if (target !== acting) {
+    stderr(`[pipeline-run] ${changeDir} (${target}) belongs to a different repository than the one this command acts on, ${cwd} (${acting}); run cleanup from that repository's checkout`);
     return 2;
   }
   const base = parsed.options.base ?? 'main';

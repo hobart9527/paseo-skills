@@ -682,7 +682,7 @@ test('--change must name the change directory: live basename or archive/<YYYY-MM
   git(otherRoot, 'commit', '-qm', 'contract');
   r = run(f, ['cleanup', path.join(otherRoot, 'openspec', 'changes', CHANGE), '--change', CHANGE, '--json']);
   assert.equal(r.status, 2, r.out);
-  assert.match(r.stderr, /is not inside the repository this command acts on/);
+  assert.match(r.stderr, /belongs to a different repository/);
   const archived = archiveChange(f);
   // Archived directory: `<YYYY-MM-DD>-<name>`, and nothing else.
   assert.equal(run(f, ['cleanup', archived, '--change', CHANGE, '--json']).status, 0);
@@ -748,28 +748,57 @@ test('a dated basename inside archive/ is never a live change name', () => {
   assert.ok(git(f.root, 'rev-parse', '--verify', 'refs/heads/integration/chg'));
 });
 
+/**
+ * Write a repository whose `chg` contract is Done and whose run-log approves deleting
+ * `task/chg/T-01` — an object that only exists in the fixture's repository.
+ */
+function approvingOtherRepo(dir) {
+  write(dir, `openspec/changes/${CHANGE}/tasks.md`, TASKS_DONE);
+  write(dir, `openspec/changes/${CHANGE}/run-log.md`,
+    `Approval: 2026-11-07T00:00:00Z clean up\nObject: task/${CHANGE}/T-01\nCommand: git branch -d task/${CHANGE}/T-01\n`);
+  git(dir, 'init', '-q', '-b', 'main');
+  git(dir, 'add', '.');
+  git(dir, 'commit', '-qm', 'contract');
+  return path.join(dir, 'openspec', 'changes', CHANGE);
+}
+
 test('cleanup never acts on a repository other than the one it was run from', () => {
   // Repo A: an open task and its own task/chg/T-01 branch.
   const f = fixture({ tasks: TASKS_OPEN });
   // Repo B: same change name, all Done, and an approval for `task/chg/T-01`, which only exists
   // in A. Reading B's contract and approval to delete A's branch is the failure this guards.
   const other = fs.mkdtempSync(path.join(os.tmpdir(), 'cleanup-other-'));
-  write(other, `openspec/changes/${CHANGE}/tasks.md`, TASKS_DONE);
-  write(other, `openspec/changes/${CHANGE}/run-log.md`,
-    `Approval: 2026-11-07T00:00:00Z clean up\nObject: task/${CHANGE}/T-01\nCommand: git branch -d task/${CHANGE}/T-01\n`);
-  git(other, 'init', '-q', '-b', 'main');
-  git(other, 'add', '.');
-  git(other, 'commit', '-qm', 'contract');
-  const otherDir = path.join(other, 'openspec', 'changes', CHANGE);
+  const otherDir = approvingOtherRepo(other);
   const r = run(f, ['cleanup', otherDir, '--execute', '--json']);
   assert.equal(r.status, 2, r.out);
-  assert.match(r.stderr, /is not inside the repository this command acts on/);
-  // The message names both paths, so the operator can see which repository was refused.
-  assert.ok(r.stderr.includes(fs.realpathSync(f.root)), r.stderr);
+  assert.match(r.stderr, /belongs to a different repository/);
+  // The message names both directories and both identities, so the operator sees the refusal.
   assert.ok(r.stderr.includes(otherDir), r.stderr);
+  assert.ok(r.stderr.includes(f.root), r.stderr);
   // Nothing from either repository ran.
   assert.ok(git(f.root, 'rev-parse', '--verify', `refs/heads/task/${CHANGE}/T-01`));
   assert.ok(fs.existsSync(f.worktrees['T-01']));
+});
+
+test('a nested repository is a different repository, not a directory inside this one', () => {
+  // Repo A: an open task and its own task/chg/T-01 branch.
+  const f = fixture({ tasks: TASKS_OPEN });
+  // Repo B nested inside A: same change name, all Done, approving A's `task/chg/T-01`. Its
+  // path is inside A's toplevel, so only repository identity can tell them apart.
+  const nested = path.join(f.root, 'vendor', 'nested');
+  fs.mkdirSync(nested, { recursive: true });
+  const nestedDir = approvingOtherRepo(nested);
+  assert.notEqual(git(nested, 'rev-parse', '--path-format=absolute', '--git-common-dir'),
+    git(f.root, 'rev-parse', '--path-format=absolute', '--git-common-dir'));
+  const r = run(f, ['cleanup', nestedDir, '--execute', '--json']);
+  assert.equal(r.status, 2, r.out);
+  assert.match(r.stderr, /belongs to a different repository/);
+  assert.ok(git(f.root, 'rev-parse', '--verify', `refs/heads/task/${CHANGE}/T-01`));
+  assert.ok(fs.existsSync(f.worktrees['T-01']));
+  // From its own repository the nested change directory is legitimate.
+  const nestedRun = spawnSync('node', [script, 'cleanup', nestedDir, '--json'], { cwd: nested, env: f.localEnv, encoding: 'utf8' });
+  assert.equal(nestedRun.status, 0, `${nestedRun.stdout}${nestedRun.stderr}`);
+  assert.equal(JSON.parse(nestedRun.stdout).change, CHANGE);
 });
 
 test('an EEXIST race at seeding re-derives approval state before executing', () => {
