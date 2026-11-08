@@ -164,6 +164,13 @@ test('contract authoring order freezes findings, SCEN ids and briefed constants'
   assert.match(schema, /a finding that exists only\s+in thinking does not count/);
   assert.match(schema, /no\s+survey, no alignment tables, no digest/);
   assert.match(schema, /`## OPEN-DECISION`: options, consequences, a recommended\s+default/);
+  // Core Baseline requirement, pinned in both the template and the proposal instruction.
+  const proposalInstr = schema.slice(schema.indexOf('  - id: proposal'), schema.indexOf('  - id: specs'));
+  for (const [name, text] of [['template', proposal], ['schema instruction', proposalInstr]]) {
+    assert.match(text, /`path:line`\s+plus\s+one\s+line\s+of\s+consequence/, `${name}: path:line + consequence`);
+    assert.match(text, /AS\s+FOUND/, `${name}: as found`);
+    assert.match(text, /and\s+commit/, `${name}: commit requirement`);
+  }
   // SCEN freeze lives in the specs instruction.
   const specsInstr = schema.slice(schema.indexOf('  - id: specs'), schema.indexOf('  - id: design'));
   assert.match(specsInstr, /\*\*SCEN freeze:\*\* once the last spec file is committed, the declared SCEN id set is\s+frozen/);
@@ -183,7 +190,7 @@ test('contract authoring order freezes findings, SCEN ids and briefed constants'
   assert.match(table, /structural check on the complete package/);
   assert.match(table, /commit with done\/remaining in the message/);
   assert.match(table, /`openspec validate`\/`openspec status`/);
-  assert.match(table, /No staged freeze-check exists; the structural check runs once, when the package is complete/);
+  assert.match(table, /No staged freeze-check exists; the first structural check runs when the package is complete, and failures are fixed and rerun until it succeeds or a required command is denied/);
   // Main-session brief fields.
   assert.match(author, /\*\*Project constants\*\*: how Verify runs in a fresh worktree/);
   assert.match(author, /the author must not write `openspec\/config\.yaml`, which belongs to the target project/);

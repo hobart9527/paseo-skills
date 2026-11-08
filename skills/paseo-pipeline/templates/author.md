@@ -53,7 +53,7 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output location: `openspec/changes/<c
 | 4 | `tasks.md`, then `acceptance.md` | commit each |
 | 5 | structural check on the complete package | fix, rerun |
 
-Each step: write, commit with done/remaining in the message, and run `openspec validate`/`openspec status` as a mid-run check when available. No staged freeze-check exists; the structural check runs once, when the package is complete.
+Each step: write, commit with done/remaining in the message, and run `openspec validate`/`openspec status` as a mid-run check when available. No staged freeze-check exists; the first structural check runs when the package is complete, and failures are fixed and rerun until it succeeds or a required command is denied.
 
 ## Write-first budget
 Measured failure: two authors spent ~55 min each on analysis and wrote no file, because the plan lived only in thinking and was re-derived every turn. Context compaction then discarded it. The budget below is an experiment target, not a guarantee; it never lowers a gate.
