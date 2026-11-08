@@ -354,7 +354,7 @@ test('FINAL is capped at two rounds with a mandatory three-way human exit mirror
   const skill = read('SKILL.md');
   assert.match(skill, /`FINAL: human-accept\(@<sha>\)`/);
   assert.match(skill, /`Approval: FINAL residual risk accepted for <sha> — <reason>`/);
-  assert.match(skill, /reopen at contract level \(delta R0 \+ CP-1\), or terminate/);
+  assert.match(skill, /reopen once at contract level \(delta R0 \+ CP-1, one wave, one delta round\), or terminate/);
 });
 
 test('FINAL repairs are batched, parallel by domain, SHA-bound, with one pre-authorizable wave', () => {
@@ -369,6 +369,46 @@ test('FINAL repairs are batched, parallel by domain, SHA-bound, with one pre-aut
   assert.match(recovery, /one `anchasi` session for all FINAL rounds/);
   assert.match(recovery, /reads the ledger first/);
   assert.match(recovery, /reason for replacement is recorded/);
+});
+
+test('FINAL cannot loop or pass on missing evidence: UNVERIFIABLE escalates, reopen is once', () => {
+  const reviewer = read('templates/reviewer.md');
+  assert.match(reviewer, /`UNVERIFIABLE` is never conformance: any such row makes the verdict `INCOMPLETE`, not a pass/);
+  assert.match(reviewer, /handled like NOT_MET after round 2/);
+  const recovery = read('templates/final-recovery.md');
+  assert.match(recovery, /After round 2 with any NOT_MET or UNVERIFIABLE row, the human must choose one/);
+  assert.match(recovery, /missing evidence for an UNVERIFIABLE row .* that is not a repair task/);
+  assert.match(recovery, /exactly one repair wave and one more delta round/);
+  assert.match(recovery, /\(b\) can be chosen at most once per change/);
+  assert.match(recovery, /only \(a\) or \(c\) remain/);
+  assert.doesNotMatch(recovery, /new repair wave whose re-review is again delta only/);
+  assert.match(recovery, /no NOT_MET or UNVERIFIABLE row is unaccepted/);
+  const skill = read('SKILL.md');
+  assert.match(skill, /NOT_MET\/UNVERIFIABLE the human chooses/);
+  assert.match(skill, /reopen once at contract level/);
+});
+
+test('FINAL evidence binds to the reviewed SHA; record commits touch only three files', () => {
+  const recovery = read('templates/final-recovery.md');
+  assert.match(recovery, /Evidence binds to the reviewed code SHA/);
+  assert.match(recovery, /only record commits touching nothing but `openspec\/changes\/<change>\/\{review\.md,rulings\.md,run-log\.md\}`/);
+  assert.match(recovery, /git diff --name-only <reviewed-sha>\.\.HEAD/);
+  assert.match(recovery, /any other path invalidates the evidence/);
+  assert.match(recovery, /differs only by such record commits/);
+  assert.doesNotMatch(recovery, /verify integration HEAD still equals the recorded SHA,/);
+  assert.match(read('templates/reviewer.md'), /record commits only/);
+  assert.match(read('SKILL.md'), /later commits may touch only `review\.md`, `rulings\.md`, `run-log\.md`/);
+});
+
+test('pre-authorization is a recorded human approval applied to a named amendment SHA', () => {
+  const recovery = read('templates/final-recovery.md');
+  assert.match(recovery, /unless covered by a pre-authorization \(below\)/);
+  assert.match(recovery, /verbatim CP-1 approval of "up to 1 FINAL repair wave of ≤N tasks, DEVIATION only"/);
+  assert.match(recovery, /adds no new interface or security boundary/);
+  assert.match(recovery, /`Approval: pre-authorized repair wave \(<cp1-approval-timestamp>\) applied to <amendment-sha>`/);
+  assert.match(recovery, /without that line naming the amendment SHA, dispatch is not authorized/);
+  assert.match(recovery, /needs fresh human CP-1 for its SHA/);
+  assert.doesNotMatch(recovery, /repair tasks need no per-task re-freeze approval/);
 });
 
 test('R0 checks the Verify oracle and amendment R0 is delta-only', () => {
