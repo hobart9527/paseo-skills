@@ -34,6 +34,20 @@ function realOrResolved(value) {
   try { return fs.realpathSync(path.resolve(value)); } catch { return path.resolve(value); }
 }
 
+/**
+ * Exactly two directory shapes name a change: the live `.../<change>` directory, or its
+ * archived copy `.../archive/<YYYY-MM-DD>-<change>`. Nothing else does — in particular a
+ * date prefix is never stripped to guess the name, because a strip would let a `--change`
+ * naming one change run cleanup against another change's directory.
+ * @returns {'live'|'archived'|null}
+ */
+function changeDirShape(changeDir, change) {
+  const base = path.basename(changeDir);
+  if (base === change) return 'live';
+  if (path.basename(path.dirname(changeDir)) !== 'archive') return null;
+  return new RegExp(`^\\d{4}-\\d{2}-\\d{2}-${escapeRe(change)}$`).test(base) ? 'archived' : null;
+}
+
 function ownedBranch(branch, change) {
   if (!branch) return false;
   if (branch === `integration/${change}`) return true;
@@ -269,6 +283,19 @@ function appendRecord(changeDir, object, outcome, sha = null) {
   fs.appendFileSync(file, `Cleanup: ${object.kind} ${object.id} ${object.command} ${outcome}${sha ? ` @${sha}` : ''}\n`);
 }
 
+function applyApprovalState(objects, blocks, done) {
+  for (const object of objects) {
+    if (object.status === 'already-done') continue;
+    object.approved = blocks.some((block) => approvalCovers(block, object));
+    object.status = done.has(recordKey(object.kind, object.id)) ? 'already-done' : object.approved ? 'planned' : 'unapproved';
+  }
+}
+
+/** True when execution may not proceed: live objects exist and none of them is approved. */
+function nothingApproved(objects) {
+  return objects.some((object) => object.status !== 'already-done') && !objects.some((object) => object.approved);
+}
+
 // ---- Execution ----
 
 function paseoArchive(object) {
@@ -321,9 +348,13 @@ export function checkPreconditions({ cwd, changeDir, change, objects, base, merg
     // After `openspec archive` the directory lives under `archive/`, a path the integration
     // branch never had. The frozen contract still sits at its pre-archive location there,
     // which the operator-supplied change name reconstructs without guessing at the date prefix.
+    // Unlike runCleanup's binding check, this only sees a directory already archived (a live
+    // one was read above), and it must hold the same invariant: the basename is exactly
+    // `<YYYY-MM-DD>-<change>`. Anything else would map one change's directory onto another's.
+    if (changeDirShape(changeDir, change) !== 'archived') return { code: 4, message: `cannot read tasks.md: ${error.message}` };
     const preArchive = path.join(path.dirname(path.dirname(changeDir)), change);
     const top = runGit(cwd, ['rev-parse', '--show-toplevel']);
-    if (preArchive === changeDir || top.status !== 0) return { code: 4, message: `cannot read tasks.md: ${error.message}` };
+    if (top.status !== 0) return { code: 4, message: `cannot read tasks.md: ${error.message}` };
     // The pre-archive path itself is gone, so resolve its existing parent and rejoin the name;
     // that also settles the /var vs /private/var difference on macOS.
     const resolved = path.join(realOrResolved(path.dirname(preArchive)), path.basename(preArchive));
@@ -429,6 +460,12 @@ export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => conso
     }
     change = path.basename(changeDir);
   }
+  // A name that does not name this directory would plan one change's cleanup against another
+  // change's approvals and branches. Accept only the two shapes the archive step can produce.
+  if (!changeDirShape(changeDir, change)) {
+    stderr(`[pipeline-run] --change ${change} does not name ${changeDir}; expected a live \`<change-dir>\` whose basename is \`${change}\`, or an archived \`<archive>/<YYYY-MM-DD>-${change}\`\n${USAGE}`);
+    return 2;
+  }
   const base = parsed.options.base ?? 'main';
   const execute = !!parsed.options.execute;
   const json = !!parsed.options.json;
@@ -438,12 +475,9 @@ export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => conso
   catch (error) { stderr(`[pipeline-run] ${error.message}`); return error.code ?? 3; }
 
   const approvals = readApprovalText(cwd, changeDir, change);
-  const blocks = parseApprovalBlocks(approvals.text);
+  let blocks = parseApprovalBlocks(approvals.text);
   const done = doneRecords(readWorktreeRunLog(changeDir));
-  for (const object of objects) {
-    object.approved = blocks.some((block) => approvalCovers(block, object));
-    object.status = done.has(recordKey(object.kind, object.id)) ? 'already-done' : object.approved ? 'planned' : 'unapproved';
-  }
+  applyApprovalState(objects, blocks, done);
   // A finished object disappears from discovery, so a re-run would report nothing at all.
   // Surface the recorded outcome instead: still listed, still skipped.
   const discovered = new Set(objects.map((object) => recordKey(object.kind, object.id)));
@@ -459,7 +493,7 @@ export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => conso
     if (refusal) {
       exit = refusal.code;
       stderr(`[pipeline-run] cleanup refused: ${refusal.message}`);
-    } else if (objects.some((object) => object.status !== 'already-done') && !objects.some((object) => object.approved)) {
+    } else if (nothingApproved(objects)) {
       exit = 5;
       refusal = { message: 'no object has a matching recorded Approval; nothing may be executed' };
       stderr(`[pipeline-run] cleanup refused: ${refusal.message}`);
@@ -477,16 +511,29 @@ export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => conso
           const seeded = readApprovalText(cwd, changeDir, change);
           approvals.text = seeded.text;
           approvals.source = seeded.source;
+          // The file that won the race is now the only source, and it may hold no approval at
+          // all. Re-derive approval and re-entrancy state from it before executing anything:
+          // the decisions above were made from the integration text that is no longer in force.
+          blocks = parseApprovalBlocks(approvals.text);
+          applyApprovalState(objects, blocks, doneRecords(approvals.text));
         }
       }
-      for (const object of objects) {
-        if (object.status === 'already-done') continue;
-        if (!object.approved) { object.status = 'unapproved'; if (!exit) exit = 5; continue; }
-        const result = executeObject(object, { cwd });
-        object.status = result.status;
-        object.detail = result.detail;
-        appendRecord(changeDir, object, result.status, result.sha);
-        if (result.status === 'failed' && exit !== 5) exit = 1;
+      // A reseeded file can leave everything unapproved; that is the same refusal as before
+      // seeding, checked again against the text actually in force.
+      if (nothingApproved(objects)) {
+        exit = 5;
+        refusal = { message: 'no object has a matching recorded Approval; nothing may be executed' };
+        stderr(`[pipeline-run] cleanup refused: ${refusal.message}`);
+      } else {
+        for (const object of objects) {
+          if (object.status === 'already-done') continue;
+          if (!object.approved) { object.status = 'unapproved'; if (!exit) exit = 5; continue; }
+          const result = executeObject(object, { cwd });
+          object.status = result.status;
+          object.detail = result.detail;
+          appendRecord(changeDir, object, result.status, result.sha);
+          if (result.status === 'failed' && exit !== 5) exit = 1;
+        }
       }
     }
   }

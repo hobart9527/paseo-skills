@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { executeObject } from '../lib/cleanup.mjs';
+import { checkPreconditions, executeObject } from '../lib/cleanup.mjs';
 
 const script = fileURLToPath(new URL('../pipeline-run.mjs', import.meta.url));
 const env = {
@@ -666,6 +666,85 @@ test('--change is validated and rejects a name that is not a bare change name', 
     const r = run(f, ['cleanup', f.changeDir, '--change', value, '--json']);
     assert.equal(r.status, 2, `${value}: ${r.out}`);
   }
+});
+
+test('--change must name the change directory: live basename or archive/<YYYY-MM-DD>-<name>', () => {
+  const f = fixture();
+  // Live directory: the basename is the only accepted name.
+  assert.equal(run(f, ['cleanup', f.changeDir, '--change', CHANGE, '--json']).status, 0);
+  let r = run(f, ['cleanup', f.changeDir, '--change', 'other', '--json']);
+  assert.equal(r.status, 2, r.out);
+  const archived = archiveChange(f);
+  // Archived directory: `<YYYY-MM-DD>-<name>`, and nothing else.
+  assert.equal(run(f, ['cleanup', archived, '--change', CHANGE, '--json']).status, 0);
+  r = run(f, ['cleanup', archived, '--change', 'other', '--json']);
+  assert.equal(r.status, 2, r.out);
+  assert.match(r.stderr, /does not name/);
+  // A basename equal to the name is the live shape wherever it sits, so the dated basename is
+  // accepted as a name — and then owns no objects at all. It can never reach `chg`'s objects.
+  r = run(f, ['cleanup', archived, '--change', `2026-11-08-${CHANGE}`, '--json']);
+  assert.equal(r.status, 0, r.out);
+  assert.deepEqual(JSON.parse(r.stdout).objects, []);
+  // A date that is not a date is not the archived shape either.
+  fs.renameSync(archived, path.join(path.dirname(archived), `notadate-${CHANGE}`));
+  const notADate = path.join(path.dirname(archived), `notadate-${CHANGE}`);
+  r = run(f, ['cleanup', notADate, '--change', CHANGE, '--json']);
+  assert.equal(r.status, 2, r.out);
+});
+
+test('an archived directory cannot authorize a different change name', () => {
+  const f = fixture();
+  const report = discover(f);
+  approve(f, report.objects);
+  // An archive of another change, carrying a run-log that still approves this change's objects.
+  const foreign = path.join(f.root, 'openspec', 'changes', 'archive', `2026-11-08-other`);
+  fs.mkdirSync(path.dirname(foreign), { recursive: true });
+  fs.cpSync(f.changeDir, foreign, { recursive: true });
+  const r = run(f, ['cleanup', foreign, '--change', CHANGE, '--execute']);
+  assert.equal(r.status, 2, r.out);
+  assert.match(r.stderr, /does not name/);
+  // Nothing ran: not one worktree, not one branch.
+  assert.ok(fs.existsSync(f.worktrees['T-01']));
+  assert.ok(fs.existsSync(f.worktrees['T-02']));
+  assert.ok(git(f.root, 'rev-parse', '--verify', 'refs/heads/integration/chg'));
+  assert.ok(git(f.root, 'rev-parse', '--verify', 'refs/heads/task/chg/T-01'));
+  // The pre-archive reconstruction used by checkPreconditions holds the same invariant.
+  const refusal = checkPreconditions({ cwd: f.root, changeDir: foreign, change: CHANGE, objects: [], base: 'main' });
+  assert.equal(refusal.code, 4);
+  assert.match(refusal.message, /cannot read tasks.md/);
+});
+
+test('an EEXIST race at seeding re-derives approval state before executing', () => {
+  const f = fixture();
+  const report = discover(f);
+  approve(f, report.objects, () => true, { onIntegration: true });
+  fs.rmSync(path.join(f.changeDir, 'run-log.md'));
+  assert.equal(discover(f).approvalSource, 'integration');
+  // Make the worktree run-log appear only after the integration fallback was read: a git
+  // fsmonitor hook runs during the precondition `git status` and creates it empty of approvals.
+  const runLog = path.join(f.changeDir, 'run-log.md');
+  const hook = path.join(os.tmpdir(), `cleanup-fsmonitor-${process.pid}-${Date.now()}.sh`);
+  fs.writeFileSync(hook, `#!/bin/sh\n[ -e '${runLog}' ] || printf '# log\\n' > '${runLog}'\nexit 1\n`);
+  fs.chmodSync(hook, 0o755);
+  git(f.root, 'config', 'core.fsmonitor', hook);
+  let r;
+  try { r = cleanup(f, '--execute', '--json'); }
+  finally { git(f.root, 'config', '--unset', 'core.fsmonitor'); }
+  // The file that won the race holds no approval, so the run refuses instead of executing
+  // the integration approvals it no longer sat on.
+  assert.equal(r.status, 5, r.out);
+  assert.match(r.stderr, /no object has a matching recorded Approval/);
+  const listed = JSON.parse(r.stdout);
+  assert.equal(listed.exit, 5);
+  assert.equal(listed.approvalSource, 'worktree');
+  for (const object of listed.objects) {
+    assert.equal(object.approved, false, object.id);
+    assert.equal(object.status, 'unapproved', object.id);
+  }
+  assert.equal(fs.readFileSync(runLog, 'utf8'), '# log\n');
+  assert.ok(fs.existsSync(f.worktrees['T-01']));
+  assert.ok(fs.existsSync(f.worktrees['T-02']));
+  assert.ok(git(f.root, 'rev-parse', '--verify', 'refs/heads/integration/chg'));
 });
 
 test('an absent integration branch with no recorded tip refuses even with --merged-at', () => {
