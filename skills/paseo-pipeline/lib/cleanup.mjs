@@ -161,12 +161,24 @@ export function discoverObjects({ cwd, changeDir, change }) {
 
 // ---- Approval gate ----
 
-function relativeInRepo(cwd, changeDir) {
+/** The realpath-normalized toplevel of the repository `cwd` belongs to, or null. */
+function repoTop(cwd) {
   const top = runGit(cwd, ['rev-parse', '--show-toplevel']);
   if (top.error || top.status !== 0) return null;
-  const rel = path.relative(realOrResolved(top.stdout.trim()), realOrResolved(changeDir));
+  return top.stdout.trim();
+}
+
+/** `changeDir` relative to `top` in slash form, or null when it is `top` itself or outside it. */
+function relativeToTop(top, changeDir) {
+  const rel = path.relative(realOrResolved(top), realOrResolved(changeDir));
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
   return rel.split(path.sep).join('/');
+}
+
+function relativeInRepo(cwd, changeDir) {
+  const top = repoTop(cwd);
+  if (!top) return null;
+  return relativeToTop(top, changeDir);
 }
 
 /**
@@ -343,6 +355,10 @@ export function executeObject(object, { cwd = process.cwd() } = {}) {
  * Every `--execute` precondition. Returns null when they all hold, or `{ code, message }`.
  * The pending-merge marker is the existing shared ref written by merge-task, read through
  * `readMergeState`; no new marker is invented.
+ *
+ * The caller guarantees `changeDir` is inside the repository `cwd` acts on (runCleanup's
+ * gate), so reading the contract from the directory and the branches from `cwd` is coherent;
+ * containment is not re-checked here.
  */
 export function checkPreconditions({ cwd, changeDir, change, objects, base, mergedAt, done = new Map() }) {
   let markdown;
@@ -468,6 +484,18 @@ export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => conso
   // change's approvals and branches. Accept only the two shapes the archive step can produce.
   if (!changeDirShape(changeDir, change)) {
     stderr(`[pipeline-run] --change ${change} does not name ${changeDir}; expected a live \`<change-dir>\` whose basename is \`${change}\`, or an archived \`<archive>/<YYYY-MM-DD>-${change}\`\n${USAGE}`);
+    return 2;
+  }
+  // The shape check only compares basenames, so it cannot tell two repositories' `chg`
+  // directories apart. Every git command here acts on `cwd`'s repository while tasks.md and
+  // run-log.md are read from `changeDir`: a directory in another repository would supply its
+  // Done tasks and approvals to delete *this* repository's branches. The repository the
+  // operator invoked the command in is the only one it may act on, so bind the two here and
+  // before discovery. Resolving `cwd` from `changeDir` would invert that direction.
+  const top = repoTop(cwd);
+  if (!top) { stderr(`[pipeline-run] cannot determine the repository for ${cwd}`); return 3; }
+  if (!relativeToTop(top, changeDir)) {
+    stderr(`[pipeline-run] ${changeDir} is not inside the repository this command acts on (${realOrResolved(top)}); run cleanup from that repository's checkout and pass its own change directory`);
     return 2;
   }
   const base = parsed.options.base ?? 'main';

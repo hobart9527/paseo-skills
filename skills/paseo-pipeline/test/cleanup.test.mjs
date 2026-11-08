@@ -674,6 +674,15 @@ test('--change must name the change directory: live basename or archive/<YYYY-MM
   assert.equal(run(f, ['cleanup', f.changeDir, '--change', CHANGE, '--json']).status, 0);
   let r = run(f, ['cleanup', f.changeDir, '--change', 'other', '--json']);
   assert.equal(r.status, 2, r.out);
+  // A correctly named directory in another repository is still refused: both gates must hold.
+  const otherRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cleanup-other-'));
+  write(otherRoot, `openspec/changes/${CHANGE}/tasks.md`, TASKS_DONE);
+  git(otherRoot, 'init', '-q', '-b', 'main');
+  git(otherRoot, 'add', '.');
+  git(otherRoot, 'commit', '-qm', 'contract');
+  r = run(f, ['cleanup', path.join(otherRoot, 'openspec', 'changes', CHANGE), '--change', CHANGE, '--json']);
+  assert.equal(r.status, 2, r.out);
+  assert.match(r.stderr, /is not inside the repository this command acts on/);
   const archived = archiveChange(f);
   // Archived directory: `<YYYY-MM-DD>-<name>`, and nothing else.
   assert.equal(run(f, ['cleanup', archived, '--change', CHANGE, '--json']).status, 0);
@@ -737,6 +746,30 @@ test('a dated basename inside archive/ is never a live change name', () => {
   assert.ok(fs.existsSync(f.worktrees['T-01']));
   assert.ok(fs.existsSync(f.worktrees['T-02']));
   assert.ok(git(f.root, 'rev-parse', '--verify', 'refs/heads/integration/chg'));
+});
+
+test('cleanup never acts on a repository other than the one it was run from', () => {
+  // Repo A: an open task and its own task/chg/T-01 branch.
+  const f = fixture({ tasks: TASKS_OPEN });
+  // Repo B: same change name, all Done, and an approval for `task/chg/T-01`, which only exists
+  // in A. Reading B's contract and approval to delete A's branch is the failure this guards.
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'cleanup-other-'));
+  write(other, `openspec/changes/${CHANGE}/tasks.md`, TASKS_DONE);
+  write(other, `openspec/changes/${CHANGE}/run-log.md`,
+    `Approval: 2026-11-07T00:00:00Z clean up\nObject: task/${CHANGE}/T-01\nCommand: git branch -d task/${CHANGE}/T-01\n`);
+  git(other, 'init', '-q', '-b', 'main');
+  git(other, 'add', '.');
+  git(other, 'commit', '-qm', 'contract');
+  const otherDir = path.join(other, 'openspec', 'changes', CHANGE);
+  const r = run(f, ['cleanup', otherDir, '--execute', '--json']);
+  assert.equal(r.status, 2, r.out);
+  assert.match(r.stderr, /is not inside the repository this command acts on/);
+  // The message names both paths, so the operator can see which repository was refused.
+  assert.ok(r.stderr.includes(fs.realpathSync(f.root)), r.stderr);
+  assert.ok(r.stderr.includes(otherDir), r.stderr);
+  // Nothing from either repository ran.
+  assert.ok(git(f.root, 'rev-parse', '--verify', `refs/heads/task/${CHANGE}/T-01`));
+  assert.ok(fs.existsSync(f.worktrees['T-01']));
 });
 
 test('an EEXIST race at seeding re-derives approval state before executing', () => {
