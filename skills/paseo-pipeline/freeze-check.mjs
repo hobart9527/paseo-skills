@@ -91,7 +91,11 @@ const collapse = (text) => text.replace(/\s+/g, ' ').trim();
 // or higher level. Trimmed, empties dropped, internal whitespace collapsed, so formatting alone is
 // not a difference but a changed assertion is.
 function scenarioBody(lines, index) {
-  const level = lines[index].match(/^(#{1,6})\s/)[1].length;
+  // Not a heading (or no line): there is no scenario body to compare, never a crash. The caller
+  // matches headings, but this runs over arbitrary repository text, so it must not rely on that.
+  const self = (lines[index] || '').match(/^(#{1,6})\s/);
+  if (!self) return '';
+  const level = self[1].length;
   const body = [];
   for (let next = index + 1; next < lines.length; next += 1) {
     const heading = lines[next].match(/^(#{1,6})\s/);
@@ -110,7 +114,9 @@ function scanScenarios(markdown) {
     const line = lines[index];
     const heading = line.match(/^##\s+(.+?)\s*$/);
     if (heading) { section = heading[1]; continue; }
-    const match = line.match(/^#{3,6}\s*Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(.*)$/i);
+    // CommonMark only treats `### ` as an ATX heading when whitespace follows the hashes, so
+    // `####Scenario:` is ordinary text — the same test `scenarioBody` applies to its boundaries.
+    const match = line.match(/^#{3,6}\s+Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(.*)$/i);
     if (!match) continue;
     found.push({ id: match[1].toUpperCase(), title: collapse(match[2]), body: scenarioBody(lines, index), section, line: index });
   }
@@ -580,8 +586,12 @@ else {
     const listed = cells[2].split(',').map((item) => item.trim()).filter(Boolean);
     const ids = listed.filter((item) => isTaskId(item));
     const required = /^yes$/i.test(cells[4]);
-    if (required && (listed.length === 0 || ids.length !== listed.length)) {
-      blocking.push(`BAD_ACCEPTANCE_TASKS acceptance.md:${rowNumber} ${cells[0]}: Tasks must list at least one task id`);
+    // The cell is comma-separated task ids; an empty cell or a token that is not a task id leaves
+    // the row without a usable owner. Name the offending token so the fix is unambiguous.
+    const bad = listed.filter((item) => !isTaskId(item));
+    if (required && (listed.length === 0 || bad.length)) {
+      const detail = listed.length === 0 ? 'Tasks must list at least one task id' : `Tasks token ${bad.join(', ')} is not a task id`;
+      blocking.push(`BAD_ACCEPTANCE_TASKS acceptance.md:${rowNumber} ${cells[0]}: ${detail}`);
     }
     for (const id of ids) {
       if (!byId.has(id)) blocking.push(`UNKNOWN_ACCEPTANCE_TASK ${cells[0]}: ${id} is not a task in tasks.md`);
@@ -606,8 +616,10 @@ else {
     const union = new Set(rows.flatMap((row) => row.ids));
     const claims = claimsByScen.get(scen);
     for (const row of rows) {
-      if (claims && row.ids.length && !row.ids.some((id) => claims.has(id))) {
-        blocking.push(`UNOWNED_ACCEPTANCE_SCEN ${scen}: none of ${row.ids.join(', ')} claims it in tasks.md Scenarios`);
+      // Every id in the cell is a claim about that id, so one real owner cannot carry a fabricated
+      // one. Naming the id also covers the "none of them claim it" case: it reports each offender.
+      for (const id of row.ids) {
+        if (!(claims && claims.has(id))) blocking.push(`UNOWNED_ACCEPTANCE_SCEN ${scen}: ${id} does not claim it in tasks.md Scenarios`);
       }
     }
     // ... and every task claiming a SCEN must appear in that SCEN's Tasks cell, so a
@@ -629,7 +641,13 @@ else {
 // unrelated prose numbers are not mistaken for tasks.
 {
   const designMarkdown = read(path.join(changeDir, 'design.md'));
-  if (designMarkdown) {
+  // With no design.md there are no decision headings, so every Implements id is unresolved. This
+  // runs outside the `if` so the ids are not silently accepted just because design.md is missing.
+  if (!designMarkdown) {
+    for (const task of tasks) {
+      for (const decision of task.implements) blocking.push(`UNKNOWN_DECISION ${task.id}: Implements ${decision} is not a decision heading in design.md`);
+    }
+  } else {
     // Only visible prose counts: the scaffold's HTML comment explains the rule with an example task
     // id, and a fenced example is not a claim about this package.
     const designVisible = visibleLines(designMarkdown).join('\n');

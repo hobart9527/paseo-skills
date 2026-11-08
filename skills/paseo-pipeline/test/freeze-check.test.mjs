@@ -129,7 +129,12 @@ test('rejects scenario-less and fixture-only tasks; design.md is optional', () =
   assert.match(run(noScen).stdout, /NO_SCEN T-03/);
   const fixtureOnly = change({ ...files, 'tasks.md': contract.replace('src/beta,test/beta.test.mjs', 'test/beta.test.mjs') });
   assert.match(run(fixtureOnly).stdout, /FIXTURE_ONLY_TASK T-03/);
-  const mech = change({ ...files, 'tasks.md': contract.replace(/(T-03 beta[\s\S]*?)  - Scen: SCEN-1\n/, '$1  - Review: mechanical\n').replace('src/beta,test/beta.test.mjs', 'test/beta.test.mjs') });
+  // T-03 drops its SCEN claim when it becomes mechanical, so acceptance must stop listing it.
+  const mech = change({
+    ...files,
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-04 | node -e "0" | yes | PENDING | pending |'),
+    'tasks.md': contract.replace(/(T-03 beta[\s\S]*?)  - Scen: SCEN-1\n/, '$1  - Review: mechanical\n').replace('src/beta,test/beta.test.mjs', 'test/beta.test.mjs'),
+  });
   assert.equal(run(mech).status, 0);
 });
 
@@ -918,7 +923,7 @@ test('UNOWNED_ACCEPTANCE_SCEN: the Tasks cell must name at least one task claimi
     'specs/a/spec.md': '### Scenario: SCEN-1\n### Scenario: SCEN-2\n',
   }));
   assert.equal(result.status, 1);
-  assert.match(codes(result).join('\n'), /^UNOWNED_ACCEPTANCE_SCEN SCEN-1: none of T-02 claims it in tasks\.md Scenarios$/m);
+  assert.match(codes(result).join('\n'), /^UNOWNED_ACCEPTANCE_SCEN SCEN-1: T-02 does not claim it in tasks\.md Scenarios$/m);
 });
 
 test('UNACCEPTED_SCEN: every declared SCEN needs an acceptance row', () => {
@@ -1052,9 +1057,9 @@ test('UNOWNED_ACCEPTANCE_SCEN: a Required=no owner row cannot excuse a wrong Req
   }));
   assert.equal(result.status, 1);
   const blocking = codes(result).join('\n');
-  assert.match(blocking, /^UNOWNED_ACCEPTANCE_SCEN SCEN-1: none of T-02 claims it in tasks\.md Scenarios$/m);
+  assert.match(blocking, /^UNOWNED_ACCEPTANCE_SCEN SCEN-1: T-02 does not claim it in tasks\.md Scenarios$/m);
   // The Required=no row naming the real owner is fine, so only the divergent yes row is named.
-  assert.doesNotMatch(blocking, /none of T-01 claims it/);
+  assert.doesNotMatch(blocking, /UNOWNED_ACCEPTANCE_SCEN SCEN-1: T-01/);
 });
 
 test('COLLIDING_SCEN: a baseline id re-declared under MODIFIED or REMOVED Requirements in this change passes', () => {
@@ -1074,6 +1079,81 @@ test('COLLIDING_SCEN: a baseline id re-declared under ADDED (or no section) is s
     assert.equal(result.status, 1, ownSection);
     assert.match(codes(result).join('\n'), /^COLLIDING_SCEN SCEN-1: already declared in openspec\/specs\/cap\/spec\.md$/m, ownSection);
   }
+});
+
+test('malformed scenario headings never crash the gate, in this change or the baseline', () => {
+  // CommonMark needs whitespace after the hashes: `####Scenario:` is text, not a declaration, so the
+  // claiming task gets UNKNOWN_SCEN and the run still produces a verdict and parseable JSON.
+  const own = change({
+    'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'review.md': REVIEW, 'acceptance.md': acceptance,
+    'specs/a/spec.md': '## ADDED Requirements\n\n####Scenario: SCEN-1 nospace\nWHEN a\nTHEN b\n',
+  });
+  const ownResult = run(own, ['--structural', '--skip-signer-check']);
+  assert.equal(ownResult.status, 1);
+  assert.doesNotMatch(ownResult.stderr, /TypeError|at scenarioBody/);
+  const ownJson = JSON.parse(ownResult.stdout);
+  assert.ok(Array.isArray(ownJson.blocking) && Array.isArray(ownJson.advisories));
+  assert.match(ownJson.blocking.join('\n'), /^UNKNOWN_SCEN T-01: SCEN-1 is not declared$/m);
+
+  // The same typo in the baseline must not take the gate down for an otherwise clean package.
+  const repo = aligned();
+  execFileSync('git', ['-C', repo, 'init', '-q', '-b', 'main'], { encoding: 'utf8' });
+  fs.mkdirSync(path.join(repo, 'openspec/specs/cap'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'openspec/specs/cap/spec.md'), '## Requirements\n####Scenario: SCEN-1 nospace\nWHEN a\nTHEN b\n');
+  const repoResult = run(repo, ['--structural', '--skip-signer-check']);
+  assert.equal(repoResult.status, 0, `${repoResult.stderr}\n${repoResult.stdout}`);
+  assert.equal(JSON.parse(repoResult.stdout).blocking.length, 0);
+});
+
+test('UNOWNED_ACCEPTANCE_SCEN: every id in the Tasks cell must claim the SCEN', () => {
+  // T-01 claims SCEN-1, T-02 claims SCEN-2; a row listing both for SCEN-1 must name T-02.
+  const tasks = `- [ ] 1.1 T-01 shared
+  - Write scope: src/shared,test/shared.test.mjs
+  - Verify with: node --test test/shared.test.mjs
+  - Scen: SCEN-1
+- [ ] 1.2 T-02 other
+  - Depends on: T-01
+  - Write scope: src/app.mjs,test/other.test.mjs
+  - Verify with: npm test
+  - Scen: SCEN-2`;
+  const result = run(change({
+    'tasks.md': tasks, 'proposal.md': 'x', 'design.md': design, 'review.md': REVIEW,
+    'specs/a/spec.md': '### Scenario: SCEN-1\n### Scenario: SCEN-2\n',
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node -e "0" | yes | PENDING | pending |\n| SCEN-2 | CLI | T-02 | node -e "0" | yes | PENDING | pending |'),
+  }));
+  assert.equal(result.status, 1);
+  const blocking = codes(result).join('\n');
+  assert.match(blocking, /^UNOWNED_ACCEPTANCE_SCEN SCEN-1: T-02 does not claim it in tasks\.md Scenarios$/m);
+  assert.doesNotMatch(blocking, /UNOWNED_ACCEPTANCE_SCEN SCEN-1: T-01/);
+});
+
+test('UNKNOWN_DECISION: Implements is unresolved when design.md is absent', () => {
+  const tasks = `- [ ] 1.1 T-01 shared
+  - Write scope: src/shared,test/shared.test.mjs
+  - Verify with: node --test test/shared.test.mjs
+  - Scen: SCEN-1
+  - Implements: D-01
+- [ ] 1.2 T-02 sink
+  - Depends on: T-01
+  - Write scope: src/app.mjs,test/sink.test.mjs
+  - Verify with: npm test
+  - Scen: SCEN-1`;
+  const result = run(change({
+    'tasks.md': tasks, 'proposal.md': 'x', 'review.md': REVIEW,
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node -e "0" | yes | PENDING | pending |'),
+    'specs/a/spec.md': '### Scenario: SCEN-1\n',
+  }));
+  assert.equal(result.status, 1);
+  assert.match(codes(result).join('\n'), /^UNKNOWN_DECISION T-01: Implements D-01 is not a decision heading in design\.md$/m);
+});
+
+test('BAD_ACCEPTANCE_TASKS: a non-task token in the Tasks cell is named', () => {
+  const result = run(change({
+    'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW,
+    'acceptance.md': table('| SCEN-1 | CLI | T-01, T-02 (integration) | node -e "0" | yes | PENDING | pending |'),
+  }));
+  assert.equal(result.status, 1);
+  assert.match(codes(result).join('\n'), /^BAD_ACCEPTANCE_TASKS acceptance\.md:3 SCEN-1: Tasks token T-02 \(integration\) is not a task id$/m);
 });
 
 test('SINK_TEST_ONLY: a sink whose whole Write scope is tests is rejected', () => {

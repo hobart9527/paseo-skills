@@ -81,7 +81,7 @@ const TASKS = `- [ ] 1.1 T-00 interface skeleton
 
 const acceptance = `| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| SCEN-CORE | CLI | T-01,T-02,T-03,T-04 | node -e "0" | yes | PENDING | pending |
+| SCEN-CORE | CLI | T-01,T-02,T-04 | node -e "0" | yes | PENDING | pending |
 `;
 
 function redTest(file, marker) {
