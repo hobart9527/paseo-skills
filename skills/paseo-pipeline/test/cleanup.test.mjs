@@ -680,11 +680,11 @@ test('--change must name the change directory: live basename or archive/<YYYY-MM
   r = run(f, ['cleanup', archived, '--change', 'other', '--json']);
   assert.equal(r.status, 2, r.out);
   assert.match(r.stderr, /does not name/);
-  // A basename equal to the name is the live shape wherever it sits, so the dated basename is
-  // accepted as a name — and then owns no objects at all. It can never reach `chg`'s objects.
+  // The parent decides the shape: inside `archive/` a dated basename is a directory name, so
+  // it is not a change name even though the live shape would otherwise accept it.
   r = run(f, ['cleanup', archived, '--change', `2026-11-08-${CHANGE}`, '--json']);
-  assert.equal(r.status, 0, r.out);
-  assert.deepEqual(JSON.parse(r.stdout).objects, []);
+  assert.equal(r.status, 2, r.out);
+  assert.match(r.stderr, /does not name/);
   // A date that is not a date is not the archived shape either.
   fs.renameSync(archived, path.join(path.dirname(archived), `notadate-${CHANGE}`));
   const notADate = path.join(path.dirname(archived), `notadate-${CHANGE}`);
@@ -712,6 +712,31 @@ test('an archived directory cannot authorize a different change name', () => {
   const refusal = checkPreconditions({ cwd: f.root, changeDir: foreign, change: CHANGE, objects: [], base: 'main' });
   assert.equal(refusal.code, 4);
   assert.match(refusal.message, /cannot read tasks.md/);
+});
+
+test('a dated basename inside archive/ is never a live change name', () => {
+  const f = fixture();
+  const archived = archiveChange(f);
+  // A later, unrelated change is literally named like the archived directory. Its integration
+  // branch points at a commit holding the archived Done contract at this same path, so the
+  // misbinding below would pass every precondition and delete that change's branch.
+  const later = `2026-11-08-${CHANGE}`;
+  git(f.root, 'add', 'openspec/changes/archive');
+  git(f.root, 'commit', '-qm', 'archive chg');
+  git(f.root, 'branch', `integration/${later}`, git(f.root, 'rev-parse', 'HEAD'));
+  git(f.root, 'branch', `task/${later}/T-01`, git(f.root, 'rev-parse', 'HEAD'));
+  // The archived chg run-log approves the later change's own task branch.
+  fs.appendFileSync(path.join(archived, 'run-log.md'),
+    `Approval: 2026-11-07T00:00:00Z clean up\nObject: task/${later}/T-01\nCommand: git branch -d task/${later}/T-01\n`);
+  const r = run(f, ['cleanup', archived, '--change', later, '--execute', '--json']);
+  assert.equal(r.status, 2, r.out);
+  assert.match(r.stderr, /does not name/);
+  // Neither of the later change's branches, nor chg's own worktrees, was touched.
+  assert.ok(git(f.root, 'rev-parse', '--verify', `refs/heads/task/${later}/T-01`));
+  assert.ok(git(f.root, 'rev-parse', '--verify', `refs/heads/integration/${later}`));
+  assert.ok(fs.existsSync(f.worktrees['T-01']));
+  assert.ok(fs.existsSync(f.worktrees['T-02']));
+  assert.ok(git(f.root, 'rev-parse', '--verify', 'refs/heads/integration/chg'));
 });
 
 test('an EEXIST race at seeding re-derives approval state before executing', () => {

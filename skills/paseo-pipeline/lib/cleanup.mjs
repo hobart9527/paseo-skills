@@ -42,10 +42,14 @@ function realOrResolved(value) {
  * @returns {'live'|'archived'|null}
  */
 function changeDirShape(changeDir, change) {
-  const base = path.basename(changeDir);
-  if (base === change) return 'live';
-  if (path.basename(path.dirname(changeDir)) !== 'archive') return null;
-  return new RegExp(`^\\d{4}-\\d{2}-\\d{2}-${escapeRe(change)}$`).test(base) ? 'archived' : null;
+  // The parent decides, never the basename alone: inside `archive/`, a dated basename is a
+  // directory name and never a change name, even when some later change is literally named
+  // `2026-11-08-chg`. Treating it as live there would run that other change's cleanup from
+  // this one's approvals and Done tasks.
+  if (path.basename(path.dirname(changeDir)) === 'archive') {
+    return new RegExp(`^\\d{4}-\\d{2}-\\d{2}-${escapeRe(change)}$`).test(path.basename(changeDir)) ? 'archived' : null;
+  }
+  return path.basename(changeDir) === change ? 'live' : null;
 }
 
 function ownedBranch(branch, change) {
