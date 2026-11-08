@@ -254,15 +254,39 @@ export function legPaths(part) {
 // and a bare runner becomes broad. Bounded to these options; no general shell parsing.
 const CWD_OPTION = /^(?:--prefix|-C|--dir|--cwd)(?:=(\S+))?$/;
 
+/** Segment-wise `./`, `dir/` and `a/../b` normalization; null when absolute or escapes the root. */
+function normalizeRelativeDir(value) {
+  const raw = String(value || '').replace(/^['"]|['"]$/g, '');
+  if (raw.startsWith('/')) return null;
+  const segments = [];
+  for (const segment of raw.split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      if (!segments.length) return null;
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  return segments.join('/');
+}
+
+/** Resolve a leg path against its working directory; an escaping or absolute path stays as written. */
+function resolveLegPath(cwd, path) {
+  if (!cwd || path.startsWith('/')) return path;
+  return normalizeRelativeDir(`${cwd}/${path}`) ?? path;
+}
+
 function legWorkingDirectory(part) {
   const tokens = String(part || '').split(/\s+/).map((token) => token.replace(/^['"]|['"]$/g, ''));
   for (let i = 0; i < tokens.length; i += 1) {
     const match = CWD_OPTION.exec(tokens[i]);
     if (!match) continue;
     const value = match[1] ?? tokens[i + 1];
-    const cwd = value && !value.startsWith('-') ? normalizeScope(value) : null;
+    const cwd = value && !value.startsWith('-') ? normalizeRelativeDir(value) : null;
     // Strip the option's value token only when it resolves; otherwise leave the leg as it was.
-    return { cwd, strip: cwd ? (match[1] ? [i] : [i, i + 1]) : [] };
+    // `cwd === ''` is the repo root and still strips the option.
+    return { cwd, strip: cwd !== null ? (match[1] ? [i] : [i, i + 1]) : [] };
   }
   return { cwd: null, strip: [] };
 }
@@ -278,9 +302,7 @@ export function verifyLegs(value) {
     // directory is not mistaken for the target of the run.
     const tokens = command.split(/\s+/);
     const scoped = strip.length ? tokens.filter((_, i) => !strip.includes(i)).join(' ') : command;
-    const paths = [...new Set(legPaths(scoped).map((path) => (
-      cwd && !path.startsWith('/') ? normalizeScope(`${cwd}/${path}`) ?? path : path
-    )))];
+    const paths = [...new Set(legPaths(scoped).map((path) => (cwd === null ? path : resolveLegPath(cwd, path))))];
     return { command, paths, broad: paths.length === 0 && FULL_SUITE_LEG.test(scoped) };
   });
 }

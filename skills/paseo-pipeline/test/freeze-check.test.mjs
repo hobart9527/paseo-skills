@@ -390,6 +390,14 @@ test('sink may run one full suite per package and mix in narrow legs', () => {
   const mixed = freezeOf(sinkContract('npm --prefix packages/a test && node --test test/sink.test.mjs'));
   assert.equal(mixed.status, 0, mixed.stdout);
 });
+test('a dotted or parent-relative prefix resolves to a narrow leg inside Write scope', () => {
+  // `./packages/web` is a working directory, and `test/a.test.ts` resolves under it; the
+  // scope gate must see `packages/web/test/a.test.ts`, not an unresolved `./...` path.
+  const tasks = contract.replace('Write scope: src/alpha,test/alpha.test.mjs', 'Write scope: packages/web/test,test/alpha.test.mjs')
+    .replace('node --test test/alpha.test.mjs', 'npm --prefix ./packages/web test -- test/a.test.ts');
+  const result = freezeOf(tasks);
+  assert.doesNotMatch(result.stdout, /VERIFY_NOT_NARROW T-02/, result.stdout);
+});
 test('a working-directory option does not hide a package suite from the sink rules', () => {
   // T-02 becomes a second full suite beside the sink's `npm test`.
   const result = freezeOf(contract.replace('node --test test/alpha.test.mjs', 'npm --prefix packages/a test'));

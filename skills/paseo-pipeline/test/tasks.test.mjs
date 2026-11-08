@@ -96,6 +96,19 @@ test('verify legs: a working-directory option scopes the runner instead of namin
     [{ paths: ['packages/web/test/a.test.ts'], broad: false }]);
   assert.deepEqual(verifyLegs('pnpm --dir=packages/x test src/a.test.ts').map((leg) => ({ paths: leg.paths, broad: leg.broad })),
     [{ paths: ['packages/x/src/a.test.ts'], broad: false }]);
+  // Working directories normalize segment-wise, not by string concatenation.
+  for (const [command, expected] of [
+    ['npm --prefix ./packages/web test -- test/a.test.ts', ['packages/web/test/a.test.ts']],
+    ['npm --prefix . test -- test/a.test.ts', ['test/a.test.ts']],
+    ['npm --prefix packages/web/ test test/a.test.ts', ['packages/web/test/a.test.ts']],
+    ['npm --prefix packages/web test -- ../shared/test/x.test.ts', ['packages/shared/test/x.test.ts']],
+  ]) {
+    assert.deepEqual(verifyLegs(command).map((leg) => leg.paths), [expected], command);
+  }
+  // `packages/web` is two levels deep, so `../../x.test.ts` lands at the root: still resolved.
+  assert.deepEqual(verifyLegs('npm --prefix packages/web test -- ../../x.test.ts').map((leg) => leg.paths), [['x.test.ts']]);
+  // One more level escapes the repo root; the path stays unresolved so the scope gate rejects it.
+  assert.deepEqual(verifyLegs('npm --prefix packages/web test -- ../../../x.test.ts').map((leg) => leg.paths), [['../../../x.test.ts']]);
 });
 
 test('official task template is parser-compatible', () => {
