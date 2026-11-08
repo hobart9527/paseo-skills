@@ -4,7 +4,7 @@
 // branches this change owns, with the exact command a human would run by hand. Nothing here
 // executes anything, so there is no approval gate to get wrong: the operator reads the list,
 // obtains approval for each object, and runs the commands themselves. Objects that look unsafe
-// to delete — a dirty worktree, a branch not merged into the base — are annotated so that
+// to delete — a dirty worktree, a branch `git branch -d` would refuse — are annotated so that
 // decision is made with the facts in view.
 
 import fs from 'node:fs';
@@ -21,6 +21,17 @@ const CHANGE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const TASK_ID = String.raw`[A-Za-z][A-Za-z0-9]*-\d+`;
 
 function escapeRe(value) { return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+// The listing's product is a command a human pastes into a shell. A worktree path may contain
+// spaces or `;` and a branch name may contain `$`, backticks or quotes (`git check-ref-format`
+// allows all of them), so every interpolated value is quoted. Values already made only of
+// shell-safe characters stay bare, so an ordinary listing reads exactly as it always did.
+const SHELL_SAFE = /^[A-Za-z0-9._/+=:@%,-]+$/;
+function shellQuote(value) {
+  const text = String(value);
+  if (text !== '' && SHELL_SAFE.test(text)) return text;
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
 
 // macOS reports /private/var for a repo opened through the /var symlink; compare real paths,
 // falling back to the literal path when the target is already gone.
@@ -152,7 +163,7 @@ export function discoverObjects({ cwd, change }) {
         id: workspace.workspaceId,
         branch: tree.branch,
         path: tree.path,
-        command: `paseo workspace archive ${workspace.workspaceId}`,
+        command: `paseo workspace archive ${shellQuote(workspace.workspaceId)}`,
       });
     } else {
       objects.push({
@@ -160,33 +171,50 @@ export function discoverObjects({ cwd, change }) {
         id: tree.path,
         branch: tree.branch,
         path: tree.path,
-        command: `git worktree remove ${tree.path}`,
+        command: `git worktree remove ${shellQuote(tree.path)}`,
       });
     }
   }
   for (const branch of listBranches(cwd, change)) {
-    objects.push({ kind: 'branch', id: branch, branch, path: null, command: `git branch -d ${branch}` });
+    objects.push({ kind: 'branch', id: branch, branch, path: null, command: `git branch -d ${shellQuote(branch)}` });
   }
-  return { change, objects };
+  return { change, objects, trees };
 }
 
 /**
  * Annotate each object with what a human needs before deleting it. This is reported status,
  * never a gate: a dirty worktree or an unmerged branch is still listed, with the fact attached.
- * `git branch -d` refuses an unmerged branch, so `mergedIntoBase: false` warns that the printed
- * command will refuse rather than delete.
+ *
+ * `git branch -d` does not consult `--base`. It checks the branch's configured upstream when
+ * that resolves, and otherwise the current `HEAD`, and it refuses while any worktree
+ * registration — including a stale one whose directory is gone — still holds the branch. The
+ * listing reports exactly that reference and those registrations instead of guessing from the
+ * base: promising refusal where `-d` succeeds would be as misleading as the reverse.
  */
-function annotate(objects, { cwd, base }) {
+function annotate(objects, { cwd, trees }) {
+  const listed = new Set(objects.filter((object) => object.path).map((object) => realOrResolved(object.path)));
   for (const object of objects) {
     if (object.kind === 'branch') {
       const tip = runGit(cwd, ['rev-parse', '--verify', '--quiet', `refs/heads/${object.branch}^{commit}`]);
       if (tip.status === 0) object.tip = tip.stdout.trim();
-      object.mergedIntoBase = runGit(cwd, ['merge-base', '--is-ancestor', object.branch, base]).status === 0;
+      // `@{upstream}` fails when none is configured or the configured ref does not resolve;
+      // Git's own delete falls back to HEAD in both cases.
+      const upstream = runGit(cwd, ['rev-parse', '--symbolic-full-name', `${object.branch}@{upstream}`]);
+      const checked = upstream.status === 0 && upstream.stdout.trim() ? upstream.stdout.trim() : 'HEAD';
+      object.deleteCheck = {
+        ref: checked,
+        merged: runGit(cwd, ['merge-base', '--is-ancestor', `refs/heads/${object.branch}`, checked]).status === 0,
+      };
+      object.heldBy = trees
+        .filter((tree) => tree.branch === object.branch)
+        .map((tree) => ({ path: tree.path, stale: !fs.existsSync(tree.path), listed: listed.has(realOrResolved(tree.path)) }));
       continue;
     }
     if (!object.path) continue;
     if (!fs.existsSync(object.path)) { object.stale = true; continue; }
-    const status = runGit(object.path, ['status', '--porcelain']);
+    // `git status` refreshes the index through optional locks, which rewrites `.git/index` in a
+    // worktree whose stat cache is stale. A listing may not touch what it lists.
+    const status = runGit(object.path, ['--no-optional-locks', 'status', '--porcelain']);
     if (status.error || status.status !== 0) { object.unreadable = true; continue; }
     object.dirty = status.stdout.trim() !== '';
   }
@@ -216,16 +244,21 @@ function taskStatus(changeDir, change) {
   };
 }
 
-/** Pending merge markers for this change's tasks: inactive refs that block a fresh merge. */
+/**
+ * Pending merge markers for this change's tasks: inactive refs that block a fresh merge.
+ * An unreadable marker is damaged state, not absence: it is collected as an error so the
+ * report can say so, because "nothing pending" would be a false all-clear.
+ */
 function pendingMerges(cwd, change, taskIds) {
   const pending = [];
+  const errors = [];
   for (const task of taskIds) {
     try {
       const state = readMergeState(cwd, change, task);
       if (state?.status === 'pending') pending.push({ task, tip: state.tip });
-    } catch { /* an unreadable marker is reported as absent; nothing acts on it here */ }
+    } catch (error) { errors.push({ task, error: error.message }); }
   }
-  return pending;
+  return { pending, errors };
 }
 
 function shape(object) {
@@ -239,7 +272,8 @@ function shape(object) {
     ...(object.stale ? { stale: true } : {}),
     ...(object.dirty ? { dirty: true } : {}),
     ...(object.unreadable ? { unreadable: true } : {}),
-    ...(object.mergedIntoBase === undefined ? {} : { mergedIntoBase: object.mergedIntoBase }),
+    ...(object.deleteCheck ? { deleteCheck: object.deleteCheck } : {}),
+    ...(object.heldBy?.length ? { heldBy: object.heldBy } : {}),
   };
 }
 
@@ -249,14 +283,23 @@ function notes(object) {
   if (object.stale) list.push('directory is gone');
   if (object.dirty) list.push('worktree has uncommitted changes; removal will refuse');
   if (object.unreadable) list.push('cannot read worktree status');
-  if (object.mergedIntoBase === false) list.push('not merged into base; branch -d will refuse');
+  if (object.deleteCheck && !object.deleteCheck.merged) {
+    list.push(`tip is not merged into ${object.deleteCheck.ref}; branch -d will refuse`);
+  }
+  for (const holder of object.heldBy ?? []) {
+    const state = holder.stale ? ', stale registration' : '';
+    // Order matters: the branch cannot be deleted until the holding registration is gone.
+    list.push(`held by worktree ${holder.path}${state}; ${holder.listed
+      ? 'run that worktree\'s listed command first'
+      : 'that registration is not listed here and must be cleared first'}`);
+  }
   return list.length ? ` (${list.join('; ')})` : '';
 }
 
 /**
  * CLI entry point. Always read-only: lists what this change owns with the command a human
  * would run for each object, and exits without touching anything.
- * Exit: 0 listed; 2 usage; 3 unreadable state.
+ * Exit: 0 listed; 2 usage; 3 unreadable state (the listing is still printed either way).
  */
 export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => console.log(line), stderr = (line) => console.error(line) } = {}) {
   let parsed;
@@ -308,12 +351,16 @@ export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => conso
   }
 
   let objects;
-  try { objects = discoverObjects({ cwd, change }).objects; }
+  let trees;
+  try { ({ objects, trees } = discoverObjects({ cwd, change })); }
   catch (error) { stderr(`[pipeline-run] ${error.message}`); return error.code ?? 3; }
 
-  annotate(objects, { cwd, base });
+  annotate(objects, { cwd, trees });
   const tasks = taskStatus(changeDir, change);
-  const pending = pendingMerges(cwd, change, tasks.ids);
+  const { pending, errors: markerErrors } = pendingMerges(cwd, change, tasks.ids);
+  // A damaged marker is unreadable state, never a clean pass; the list is still printed,
+  // because the human needs it either way.
+  const exit = markerErrors.length ? 3 : 0;
 
   if (json) {
     stdout(JSON.stringify({
@@ -322,14 +369,16 @@ export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => conso
       repository: acting,
       tasks: { source: tasks.source, open: tasks.open, errors: tasks.errors },
       pendingMerges: pending,
+      pendingMergeErrors: markerErrors,
       objects: objects.map(shape),
-      exit: 0,
+      exit,
     }, null, 2));
   } else {
     stdout(`${change} (base ${base}, repository ${acting})`);
     stdout(`tasks: ${tasks.source ?? 'unreadable'}${tasks.open.length ? `, open: ${tasks.open.join(', ')}` : ', all Done'}`);
     if (tasks.errors.length) stdout(`tasks errors: ${tasks.errors.join('; ')}`);
     for (const marker of pending) stdout(`pending merge marker: ${marker.task} @ ${marker.tip}`);
+    for (const error of markerErrors) stdout(`unreadable merge marker: ${error.task}: ${error.error}; pending merge state cannot be determined for it`);
     for (const object of objects) {
       const location = object.path ? ` ${object.path}` : '';
       const tip = object.tip ? ` (tip ${object.tip})` : '';
@@ -337,5 +386,5 @@ export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => conso
     }
     stdout('read-only: nothing was executed; obtain approval and run each command by hand');
   }
-  return 0;
+  return exit;
 }

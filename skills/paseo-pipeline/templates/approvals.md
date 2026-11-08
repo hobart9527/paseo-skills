@@ -17,8 +17,10 @@ Use before any destructive or production step: deploy, `archive_workspace`, bran
    directory is gone is an ordinary `git-worktree` object removed individually with `git
    worktree remove <path>`; a dirty or locked worktree refuses, and that refusal is reported,
    never forced (`-D`, `--force`) and never replaced with `rm -rf`. The listing marks a dirty
-   worktree, an unreadable one and a branch not merged into the base, so those decisions are
-   made with the facts in view.
+   worktree, an unreadable one, an unreadable merge marker (exit 3), and for each branch the
+   reference `git branch -d` will actually check — its configured upstream, or `HEAD` when it
+   has none — plus any worktree registration still holding it, since that alone makes `-d`
+   refuse. Delete a holding worktree before its branch.
 2. **Ask.** State what is irreversible, what is archived versus deleted, and what is pushed. Never
    bundle two object classes in one question.
 3. **Record the approval verbatim** in `openspec/changes/<change>/run-log.md`, one block per

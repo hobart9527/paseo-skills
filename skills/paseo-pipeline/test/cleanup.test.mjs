@@ -36,6 +36,13 @@ const fs = require('node:fs');
 const cfg = JSON.parse(fs.readFileSync(process.env.FAKE_PASEO_CFG, 'utf8'));
 const [a, b] = process.argv.slice(2);
 if (a === 'workspace' && b === 'ls') { process.stdout.write(JSON.stringify(cfg.workspaces)); process.exit(0); }
+if (a === 'workspace' && b === 'archive') {
+  // Records the argument it received and removes the workspace from later listings, the way
+  // the real archive does. It archives one id and nothing else.
+  fs.appendFileSync(cfg.archived, JSON.stringify(process.argv.slice(3)) + '\\n');
+  process.exit(0);
+}
+if (a === 'workspace' && b === 'unarchive') process.exit(0);
 process.exit(1);
 `;
 
@@ -45,7 +52,7 @@ function fakePaseo(dir, root, workspaces = []) {
   fs.writeFileSync(path.join(bin, 'paseo'), FAKE_PASEO);
   fs.chmodSync(path.join(bin, 'paseo'), 0o755);
   const cfg = path.join(dir, '.fake-paseo.json');
-  fs.writeFileSync(cfg, JSON.stringify({ root, workspaces }));
+  fs.writeFileSync(cfg, JSON.stringify({ root, workspaces, archived: path.join(dir, '.fake-paseo-archived') }));
   return { ...env, PATH: `${bin}:${process.env.PATH}`, FAKE_PASEO_CFG: cfg };
 }
 
@@ -173,16 +180,17 @@ test('a pending merge marker is reported, not refused', () => {
   assert.match(cleanup(f).stdout, /pending merge marker: T-02 @ [0-9a-f]{40}/);
 });
 
-test('a branch not merged into base is listed with its pointer and annotated', () => {
+test('a branch not merged into the checked ref is listed with its pointer and annotated', () => {
   const f = fixture({ integrated: false });
   git(f.worktrees['T-02'], 'commit', '-q', '--allow-empty', '-m', 'unmerged work');
   const tip = git(f.root, 'rev-parse', 'task/chg/T-02');
   const report = discover(f);
   const branch = report.objects.find((object) => object.kind === 'branch' && object.id === 'task/chg/T-02');
   assert.equal(branch.tip, tip);
-  assert.equal(branch.mergedIntoBase, false);
+  // No upstream is configured, so `git branch -d` checks HEAD — never `--base`.
+  assert.deepEqual(branch.deleteCheck, { ref: 'HEAD', merged: false });
   assert.equal(branch.command, 'git branch -d task/chg/T-02');
-  assert.match(cleanup(f).stdout, /not merged into base; branch -d will refuse/);
+  assert.match(cleanup(f).stdout, /tip is not merged into HEAD; branch -d will refuse/);
   // The branch is still there: `-d` is what the listing says, and nothing was run.
   assert.equal(git(f.root, 'rev-parse', '--verify', 'refs/heads/task/chg/T-02'), tip);
 });
@@ -196,6 +204,173 @@ test('a dirty worktree is listed and annotated, never removed', () => {
   assert.doesNotMatch(object.command, /--force/);
   assert.match(cleanup(f).stdout, /worktree has uncommitted changes; removal will refuse/);
   assert.ok(fs.existsSync(f.worktrees['T-02']));
+});
+
+/** Run an emitted command literally, the way a human pastes it. */
+function shell(cwd, command) {
+  return spawnSync('sh', ['-c', command], { cwd, env, encoding: 'utf8' });
+}
+
+/** What the real `git branch -d` decides for `branch`, in the fixture's repository. */
+function branchDelete(f, branch) {
+  const r = spawnSync('git', ['-C', f.root, 'branch', '-d', branch], { env, encoding: 'utf8' });
+  return { status: r.status, out: `${r.stdout}${r.stderr}` };
+}
+
+/** The worktree's index file bytes: any optional-lock refresh rewrites this file. */
+function indexBytes(cwd) {
+  return fs.readFileSync(git(cwd, 'rev-parse', '--path-format=absolute', '--git-path', 'index'));
+}
+
+/** A worktree at exactly `dir`; returns the path git registered for it. */
+function addWorktree(f, branch, dir) {
+  git(f.root, 'worktree', 'add', '-q', '-b', branch, dir, f.integrationTip);
+  return spawnSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], { env, encoding: 'utf8' }).stdout.trim();
+}
+
+test('cleanup never writes the index of the worktree it inspects', () => {
+  const f = fixture();
+  const worktree = f.worktrees['T-01'];
+  // A stat-dirty tracked file whose content is unchanged is what makes plain `git status`
+  // refresh and rewrite the index through an optional lock.
+  const statDirty = path.join(worktree, 'openspec', 'changes', CHANGE, 'proposal.md');
+  const future = new Date('2030-12-31T00:00:00Z');
+  fs.utimesSync(statDirty, future, future);
+  fs.appendFileSync(path.join(worktree, 'openspec', 'changes', CHANGE, 'acceptance.md'), 'changed\n');
+  const before = indexBytes(worktree);
+  const report = discover(f);
+  assert.deepEqual(indexBytes(worktree), before);
+  // The probe still reports the dirty state correctly; it just does it without writing.
+  const object = report.objects.find((item) => item.id === worktree);
+  assert.equal(object.dirty, true);
+});
+
+test('a worktree path with a space yields a command that removes only that worktree', () => {
+  const f = fixture();
+  const dir = path.join(f.root, '..', `${path.basename(f.root)}-wt space`);
+  const registeredPath = addWorktree(f, 'task/chg/T-03', dir);
+  const object = discover(f).objects.find((item) => item.id === registeredPath);
+  assert.equal(object.command, `git worktree remove '${registeredPath}'`);
+  // The path is displayed as it is; only the command text is quoted.
+  assert.equal(object.path, registeredPath);
+  const r = shell(f.root, object.command);
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(!registered(f, registeredPath));
+  assert.ok(registered(f, f.worktrees['T-01']));
+});
+
+test('a worktree path with a semicolon yields a command with no shell side effect', () => {
+  const f = fixture();
+  const dir = path.join(f.root, '..', `${path.basename(f.root)}-wt;touch>PWNED`);
+  const registeredPath = addWorktree(f, 'task/chg/T-03', dir);
+  const object = discover(f).objects.find((item) => item.id === registeredPath);
+  assert.equal(object.command, `git worktree remove '${registeredPath}'`);
+  const r = shell(f.root, object.command);
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(!registered(f, registeredPath));
+  // Unquoted, the `;` would have run `touch>PWNED` in the current directory.
+  assert.ok(!fs.existsSync(path.join(f.root, 'PWNED')));
+});
+
+test('a branch name containing $ yields a command that deletes only that branch', () => {
+  const f = fixture();
+  // A live change directory's basename is the change name with no charset check, and
+  // `integration/<change>` is legal; `$` is exactly the shell-active character at issue.
+  const change = 'chg$(id>PWNED)';
+  const dir = path.join(f.root, 'openspec', 'changes', change);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'tasks.md'), TASKS_DONE);
+  git(f.root, 'branch', `integration/${change}`, 'main');
+  const r = run(f, ['cleanup', dir, '--json']);
+  assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+  const branch = JSON.parse(r.stdout).objects.find((object) => object.kind === 'branch' && object.id === `integration/${change}`);
+  assert.ok(branch, r.stdout);
+  assert.equal(branch.command, `git branch -d 'integration/${change}'`);
+  const out = shell(f.root, branch.command);
+  assert.equal(out.status, 0, out.stderr);
+  assert.ok(!fs.existsSync(path.join(f.root, 'PWNED')));
+  const gone = spawnSync('git', ['-C', f.root, 'rev-parse', '--verify', '--quiet', `refs/heads/integration/${change}`], { env, encoding: 'utf8' });
+  assert.notEqual(gone.status, 0);
+  // No other branch was touched.
+  assert.ok(git(f.root, 'rev-parse', '--verify', 'refs/heads/integration/chg'));
+});
+
+test('the listing predicts git branch -d: merged into HEAD with no upstream deletes', () => {
+  const f = fixture();
+  git(f.root, 'branch', 'task/chg/T-09', 'main');
+  const report = discover(f);
+  const branch = report.objects.find((object) => object.id === 'task/chg/T-09');
+  assert.deepEqual(branch.deleteCheck, { ref: 'HEAD', merged: true });
+  assert.equal(branch.heldBy, undefined);
+  assert.doesNotMatch(cleanup(f).stdout, /T-09[^\n]*will refuse/);
+  // The listing agreed with the real decision.
+  assert.equal(branchDelete(f, 'task/chg/T-09').status, 0);
+});
+
+test('the listing predicts git branch -d: an upstream that lacks the tip refuses though base has it', () => {
+  const f = fixture();
+  const emptyTree = git(f.root, 'hash-object', '-t', 'tree', '/dev/null');
+  const unrelated = git(f.root, 'commit-tree', emptyTree, '-m', 'unrelated root');
+  git(f.root, 'update-ref', 'refs/heads/upstream-lacking', unrelated);
+  git(f.root, 'branch', 'task/chg/T-10', 'main');
+  git(f.root, 'branch', '--set-upstream-to=upstream-lacking', 'task/chg/T-10');
+  // The old annotation asked about `main` and would have promised a successful delete.
+  const againstBase = spawnSync('git', ['-C', f.root, 'merge-base', '--is-ancestor', 'task/chg/T-10', 'main'], { env, encoding: 'utf8' });
+  assert.equal(againstBase.status, 0);
+  const branch = discover(f).objects.find((object) => object.id === 'task/chg/T-10');
+  assert.deepEqual(branch.deleteCheck, { ref: 'refs/heads/upstream-lacking', merged: false });
+  assert.match(cleanup(f).stdout, /tip is not merged into refs\/heads\/upstream-lacking; branch -d will refuse/);
+  assert.notEqual(branchDelete(f, 'task/chg/T-10').status, 0);
+});
+
+test('the listing predicts git branch -d: a worktree registration blocks it and is named', () => {
+  const f = fixture();
+  const heldPath = f.worktrees['T-01'];
+  const report = discover(f);
+  const branch = report.objects.find((object) => object.id === 'task/chg/T-01');
+  assert.deepEqual(branch.heldBy, [{ path: heldPath, stale: false, listed: true }]);
+  assert.notEqual(branchDelete(f, 'task/chg/T-01').status, 0);
+  const listing = cleanup(f);
+  assert.equal(listing.status, 0, listing.out);
+  assert.ok(listing.stdout.includes(`held by worktree ${heldPath}; run that worktree's listed command first`), listing.stdout);
+  // The holding worktree is listed before the branch it blocks.
+  assert.ok(listing.stdout.indexOf(heldPath) < listing.stdout.indexOf(`[branch] task/chg/T-01`), listing.stdout);
+});
+
+test('a stale registration blocks branch -d until its own command runs', () => {
+  const f = fixture({ staleFor: 'T-03' });
+  const stalePath = f.worktrees['T-03'];
+  const report = discover(f);
+  const branch = report.objects.find((object) => object.id === 'task/chg/T-03');
+  assert.deepEqual(branch.heldBy, [{ path: stalePath, stale: true, listed: true }]);
+  assert.match(cleanup(f).stdout, /held by worktree .*, stale registration/);
+  assert.notEqual(branchDelete(f, 'task/chg/T-03').status, 0);
+  // `git worktree remove <missing-path>` is exactly the command the listing emits for it.
+  const stale = report.objects.find((object) => object.kind === 'git-worktree' && object.path === stalePath);
+  const removed = shell(f.root, stale.command);
+  assert.equal(removed.status, 0, removed.stderr);
+  assert.equal(branchDelete(f, 'task/chg/T-03').status, 0);
+});
+
+test('an unreadable merge marker is reported and exits 3, never a clean pass', () => {
+  const f = fixture();
+  const blob = spawnSync('git', ['hash-object', '-w', '--stdin'], { cwd: f.root, env, encoding: 'utf8', input: '{"status":"bogus"}' });
+  git(f.root, 'update-ref', 'refs/pipeline/merge-failures/chg/T-01', blob.stdout.trim());
+  const r = cleanup(f, '--json');
+  assert.equal(r.status, 3, r.out);
+  const report = JSON.parse(r.stdout);
+  assert.equal(report.exit, 3);
+  assert.deepEqual(report.pendingMerges, []);
+  assert.equal(report.pendingMergeErrors.length, 1);
+  assert.equal(report.pendingMergeErrors[0].task, 'T-01');
+  assert.match(report.pendingMergeErrors[0].error, /invalid refs\/pipeline\/merge-failures\/chg\/T-01/);
+  // The objects the human needs are still listed; the error sits beside them.
+  assert.equal(report.objects.filter((object) => object.kind === 'branch').length, 3);
+  assert.equal(report.objects.filter((object) => object.kind === 'git-worktree').length, 2);
+  const text = cleanup(f);
+  assert.equal(text.status, 3, text.out);
+  assert.match(text.stdout, /unreadable merge marker: T-01: .*cannot be determined/);
+  assert.match(text.stdout, /\[branch\] integration\/chg/);
 });
 
 test('a Paseo-owned worktree yields only the archive command, never worktree remove', () => {
