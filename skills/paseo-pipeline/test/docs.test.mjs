@@ -137,7 +137,12 @@ test('author brief carries a write-first budget without lowering any gate', () =
   assert.match(author, /`MISSING_DEPENDENCIES`/);
   assert.match(author, /Budget exhaustion is never a `COMPLETE`/);
   assert.match(author, /Do not read `freeze-check`, parser or scheduler source/);
-  assert.match(author, /30-minute mark/);
+  assert.match(author, /30-minute mark and compares Paseo status with `git log`/);
+  assert.match(author, /Having made a first commit does not clear the point/);
+  assert.match(author, /complete package plus the structural check by minute 20/);
+  assert.match(author, /roughly 30 \/ 60 \/ 75 calls approximate the same anchors/);
+  assert.match(author, /Return `BLOCKED` only if the choice changes the task graph or ownership/);
+  assert.match(author, /record that each affected Verify cannot run until the main session resolves it; a zero exit status is not readiness/);
   // The budget must not displace the gates or the single-author topology.
   assert.match(author, /`COMPLETE` still requires the structural check to succeed on committed content/);
   assert.match(author, /One `gongbu` author writes the entire package/);

@@ -23,7 +23,7 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output location: `openspec/changes/<c
 - Structural check: exact command to run immediately after the initial package is complete.
 - Decisions, approved design (if any), and verified source references.
 - Human approvals and any known permission constraints; do not imply preflight authorizes later commands.
-- Product decisions already settled, and the commit-bound path and version of every authoritative input, so the author discovers fewer of them mid-run. The main session sets a reconciliation point at the 30-minute mark: no package commit by then means one steer asking for a commit of the current state and a gap report.
+- Product decisions already settled, and the commit-bound path and version of every authoritative input, so the author discovers fewer of them mid-run. The main session sets a reconciliation point at the 30-minute mark and compares Paseo status with `git log` in the author workspace: no commit, or a newest commit older than ~10 minutes with the package incomplete, means one steer asking for a commit of the current state and a gap report. Having made a first commit does not clear the point.
 
 ## Denied command report
 `BLOCKED` — command: `<exact command>`; cwd: `<absolute path>`; denial: `<verbatim denial>`; next responsible action: `<who must authorize or run it>`. Do not seek an alternate invocation to bypass the denial.
@@ -44,7 +44,7 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output location: `openspec/changes/<c
 
 ## Write-first budget
 Measured failure: two authors spent ~55 min each on analysis and wrote no file, because the plan lived only in thinking and was re-derived every turn. Context compaction then discarded it. The budget below is an experiment target, not a guarantee; it never lowers a gate.
-- **Clock.** Run `date` first and record the start. Check it at each commit. Anchors: first files committed by minute 10 (`proposal.md`, spec skeletons with the decisions you already hold); complete package plus the structural check by minute 20; stop at minute 25. About three tool calls per minute is typical, so roughly 25 / 50 / 70 calls is the same budget when no clock is at hand.
+- **Clock.** Run `date` first and record the start. Check it at each commit. Anchors: first files committed by minute 10 (`proposal.md`, spec skeletons with the decisions you already hold); complete package plus the structural check by minute 20; stop at minute 25. Measured pace was about three tool calls per minute, so roughly 30 / 60 / 75 calls approximate the same anchors when no clock is at hand.
 - **Write, then verify.** Once you judge context sufficient for a rule, write it. Every later lookup must serve the rule being written, not reopen the plan. The plan lives in the files.
 - **Commit each artifact as it lands.** Put done and remaining items in the commit message so `git log` reconstructs progress after a context compaction; a summary is not state.
 - **Bounded collision checks.** Exactly four: the Requirement text you modify (quote it verbatim), the storage constraint it writes into (`CHECK`/enum/migration), existing tests inside each task's Write scope, and how each Verify runs in a fresh worktree. Read baseline files with `rg -n` and line windows; never read a multi-thousand-line file whole. If one output exceeds ~20k characters, narrow the query.
