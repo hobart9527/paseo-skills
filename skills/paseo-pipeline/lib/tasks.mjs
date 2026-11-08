@@ -32,7 +32,8 @@ export function parseReviewTag(value) {
 }
 
 export function normalizeScope(value) {
-  const raw = String(value || '').trim().replace(/\/+$/, '');
+  // `./src/a` and `src/a` name the same repo-relative path; leave the spelling to neither side.
+  const raw = String(value || '').trim().replace(/^(?:\.\/+)+/, '').replace(/\/+$/, '');
   if (!raw || raw.startsWith('/') || raw.includes('..')) return null;
   return raw.split('/').filter(Boolean).join('/');
 }

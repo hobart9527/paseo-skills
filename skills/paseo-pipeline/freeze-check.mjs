@@ -573,7 +573,7 @@ if (fullSuiteSinks.length > 1) blocking.push(`TOO_MANY_FULL_SUITE_SINKS: ${fullS
 // out. Route, CLI and prose entries have no extension and are left to R0. Extensions run from
 // one char (`main.c`) to long compound forms (`application.properties`); the extension must
 // contain a letter so version-like numbers (`1.5`) are not read as files.
-const entryFileTokens = (cell) => cell.split(/[\s,;()]+/).map((word) => word.replace(/^[`'"]+|[`'"]+$/g, '').replace(/[.:]+$/, ''))
+const entryFileTokens = (cell) => cell.split(/[\s,;()]+/).map((word) => word.replace(/^[`'"]+|[`'"]+$/g, '').replace(/#.*$/, '').replace(/[.:]+$/, ''))
   .filter((word) => /^[^`'"]*\.[A-Za-z0-9]{1,12}$/.test(word) && /[A-Za-z]/.test(word.split('.').pop()) && !word.includes('*'));
 // Write scopes are directories or files; a short entry like `ExpenseBillForm.tsx` names the file
 // without its directory, so match it as a path suffix too. No repo lookup: the tasks.md scope is
@@ -620,7 +620,8 @@ else {
     }
     // Column 3 is the Tasks cell; the old parser never read it, so the two files could
     // assign the same SCEN to different tasks (or acceptance could omit a scenario entirely).
-    const listed = cells[2].split(',').map((item) => item.trim()).filter(Boolean);
+    const rawTasks = cells[2].trim();
+    const listed = rawTasks.split(',').map((item) => item.trim()).filter(Boolean);
     const ids = listed.filter((item) => isTaskId(item));
     const required = /^yes$/i.test(cells[4]);
     // An empty cell means "derive the owners from tasks.md": the task list is then a
@@ -628,14 +629,18 @@ else {
     // A non-task token is still an error on every row; it is not an intentional omission, and
     // deriving owners from it would silently paper over a placeholder like `TBD`.
     const bad = listed.filter((item) => !isTaskId(item));
+    if (rawTasks && !listed.length) {
+      blocking.push(`BAD_ACCEPTANCE_TASKS acceptance.md:${rowNumber} ${cells[0]}: Tasks cell ${rawTasks} names no task id`);
+    }
     if (bad.length) {
       blocking.push(`BAD_ACCEPTANCE_TASKS acceptance.md:${rowNumber} ${cells[0]}: Tasks token ${bad.join(', ')} is not a task id`);
     }
     for (const id of ids) {
       if (!byId.has(id)) blocking.push(`UNKNOWN_ACCEPTANCE_TASK ${cells[0]}: ${id} is not a task in tasks.md`);
     }
-    // Derived owners are the claimers; an explicit cell keeps its current meaning.
-    const owners = ids.length ? ids : [...(claimsByScen.get(scen) ?? [])];
+    // Derived owners are the claimers, and only a truly empty cell derives; a non-empty cell that
+    // yields no id (`,`, `TBD`) is already reported above and keeps its (empty) explicit meaning.
+    const owners = rawTasks ? ids : [...(claimsByScen.get(scen) ?? [])];
     if (!rowsByScen.has(scen)) rowsByScen.set(scen, []);
     rowsByScen.get(scen).push({ ids, owners, entry: cells[1], line: rowNumber });
     if (required) requiredRows.push(cells);
