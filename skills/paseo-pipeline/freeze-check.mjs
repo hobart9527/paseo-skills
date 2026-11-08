@@ -95,23 +95,33 @@ const collapse = (text) => text.replace(/\s+/g, ' ').trim();
 // different function from the declaration scan below: discovery reads visible content (fenced
 // examples and comments are not declarations), while a comparison of two declarations must keep
 // everything a reader would compare. It reads the RAW lines, keeps fenced payloads, and only
-//   1. normalizes line endings (CRLF -> LF) and strips trailing whitespace on each line,
-//   2. drops leading and trailing blank lines,
-// so a body that differs in trailing whitespace or blank lines compares equal, but one that differs
-// in a fenced payload or in interior whitespace (e.g. a literal's spacing) does not. Leading
-// indentation is preserved on purpose: indentation can be significant inside a fenced block, so it
-// is not normalized away. Do not fold this into `visibleLines`.
-function comparedBody(markdown, index) {
-  const lines = markdown.split(/\r?\n/);
+//   1. ends the body at the next VISIBLE heading of the same or higher level — a `#` line inside a
+//      fenced payload or an HTML comment is content, not the end of the scenario,
+//   2. normalizes line endings (CRLF -> LF) and strips trailing whitespace on each line,
+//   3. reduces each fence delimiter line to one canonical `~~~`: content matters, delimiter style
+//      (``` vs ~~~, info string) does not,
+//   4. drops leading and trailing blank lines,
+// so a body that differs in trailing whitespace, blank lines or fence style compares equal, but one
+// that differs in a fenced payload, in comment content, or in interior whitespace (e.g. a literal's
+// spacing) does not. Leading indentation is preserved on purpose: indentation can be significant
+// inside a fenced block, so it is not normalized away. Do not fold this into `visibleLines`.
+function comparedBody(markdown, index, visible = visibleLines(markdown)) {
+  const raw = markdown.split(/\r?\n/);
   // Not a heading (or no line): there is no scenario body to compare, never a crash.
-  const self = (lines[index] || '').match(/^(#{1,6})\s/);
+  const self = (raw[index] || '').match(/^(#{1,6})\s/);
   if (!self) return '';
   const level = self[1].length;
+  // Boundary from visible structure only: the same notion of "heading" every other check uses.
+  let boundary = raw.length;
+  for (const entry of visible) {
+    if (entry.rawIndex <= index) continue;
+    const heading = entry.text.match(/^(#{1,6})\s/);
+    if (heading && heading[1].length <= level) { boundary = entry.rawIndex; break; }
+  }
   const body = [];
-  for (let next = index + 1; next < lines.length; next += 1) {
-    const heading = lines[next].match(/^(#{1,6})\s/);
-    if (heading && heading[1].length <= level) break;
-    body.push(lines[next].replace(/\s+$/, ''));
+  for (let next = index + 1; next < boundary; next += 1) {
+    const line = raw[next].replace(/\s+$/, '');
+    body.push(FENCE_MARKER.test(line) ? '~~~' : line);
   }
   while (body.length && !body[0]) body.shift();
   while (body.length && !body[body.length - 1]) body.pop();
@@ -129,7 +139,7 @@ function scanScenarios(markdown) {
     // `####Scenario:` is ordinary text.
     const match = text.match(/^#{3,6}\s+Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(.*)$/i);
     if (!match) continue;
-    found.push({ id: match[1].toUpperCase(), title: collapse(match[2]), body: comparedBody(markdown, rawIndex), section, line: rawIndex });
+    found.push({ id: match[1].toUpperCase(), title: collapse(match[2]), body: comparedBody(markdown, rawIndex, entries), section, line: rawIndex });
   }
   return found;
 }

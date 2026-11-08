@@ -1035,6 +1035,46 @@ test('COLLIDING_SCEN: a differing fenced payload in the body is a collision, not
   assert.match(codes(result).join('\n'), /^COLLIDING_SCEN SCEN-1: already declared in openspec\/changes\/other\/specs\/cap\/spec\.md$/m);
 });
 
+test('COLLIDING_SCEN: a body does not end at a # line inside a fence', () => {
+  // A `#` line inside a fenced payload is content, not a heading: if it ended the body, the
+  // differing THEN below it would never be compared.
+  const shapes = [
+    ['WHEN run the probe\n```bash\n# step one\nprobe --flag\n```\nTHEN exit 0', 'WHEN run the probe\n```bash\n# step one\nprobe --flag\n```\nTHEN exit 7'],
+    ['WHEN run the probe\n~~~bash\n# step one\nprobe --flag\n~~~\nTHEN exit 0', 'WHEN run the probe\n~~~bash\n# step one\nprobe --flag\n~~~\nTHEN exit 7'],
+    ['WHEN run the probe\n```bash\n## Examples\nprobe --flag\n```\nTHEN exit 0', 'WHEN run the probe\n```bash\n## Examples\nprobe --flag\n```\nTHEN exit 7'],
+    // an unclosed fence must not hide the rest of the body either
+    ['WHEN run the probe\n```bash\n# stuck\nprobe --flag', 'WHEN run the probe\n```bash\n# stuck\nprobe --other'],
+  ];
+  for (const [ownBody, otherBody] of shapes) {
+    const dir = repoWith('SCEN-1', { otherSection: 'MODIFIED Requirements', ownTitle: 'shared contract', otherTitle: 'shared contract', ownBody, otherBody });
+    const result = run(dir, ['--structural', '--skip-signer-check']);
+    assert.equal(result.status, 1, `${ownBody}\n---\n${otherBody}`);
+    assert.match(codes(result).join('\n'), /^COLLIDING_SCEN SCEN-1: already declared in openspec\/changes\/other\/specs\/cap\/spec\.md$/m, ownBody);
+  }
+});
+
+test('COLLIDING_SCEN: a body does not end at a # line inside an HTML comment', () => {
+  const ownBody = 'WHEN run the probe\n<!--\n### old shape\n-->\nTHEN exit 0';
+  const otherBody = 'WHEN run the probe\n<!--\n### old shape\n-->\nTHEN exit 7';
+  const dir = repoWith('SCEN-1', { otherSection: 'MODIFIED Requirements', ownTitle: 'shared contract', otherTitle: 'shared contract', ownBody, otherBody });
+  const result = run(dir, ['--structural', '--skip-signer-check']);
+  assert.equal(result.status, 1);
+  assert.match(codes(result).join('\n'), /^COLLIDING_SCEN SCEN-1: already declared in openspec\/changes\/other\/specs\/cap\/spec\.md$/m);
+});
+
+test('ADVISORY_SHARED_SCEN: the fence delimiter style is not part of the body', () => {
+  // Same prose and payload, backticks in one change and tildes in the other: a reader would call
+  // this the same scenario, and a MODIFIED re-declaration must be able to stay verbatim.
+  const dir = repoWith('SCEN-1', {
+    otherSection: 'MODIFIED Requirements', ownTitle: 'shared contract', otherTitle: 'shared contract',
+    ownBody: 'WHEN a\n```\npayload\n```\nTHEN b\n', otherBody: 'WHEN a\n~~~\npayload\n~~~\nTHEN b\n',
+  });
+  const result = run(dir, ['--structural', '--skip-signer-check']);
+  assert.equal(result.status, 0, JSON.stringify(codes(result)));
+  assert.doesNotMatch(codes(result).join('\n'), /COLLIDING_SCEN/);
+  assert.match(JSON.parse(result.stdout).advisories.join('\n'), /^ADVISORY_SHARED_SCEN SCEN-1: openspec\/changes\/other\/specs\/cap\/spec\.md declares the same scenario text/m);
+});
+
 test('COLLIDING_SCEN: a body differing only in interior whitespace is a collision', () => {
   // A literal's spacing is meaningful; collapsing it would hide a changed value.
   const dir = repoWith('SCEN-1', {
