@@ -346,6 +346,13 @@ artifacts:
       which tasks.md and the test suite do not: a task can be merged and its unit
       tests green while the feature is unreachable from the real entry point.
 
+      Every `SCEN-*` declared in the change's spec delta needs at least one row;
+      rows may share an Entry and Verify and may reuse an existing test, so a
+      scenario does not require a new test of its own. A row's `Tasks` cell may list
+      only tasks that claim that scenario in `tasks.md` `Scenarios`, and the union of
+      all rows for a scenario must name every task that claims it. Several rows may
+      split the owners; no single row needs all of them.
+
       Format is fixed because `CP-2 human acceptance review`
       parses it:
 
@@ -361,9 +368,13 @@ artifacts:
       - **Scenario**: a `SCEN-*` id declared in this change's spec delta. Must exist.
       - **Entry**: the real entry point - HTTP route, UI path, CLI command, or the
         wiring point that makes the capability reachable. Not an internal function.
-      - **Tasks**: comma-separated task ids from tasks.md that carry this row.
-      - **Verify**: the command or manual procedure that exercises Entry.
-      - **Required**: `yes` blocks delivery; `no` is recorded but does not block.
+      - **Tasks**: comma-separated task ids from tasks.md that carry this row; a required
+        row must list at least one, and every id must claim this scenario in `Scenarios`.
+      - **Verify**: the command that exercises Entry. Required=yes needs one executable
+        command; a manual procedure, a `!` prefix, or natural language is rejected. Judge
+        it by its own exit code, not by the pipeline tail's.
+      - **Required**: `yes` blocks delivery; `no` is recorded but does not block. Decide
+        from real delivery semantics rather than setting every row `no`.
       - **Result**: leave `PENDING` in the frozen matrix. Record closeout results externally.
       - **Evidence**: leave `pending` in the frozen matrix. Record output and the full
         source SHA in the external execution record.

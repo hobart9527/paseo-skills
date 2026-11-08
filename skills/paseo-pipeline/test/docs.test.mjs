@@ -434,3 +434,38 @@ test('contract guidance distinguishes structural coverage from worker readiness'
   assert.match(schema, /Structural checks cannot prove existence/);
   assert.match(tasks, /静态检查不证明文件存在/);
 });
+
+test('acceptance guidance matches the gate: every declared SCEN is covered, journeys are not', () => {
+  const author = read('templates/author.md');
+  const schema = read('openspec-schema/schema.yaml');
+  const template = read('openspec-schema/templates/acceptance.md');
+  // The old brief said acceptance is "not ... every spec scenario", which the gate contradicts:
+  // freeze-check.mjs:633 rejects UNACCEPTED_SCEN. The brief must state the row requirement in its
+  // own words, while still forbidding a second unit-test list.
+  assert.doesNotMatch(author, /not a second list of unit tests or every spec scenario/);
+  assert.match(author, /not a second list of unit tests, but every declared `SCEN-\*` still needs at least one row/);
+  assert.match(author, /Rows may share an Entry and Verify, and reuse an existing test: a scenario does not need a new test of its own/);
+  // Ownership: per-row subset, union covers every claimant.
+  assert.match(author, /`Tasks` cell may list only tasks that claim that SCEN in `tasks\.md` `Scenarios`/);
+  assert.match(author, /their union lists every claiming task/);
+  // Required is a semantic decision, not a blanket `no`.
+  assert.match(author, /`Required` follows real delivery semantics — do not set every row `no`/);
+  assert.match(template, /每个声明过的场景至少一行/);
+  assert.match(template, /所有行的并集必须覆盖全部认领者/);
+  assert.match(template, /不要为省事把全部行设为 no/);
+  // Schema acceptance instruction carries the same rule, scoped to its own block.
+  const acceptanceInstr = schema.slice(schema.indexOf('  - id: acceptance'), schema.indexOf('  - id: review'));
+  assert.match(acceptanceInstr, /Every `SCEN-\*` declared in the change's spec delta needs at least one row/);
+  assert.match(acceptanceInstr, /union of\s+all rows for a scenario must name every task that claims it/);
+  assert.match(acceptanceInstr, /rather than setting every row `no`/);
+});
+
+test('structural-check guidance names the real exit code, not a pipeline tail status', () => {
+  const author = read('templates/author.md');
+  const template = read('openspec-schema/templates/acceptance.md');
+  // A `| tail` at the end of the pipe replaces the checker's status with tail's; the brief must say so.
+  assert.match(author, /Judge the result by the check's own process exit code, not by the status of the last command in a pipe/);
+  assert.match(author, /`node freeze-check\.mjs \.\.\. \| tail -n 20` reports `tail`'s status, not the check's/);
+  assert.match(author, /With `--structural --json`, only `blocking` rejects; `advisories` are for R0 and keep exit 0/);
+  assert.match(template, /经过 `\| tail` 等管道时 `\$\?` 是管道末端的状态，不能当作检查结果/);
+});

@@ -1373,3 +1373,85 @@ test('a fully aligned package with a production-owning sink, Implements ids and 
   assert.equal(result.status, 0, result.stdout);
   assert.deepEqual(codes(result), []);
 });
+
+// The acceptance rules the author brief now documents, exercised through the real templates:
+// declared coverage, shared Entry/Verify, per-row owner subset, and union coverage.
+test('filled templates: every declared SCEN gets a row, rows may share Entry/Verify, owners split by row', () => {
+  const templates = path.join(root, 'openspec-schema', 'templates');
+  const readTemplate = (name) => fs.readFileSync(path.join(templates, name), 'utf8');
+  const tasks = `${readTemplate('tasks.md')
+    .replaceAll('path/to/file.mjs', 'src/app.mjs')
+    .replaceAll('path/to/file.test.mjs', 'test/app.test.mjs')
+    .replaceAll('path/to/a.mjs', 'src/api.mjs')
+    .replaceAll('path/to/a.test.mjs', 'test/api.test.mjs')}
+- [ ] 2.2 T-03 <second carrier of the same journey>
+  - Depends on: T-01
+  - Write scope: src/extra.mjs, test/extra.test.mjs
+  - Verify with: node --test test/extra.test.mjs
+  - Scenarios: SCEN-CAP-01
+`;
+  const row = (scen, owner) => `| ${scen} | CLI \`node src/app.mjs\` | ${owner} | node --test test/app.test.mjs | yes | PENDING | pending |`;
+  const header = '| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |\n| --- | --- | --- | --- | --- | --- | --- |\n';
+  const table = (...rows) => header + rows.join('\n');
+  const files = {
+    'proposal.md': readTemplate('proposal.md'),
+    'specs/cap/spec.md': '## ADDED Requirements\n\n### Scenario: SCEN-CAP-01 the app starts\n\nWHEN invoked\nTHEN it runs\n\n### Scenario: SCEN-CAP-02 the api answers\n\nWHEN called\nTHEN it answers\n',
+    'tasks.md': tasks,
+    // Same Entry and Verify on every row: a scenario needs no new test of its own, and the two
+    // SCEN-CAP-01 rows split T-01 and T-03 between them.
+    'acceptance.md': table(row('SCEN-CAP-01', 'T-01'), row('SCEN-CAP-01', 'T-03'), row('SCEN-CAP-02', 'T-02')),
+  };
+  const ok = run(change(files), ['--structural', '--skip-signer-check']);
+  assert.equal(ok.status, 0, `${ok.stdout}${ok.stderr}`);
+  assert.deepEqual(JSON.parse(ok.stdout).blocking, []);
+
+  // Minimal variants of the same fixture: each still blocks for its own named reason.
+  const missing = run(change({ ...files, 'acceptance.md': table(row('SCEN-CAP-01', 'T-01'), row('SCEN-CAP-01', 'T-03')) }), ['--structural', '--skip-signer-check']);
+  assert.equal(missing.status, 1);
+  assert.match(JSON.parse(missing.stdout).blocking.join('\n'), /^UNACCEPTED_SCEN SCEN-CAP-02 \(specs\/cap\/spec\.md\): every declared SCEN needs an acceptance row$/m);
+
+  const extraOwner = run(change({ ...files, 'acceptance.md': table(row('SCEN-CAP-01', 'T-01,T-02'), row('SCEN-CAP-01', 'T-03'), row('SCEN-CAP-02', 'T-02')) }), ['--structural', '--skip-signer-check']);
+  assert.equal(extraOwner.status, 1);
+  // T-02 claims only SCEN-CAP-02, so naming it on a SCEN-CAP-01 row blocks even though the union
+  // still contains every real claimant: ownership is row-local.
+  assert.match(JSON.parse(extraOwner.stdout).blocking.join('\n'), /^UNOWNED_ACCEPTANCE_SCEN SCEN-CAP-01: T-02 does not claim it in tasks\.md Scenarios$/m);
+
+  const unionGap = run(change({ ...files, 'acceptance.md': table(row('SCEN-CAP-01', 'T-01'), row('SCEN-CAP-02', 'T-02')) }), ['--structural', '--skip-signer-check']);
+  assert.equal(unionGap.status, 1);
+  assert.match(JSON.parse(unionGap.stdout).blocking.join('\n'), /^UNACCEPTED_TASK_SCEN T-03: SCEN-CAP-01 is claimed but no acceptance row lists T-03$/m);
+});
+
+test('structural result: blocking rejects with non-zero, advisories keep exit 0 and stay separate', () => {
+  const templates = path.join(root, 'openspec-schema', 'templates');
+  const readTemplate = (name) => fs.readFileSync(path.join(templates, name), 'utf8');
+  // The real scaffold yields an advisory (its DAG sink writes only tests) with zero blocking; exit
+  // stays 0 and the two arrays are disjoint, so a caller must read `blocking`, not output presence.
+  const tasks = readTemplate('tasks.md')
+    .replaceAll('path/to/file.mjs', 'src/app.mjs')
+    .replaceAll('path/to/file.test.mjs', 'test/app.test.mjs')
+    .replaceAll('path/to/a.mjs', 'src/api.mjs')
+    .replaceAll('path/to/a.test.mjs', 'test/api.test.mjs')
+    // The second task is the DAG sink and is test-only, which freeze-check reports as an advisory.
+    .replace('  - Write scope: src/api.mjs, test/api.test.mjs', '  - Write scope: test/api.test.mjs')
+    .replace('  - Review: standard', '  - Review: mechanical')
+    .replace('  - Verify with: node --test test/api.test.mjs', '  - Verify with: npm test');
+  const acceptance = readTemplate('acceptance.md')
+    .replace('| `<跑一遍该入口的命令或步骤>` |', '| node --test test/app.test.mjs |')
+    .replace('| `<命令或步骤>` |', '| node --test test/api.test.mjs |');
+  const base = {
+    'proposal.md': readTemplate('proposal.md'),
+    'specs/cap/spec.md': '## ADDED Requirements\n\n### Scenario: SCEN-CAP-01 the app starts\n\nWHEN invoked\nTHEN it runs\n\n### Scenario: SCEN-CAP-02 the api answers\n\nWHEN called\nTHEN it answers\n',
+    'tasks.md': tasks,
+    'acceptance.md': acceptance,
+  };
+  const clean = run(change(base), ['--structural', '--skip-signer-check']);
+  assert.equal(clean.status, 0, clean.stderr);
+  const report = JSON.parse(clean.stdout);
+  assert.deepEqual(report.blocking, []);
+  assert.ok(report.advisories.length > 0, 'fixture must produce at least one advisory');
+  for (const advisory of report.advisories) assert.ok(!report.blocking.includes(advisory));
+  // A real block in the same shape flips the process status without throwing away the JSON.
+  const blocked = run(change({ ...base, 'acceptance.md': acceptance.replace(/\| SCEN-CAP-02[^\n]*\n/, '') }), ['--structural', '--skip-signer-check']);
+  assert.equal(blocked.status, 1);
+  assert.ok(JSON.parse(blocked.stdout).blocking.length > 0);
+});
