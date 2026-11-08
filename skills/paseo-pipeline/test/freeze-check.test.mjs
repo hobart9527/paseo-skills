@@ -889,13 +889,13 @@ const codes = (result) => {
   try { return JSON.parse(result.stdout).blocking; } catch { return []; }
 };
 
-test('BAD_ACCEPTANCE_TASKS: a Required=yes row with no task id is rejected', () => {
-  const result = run(change({
-    'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW,
-    'acceptance.md': table('| SCEN-1 | CLI |  | node -e "0" | yes | PENDING | pending |'),
-  }));
-  assert.equal(result.status, 1);
-  assert.match(codes(result).join('\n'), /^BAD_ACCEPTANCE_TASKS acceptance\.md:3 SCEN-1: Tasks must list at least one task id$/m);
+test('BAD_ACCEPTANCE_TASKS: an empty Tasks cell derives its owners, a non-task token is still rejected', () => {
+  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW };
+  const derived = run(change({ ...files, 'acceptance.md': table('| SCEN-1 | CLI |  | node -e "0" | yes | PENDING | pending |') }));
+  assert.equal(derived.status, 0, derived.stdout);
+  const bad = run(change({ ...files, 'acceptance.md': table('| SCEN-1 | CLI | T-01 and T-02 | node -e "0" | yes | PENDING | pending |') }));
+  assert.equal(bad.status, 1);
+  assert.match(codes(bad).join('\n'), /^BAD_ACCEPTANCE_TASKS acceptance\.md:3 SCEN-1: Tasks token T-01 and T-02 is not a task id$/m);
 });
 
 test('UNKNOWN_ACCEPTANCE_TASK: a Tasks cell naming a task absent from tasks.md is rejected', () => {
@@ -945,6 +945,71 @@ test('UNACCEPTED_TASK_SCEN: every claiming task must appear in that SCEN\'s Task
   }));
   assert.equal(result.status, 1);
   assert.match(codes(result).join('\n'), /^UNACCEPTED_TASK_SCEN T-01: SCEN-1 is claimed but no acceptance row lists T-01$/m);
+});
+
+// ---- entry ownership: the row owner must write the acceptance Entry, or reach its writer ----
+const entryTask = (id, { depends = '', uses = '', scope, scen = '', extra = '' }) => [
+  `- [ ] 1.1 ${id} task`,
+  ...(depends ? [`  - Depends on: ${depends}`] : []),
+  ...(uses ? [`  - Uses: ${uses}`] : []),
+  `  - Write scope: ${scope}`,
+  ...(extra ? [extra] : []),
+  `  - Verify with: node --test test/${id.toLowerCase()}.test.mjs`,
+  ...(scen ? [`  - Scen: ${scen}`] : []),
+].join('\n');
+const entryRun = (tasks, rows, spec = '### Scenario: SCEN-1\n### Scenario: SCEN-2\n') => run(change({
+  'tasks.md': tasks.join('\n'),
+  'proposal.md': 'x',
+  'design.md': design,
+  'review.md': REVIEW,
+  'specs/a/spec.md': spec,
+  'acceptance.md': table(rows),
+}));
+// D4 shape: the component owns the SCEN, the entry file belongs to an unrelated assembler.
+const splitEntry = [
+  entryTask('T-01', { scope: 'src/form/ExpenseLine.tsx,test/t-01.test.mjs', scen: 'SCEN-1' }),
+  entryTask('T-02', { scope: 'src/form/ExpenseBillForm.tsx,test/t-02.test.mjs', scen: 'SCEN-2' }),
+];
+const splitRow = (tasks, entry = 'src/form/ExpenseBillForm.tsx') => `| SCEN-1 | ${entry} | ${tasks} | node -e "0" | yes | PENDING | pending |
+| SCEN-2 | GET /api/other | T-02 | node -e "0" | yes | PENDING | pending |`;
+
+test('ENTRY_OWNER_UNCLAIMED: a row owner that does not write the Entry and cannot reach its writer blocks', () => {
+  const result = entryRun(splitEntry, splitRow('T-01'));
+  assert.equal(result.status, 1);
+  assert.match(codes(result).join('\n'), /^ENTRY_OWNER_UNCLAIMED SCEN-1 acceptance\.md:3: Entry src\/form\/ExpenseBillForm\.tsx is written by T-02 but no row owner writes it or depends on its writer$/m);
+});
+
+test('ENTRY_OWNER_UNCLAIMED: derived empty Tasks combined with the entry check', () => {
+  const result = entryRun(splitEntry, splitRow(''));
+  assert.equal(result.status, 1);
+  assert.match(codes(result).join('\n'), /^ENTRY_OWNER_UNCLAIMED SCEN-1 acceptance\.md:3:/m);
+});
+
+test('ENTRY_OWNER_UNCLAIMED: the owner may write the Entry itself', () => {
+  const tasks = [
+    entryTask('T-01', { scope: 'src/form/ExpenseBillForm.tsx,test/t-01.test.mjs', scen: 'SCEN-1' }),
+    entryTask('T-02', { scope: 'src/form/ExpenseLine.tsx,test/t-02.test.mjs', scen: 'SCEN-2' }),
+  ];
+  assert.equal(entryRun(tasks, splitRow('T-01')).status, 0);
+});
+
+test('ENTRY_OWNER_UNCLAIMED: the owner may depend on the writer', () => {
+  const tasks = splitEntry.map((task) => (task.includes('T-01 task') ? task.replace('  - Write scope:', '  - Depends on: T-02\n  - Write scope:') : task));
+  assert.equal(entryRun(tasks, splitRow('T-01')).status, 0);
+});
+
+test('ENTRY_OWNER_UNCLAIMED: a skeleton that pre-wires the Entry satisfies the consumer through Uses', () => {
+  const tasks = [
+    entryTask('T-00', { scope: 'src/form/ExpenseBillForm.tsx,test/t-00.test.mjs', extra: '  - Kind: skeleton\n  - Interface: src/form/ExpenseBillForm.tsx#Form\n  - Review: mechanical' }),
+    entryTask('T-01', { uses: 'T-00', scope: 'src/form/ExpenseLine.tsx,test/t-01.test.mjs', scen: 'SCEN-1' }),
+  ];
+  // The short name resolves against the skeleton's Write scope.
+  assert.equal(entryRun(tasks, '| SCEN-1 | ExpenseBillForm.tsx | T-01 | node -e "0" | yes | PENDING | pending |', '### Scenario: SCEN-1\n').status, 0);
+});
+
+test('ENTRY_OWNER_UNCLAIMED: entries without a file token or without a writer are left to R0', () => {
+  assert.equal(entryRun(splitEntry, splitRow('T-01', 'GET /api/expenses')).status, 0);
+  assert.equal(entryRun(splitEntry, splitRow('T-01', 'src/legacy/Unchanged.tsx')).status, 0);
 });
 
 // A repo with SCEN ids already declared outside `aligned()`: the baseline spec and one other change.

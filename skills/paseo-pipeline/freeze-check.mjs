@@ -165,11 +165,12 @@ const RULE_FIXES = {
   BAD_INTERFACE: 'use Interface: <repo-path>[#<symbol>]',
   BAD_IMPLEMENTS: 'use Implements: D-<number>[, D-<number>] (decision ids from design.md)',
   BAD_KIND: 'use Kind: skeleton (or omit it)',
-  BAD_ACCEPTANCE_TASKS: 'list the task ids that carry this scenario in acceptance.md Tasks',
+  BAD_ACCEPTANCE_TASKS: 'leave Tasks empty to derive the owners from tasks.md Scenarios, or list the task ids that carry this scenario',
   UNKNOWN_ACCEPTANCE_TASK: 'point Tasks at ids declared in tasks.md',
   UNOWNED_ACCEPTANCE_SCEN: 'list a task that claims this SCEN in tasks.md Scenarios',
   UNACCEPTED_SCEN: 'add an acceptance row for every declared SCEN',
-  UNACCEPTED_TASK_SCEN: 'list the claiming task id in that scenario\'s acceptance row Tasks cell',
+  UNACCEPTED_TASK_SCEN: 'list the claiming task id in that scenario\'s acceptance row Tasks cell, or leave the cell empty to derive it',
+  ENTRY_OWNER_UNCLAIMED: 'let the task that writes the Entry claim the SCEN, or make a row owner depend on that writer (e.g. a Kind: skeleton that pre-wires the entry)',
   COLLIDING_SCEN: 'choose a new SCEN id, or re-declare a baseline id under MODIFIED/REMOVED Requirements in this change',
   DESIGN_NAMES_TASK: 'name decisions and affected modules in design.md; let tasks.md declare Implements:',
   UNKNOWN_DECISION: 'add a decision heading (e.g. `- **D-01 <title>**` under `## Decisions`) in design.md',
@@ -571,6 +572,19 @@ for (const task of tasks) {
 const fullSuiteSinks = tasks.filter((task) => verifyLegs(task.verify).some((leg) => leg.broad));
 if (fullSuiteSinks.length > 1) blocking.push(`TOO_MANY_FULL_SUITE_SINKS: ${fullSuiteSinks.map((task) => task.id).join(', ')}`);
 
+// Entry cells mix prose with a real entry point, so a check has to pull the file-shaped tokens
+// out. Route, CLI and prose entries have no extension and are left to R0.
+const entryFileTokens = (cell) => cell.split(/[\s,;()]+/).map((word) => word.replace(/^[`'"]+|[`'"]+$/g, '').replace(/[.:]+$/, ''))
+  .filter((word) => /^[^`'"]*\.[A-Za-z0-9]{2,6}$/.test(word) && !word.includes('*'));
+// Write scopes are directories or files; a short entry like `ExpenseBillForm.tsx` names the file
+// without its directory, so match it as a path suffix too. No repo lookup: the tasks.md scope is
+// the only authority here, which keeps the check independent of the worktree.
+const entryWriters = (token) => {
+  const normalized = normalizeScope(token);
+  if (!normalized) return [];
+  return tasks.filter((task) => isFileWithinScopes(normalized, task.scope)
+    || task.scope.some((scope) => scope === normalized || scope.endsWith(`/${normalized}`))).map((task) => task.id);
+};
 const acceptanceMarkdown = read(path.join(changeDir, 'acceptance.md'));
 if (!acceptanceMarkdown) blocking.push('MISSING_ACCEPTANCE: acceptance.md not found');
 else {
@@ -610,18 +624,20 @@ else {
     const listed = cells[2].split(',').map((item) => item.trim()).filter(Boolean);
     const ids = listed.filter((item) => isTaskId(item));
     const required = /^yes$/i.test(cells[4]);
-    // The cell is comma-separated task ids; an empty cell or a token that is not a task id leaves
-    // the row without a usable owner. Name the offending token so the fix is unambiguous.
+    // An empty cell means "derive the owners from tasks.md": the task list is then a
+    // hand-maintained duplicate of the Scenarios column and drifts (D4: 10 of 34 blocks).
+    // A non-task token is still an error; it is not an intentional omission.
     const bad = listed.filter((item) => !isTaskId(item));
-    if (required && (listed.length === 0 || bad.length)) {
-      const detail = listed.length === 0 ? 'Tasks must list at least one task id' : `Tasks token ${bad.join(', ')} is not a task id`;
-      blocking.push(`BAD_ACCEPTANCE_TASKS acceptance.md:${rowNumber} ${cells[0]}: ${detail}`);
+    if (required && bad.length) {
+      blocking.push(`BAD_ACCEPTANCE_TASKS acceptance.md:${rowNumber} ${cells[0]}: Tasks token ${bad.join(', ')} is not a task id`);
     }
     for (const id of ids) {
       if (!byId.has(id)) blocking.push(`UNKNOWN_ACCEPTANCE_TASK ${cells[0]}: ${id} is not a task in tasks.md`);
     }
+    // Derived owners are the claimers; an explicit cell keeps its current meaning.
+    const owners = ids.length ? ids : [...(claimsByScen.get(scen) ?? [])];
     if (!rowsByScen.has(scen)) rowsByScen.set(scen, []);
-    rowsByScen.get(scen).push({ ids, line: rowNumber });
+    rowsByScen.get(scen).push({ ids, owners, entry: cells[1], line: rowNumber });
     if (required) requiredRows.push(cells);
   }
   for (const scenario of acceptanceScenarios) {
@@ -637,7 +653,7 @@ else {
   // claim it. Applied to every row that lists ids — a Tasks cell means "these tasks carry this
   // scenario" whatever the Required value, and Required=no rows name owners too.
   for (const [scen, rows] of rowsByScen) {
-    const union = new Set(rows.flatMap((row) => row.ids));
+    const union = new Set(rows.flatMap((row) => row.owners));
     const claims = claimsByScen.get(scen);
     for (const row of rows) {
       // Every id in the cell is a claim about that id, so one real owner cannot carry a fabricated
@@ -650,6 +666,18 @@ else {
     // second owner cannot be silently dropped from acceptance.
     for (const id of claims ?? []) {
       if (!union.has(id)) blocking.push(`UNACCEPTED_TASK_SCEN ${id}: ${scen} is claimed but no acceptance row lists ${id}`);
+    }
+    // A row can name the right owner and still observe the wrong entry: a component task whose
+    // acceptance Entry is assembled by an unrelated downstream task passes the checks above
+    // (D4: a component claimed the form scenario whose Entry was ExpenseBillForm.tsx). Only
+    // file-path tokens are judged; route/CLI entries and unchanged baseline files stay with R0.
+    for (const row of rows) {
+      for (const token of entryFileTokens(row.entry)) {
+        const writers = entryWriters(token);
+        if (!writers.length) continue;
+        const covered = row.owners.some((owner) => writers.includes(owner) || writers.some((writer) => reaches(owner, writer)));
+        if (!covered) blocking.push(`ENTRY_OWNER_UNCLAIMED ${scen} acceptance.md:${row.line}: Entry ${token} is written by ${writers.join(', ')} but no row owner writes it or depends on its writer`);
+      }
     }
   }
   if (!requiredRows.length) blocking.push('MISSING_REQUIRED_ACCEPTANCE: acceptance.md has no Required=yes row');
