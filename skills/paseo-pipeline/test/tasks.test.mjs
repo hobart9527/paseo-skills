@@ -133,6 +133,10 @@ test('parses uses, reads, est, skeleton, interface and deferred review', () => {
   assert.deepEqual(consumer.uses, ['T-00', 'T-02']);
   assert.deepEqual(consumer.reads, ['src/shared/data.ts', 'scripts/specs/probe.mjs']);
   assert.equal(consumer.est, 'L');
+  assert.deepEqual(consumer.implements, []);
+  const decisions = parseTasks('- [ ] 1.1 T-09 x\n  - Write scope: a\n  - Implements: D-01, D-02\n  - Verify with: true\n');
+  assert.deepEqual(decisions.tasks[0].implements, ['D-01', 'D-02']);
+  assert.deepEqual(decisions.errors, []);
   assert.deepEqual(consumer.riskSurface, ['public-api', 'ui']);
   assert.equal(consumer.review, 'deferred');
   // Defaults stay stable when optional scheduling fields are absent.
@@ -154,10 +158,11 @@ test('rejects malformed Reads, Est, Interface and Kind values', () => {
   - Kind: partial
   - Interface: a.ts#two words
   - Interface: a.ts#sym#extra
+  - Implements: D-1, decision
   - Verify with: true
 `;
   const { errors } = parseTasks(text);
-  for (const code of ['BAD_READS', 'BAD_EST', 'BAD_KIND', 'BAD_INTERFACE']) {
+  for (const code of ['BAD_READS', 'BAD_EST', 'BAD_KIND', 'BAD_INTERFACE', 'BAD_IMPLEMENTS']) {
     assert.ok(errors.some((error) => error.code === code), code);
   }
   assert.equal(errors.filter((error) => error.code === 'BAD_INTERFACE').length, 2);

@@ -14,6 +14,7 @@ const REVIEWER_ID = String.raw`mechanical|deferred|[0-9a-f]{7,40}|[0-9a-f]{8}-[0
 const REVIEW_TAG = new RegExp(String.raw`^pass\((${REVIEWER_ID})@([0-9a-f]{7,40})\/([0-9a-f]{7,40})\)$`);
 export const REVIEW_MODES = ['standard', 'strict', 'mechanical', 'deferred'];
 const INTERFACE_SYMBOL = /^[^\s#]+$/;
+const DECISION_ID = /^D-\d+$/;
 
 
 export function isTaskId(value) {
@@ -88,6 +89,7 @@ export function parseTasks(markdown) {
         est: 'M',
         kind: null,
         interface: [],
+        implements: [],
         riskSurface: [],
         verify: '',
         scenarios: [],
@@ -139,6 +141,11 @@ export function parseTasks(markdown) {
         if (!normalized || parts.length > 2 || (parts.length === 2 && !INTERFACE_SYMBOL.test(symbol))) {
           errors.push({ code: 'BAD_INTERFACE', task: current.id, message: `bad Interface entry: ${entry}` });
         } else current.interface.push(symbol ? `${normalized}#${symbol}` : normalized);
+      }
+    } else if (key === 'implements') {
+      for (const entry of splitList(value)) {
+        if (!DECISION_ID.test(entry)) errors.push({ code: 'BAD_IMPLEMENTS', task: current.id, message: `bad Implements entry: ${entry}` });
+        else current.implements.push(entry);
       }
     } else if (key === 'risk-surface' || key === 'risk surface') {
       current.riskSurface.push(...splitList(value.replace(/[\[\]]/g, '')).map((item) => item.toLowerCase()));

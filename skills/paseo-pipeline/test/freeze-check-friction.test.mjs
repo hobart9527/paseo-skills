@@ -22,7 +22,7 @@ function change(files) {
 }
 
 const table = (rows) => `| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |\n| --- | --- | --- | --- | --- | --- | --- |\n${rows}`;
-const acceptance = table('| SCEN-1 | CLI | T-02 | node -e "0" | yes | PENDING | pending |');
+const acceptance = table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node -e "0" | yes | PENDING | pending |');
 const contract = `- [ ] 1.1 T-01 shared
   - Write scope: src/shared,test/shared.test.mjs
   - Verify with: node --test test/shared.test.mjs
@@ -39,7 +39,7 @@ const contract = `- [ ] 1.1 T-01 shared
   - Scen: SCEN-1
 - [ ] 1.4 T-04 sink
   - Depends on: T-02,T-03
-  - Write scope: test/sink.test.mjs
+  - Write scope: src/sink.mjs,test/sink.test.mjs
   - Verify with: npm test
   - Scen: SCEN-1`;
 const design = '## Impact Inventory\nnone\n';

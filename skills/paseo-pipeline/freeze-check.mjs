@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo-agents.mjs';
-import { parseTasks, graphErrors, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, legPaths, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
+import { parseTasks, graphErrors, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, isTaskId, legPaths, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
 import { dispatchDeps, weightedSpeedup, weightedCriticalPath, verifyScope, readsOnlyEdges, pathWithin, resolveModel, LIVE_MODEL } from './lib/schedule.mjs';
 import { runGit } from './lib/git.mjs';
 
@@ -37,6 +37,15 @@ function read(file) {
   }
   return out;
 }
+function walkMarkdown(dir, out = []) {
+  if (!fs.existsSync(dir)) return out;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) walkMarkdown(full, out);
+    else if (entry.name.endsWith('.md')) out.push(full);
+  }
+  return out;
+}
 
 // One concrete fix per blocking rule, printed by --explain.
 const RULE_FIXES = {
@@ -57,7 +66,17 @@ const RULE_FIXES = {
   VERIFY_JUNK_LEG: 'put shell setup inside the leg it belongs to: `bash -c \'set -e; <command>\'`, or use `&&` between real commands',
   BAD_EST: 'use Est: S, M or L',
   BAD_INTERFACE: 'use Interface: <repo-path>[#<symbol>]',
+  BAD_IMPLEMENTS: 'use Implements: D-<number>[, D-<number>] (decision ids from design.md)',
   BAD_KIND: 'use Kind: skeleton (or omit it)',
+  BAD_ACCEPTANCE_TASKS: 'list the task ids that carry this scenario in acceptance.md Tasks',
+  UNKNOWN_ACCEPTANCE_TASK: 'point Tasks at ids declared in tasks.md',
+  UNOWNED_ACCEPTANCE_SCEN: 'list a task that claims this SCEN in tasks.md Scenarios',
+  UNACCEPTED_SCEN: 'add an acceptance row for every declared SCEN',
+  UNACCEPTED_TASK_SCEN: 'list the claiming task id in that scenario\'s acceptance row Tasks cell',
+  COLLIDING_SCEN: 'choose a new SCEN id, or declare the existing id under MODIFIED/REMOVED Requirements',
+  SINK_TEST_ONLY: 'give the sink the assembly/wiring file it wires in its Write scope, not only tests',
+  DESIGN_NAMES_TASK: 'name decisions and affected modules in design.md; let tasks.md declare Implements:',
+  UNKNOWN_DECISION: 'add a decision heading (e.g. `- **D-01 <title>**` under `## Decisions`) in design.md',
   UNKNOWN_SCEN: 'claim a SCEN declared under specs/',
   DUPLICATE_SCEN: 'give each scenario declaration a unique SCEN id and update its task claims',
   UNCLAIMED_SCEN: 'assign each declared SCEN to at least one task',
@@ -133,6 +152,53 @@ for (const task of tasks) {
 }
 for (const [scen, file] of declared) {
   if (!claimed.has(scen)) blocking.push(`UNCLAIMED_SCEN: ${scen} (${file}) has no task`);
+}
+
+// Cross-change SCEN collision. `declared` above only knows this change's own files, so a scenario id
+// another unarchived change already declares goes unnoticed and the two contracts disagree at merge.
+// Re-declaring an existing id under MODIFIED/REMOVED Requirements is legitimate (it updates that
+// requirement); any other declaration is a collision. Git history, archives and branches are out of
+// scope: only the current checkout is read, and a missing repo silently skips the check.
+{
+  const toplevel = gitIn(changeDir, ['rev-parse', '--show-toplevel']);
+  if (toplevel.status === 0) {
+    const repoRoot = toplevel.stdout.trim();
+    const realOr = (value) => { try { return fs.realpathSync(value); } catch { return path.resolve(value); } };
+    const current = realOr(changeDir);
+    const sources = walkMarkdown(path.join(repoRoot, 'openspec', 'specs'));
+    const changesRoot = path.join(repoRoot, 'openspec', 'changes');
+    if (fs.existsSync(changesRoot)) {
+      for (const entry of fs.readdirSync(changesRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const dir = path.join(changesRoot, entry.name);
+        if (realOr(dir) === current) continue;
+        sources.push(...walkMarkdown(path.join(dir, 'specs')));
+      }
+    }
+    const external = new Map();
+    for (const file of sources) {
+      // A re-declaration under MODIFIED/REMOVED Requirements keeps the id; only an ADDED (or
+      // unlabelled) declaration collides.
+      let section = '';
+      for (const line of read(file).split(/\r?\n/)) {
+        const heading = line.match(/^##\s+(.+?)\s*$/);
+        if (heading) { section = heading[1]; continue; }
+        const match = line.match(/^#{3,6}\s*Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(?:\s+.*)?$/i);
+        if (!match) continue;
+        const id = match[1].toUpperCase();
+        if (!external.has(id)) external.set(id, []);
+        external.get(id).push({ file: path.relative(repoRoot, file), allowed: /^(?:MODIFIED|REMOVED) Requirements$/i.test(section) });
+      }
+    }
+    for (const scen of declared.keys()) {
+      const hits = external.get(scen) || [];
+      const collision = hits.find((hit) => !hit.allowed);
+      if (collision) {
+        blocking.push(`COLLIDING_SCEN ${scen}: already declared in ${collision.file}`);
+        fixes.set('COLLIDING_SCEN', 'choose a new SCEN id, or declare the existing id under MODIFIED/REMOVED Requirements');
+      }
+    }
+  }
 }
 
 // Dispatch-dependency wave width is a planning heuristic, not exact maximum concurrency.
@@ -393,6 +459,11 @@ for (const task of tasks) {
 }
 // Vertical slices: behavior tasks must claim a SCEN and own production code, not only tests.
 for (const task of tasks) {
+  // A sink is the assembly/wiring point: when every card task writes its own leaf component, a sink
+  // that owns only test files leaves no task owning the point that wires them together.
+  if (sinkIds.has(task.id) && task.scope.length && task.scope.every((scope) => isTestPath(scope))) {
+    blocking.push(`SINK_TEST_ONLY ${task.id}: sink Write scope has only test paths; the sink must own the assembly/wiring file`);
+  }
   if (task.review === 'mechanical') continue;
   if (!task.scenarios.length) blocking.push(`NO_SCEN ${task.id}: non-mechanical task must claim at least one SCEN (or be Review: mechanical)`);
   if (!sinkIds.has(task.id) && task.scope.length && task.scope.every((scope) => isTestPath(scope))) {
@@ -414,6 +485,10 @@ if (!acceptanceMarkdown) blocking.push('MISSING_ACCEPTANCE: acceptance.md not fo
 else {
   const acceptanceScenarios = new Set();
   const requiredRows = [];
+  // Tasks cells actually read, so tasks.md and acceptance.md must agree in both directions.
+  const rowsByScen = new Map();
+  const claimsByScen = new Map(tasks.flatMap((task) => task.scenarios.map((scen) => [scen.toUpperCase(), task.id]))
+    .reduce((acc, [scen, id]) => { if (!acc.has(scen)) acc.set(scen, new Set()); acc.get(scen).add(id); return acc; }, new Map()));
   // A literal `|` inside a cell silently changed the column count and the old parser
   // just skipped the row. Count against the header instead, and accept `\|`.
   const cellsOf = (line) => line.split(/(?<!\\)\|/).slice(1, -1)
@@ -433,20 +508,72 @@ else {
       blocking.push(`MALFORMED_ACCEPTANCE_ROW acceptance.md:${rowNumber}: ${cells.length} cells, header has ${expectedColumns}; a literal \`|\` must be written \`\\|\``);
       continue;
     }
-    acceptanceScenarios.add(cells[0].toUpperCase());
+    const scen = cells[0].toUpperCase();
+    acceptanceScenarios.add(scen);
     if (!/^(yes|no)$/i.test(cells[4])) {
       blocking.push(`BAD_ACCEPTANCE_REQUIRED acceptance.md:${rowNumber}: ${cells[0]} Required must be yes or no`);
       continue;
     }
-    if (/^yes$/i.test(cells[4])) requiredRows.push(cells);
+    // Column 3 is the Tasks cell; the old parser never read it, so the two files could
+    // assign the same SCEN to different tasks (or acceptance could omit a scenario entirely).
+    const listed = cells[2].split(',').map((item) => item.trim()).filter(Boolean);
+    const ids = listed.filter((item) => isTaskId(item));
+    const required = /^yes$/i.test(cells[4]);
+    if (required && (listed.length === 0 || ids.length !== listed.length)) {
+      blocking.push(`BAD_ACCEPTANCE_TASKS acceptance.md:${rowNumber} ${cells[0]}: Tasks must list at least one task id`);
+    }
+    for (const id of ids) {
+      if (!byId.has(id)) blocking.push(`UNKNOWN_ACCEPTANCE_TASK ${cells[0]}: ${id} is not a task in tasks.md`);
+    }
+    if (!rowsByScen.has(scen)) rowsByScen.set(scen, []);
+    rowsByScen.get(scen).push({ ids, line: rowNumber });
+    if (required) requiredRows.push(cells);
   }
   for (const scenario of acceptanceScenarios) {
     if (!declared.has(scenario)) blocking.push(`UNKNOWN_ACCEPTANCE_SCEN: ${scenario} is not declared`);
+  }
+  // Symmetric with UNCLAIMED_SCEN: every declared scenario needs a row, not only the
+  // ones acceptance happens to mention.
+  for (const [scen, file] of declared) {
+    if (!acceptanceScenarios.has(scen)) blocking.push(`UNACCEPTED_SCEN ${scen} (${file}): every declared SCEN needs an acceptance row`);
+  }
+  // A row's Tasks cell must name at least one task that actually claims that SCEN.
+  for (const [scen, rows] of rowsByScen) {
+    const union = new Set(rows.flatMap((row) => row.ids));
+    const claims = claimsByScen.get(scen);
+    if (claims && union.size && ![...union].some((id) => claims.has(id))) {
+      blocking.push(`UNOWNED_ACCEPTANCE_SCEN ${scen}: none of ${[...union].join(', ')} claims it in tasks.md Scenarios`);
+    }
+    // ... and every task claiming a SCEN must appear in that SCEN's Tasks cell, so a
+    // second owner cannot be silently dropped from acceptance.
+    for (const id of claims ?? []) {
+      if (!union.has(id)) blocking.push(`UNACCEPTED_TASK_SCEN ${id}: ${scen} is claimed but no acceptance row lists ${id}`);
+    }
   }
   if (!requiredRows.length) blocking.push('MISSING_REQUIRED_ACCEPTANCE: acceptance.md has no Required=yes row');
   for (const cells of requiredRows) {
     if (cells[5] !== 'PENDING') blocking.push(`ACCEPTANCE_NOT_FROZEN ${cells[0]}: Result must start PENDING`);
     if (/^`?\s*(?:!|manual|手工|自然语言)/i.test(cells[3])) blocking.push(`BAD_ACCEPTANCE_VERIFY ${cells[0]}: Required=yes needs one executable command`);
+  }
+}
+
+// design.md names decisions, tasks name task ids. design is written before tasks, so it cannot
+// cite task ids without becoming circular: a decision is `- **D-01 <title>**` under `## Decisions`,
+// and tasks.md points back at it with `Implements:`. Only ids declared in tasks.md are matched, so
+// unrelated prose numbers are not mistaken for tasks.
+{
+  const designMarkdown = read(path.join(changeDir, 'design.md'));
+  if (designMarkdown) {
+    const decisions = new Set([...designMarkdown.matchAll(/^\s*[-*]\s*\*\*(D-\d+)\b/gm)].map((match) => match[1]));
+    for (const task of tasks) {
+      const pattern = new RegExp(`(^|[^A-Za-z0-9_-])${task.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])`);
+      if (pattern.test(designMarkdown)) {
+        blocking.push(`DESIGN_NAMES_TASK ${task.id}: design.md must not name task ids; name decisions and let tasks.md declare Implements:`);
+      }
+      for (const decision of task.implements) {
+        if (!decisions.has(decision)) blocking.push(`UNKNOWN_DECISION ${task.id}: Implements ${decision} is not a decision heading in design.md`);
+      }
+    }
   }
 }
 

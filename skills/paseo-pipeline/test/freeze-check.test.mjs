@@ -37,14 +37,14 @@ const contract = `- [ ] 1.1 T-01 shared
   - Scen: SCEN-1
 - [ ] 1.4 T-04 sink
   - Depends on: T-02,T-03
-  - Write scope: test/sink.test.mjs
+  - Write scope: src/sink.mjs,test/sink.test.mjs
   - Verify with: npm test
   - Scen: SCEN-1`;
 const design = '## Impact Inventory\nnone\n';
 // A valid R0 sign-off written by hanlin after independent review.
 const REVIEW = 'R0: pass(9b2f4c1e-aaaa-4a2b-8c3d-000000000099@abcdef1)\n';
 test('accepts narrow non-sink tasks and reports concurrency', () => {
-  const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-04 | node -e "0" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW });
+  const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node -e "0" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW });
   const result = run(dir);
   assert.equal(result.status, 0);
 });
@@ -93,7 +93,7 @@ test('rejects wave scope conflict', () => {
 });
 
 const table = (rows) => `| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |\n| --- | --- | --- | --- | --- | --- | --- |\n${rows}`;
-const acceptance = table('| SCEN-1 | CLI | T-02 | node -e "0" | yes | PENDING | pending |');
+const acceptance = table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node -e "0" | yes | PENDING | pending |');
 test('accepts schema scenario headings with descriptions and rejects hidden full-suite legs', () => {
   const bad = contract.replace('node --test test/alpha.test.mjs', 'npm test && node --test test/alpha.test.mjs');
   const dir = change({ 'tasks.md': bad, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1 successful alpha\n' });
@@ -142,10 +142,13 @@ test('rejects scope overlap between tasks in different waves with no dependency 
   assert.equal(run(change({ ...files, 'tasks.md': ok })).status, 0);
 });
 
-test('design.md content is not contract-checked: no impact or alignment tables exist', () => {
+test('design.md prose is free-form but must not name task ids; decisions are named, not tasks', () => {
   const files = { 'proposal.md': 'x', 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'tasks.md': contract, 'review.md': REVIEW };
-  // Any design.md prose passes; survey tables are gone, so nothing scans it for task ids.
-  assert.equal(run(change({ ...files, 'design.md': '# Design\nfoo() -> fixtures -> T-99\n' })).status, 0);
+  // Unrelated prose numbering and ids that are not tasks stay free-form.
+  assert.equal(run(change({ ...files, 'design.md': '# Design\nfoo() -> fixtures -> T-99, step T-1\n' })).status, 0);
+  const named = run(change({ ...files, 'design.md': '# Design\n## Decisions\n- **D-01 local draft**\n  - Owner: T-02\n' }));
+  assert.equal(named.status, 1);
+  assert.match(named.stdout, /DESIGN_NAMES_TASK T-02: design\.md must not name task ids/);
 });
 
 test('rejects missing R0 sign-off (no review.md)', () => {
@@ -242,8 +245,8 @@ const diamond = (n) => Array.from({ length: n }, (_, i) => i).map((i) => `- [ ] 
 
 test('low speedup advisory fires on a near-serial DAG and stays silent on a wide one', () => {
   const files = { 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW };
-  const adv = (tasks) => JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change({ ...files, 'tasks.md': tasks }), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
-  const wide = adv(diamond(6)); // T-01 then 5 parallel: 6 tasks / 2 waves = 3x
+  const adv = (tasks, acc = acceptance) => JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change({ ...files, 'acceptance.md': acc, 'tasks.md': tasks }), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
+  const wide = adv(diamond(6), table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04,T-05,T-06 | node -e "0" | yes | PENDING | pending |')); // T-01 then 5 parallel: 6 tasks / 2 waves = 3x
   assert.equal(wide.route, 'pipeline');
   assert.deepEqual(wide.advisories, []);
   const chain = adv(`- [ ] 1.1 T-01 a\n  - Write scope: src/a.mjs,test/a.test.mjs\n  - Verify with: node --test test/a.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.2 T-02 b\n  - Depends on: T-01\n  - Write scope: src/b.mjs,test/b.test.mjs\n  - Verify with: node --test test/b.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.3 T-03 c\n  - Depends on: T-01\n  - Write scope: src/c.mjs,test/c.test.mjs\n  - Verify with: node --test test/c.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.4 T-04 d\n  - Depends on: T-02,T-03\n  - Write scope: src/d.mjs,test/d.test.mjs\n  - Verify with: node --test test/d.test.mjs\n  - Scen: SCEN-1`);
@@ -290,12 +293,11 @@ test('critical chain follows the weighted dispatch graph, not wave depth', () =>
     'tasks.md': tasks,
     'proposal.md': 'x',
     'design.md': design,
-    'acceptance.md': table('| SCEN-1 | CLI | T-03 | npm test | yes | PENDING | pending |'),
+    'acceptance.md': table('| SCEN-1 | CLI | T-00,T-01,T-02,T-03 | npm test | yes | PENDING | pending |'),
     'specs/a/spec.md': '### Scenario: SCEN-1\n',
     'review.md': REVIEW,
   }), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
-  assert.deepEqual(report.criticalChain.map((step) => [step.id, step.via]),
-    [['T-00', null], ['T-01', 'uses'], ['T-02', 'logical'], ['T-03', 'logical']]);
+  assert.deepEqual(report.criticalChain.map((step) => [step.id, step.via]),    [['T-00', null], ['T-01', 'uses'], ['T-02', 'logical'], ['T-03', 'logical']]);
 });
 
 test('a dependency carried only by a shared read-only fixture is advisory, not blocking', () => {
@@ -313,7 +315,7 @@ test('a dependency carried only by a shared read-only fixture is advisory, not b
     '  - Scen: SCEN-1',
     '- [ ] 1.3 T-03 sink',
     '  - Depends on: T-02',
-    '  - Write scope: test/sink.test.mjs',
+    '  - Write scope: src/sink.mjs,test/sink.test.mjs',
     '  - Verify with: npm test',
     '  - Scen: SCEN-1',
     '',
@@ -322,7 +324,7 @@ test('a dependency carried only by a shared read-only fixture is advisory, not b
     'tasks.md': tasks,
     'proposal.md': 'x',
     'design.md': design,
-    'acceptance.md': table('| SCEN-1 | CLI | T-03 | npm test | yes | PENDING | pending |'),
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03 | npm test | yes | PENDING | pending |'),
     'specs/a/spec.md': '### Scenario: SCEN-1\n',
     'review.md': REVIEW,
   }), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
@@ -348,7 +350,7 @@ test('a dependency between two writers of the same files is not reported as read
     '  - Scen: SCEN-1',
     '- [ ] 1.3 T-03 sink',
     '  - Depends on: T-02',
-    '  - Write scope: test/sink.test.mjs',
+    '  - Write scope: src/sink.mjs,test/sink.test.mjs',
     '  - Verify with: npm test',
     '  - Scen: SCEN-1',
     '',
@@ -357,7 +359,7 @@ test('a dependency between two writers of the same files is not reported as read
     'tasks.md': tasks,
     'proposal.md': 'x',
     'design.md': design,
-    'acceptance.md': table('| SCEN-1 | CLI | T-03 | npm test | yes | PENDING | pending |'),
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03 | npm test | yes | PENDING | pending |'),
     'specs/a/spec.md': '### Scenario: SCEN-1\n',
     'review.md': REVIEW,
   }), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
@@ -368,7 +370,7 @@ function sinkContract(verify, extra = '') {
   return contract.replace('Verify with: npm test', `Verify with: ${verify}`).replace('  - Scen: SCEN-1\n', '  - Scen: SCEN-1\n').replace(/(1\.4 T-04 sink\n)/, `$1${extra}`);
 }
 function freezeOf(tasks) {
-  return run(change({ 'tasks.md': tasks, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-04 | node -e "0" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW }));
+  return run(change({ 'tasks.md': tasks, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node -e "0" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW }));
 }
 test('sink without a full-suite leg must still have a narrow Verify', () => {
   const result = freezeOf(sinkContract('echo ok'));
@@ -492,14 +494,14 @@ const scheduleContract = `- [ ] 1.1 T-00 skeleton
   - Scen: SCEN-1
 - [ ] 1.4 T-03 sink
   - Depends on: T-00,T-01,T-02
-  - Write scope: test/sink.test.mjs
+  - Write scope: src/sink.ts,test/sink.test.mjs
   - Verify with: npm test
   - Scen: SCEN-1`;
 const scheduleFiles = (tasks) => ({
   'tasks.md': tasks,
   'proposal.md': 'x',
   'design.md': design,
-  'acceptance.md': table('| SCEN-1 | CLI | T-03 | node -e "0" | yes | PENDING | pending |'),
+  'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03 | node -e "0" | yes | PENDING | pending |'),
   'specs/a/spec.md': '### Scenario: SCEN-1\n',
 });
 const freezeStructural = (tasks) => run(change(scheduleFiles(tasks)), ['--structural', '--skip-signer-check']);
@@ -607,7 +609,7 @@ test('a producer consumed only through Uses is not a sink and may defer review',
   - Scen: SCEN-1
 - [ ] 1.4 T-03 sink
   - Depends on: T-00,T-02
-  - Write scope: test/sink.test.mjs
+  - Write scope: src/sink.ts,test/sink.test.mjs
   - Verify with: npm test
   - Scen: SCEN-1`;
   const result = freezeStructural(tasks);
@@ -638,7 +640,7 @@ test('DEFERRED_NOT_STANDARD blocks the sink and persistence/security surfaces, b
 test('skeleton Write-scope overlap is exempt against transitive dependents', () => {
   // T-03 depends on T-01, which Uses the skeleton: it cannot start before the skeleton merged.
   const transitive = scheduleContract
-    .replace('  - Depends on: T-00,T-01,T-02\n  - Write scope: test/sink.test.mjs', '  - Depends on: T-01,T-02\n  - Write scope: src/iface/sink.ts,test/sink.test.mjs');
+    .replace('  - Depends on: T-00,T-01,T-02\n  - Write scope: src/sink.ts,test/sink.test.mjs', '  - Depends on: T-01,T-02\n  - Write scope: src/iface/sink.ts,test/sink.test.mjs');
   assert.equal(freezeStructural(transitive).status, 0, freezeStructural(transitive).stdout);
   // An independent task with no path to the skeleton is a real writer race.
   const race = scheduleContract.replace('  - Scen: SCEN-1', '  - Scen: SCEN-1\n- [ ] 1.5 T-04 race\n  - Write scope: src/iface/race.ts,test/race.test.mjs\n  - Verify with: node --test test/race.test.mjs\n  - Scen: SCEN-1');
@@ -679,13 +681,13 @@ test('--explain prints a rule, reason and fix for every block', () => {
 
 // ---- contract lint: silent failure modes ----
 test('an acceptance row split by an unescaped pipe is a named block, not a silent skip', () => {
-  const row = '| SCEN-1 | CLI | T-02 | echo "a | b" | yes | PENDING | pending |';
+  const row = '| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | echo "a | b" | yes | PENDING | pending |';
   const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table(row), 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
   const result = run(dir);
   assert.equal(result.status, 1);
   assert.match(result.stdout, /MALFORMED_ACCEPTANCE_ROW/);
   // An escaped pipe keeps the column count and is accepted.
-  const escaped = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-02 | echo "a \\| b" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW });
+  const escaped = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | echo "a \\| b" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW });
   assert.equal(run(escaped).status, 0);
 });
 
@@ -702,7 +704,7 @@ test('shell setup is not a verify leg: set -e and || are named blocks', () => {
 
 test('a shell loop is an advisory, not invented legs', () => {
   const loop = contract
-    .replace('Write scope: test/sink.test.mjs', 'Write scope: test/sink.test.mjs,scripts/specs/probe.mjs')
+    .replace('Write scope: src/sink.mjs,test/sink.test.mjs', 'Write scope: src/sink.mjs,test/sink.test.mjs,scripts/specs/probe.mjs')
     .replace('  - Verify with: npm test', '  - Review: mechanical\n  - Verify with: for f in scripts/specs/probe.mjs; do node "$f"; done');
   const dir = change({ 'tasks.md': loop, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW });
   const result = run(dir);
@@ -853,4 +855,133 @@ test('acceptance requires the same seven-column header as runner', () => {
   const missing = run(change({ ...files, 'acceptance.md': '| SCEN-1 | CLI | T-02 | node -e "0" | yes | PENDING | pending |' }));
   assert.equal(missing.status, 1);
   assert.match(missing.stdout, /BAD_ACCEPTANCE_HEADER/);
+});
+
+// ---- acceptance <-> tasks alignment, cross-change ids, sink assembly, design decisions ----
+function aligned(files = {}) {
+  const tasks = `- [ ] 1.1 T-01 shared
+  - Write scope: src/shared,test/shared.test.mjs
+  - Verify with: node --test test/shared.test.mjs
+  - Scen: SCEN-1
+  - Implements: D-01
+- [ ] 1.2 T-02 sink
+  - Depends on: T-01
+  - Write scope: src/app.mjs,test/sink.test.mjs
+  - Verify with: npm test
+  - Scen: SCEN-1
+  - Implements: D-01, D-02`;
+  return change({
+    'tasks.md': tasks,
+    'proposal.md': 'x',
+    'design.md': '## Decisions\n- **D-01 shared helper** 影响模块/路径: src/shared\n- **D-02 wiring** 影响模块/路径: src/app.mjs\n',
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node -e "0" | yes | PENDING | pending |'),
+    'specs/a/spec.md': '### Scenario: SCEN-1\n',
+    'review.md': REVIEW,
+    ...files,
+  });
+}
+const codes = (result) => {
+  try { return JSON.parse(result.stdout).blocking; } catch { return []; }
+};
+
+test('BAD_ACCEPTANCE_TASKS: a Required=yes row with no task id is rejected', () => {
+  const result = run(change({
+    'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW,
+    'acceptance.md': table('| SCEN-1 | CLI |  | node -e "0" | yes | PENDING | pending |'),
+  }));
+  assert.equal(result.status, 1);
+  assert.match(codes(result).join('\n'), /^BAD_ACCEPTANCE_TASKS acceptance\.md:3 SCEN-1: Tasks must list at least one task id$/m);
+});
+
+test('UNKNOWN_ACCEPTANCE_TASK: a Tasks cell naming a task absent from tasks.md is rejected', () => {
+  const result = run(change({
+    'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW,
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04,T-99 | node -e "0" | yes | PENDING | pending |'),
+  }));
+  assert.equal(result.status, 1);
+  assert.match(codes(result).join('\n'), /^UNKNOWN_ACCEPTANCE_TASK SCEN-1: T-99 is not a task in tasks\.md$/m);
+});
+
+test('UNOWNED_ACCEPTANCE_SCEN: the Tasks cell must name at least one task claiming the SCEN', () => {
+  // T-01 carries only SCEN-1; the SCEN-2 row naming it therefore has no real owner.
+  const tasks = `- [ ] 1.1 T-01 shared
+  - Write scope: src/shared,test/shared.test.mjs
+  - Verify with: node --test test/shared.test.mjs
+  - Scen: SCEN-1
+- [ ] 1.2 T-02 other
+  - Write scope: src/other,test/other.test.mjs
+  - Verify with: node --test test/other.test.mjs
+  - Scen: SCEN-2`;
+  const result = run(change({
+    'tasks.md': tasks, 'proposal.md': 'x', 'design.md': design, 'review.md': REVIEW,
+    'acceptance.md': table('| SCEN-1 | CLI | T-02 | node -e "0" | yes | PENDING | pending |\n| SCEN-2 | CLI | T-01 | node -e "0" | yes | PENDING | pending |'),
+    'specs/a/spec.md': '### Scenario: SCEN-1\n### Scenario: SCEN-2\n',
+  }));
+  assert.equal(result.status, 1);
+  assert.match(codes(result).join('\n'), /^UNOWNED_ACCEPTANCE_SCEN SCEN-1: none of T-02 claims it in tasks\.md Scenarios$/m);
+});
+
+test('UNACCEPTED_SCEN: every declared SCEN needs an acceptance row', () => {
+  const dir = change({
+    'tasks.md': `${contract}\n- [ ] 1.5 T-05 other\n  - Write scope: src/other,test/other.test.mjs\n  - Verify with: node --test test/other.test.mjs\n  - Scen: SCEN-2`,
+    'proposal.md': 'x', 'design.md': design, 'review.md': REVIEW,
+    'acceptance.md': acceptance,
+    'specs/a/spec.md': '### Scenario: SCEN-1\n### Scenario: SCEN-2\n',
+  });
+  const result = run(dir);
+  assert.equal(result.status, 1);
+  assert.match(codes(result).join('\n'), /^UNACCEPTED_SCEN SCEN-2 \(specs\/a\/spec\.md\): every declared SCEN needs an acceptance row$/m);
+});
+
+test('UNACCEPTED_TASK_SCEN: every claiming task must appear in that SCEN\'s Tasks cell', () => {
+  const result = run(change({
+    'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW,
+    'acceptance.md': table('| SCEN-1 | CLI | T-02,T-03,T-04 | node -e "0" | yes | PENDING | pending |'),
+  }));
+  assert.equal(result.status, 1);
+  assert.match(codes(result).join('\n'), /^UNACCEPTED_TASK_SCEN T-01: SCEN-1 is claimed but no acceptance row lists T-01$/m);
+});
+
+test('COLLIDING_SCEN: another change declaring the id blocks; MODIFIED/REMOVED re-declaration is allowed', () => {
+  const colliding = aligned();
+  const sh = (...args) => execFileSync('git', ['-C', colliding, ...args], { encoding: 'utf8' }).trim();
+  sh('init', '-q', '-b', 'main');
+  fs.mkdirSync(path.join(colliding, 'openspec/changes/other/specs/cap'), { recursive: true });
+  fs.writeFileSync(path.join(colliding, 'openspec/changes/other/specs/cap/spec.md'), '## ADDED Requirements\n### Scenario: SCEN-1 other\n');
+  const blocked = run(colliding, ['--structural', '--skip-signer-check']);
+  assert.equal(blocked.status, 1);
+  assert.match(codes(blocked).join('\n'), /^COLLIDING_SCEN SCEN-1: already declared in openspec\/changes\/other\/specs\/cap\/spec\.md$/m);
+  // A MODIFIED re-declaration updates the same requirement, so it is not a collision.
+  fs.writeFileSync(path.join(colliding, 'openspec/changes/other/specs/cap/spec.md'), '## MODIFIED Requirements\n### Scenario: SCEN-1 other\n');
+  const allowed = run(colliding, ['--structural', '--skip-signer-check']);
+  assert.equal(allowed.status, 0, JSON.stringify(codes(allowed)));
+});
+
+test('SINK_TEST_ONLY: a sink whose whole Write scope is tests is rejected', () => {
+  const result = run(change({
+    'tasks.md': contract.replace('Write scope: src/sink.mjs,test/sink.test.mjs', 'Write scope: test/sink.test.mjs'),
+    'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW,
+    'acceptance.md': acceptance,
+  }));
+  assert.equal(result.status, 1);
+  assert.match(codes(result).join('\n'), /^SINK_TEST_ONLY T-04: sink Write scope has only test paths; the sink must own the assembly\/wiring file$/m);
+});
+
+test('DESIGN_NAMES_TASK: design.md naming a declared task id is rejected', () => {
+  const result = run(aligned({ 'design.md': '## Decisions\n- **D-01 shared helper**\n  - Owner: T-01\n- **D-02 wiring**\n' }));
+  assert.equal(result.status, 1);
+  assert.match(codes(result).join('\n'), /^DESIGN_NAMES_TASK T-01: design\.md must not name task ids; name decisions and let tasks\.md declare Implements:$/m);
+});
+
+test('UNKNOWN_DECISION: Implements must name a decision heading in design.md', () => {
+  const result = run(aligned({ 'design.md': '## Decisions\n- **D-01 shared helper**\n' }));
+  assert.equal(result.status, 1);
+  assert.match(codes(result).join('\n'), /^UNKNOWN_DECISION T-02: Implements D-02 is not a decision heading in design\.md$/m);
+});
+
+test('a fully aligned package with a production-owning sink, Implements ids and no design task ids passes', () => {
+  const dir = aligned();
+  const result = run(dir);
+  assert.equal(result.status, 0, result.stdout);
+  assert.deepEqual(codes(result), []);
 });

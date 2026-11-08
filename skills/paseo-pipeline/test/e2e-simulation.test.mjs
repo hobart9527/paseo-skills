@@ -119,12 +119,13 @@ Multiply numbers.
 Composite arithmetic expressions.
 `);
 
+  // design.md names decisions and affected modules only; task ids live in tasks.md.
   write(`openspec/changes/${change}/design.md`, `# Design
-## Impact Inventory
-- T-01: affects src/core.mjs
-- T-02: affects src/add.mjs
-- T-03: affects src/mul.mjs
-- T-04: affects src/calc.mjs
+## Decisions
+- **D-01 core math** affects src/core.mjs
+- **D-02 add** affects src/add.mjs
+- **D-03 mul** affects src/mul.mjs
+- **D-04 calculator facade** affects src/calc.mjs
 `);
 
   write(`openspec/changes/${change}/acceptance.md`, `# Acceptance Matrix

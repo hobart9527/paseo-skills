@@ -107,7 +107,9 @@ test('escaped pipe passes through and output overflow fails closed', () => {
 test('legacy CP-1 accepted matrix executes and checks at committed integration HEAD', () => {
   const f = fixture('printf hello', '| SCEN-1 | CLI | T-02 | touch should-not-run | no | BLOCKED | legacy evidence |\n');
   const matrix = path.join(f.dir, 'acceptance.md');
-  fs.writeFileSync(matrix, fs.readFileSync(matrix, 'utf8').replace('yes | PENDING | pending', 'yes | PENDING | legacy evidence'));
+  fs.writeFileSync(matrix, fs.readFileSync(matrix, 'utf8')
+    .replace('| CLI | T-01 |', '| CLI | T-01,T-02,T-03,T-04 |')
+    .replace('yes | PENDING | pending', 'yes | PENDING | legacy evidence'));
   fs.writeFileSync(path.join(f.dir, 'tasks.md'), `- [ ] 1.1 T-01 shared
   - Write scope: src/shared,test/shared.test.mjs
   - Verify with: node --test test/shared.test.mjs
@@ -124,7 +126,7 @@ test('legacy CP-1 accepted matrix executes and checks at committed integration H
   - Scen: SCEN-1
 - [ ] 1.4 T-04 sink
   - Depends on: T-02,T-03
-  - Write scope: test/sink.test.mjs
+  - Write scope: src/sink.mjs,test/sink.test.mjs
   - Verify with: npm test
   - Scen: SCEN-1\n`);
   fs.writeFileSync(path.join(f.dir, 'proposal.md'), 'x\n');
