@@ -8,7 +8,7 @@
 //   pipeline-run.mjs plan   <change-dir> [--json] [--worker-cap N] [--idle-minutes N]
 //   pipeline-run.mjs merge  <change-dir> <task-id> [--timeout=ms] [--allow-attempt-over]
 //   pipeline-run.mjs status <change-dir>
-//   pipeline-run.mjs cleanup <change-dir> [--dry-run] [--execute] [--json] [--base <ref>]
+//   pipeline-run.mjs cleanup <change-dir> [--json] [--base <ref>] [--change <name>]
 //   pipeline-run.mjs acceptance run|check <change-dir> --evidence <file> ...
 //   pipeline-run.mjs install-hook <worktree> [<worktree>...]
 //
