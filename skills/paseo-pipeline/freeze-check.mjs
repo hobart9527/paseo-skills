@@ -8,36 +8,34 @@ import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo-agents
 import { parseTasks, graphErrors, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, isTaskId, legPaths, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
 import { dispatchDeps, weightedSpeedup, weightedCriticalPath, verifyScope, readsOnlyEdges, pathWithin, resolveModel, LIVE_MODEL } from './lib/schedule.mjs';
 import { runGit } from './lib/git.mjs';
-import { walkSpecFiles, visibleLines, scanScenarios, scanRequirements, collectSpecSources, externalScenarios, classifyScenCollisions } from './lib/spec-scan.mjs';
+import { loadSpecTree, visibleLines, scanScenarios, scanRequirements, classifyScenCollisions } from './lib/spec-scan.mjs';
 
 const args = process.argv.slice(2);
-const json = args.includes('--json');
-const explain = args.includes('--explain');
+// One pass over argv, in one place. The value after `--stage` is consumed with it, so it is never
+// mistaken for the change directory; every other non-flag token is positional.
+const flags = new Set(); const positional = []; const stageValues = [];
+for (let index = 0; index < args.length; index += 1) {
+  if (args[index] === '--stage') { stageValues.push(args[index + 1]); index += 1; }
+  else if (args[index].startsWith('--')) flags.add(args[index]);
+  else positional.push(args[index]);
+}
+const json = flags.has('--json');
+const explain = flags.has('--explain');
 // --structural: validate the contract the authors wrote, before hanlin reviews it. The R0
 // sign-off is the output of that review, so requiring it here would deadlock the entry flow.
-const structural = args.includes('--structural');
-// --stage specs: the staged check that runs after specs/ is committed, before tasks.md exists.
-// It is valid only with --structural; any other value is a usage error rather than a fallback,
-// so a typo cannot silently run the full check against a half-written package. Every occurrence
-// is validated: a second `--stage` (even an identical one) is ambiguous, so it is also an error.
-const stagePositions = args.flatMap((arg, index) => (arg === '--stage' ? [index] : []));
-const stage = stagePositions.length ? args[stagePositions[0] + 1] : null;
-const validStage = stagePositions.length === 1
-  && stage === 'specs'
-  && stagePositions[0] + 1 < args.length;
-if (stagePositions.length && (!structural || !validStage)) {
+const structural = flags.has('--structural');
+// --stage specs (exactly once, with --structural) is the staged check that runs after specs/ is
+// committed and before tasks.md exists; anything else is a usage error, never a silent fallback.
+const validStage = stageValues.length === 1 && stageValues[0] === 'specs' && structural;
+if (stageValues.length && !validStage) {
   console.error('Usage: freeze-check.mjs <change-dir> --structural --stage specs [--json]');
   process.exit(2);
 }
+const stage = stageValues.length ? 'specs' : null;
 // --skip-signer-check: offline escape hatch; the R0 signer uuid is then format-checked only.
-const skipSignerCheck = args.includes('--skip-signer-check');
+const skipSignerCheck = flags.has('--skip-signer-check');
 // --strict: promote drift advisories (currently: frozen base behind the default branch) to blocks.
-const strict = args.includes('--strict');
-// The value after `--stage` is the stage value, not the change directory; every other non-flag
-// token (including a second `--stage`'s stray value, which the validation above already rejected)
-// is positional.
-const stageValueIndex = stagePositions.length && stage === args[stagePositions[0] + 1] ? stagePositions[0] + 1 : -1;
-const positional = args.filter((arg, index) => index !== stageValueIndex && !arg.startsWith('--'));
+const strict = flags.has('--strict');
 const changeDir = positional[0];
 if (!changeDir) {
   console.error('Usage: freeze-check.mjs <change-dir> [--json] [--explain] [--structural] [--skip-signer-check] [--strict]');
@@ -105,6 +103,12 @@ const advisories = [];
 const fixes = new Map();
 if (blocking.length) fixes.set('CONTRACT', 'fix the field named in the message; see openspec-schema/templates/tasks.md for the exact shape');
 
+// One snapshot of every spec this run reads (own, baseline, other active changes). `loadSpecTree` is
+// the only spec I/O and never throws; the policy for its problems is here, at the caller.
+const toplevel = gitIn(changeDir, ['rev-parse', '--show-toplevel']);
+const repoRoot = toplevel.status === 0 ? toplevel.stdout.trim() : null;
+const specTree = loadSpecTree({ repoRoot, changeDir });
+
 // Scenario mapping.
 const declared = new Map();
 // Section (`## ...`), heading text and body each id is declared under in THIS change; the
@@ -113,8 +117,8 @@ const declared = new Map();
 const declaredSection = new Map();
 const declaredTitle = new Map();
 const declaredBody = new Map();
-for (const file of walkSpecFiles(path.join(changeDir, 'specs'))) {
-  for (const found of scanScenarios(read(file))) {
+for (const { file, text } of specTree.current) {
+  for (const found of scanScenarios(text)) {
     const source = path.relative(changeDir, file);
     if (declared.has(found.id)) blocking.push(`DUPLICATE_SCEN ${found.id}: declared in ${declared.get(found.id)} and ${source}`);
     else {
@@ -144,22 +148,35 @@ for (const [scen, file] of declared) {
 // title and body — conservative content identity, not Markdown rendering equivalence. Git history,
 // archives and branches are out of scope: only the current checkout is read, and a missing repo
 // silently skips the check.
+//
+// An unreadable spec file or directory is a blocking defect, not an empty declaration set. Base
+// crashed with an uncaught TypeError on the same input, so this is deliberately the one place the
+// byte-identical-to-base requirement is relaxed: same exit code (1), never a pass, a readable
+// message, and the normal JSON object under --json. This runs before the `--stage specs` dispatch,
+// so both modes inherit it.
+for (const problem of specTree.problems) {
+  blocking.push(`UNREADABLE_SPEC ${problem.path}: ${problem.reason}`);
+  console.error(`[freeze-check] unreadable spec ${problem.path}: ${problem.reason}`);
+}
 {
-  const toplevel = gitIn(changeDir, ['rev-parse', '--show-toplevel']);
-  if (toplevel.status === 0) {
-    const repoRoot = toplevel.stdout.trim();
-    const { baselineFiles, sources, unreadable: unreadableScans } = collectSpecSources({ repoRoot, excludeDir: changeDir });
-    const { external, unreadable } = externalScenarios({ repoRoot, baselineFiles, sources });
-    // An unreadable baseline or other-change spec (or a directory that cannot be listed) is a
-    // blocking defect, not an empty declaration set: skipping it would let the collision gate pass
-    // over input it never saw. Base crashed with an uncaught TypeError on the same input, so this is
-    // deliberately the one place the byte-identical-to-base requirement is relaxed: same exit code
-    // (1), never a pass, a readable message, and the normal JSON object in --json mode. Blocking is
-    // recorded so every output mode stays fail-closed.
-    for (const entry of [...unreadableScans, ...unreadable]) {
-      blocking.push(`UNREADABLE_SPEC ${entry.file}: ${entry.reason}`);
-      fixes.set('UNREADABLE_SPEC', 'make the file readable (repair or remove the dangling link/permissions); an unreadable spec cannot be checked');
-      console.error(`[freeze-check] unreadable spec ${entry.file}: ${entry.reason}`);
+  if (repoRoot) {
+    const external = new Map();
+    // Which external file declares each id, with its visible heading text and body. The section in
+    // that file decides nothing: the external side cannot know whether this change is legitimately
+    // re-declaring the id. Fenced examples and comments are not declarations (same helper as above).
+    // An unreadable source is absent from the snapshot, so it is never scanned as if it were empty.
+    const baselineFiles = new Set(specTree.baseline.map((source) => source.file));
+    const sources = [...specTree.baseline, ...specTree.others];
+    for (const { file, text } of sources) {
+      for (const found of scanScenarios(text)) {
+        if (!external.has(found.id)) external.set(found.id, []);
+        external.get(found.id).push({
+          file: path.relative(repoRoot, file),
+          baseline: baselineFiles.has(file),
+          title: found.title,
+          body: found.body,
+        });
+      }
     }
     const result = classifyScenCollisions({ declared, declaredSection, declaredTitle, declaredBody, external });
     for (const message of result.blocking) blocking.push(message);
@@ -184,33 +201,20 @@ if (stage === 'specs') {
   // Requirement overlap: another active change already adds, modifies or removes a requirement
   // this change modifies or removes. Structural misses it because each side is a valid delta alone;
   // the merge gives the capability two intentions for one requirement.
-  const toplevel = gitIn(changeDir, ['rev-parse', '--show-toplevel']);
-  if (toplevel.status === 0) {
-    const repoRoot = toplevel.stdout.trim();
+  if (repoRoot) {
     const current = { ADDED: new Set(), MODIFIED: new Set(), REMOVED: new Set(), RENAMED: new Set() };
-    for (const file of walkSpecFiles(path.join(changeDir, 'specs'))) {
-      for (const found of scanRequirements(read(file) || '')) current[found.section]?.add(found.name);
+    for (const { text } of specTree.current) {
+      for (const found of scanRequirements(text)) current[found.section]?.add(found.name);
     }
-    const { sources, unreadable: unreadableScans } = collectSpecSources({ repoRoot, excludeDir: changeDir });
-    // The scan above already reported unreadable external inputs as UNREADABLE_SPEC; this pass must
-    // not silently treat them as having no requirements, so it records nothing for them.
-    for (const entry of unreadableScans) {
-      const message = `UNREADABLE_SPEC ${entry.file}: ${entry.reason}`;
-      if (!specBlocking.includes(message)) specBlocking.push(message);
-    }
+    // Unreadable sources are already blocking (see the collision block above) and are absent from
+    // the snapshot, so this pass never treats them as requirements-free files.
     const external = new Map();
-    for (const file of sources) {
-      const relative = path.relative(repoRoot, file).split(path.sep).join('/');
-      const changeMatch = /^openspec\/changes\/([^/]+)\//.exec(relative);
-      if (!changeMatch) continue;
-      // A source that cannot be read is already a block above; skip it rather than scanning ''.
-      const sourceText = read(file);
-      if (sourceText === null) continue;
-      for (const found of scanRequirements(sourceText)) {
+    for (const { change, text } of specTree.others) {
+      for (const found of scanRequirements(text)) {
         if (!['ADDED', 'MODIFIED', 'REMOVED', 'RENAMED'].includes(found.section)) continue;
         if (!external.has(found.name)) external.set(found.name, new Map());
-        if (!external.get(found.name).has(changeMatch[1])) external.get(found.name).set(changeMatch[1], new Set());
-        external.get(found.name).get(changeMatch[1]).add(found.section);
+        if (!external.get(found.name).has(change)) external.get(found.name).set(change, new Set());
+        external.get(found.name).get(change).add(found.section);
       }
     }
     const touched = [...new Set([...current.MODIFIED, ...current.REMOVED])].sort();
@@ -223,12 +227,7 @@ if (stage === 'specs') {
       }
     }
   }
-  const summary = {
-    change: path.resolve(changeDir),
-    stage: 'specs',
-    blocking: [...new Set(specBlocking)],
-    advisories: [...new Set(stageAdvisories)],
-  };
+  const summary = { change: path.resolve(changeDir), stage: 'specs', blocking: [...new Set(specBlocking)], advisories: [...new Set(stageAdvisories)] };
   if (json) console.log(JSON.stringify(summary, null, 2));
   else {
     console.log(`[freeze-check] ${summary.change} (stage specs)`);
