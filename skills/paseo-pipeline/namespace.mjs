@@ -38,15 +38,16 @@ const repoRoot = toplevel.stdout.trim();
 // (a specs-first author runs this before creating the change directory).
 const excludeDir = fs.existsSync(changeDir) ? changeDir : null;
 const excludeName = fs.existsSync(changeDir) ? null : changeName;
-const { sources } = collectSpecSources({ repoRoot, excludeDir, excludeName });
+const { sources, unreadable: scanUnreadable } = collectSpecSources({ repoRoot, excludeDir, excludeName });
 
 const ID = /^SCEN-(.*)-(\d+)$/;
 const prefixes = new Map();
 const unparsed = [];
-// A spec file that cannot be read is never silently skipped: the free-range numbers would be
-// wrong and the report would look complete. It is listed and makes the exit status nonzero, while
-// the rest of the report still prints so the author can act on it.
-const unreadable = [];
+// A spec file (or a directory that cannot be listed) is never silently skipped: the free-range
+// numbers and the requirement overlap list would be wrong while the report looked complete. It is
+// listed and makes the exit status nonzero, while the rest of the report still prints so the author
+// can act on it.
+const unreadable = [...scanUnreadable];
 for (const file of sources) {
   const relative = path.relative(repoRoot, file).split(path.sep).join('/');
   const changeMatch = /^openspec\/changes\/([^/]+)\//.exec(relative);
@@ -136,7 +137,7 @@ if (json) {
     lines.push(`  SCEN-${entry.prefix}  max=${entry.max} next=${entry.next} ids=${entry.occurrences}  ${used}`);
   }
   if (unreadable.length) {
-    lines.push('', `Unreadable spec files (${unreadable.length}, NOT scanned; free-range numbers may be incomplete):`);
+    lines.push('', `Unreadable spec files or directories (${unreadable.length}, NOT scanned; free-range numbers may be incomplete):`);
     for (const entry of [...unreadable].sort((a, b) => a.file.localeCompare(b.file))) lines.push(`  ${entry.file}: ${entry.reason}`);
   }
   if (unparsed.length) {

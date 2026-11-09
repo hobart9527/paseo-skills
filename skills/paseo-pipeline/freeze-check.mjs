@@ -76,6 +76,7 @@ const RULE_FIXES = {
   UNACCEPTED_TASK_SCEN: 'list the claiming task id in that scenario\'s acceptance row Tasks cell, or leave the cell empty to derive it',
   ENTRY_OWNER_UNCLAIMED: 'let the task that writes the Entry claim the SCEN, or make a row owner depend on that writer (e.g. a Kind: skeleton that pre-wires the entry)',
   COLLIDING_SCEN: 'choose a new SCEN id, or re-declare a baseline id under MODIFIED/REMOVED Requirements in this change',
+  UNREADABLE_SPEC: 'make the file readable (repair or remove the dangling link/permissions); an unreadable spec cannot be checked',
   DESIGN_NAMES_TASK: 'name decisions and affected modules in design.md; let tasks.md declare Implements:',
   UNKNOWN_DECISION: 'add a decision heading (e.g. `- **D-01 <title>**` under `## Decisions`) in design.md',
   UNKNOWN_SCEN: 'claim a SCEN declared under specs/',
@@ -147,13 +148,19 @@ for (const [scen, file] of declared) {
   const toplevel = gitIn(changeDir, ['rev-parse', '--show-toplevel']);
   if (toplevel.status === 0) {
     const repoRoot = toplevel.stdout.trim();
-    const { baselineFiles, sources } = collectSpecSources({ repoRoot, excludeDir: changeDir });
+    const { baselineFiles, sources, unreadable: unreadableScans } = collectSpecSources({ repoRoot, excludeDir: changeDir });
     const { external, unreadable } = externalScenarios({ repoRoot, baselineFiles, sources });
-    // An unreadable baseline or other-change spec is a fatal error, not an empty declaration set:
-    // silently skipping it would let the collision gate pass over a file it never saw. This is the
-    // base behavior (it threw on the same input); the explicit message just names the file.
-    for (const entry of unreadable) console.error(`[freeze-check] unreadable spec ${entry.file}: ${entry.reason}`);
-    if (unreadable.length) process.exit(1);
+    // An unreadable baseline or other-change spec (or a directory that cannot be listed) is a
+    // blocking defect, not an empty declaration set: skipping it would let the collision gate pass
+    // over input it never saw. Base crashed with an uncaught TypeError on the same input, so this is
+    // deliberately the one place the byte-identical-to-base requirement is relaxed: same exit code
+    // (1), never a pass, a readable message, and the normal JSON object in --json mode. Blocking is
+    // recorded so every output mode stays fail-closed.
+    for (const entry of [...unreadableScans, ...unreadable]) {
+      blocking.push(`UNREADABLE_SPEC ${entry.file}: ${entry.reason}`);
+      fixes.set('UNREADABLE_SPEC', 'make the file readable (repair or remove the dangling link/permissions); an unreadable spec cannot be checked');
+      console.error(`[freeze-check] unreadable spec ${entry.file}: ${entry.reason}`);
+    }
     const result = classifyScenCollisions({ declared, declaredSection, declaredTitle, declaredBody, external });
     for (const message of result.blocking) blocking.push(message);
     for (const message of result.advisories) advisories.push(message);
@@ -168,7 +175,7 @@ if (stage === 'specs') {
   const specBlocking = [];
   for (const message of blocking) {
     const code = message.match(/^([A-Z][A-Z0-9_]*)/)?.[1] ?? '';
-    if (['DUPLICATE_SCEN', 'COLLIDING_SCEN', 'NO_SPEC_SCEN'].includes(code)) specBlocking.push(message);
+    if (['DUPLICATE_SCEN', 'COLLIDING_SCEN', 'NO_SPEC_SCEN', 'UNREADABLE_SPEC'].includes(code)) specBlocking.push(message);
   }
   // A specs-only change that declares scenarios is fine; one that declares none is not. The name
   // says what is wrong without borrowing the task-level NO_SCEN rule.
@@ -184,13 +191,22 @@ if (stage === 'specs') {
     for (const file of walkSpecFiles(path.join(changeDir, 'specs'))) {
       for (const found of scanRequirements(read(file) || '')) current[found.section]?.add(found.name);
     }
-    const { sources } = collectSpecSources({ repoRoot, excludeDir: changeDir });
+    const { sources, unreadable: unreadableScans } = collectSpecSources({ repoRoot, excludeDir: changeDir });
+    // The scan above already reported unreadable external inputs as UNREADABLE_SPEC; this pass must
+    // not silently treat them as having no requirements, so it records nothing for them.
+    for (const entry of unreadableScans) {
+      const message = `UNREADABLE_SPEC ${entry.file}: ${entry.reason}`;
+      if (!specBlocking.includes(message)) specBlocking.push(message);
+    }
     const external = new Map();
     for (const file of sources) {
       const relative = path.relative(repoRoot, file).split(path.sep).join('/');
       const changeMatch = /^openspec\/changes\/([^/]+)\//.exec(relative);
       if (!changeMatch) continue;
-      for (const found of scanRequirements(read(file) || '')) {
+      // A source that cannot be read is already a block above; skip it rather than scanning ''.
+      const sourceText = read(file);
+      if (sourceText === null) continue;
+      for (const found of scanRequirements(sourceText)) {
         if (!['ADDED', 'MODIFIED', 'REMOVED', 'RENAMED'].includes(found.section)) continue;
         if (!external.has(found.name)) external.set(found.name, new Map());
         if (!external.get(found.name).has(changeMatch[1])) external.get(found.name).set(changeMatch[1], new Set());

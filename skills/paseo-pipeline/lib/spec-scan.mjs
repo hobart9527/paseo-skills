@@ -3,23 +3,37 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-// Every spec.md under a directory tree; the declaration sources of one change.
-export function walkSpecFiles(dir, out = []) {
-  if (!fs.existsSync(dir)) return out;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+// Every spec.md under a directory tree; the declaration sources of one change. With an
+// `unreadable` out-array a directory that cannot be listed is recorded instead of thrown; without
+// one the error propagates, which is the base behavior for a change's own specs.
+export function walkSpecFiles(dir, out = [], unreadable = null) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (error) {
+    if (!unreadable) throw error;
+    if (fs.existsSync(dir)) unreadable.push({ file: dir, reason: error.message });
+    return out;
+  }
+  for (const entry of entries) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) walkSpecFiles(full, out);
+    if (entry.isDirectory()) walkSpecFiles(full, out, unreadable);
     else if (entry.name === 'spec.md') out.push(full);
   }
   return out;
 }
 // Every markdown file: baseline specs and other changes' spec trees are scanned this way so a
 // declaration in an odd filename is still seen by the cross-change check.
-export function walkMarkdown(dir, out = []) {
-  if (!fs.existsSync(dir)) return out;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+export function walkMarkdown(dir, out = [], unreadable = null) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (error) {
+    // A missing directory contributes no sources (it may simply not exist); an existing one that
+    // cannot be listed is an unreadable scan and must not silently look empty.
+    if (!unreadable) throw error;
+    if (fs.existsSync(dir)) unreadable.push({ file: dir, reason: error.message });
+    return out;
+  }
+  for (const entry of entries) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) walkMarkdown(full, out);
+    if (entry.isDirectory()) walkMarkdown(full, out, unreadable);
     else if (entry.name.endsWith('.md')) out.push(full);
   }
   return out;
@@ -148,25 +162,44 @@ export function capabilityOf(specsDir, file) {
 export function realOr(value) {
   try { return fs.realpathSync(value); } catch { return path.resolve(value); }
 }
+// The file part of an unreadable entry: a directory is reported with a trailing slash so the reader
+// knows a whole subtree, not one file, could not be scanned.
+const unreadablePath = (file, repoRoot) => {
+  const relative = path.relative(repoRoot, file).split(path.sep).join('/');
+  return fs.existsSync(file) && fs.statSync(file).isDirectory() ? `${relative}/` : relative;
+};
 // Baseline specs plus every unarchived change's spec tree. `excludeDir` is the change being
 // authored; `excludeName` covers a change directory that does not exist yet, where realpath cannot
 // match it. Archived changes live under `changes/archive/<name>/specs`, which this walk does not
-// reach, so only active changes contribute.
+// reach, so only active changes contribute. Unreadable files and directories are returned rather
+// than skipped: the caller decides how to fail.
 export function collectSpecSources({ repoRoot, excludeDir = null, excludeName = null }) {
   const current = excludeDir == null ? null : realOr(excludeDir);
-  const baselineFiles = new Set(walkMarkdown(path.join(repoRoot, 'openspec', 'specs')));
+  const unreadable = [];
+  const baselineFiles = new Set(walkMarkdown(path.join(repoRoot, 'openspec', 'specs'), [], unreadable));
   const sources = [...baselineFiles];
   const changesRoot = path.join(repoRoot, 'openspec', 'changes');
-  if (fs.existsSync(changesRoot)) {
-    for (const entry of fs.readdirSync(changesRoot, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      if (excludeName && entry.name === excludeName) continue;
-      const dir = path.join(changesRoot, entry.name);
-      if (current && realOr(dir) === current) continue;
-      sources.push(...walkMarkdown(path.join(dir, 'specs')));
-    }
+  let changeDirs = [];
+  try { changeDirs = fs.readdirSync(changesRoot, { withFileTypes: true }); } catch (error) {
+    if (fs.existsSync(changesRoot)) unreadable.push({ file: changesRoot, reason: error.message });
   }
-  return { baselineFiles, sources };
+  for (const entry of changeDirs) {
+    if (!entry.isDirectory()) continue;
+    if (excludeName && entry.name === excludeName) continue;
+    const dir = path.join(changesRoot, entry.name);
+    if (current && realOr(dir) === current) continue;
+    sources.push(...walkMarkdown(path.join(dir, 'specs'), [], unreadable));
+  }
+  return {
+    baselineFiles,
+    sources,
+    // Repo-relative, the same shape `externalScenarios` reports, so both lists read the same way in
+    // messages that combine them.
+    unreadable: unreadable.map((entry) => ({
+      file: unreadablePath(entry.file, repoRoot),
+      reason: entry.reason,
+    })),
+  };
 }
 // A spec file that cannot be read (dangling symlink, permissions) must never be treated as empty:
 // an empty file declares nothing, so the collision gate would silently pass over it. Callers turn

@@ -128,7 +128,7 @@ test('an unreadable spec is reported, never silently skipped, and makes the exit
   try {
     const human = run(dir);
     assert.equal(human.status, 1, human.stdout + human.stderr);
-    assert.match(human.stdout, /Unreadable spec files \(1/);
+    assert.match(human.stdout, /Unreadable spec files or directories \(1/);
     assert.match(human.stdout, /openspec\/changes\/other\/specs\/payee\/dangling\.md/);
     assert.match(human.stdout, /SCEN-PAD/);
     const machine = run(dir, ['--json']);
@@ -138,4 +138,25 @@ test('an unreadable spec is reported, never silently skipped, and makes the exit
   } finally { fs.rmSync(dangling, { force: true }); }
   // The same repo without the dangling link is clean again.
   assert.equal(run(dir).status, 0);
+});
+
+test('an unlistable baseline directory is reported too, not silently scanned as empty', () => {
+  const dir = repo();
+  const locked = path.join(dir, 'openspec/specs/locked');
+  fs.mkdirSync(locked, { recursive: true });
+  fs.writeFileSync(path.join(locked, 'spec.md'), '## Requirements\n#### Scenario: SCEN-PAD-99 locked\n');
+  fs.chmodSync(locked, 0o000);
+  try {
+    const human = run(dir);
+    assert.equal(human.status, 1, human.stdout + human.stderr);
+    assert.match(human.stdout, /Unreadable spec files or directories \(1/);
+    assert.match(human.stdout, /openspec\/specs\/locked\//);
+    const machine = run(dir, ['--json']);
+    assert.equal(machine.status, 1);
+    const report = JSON.parse(machine.stdout);
+    assert.deepEqual(report.unreadable.map((entry) => entry.file), ['openspec/specs/locked/']);
+    // The locked scenario was never counted, so the range is honest about what it did not see.
+    const pad = report.scenarios.find((entry) => entry.prefix === 'PAD');
+    assert.equal(pad.max, 7);
+  } finally { fs.chmodSync(locked, 0o755); }
 });
