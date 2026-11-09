@@ -378,6 +378,14 @@ test('the author hook is installed per workspace; workers never type their ident
   assert.ok(fs.statSync(path.join(dir, 'hooks', 'git', 'commit-msg')).mode & 0o111, 'hook must be executable');
 });
 
+test('merge gate documents test-infrastructure approval and its limited effect', () => {
+  const skill = read('SKILL.md');
+  assert.match(skill, /--allow-test-infra/);
+  assert.match(skill, /explicit human approval/);
+  assert.match(skill, /releases only the test-infrastructure check/);
+  assert.match(skill, /does not skip any other gate/);
+});
+
 test('exit 21 names the environment cause, not only the regression', () => {
   const skill = read('SKILL.md');
   assert.match(skill, /Exit 21: a replayed already-Done Verify failed/);

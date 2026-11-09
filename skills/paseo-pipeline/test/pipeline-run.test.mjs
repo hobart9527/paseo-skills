@@ -299,6 +299,26 @@ test('pending marker after completed merge does not trigger repeat or rewrite ma
   assert.equal(git(f.cwd, 'rev-parse', 'refs/pipeline/merge-failures/chg/T-01'), object.stdout.trim());
 });
 
+test('merge driver forwards --allow-test-infra and releases only that gate', () => {
+  const f = fixture();
+  const tasks = path.join(f.cwd, 'openspec/changes/chg/tasks.md');
+  fs.writeFileSync(tasks, fs.readFileSync(tasks, 'utf8').replace('Write scope: src,test', 'Write scope: src,test,vitest.config.ts'));
+  git(f.cwd, 'add', 'openspec/changes/chg/tasks.md');
+  git(f.cwd, 'commit', '-qm', 'extend test infrastructure scope');
+  implement(f.cwd, 'task/chg/T-01');
+  git(f.cwd, 'switch', '-q', 'task/chg/T-01');
+  write(f.cwd, 'vitest.config.ts', 'export default {};\n');
+  git(f.cwd, 'add', 'vitest.config.ts');
+  git(f.cwd, 'commit', '-qm', `infra\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
+  git(f.cwd, 'switch', '-q', 'integration/chg');
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  const denied = run(f.cwd, f.localEnv, ['merge', dir, 'T-01']);
+  assert.equal(denied.status, 38, denied.out);
+  assert.match(denied.out, /test infrastructure changes require human approval/);
+  const approved = run(f.cwd, f.localEnv, ['merge', dir, 'T-01', '--allow-test-infra']);
+  assert.equal(approved.status, 0, approved.out);
+});
+
 test('merge driver forwards both timeout forms and rejects unknown options', () => {
   for (const args of [['--timeout', '5000'], ['--timeout=5000']]) {
     const f = fixture();

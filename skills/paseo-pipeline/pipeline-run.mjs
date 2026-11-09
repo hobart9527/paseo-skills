@@ -100,13 +100,14 @@ if (command === 'acceptance') {
   process.exit(failed ? 1 : 0);
 } else if (command === 'merge') {
   let parsed;
-  try { parsed = parseOptions(rest, { timeout: 'value', 'allow-attempt-over': 'boolean' }); } catch (error) { die(error.message); }
+  try { parsed = parseOptions(rest, { timeout: 'value', 'allow-attempt-over': 'boolean', 'allow-test-infra': 'boolean' }); } catch (error) { die(error.message); }
   if (parsed.positional.length !== 2) die('merge needs <change-dir> <task-id>');
   const dir = changeDirOf(parsed.positional[0]);
   const taskId = parsed.positional[1];
   const mergeOptions = [];
   if (parsed.options.timeout !== undefined) mergeOptions.push(`--timeout=${parsed.options.timeout}`);
   if (parsed.options['allow-attempt-over']) mergeOptions.push('--allow-attempt-over');
+  if (parsed.options['allow-test-infra']) mergeOptions.push('--allow-test-infra');
   const change = path.basename(dir);
   const refs = runGit(undefined, ['for-each-ref', '--format=%(refname:short)', `refs/heads/task/${change}/`]).stdout
     .split('\n').map((line) => line.trim()).filter(Boolean);
