@@ -34,7 +34,7 @@ export const REMINDER = [
   // Use a real monorepo path: the old `src/a.ts` example was copied verbatim into plans for
   // changes that lived in packages/*, and the flat src/ scope then looked like a second scope.
   'TIER-PLAN: tier=1 files=packages/web/src/a.tsx,packages/web/test/a.test.tsx scope=packages/web',
-  '闸门读这一行，在首次业务写入前就按计划判定（而不是写到第 4 个文件才提示）。计划变了就重新输出一行。',
+  '闸门读这一行，在首次业务写入前就按计划判定（而不是写到第 4 个文件才提示）。计划变了就重新输出一行。30 分钟空闲重置账本不代表任何作用域已获批准；顶层 src/test/tests/__tests__/spec/e2e 合并为一个作用域，其余按顶层目录，packages/apps/services/crates/skills 按工作区包。',
   TIER_RULES,
   '纯评估、纯讨论不需要声明。',
 ].join('\n');
