@@ -282,16 +282,25 @@ function resolveLegPath(cwd, path) {
 
 function legWorkingDirectory(part) {
   const tokens = String(part || '').split(/\s+/).map((token) => token.replace(/^['"]|['"]$/g, ''));
+  // Every occurrence is a working directory, never a target: npm honours the LAST `--prefix`
+  // (`npm --prefix a --prefix b test` runs b's suite), so reading only the first left the
+  // second package path in the token list and a whole suite looked narrow. pnpm rejects a
+  // repeated `-C`, which cannot run a narrow test either; treating it the same is conservative.
+  let cwd = null;
+  const strip = [];
   for (let i = 0; i < tokens.length; i += 1) {
     const match = CWD_OPTION.exec(tokens[i]);
     if (!match) continue;
     const value = match[1] ?? tokens[i + 1];
-    const cwd = value && !value.startsWith('-') ? normalizeRelativeDir(value) : null;
+    const resolved = value && !value.startsWith('-') ? normalizeRelativeDir(value) : null;
     // Strip the option's value token only when it resolves; otherwise leave the leg as it was.
     // `cwd === ''` is the repo root and still strips the option.
-    return { cwd, strip: cwd !== null ? (match[1] ? [i] : [i, i + 1]) : [] };
+    if (resolved === null) continue;
+    cwd = resolved;
+    strip.push(i);
+    if (!match[1]) strip.push(i + 1);
   }
-  return { cwd: null, strip: [] };
+  return { cwd, strip };
 }
 
 /**

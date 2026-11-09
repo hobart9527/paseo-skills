@@ -299,6 +299,26 @@ test('a prefix suite on an already-Done task is skipped and only its narrow leg 
   assert.match(fs.readFileSync(path.join(f.cwd, `openspec/changes/${f.change}/run-log.md`), 'utf8'), /"replayed":1/);
 });
 
+test('a repeated working-directory option is a broad leg, so replay still runs the narrow one', () => {
+  // Prior T-00 lists a package suite behind two `--prefix` options beside a narrow test. npm runs
+  // the last package's whole suite, so that leg must be skipped as broad — and the narrow leg
+  // must still replay. Reading the first prefix only would make the "suite" look like a path:
+  // the skip would then not apply, and the replay would fail trying to run the real npm suite in
+  // a fixture that has no packages.
+  const tasks = '- [x] T-00 prior\n  - Write scope: test/prior.test.mjs\n  - Reads: src/poison.txt\n  - Review: mechanical\n  - Verify with: npm --prefix packages/a --prefix packages/b test && node --test test/prior.test.mjs\n  - Done: source=abcdef1 review=worker\n- [ ] T-01 target\n  - Write scope: src,test\n  - Verify with: node --test test/a.test.mjs\n';
+  const f = taggedFixture(tasks);
+  write(f.cwd, 'test/prior.test.mjs', `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\ntest('legacy', () => { assert.equal(fs.existsSync('src/poison.txt'), false); });\n`);
+  write(f.cwd, 'test/a.test.mjs', PASSING_TEST);
+  write(f.cwd, 'src/a.txt', 'a');
+  git(f.cwd, 'add', '.');
+  git(f.cwd, 'commit', '-qm', `w\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
+  const tip = git(f.cwd, 'rev-parse', 'HEAD'); git(f.cwd, 'switch', '-q', `integration/${f.change}`);
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
+  assert.equal(r.status, 0, r.out);
+  const log = fs.readFileSync(path.join(f.cwd, `openspec/changes/${f.change}/run-log.md`), 'utf8');
+  assert.match(log, /"replayed":1/);
+});
+
 test('attempt breaker: -a4 is exit 37 unless a human approved it', () => {
   const f = fixture();
   git(f.cwd, 'branch', '-m', `task/${f.change}/T-01`, `task/${f.change}/T-01-a4`);

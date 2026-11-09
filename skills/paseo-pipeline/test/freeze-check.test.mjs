@@ -420,6 +420,17 @@ test('mechanical non-sink still needs narrow Verify', () => {
   const tasks = contract.replace('  - Verify with: node --test test/alpha.test.mjs', '  - Review: mechanical\n  - Verify with: rg -c done src/alpha');
   assert.match(freezeOf(tasks).stdout, /VERIFY_NOT_NARROW T-02/);
 });
+test('a repeated working-directory option stays a full-suite leg at the gate', () => {
+  // Freeze-check must not accept `npm --prefix a --prefix b test` as a narrow non-sink Verify:
+  // npm runs b's whole suite, so classifying it narrow would let an unowned package suite
+  // satisfy the gate. The sink accounting sees one broad leg, not zero.
+  const nonSink = freezeOf(contract.replace('node --test test/alpha.test.mjs', 'npm --prefix packages/a --prefix packages/b test'));
+  assert.equal(nonSink.status, 1);
+  assert.match(nonSink.stdout, /VERIFY_FULL_SUITE_NON_SINK T-02/);
+  // Two broad legs on the sink stay two explicit legs, so the per-package accounting is unchanged.
+  const sink = freezeOf(sinkContract('npm --prefix packages/a --prefix packages/b test'));
+  assert.equal(sink.status, 0, sink.stdout);
+});
 
 // ---- R0: the last sign-off line wins ----
 function signedRepo(review) {
