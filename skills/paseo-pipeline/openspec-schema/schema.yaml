@@ -444,8 +444,10 @@ apply:
   requires: [tasks]
   tracks: tasks.md
   instruction: |
-    Stop unless R0 has passed and the human has approved CP-1 for the exact
-    contract commit. After that freeze, defer execution to
+    Stop unless R0 is closed by either `R0: pass(...)` or the human-accepted
+    residual-risk exception `R0: human-accept(@<sha>)` recorded in run-log.md,
+    and the human has approved CP-1 for the exact contract commit. Human-accept
+    is not a reviewer pass. After that freeze, defer execution to
     `pipeline-run.mjs plan`; workers do the assigned work. Never hand-tick
     task Done boxes. `requires: [tasks]` is a validation dependency, not
     authorization to execute tasks.

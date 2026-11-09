@@ -11,7 +11,9 @@ test('skill documents converged core and hard limits', () => {
 });
 test('pipeline prompts align execution, contract, review, and handoff rules', () => {
   const schema = read('openspec-schema/schema.yaml');
-  assert.match(schema, /Stop unless R0 has passed[\s\S]*`pipeline-run\.mjs plan`[\s\S]*Never hand-tick[\s\S]*validation dependency, not[\s\S]*authorization to execute tasks/);
+  assert.match(schema, /Stop unless R0 is closed[\s\S]*`pipeline-run\.mjs plan`[\s\S]*Never hand-tick[\s\S]*validation dependency, not[\s\S]*authorization to execute tasks/);
+  assert.match(schema, /R0 is closed by either `R0: pass\(\.\.\.\)` or the human-accepted[\s\S]*`R0: human-accept\(@<sha>\)` recorded in run-log\.md/);
+  assert.match(schema, /Human-accept[\s\S]*is not a reviewer pass/);
   assert.match(schema, /complete updated requirement under `## MODIFIED Requirements`/);
   assert.match(schema, /keep unchanged scenarios verbatim/);
   const author = read('templates/author.md');
