@@ -444,10 +444,12 @@ apply:
   requires: [tasks]
   tracks: tasks.md
   instruction: |
-    Stop unless R0 is closed by either `R0: pass(...)` or the human-accepted
-    residual-risk exception `R0: human-accept(@<sha>)` recorded in run-log.md,
-    and the human has approved CP-1 for the exact contract commit. Human-accept
-    is not a reviewer pass. After that freeze, defer execution to
+    Stop unless R0 is closed by either `R0: pass(<uuid>@<sha>)` in `review.md`,
+    or the human-accepted exception `R0: human-accept(@<sha>)` in `review.md`
+    plus `Approval: R0 residual risk accepted for <sha> — <reason>` in `run-log.md`.
+    Human-accept is never a reviewer pass. CP-1 approval for the exact contract
+    commit is still required. See SKILL.md for open-item rulings.md details.
+    After that freeze, defer execution to
     `pipeline-run.mjs plan`; workers do the assigned work. Never hand-tick
     task Done boxes. `requires: [tasks]` is a validation dependency, not
     authorization to execute tasks.

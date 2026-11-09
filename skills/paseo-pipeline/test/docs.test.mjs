@@ -12,8 +12,8 @@ test('skill documents converged core and hard limits', () => {
 test('pipeline prompts align execution, contract, review, and handoff rules', () => {
   const schema = read('openspec-schema/schema.yaml');
   assert.match(schema, /Stop unless R0 is closed[\s\S]*`pipeline-run\.mjs plan`[\s\S]*Never hand-tick[\s\S]*validation dependency, not[\s\S]*authorization to execute tasks/);
-  assert.match(schema, /R0 is closed by either `R0: pass\(\.\.\.\)` or the human-accepted[\s\S]*`R0: human-accept\(@<sha>\)` recorded in run-log\.md/);
-  assert.match(schema, /Human-accept[\s\S]*is not a reviewer pass/);
+  assert.match(schema, /R0 is closed by either[\s\S]*`R0: pass\(<uuid>@<sha>\)` in `review\.md`[\s\S]*`R0: human-accept\(@<sha>\)` in `review\.md`[\s\S]*`Approval: R0 residual risk accepted for <sha> — <reason>` in `run-log\.md`/);
+  assert.match(schema, /Human-accept is never a reviewer pass/);
   assert.match(schema, /complete updated requirement under `## MODIFIED Requirements`/);
   assert.match(schema, /keep unchanged scenarios verbatim/);
   const author = read('templates/author.md');
@@ -633,11 +633,10 @@ test('FINAL depth follows the diff content and R0 rulings have a record format',
 test('R0 has a legal exit: reviewer pass, recorded human exception, or blocking', () => {
   const skill = read('SKILL.md');
   // The two approval kinds are distinct and neither may be written as the other.
-  assert.match(skill, /R0: pass\(<agent-uuid>@<reviewed-sha>\)/);
-  assert.match(skill, /R0: human-accept\(@<sha>\)/);
-  assert.match(skill, /never written as a reviewer pass/);
-  // A human exception needs its own record, not just the sign-off line.
-  assert.match(skill, /approval in `run-log\.md`/);
+  assert.match(skill, /R0: pass\(<reviewer-uuid>@<sha>\)` in `review\.md`/);
+  assert.match(skill, /R0: human-accept\(@<sha>\)` in `review\.md`/);
+  assert.match(skill, /Approval: R0 residual risk accepted for <sha> — <reason>` in `run-log\.md`/);
+  assert.match(skill, /never a reviewer pass/);
   assert.match(skill, /open item and reason in `rulings\.md`/);
   // Whole-package rounds are capped; a directed repair is verified as a delta.
   assert.match(skill, /at most two whole-package rounds/);
