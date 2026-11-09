@@ -11,11 +11,11 @@ import { runGit } from './lib/git.mjs';
 import { loadSpecTree, visibleLines, scanScenarios, scanRequirements, classifyScenCollisions } from './lib/spec-scan.mjs';
 
 const args = process.argv.slice(2);
-// One pass over argv, in one place. The value after `--stage` is consumed with it, so it is never
-// mistaken for the change directory; every other non-flag token is positional.
-const flags = new Set(); const positional = []; const stageValues = [];
+// One pass over argv. Any token that is `--stage` or starts with it is stage syntax: its value is
+// consumed with it and a spelling like `--stage=specs`, `--stagefoo` or a repeat is rejected.
+const flags = new Set(); const positional = []; const stageTokens = [];
 for (let index = 0; index < args.length; index += 1) {
-  if (args[index] === '--stage') { stageValues.push(args[index + 1]); index += 1; }
+  if (args[index].startsWith('--stage')) { stageTokens.push(args[index], args[index + 1]); index += 1; }
   else if (args[index].startsWith('--')) flags.add(args[index]);
   else positional.push(args[index]);
 }
@@ -24,14 +24,13 @@ const explain = flags.has('--explain');
 // --structural: validate the contract the authors wrote, before hanlin reviews it. The R0
 // sign-off is the output of that review, so requiring it here would deadlock the entry flow.
 const structural = flags.has('--structural');
-// --stage specs (exactly once, with --structural) is the staged check that runs after specs/ is
-// committed and before tasks.md exists; anything else is a usage error, never a silent fallback.
-const validStage = stageValues.length === 1 && stageValues[0] === 'specs' && structural;
-if (stageValues.length && !validStage) {
+// Valid staged syntax is exactly `--stage specs` with `--structural`; anything else is a usage error.
+const validStage = stageTokens.length === 2 && stageTokens[0] === '--stage' && stageTokens[1] === 'specs' && structural;
+if (stageTokens.length && !validStage) {
   console.error('Usage: freeze-check.mjs <change-dir> --structural --stage specs [--json]');
   process.exit(2);
 }
-const stage = stageValues.length ? 'specs' : null;
+const stage = stageTokens.length ? 'specs' : null;
 // --skip-signer-check: offline escape hatch; the R0 signer uuid is then format-checked only.
 const skipSignerCheck = flags.has('--skip-signer-check');
 // --strict: promote drift advisories (currently: frozen base behind the default branch) to blocks.
@@ -42,6 +41,7 @@ if (!changeDir) {
   process.exit(2);
 }
 
+// Non-spec inputs only; spec files go through `loadSpecTree`, which reports an unreadable one.
 function read(file) {
   try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
 }

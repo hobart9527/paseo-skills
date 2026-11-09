@@ -160,8 +160,8 @@ export function capabilityOf(specsDir, file) {
 
 // ---- the single I/O entry ----
 // The spec inputs as one tree, read once:
-//   { kind: 'absent' }                          the path does not exist at all
-//   { kind: 'unreadable', path, reason }        it exists but cannot be listed or read
+//   { kind: 'absent' }                          the path is not there (ENOENT/ENOTDIR)
+//   { kind: 'unreadable', path, reason }        it is there but cannot be listed or read
 //   { kind: 'dir', path, children: [...] }
 //   { kind: 'file', path, text }
 // `flattenFiles` and `treeProblems` are pure: they only walk the tree they are given, so the
@@ -181,67 +181,90 @@ export function treeProblems(node, out = []) {
 }
 
 // `realpath` when it exists, so a change reached through a symlinked worktree still matches itself.
+// This is identity resolution only and never classifies a spec input: an unreadable change reached
+// through a link still differs from the authored change by path, which only adds a redundant
+// duplicate of a source this run already reads, never removes one.
 const realOr = (value) => { try { return fs.realpathSync(value); } catch { return path.resolve(value); } };
-// Whether a path exists at all, as a file, directory or link. Deliberately lstat: `existsSync` is
-// false for a dangling symlink, which must be an unreadable input, not an absent one.
-const existsAsEntry = (value) => { try { fs.lstatSync(value); return true; } catch { return false; } };
 
-// Read a directory subtree. Only real directories are descended into (base's walk skipped a
-// symlinked directory), and only files whose name satisfies `matchLeaf` are read at all.
-function readTree(dir, matchLeaf) {
+// THE classifier, and the only place an I/O error becomes "absent". Absent means exactly ENOENT or
+// ENOTDIR — the filesystem says the path is not there. Every other code (EACCES, EPERM, ELOOP, EIO,
+// ...) means an entry is there that this process cannot examine, which is an unreadable problem,
+// never a silent skip. When the failure itself reported ENOENT/ENOTDIR, lstat decides: lstat does
+// not follow the final link, so a dangling symlink reads as PRESENT and is reported as unreadable;
+// only a path whose own lstat also says "not there" is absent.
+const ABSENT_CODES = new Set(['ENOENT', 'ENOTDIR']);
+function classifyFailure(file, error) {
+  if (!ABSENT_CODES.has(error.code)) return { kind: 'unreadable', path: file, reason: error.message, directory: false };
+  try { fs.lstatSync(file); }
+  catch (probeError) {
+    return ABSENT_CODES.has(probeError.code)
+      ? { kind: 'absent' }
+      : { kind: 'unreadable', path: file, reason: probeError.message, directory: false };
+  }
+  return { kind: 'unreadable', path: file, reason: error.message, directory: false };
+}
+
+// List one directory, shallowly. Used for `openspec/changes`, which base listed with Dirents and
+// never descended into itself; a failure to list it is classified by `classifyFailure`.
+function listDir(dir) {
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch (error) {
-    return existsAsEntry(dir)
-      ? { kind: 'unreadable', path: dir, reason: error.message, directory: true }
-      : { kind: 'absent' };
+    const state = classifyFailure(dir, error);
+    return state.kind === 'unreadable' ? { ...state, directory: true } : state;
   }
+  return { kind: 'dir', path: dir, entries };
+}
+// Read a `specs/` subtree. Only real directories are descended into (base's walk skipped a
+// symlinked directory), and only files whose name satisfies `matchLeaf` are read at all. Listing
+// goes through `listDir`, so every readdir failure is classified in exactly one place.
+function readTree(dir, matchLeaf) {
+  const listed = listDir(dir);
+  if (listed.kind !== 'dir') return listed;
   const children = [];
-  for (const entry of entries) {
+  for (const entry of listed.entries) {
     if (!entry.isDirectory() && !matchLeaf(entry.name)) continue;
     children.push(entry.isDirectory() ? readTree(path.join(dir, entry.name), matchLeaf) : readLeaf(path.join(dir, entry.name)));
   }
   return { kind: 'dir', path: dir, children };
 }
-// One file's text, or a problem when it exists but cannot be read. Never returns empty text for an
-// unreadable file; never records a missing file as a problem.
+// One file's text, or its state when it cannot be read. Never returns empty text for an unreadable
+// file; never records a genuinely missing file as a problem.
 function readLeaf(file) {
   try {
     return { kind: 'file', path: file, text: fs.readFileSync(file, 'utf8') };
   } catch (error) {
-    return existsAsEntry(file)
-      ? { kind: 'unreadable', path: file, reason: error.message, directory: false }
-      : { kind: 'absent' };
+    return classifyFailure(file, error);
   }
 }
 
 // The one place spec I/O happens. Returns a snapshot, never throws:
 //   { current: [{file, text}], baseline: [{file, text}], others: [{change, file, text}],
 //     problems: [{path, kind: 'unreadable', reason}] }
-// Rules, defined here only:
-//   - a missing directory or file (`specs/` absent, `openspec/specs` absent, no `openspec/changes`)
-//     is ABSENT: it contributes no sources and no problem. That is what base's `existsSync` guard
-//     did, and it is why a change with no `specs/` is a normal run, not a crash;
-//   - a path that exists but cannot be read or listed (dangling symlink, EACCES, EISDIR, ...) is a
-//     PROBLEM: the source is skipped whole and never scanned as if it were empty;
-//   - anything else yields `text`.
-// `current` is this change's own `specs/` tree (`spec.md` files, exactly base's `walk`);
-// `baseline` and `others` are every markdown file under `openspec/specs` and under each other
-// unarchived change's `specs/` (exactly base's `walkMarkdown`), excluding the change being authored
-// (by realpath, or by `excludeName` when its directory does not exist yet). A problem `path` is
-// relative to `repoRoot` (else `changeDir`) with a trailing slash for a directory.
+// Scope is base's, exactly:
+//   - `current`: this change's own `specs/` tree, `spec.md` leaves (base's `walk`);
+//   - `baseline`: `openspec/specs` as every `.md` (base's `walkMarkdown`);
+//   - `others`: the immediate child directories of `openspec/changes` (Dirents; symlinked change
+//     dirs are not followed), each read only at `<child>/specs`, every `.md`. Nothing under
+//     `archive/`, under `<change>/` outside `specs/`, or directly in `openspec/changes` is opened.
+// A path is absent only per `classifyFailure` (ENOENT/ENOTDIR): it contributes no source and no
+// problem, which is what base's `existsSync` guard did. Anything present but unreadable contributes
+// a problem and is skipped whole, never scanned as if it were empty.
+// The change being authored is excluded by realpath, or by `excludeName` when its directory does
+// not exist yet. A problem `path` is relative to `repoRoot` (else `changeDir`), trailing slash for
+// a directory.
 export function loadSpecTree({ repoRoot = null, changeDir, excludeName = null }) {
   const base = repoRoot ?? changeDir;
   const display = (node) => `${path.relative(base, node.path).split(path.sep).join('/')}${node.directory ? '/' : ''}`;
   const problemsOf = (node) => treeProblems(node).map((problem) => ({ path: display(problem), kind: 'unreadable', reason: problem.reason }));
+  const sourcesOf = (tree, match, annotate = (source) => source) => flattenFiles(tree, match, [])
+    .map((node) => annotate({ file: node.path, text: node.text }));
   const isMarkdown = (name) => name.endsWith('.md');
 
   const currentTree = readTree(path.join(changeDir, 'specs'), (name) => name === 'spec.md');
-  const toSources = (tree, match, annotate = (source) => source) => flattenFiles(tree, match, [])
-    .map((node) => annotate({ file: node.path, text: node.text }));
   const snapshot = {
-    current: toSources(currentTree, (name) => name === 'spec.md'),
+    current: sourcesOf(currentTree, (name) => name === 'spec.md'),
     baseline: [],
     others: [],
     problems: problemsOf(currentTree),
@@ -249,19 +272,22 @@ export function loadSpecTree({ repoRoot = null, changeDir, excludeName = null })
   if (!repoRoot) return snapshot;
 
   const baselineTree = readTree(path.join(repoRoot, 'openspec', 'specs'), isMarkdown);
-  snapshot.baseline = toSources(baselineTree, isMarkdown);
+  snapshot.baseline = sourcesOf(baselineTree, isMarkdown);
   snapshot.problems.push(...problemsOf(baselineTree));
 
-  const changesTree = readTree(path.join(repoRoot, 'openspec', 'changes'), () => false);
-  snapshot.problems.push(...problemsOf(changesTree));
-  if (changesTree.kind !== 'dir') return snapshot;
+  const changes = listDir(path.join(repoRoot, 'openspec', 'changes'));
+  if (changes.kind === 'unreadable') snapshot.problems.push({ path: display(changes), kind: 'unreadable', reason: changes.reason });
+  if (changes.kind !== 'dir') return snapshot;
   const currentReal = realOr(changeDir);
-  for (const child of changesTree.children) {
-    if (child.kind !== 'dir' || realOr(child.path) === currentReal) continue;
-    const change = path.basename(child.path);
-    if (excludeName && change === excludeName) continue;
-    const specsTree = readTree(path.join(child.path, 'specs'), isMarkdown);
-    snapshot.others.push(...toSources(specsTree, isMarkdown, (source) => ({ change, ...source })));
+  for (const entry of changes.entries) {
+    // Base used Dirent.isDirectory(), which is false for a symlink: a symlinked change dir is not
+    // followed and contributes nothing.
+    if (!entry.isDirectory()) continue;
+    const dir = path.join(changes.path, entry.name);
+    if (realOr(dir) === currentReal) continue;
+    if (excludeName && entry.name === excludeName) continue;
+    const specsTree = readTree(path.join(dir, 'specs'), isMarkdown);
+    snapshot.others.push(...sourcesOf(specsTree, isMarkdown, (source) => ({ change: entry.name, ...source })));
     snapshot.problems.push(...problemsOf(specsTree));
   }
   return snapshot;
