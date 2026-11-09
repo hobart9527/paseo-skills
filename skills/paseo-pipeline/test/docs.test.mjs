@@ -215,14 +215,23 @@ test('authoring order commits a proposal skeleton before any code read', () => {
   const table = author.slice(order, author.indexOf('## Write-first budget'));
   // Step 0 exists with the skeleton scope, the 2-minute commit and the no-code constraint.
   assert.match(table, /\| 0 \| `proposal\.md` skeleton:/);
-  // Every required skeleton element is pinned inside the Step 0 row itself.
+  // Every required skeleton element is pinned individually inside the Step 0 row,
+  // so a reasonable rewording does not break them and deleting one fails its own check.
   const row0 = table.split('\n').find((line) => line.startsWith('| 0 |'));
   assert.ok(row0, 'Step 0 row exists');
-  assert.match(row0, /skeleton: Why, the rule list under What Changes \(one line per rule; details may be TBD\), `## OPEN-DECISION` for choices the brief already supplies, and an empty `## Baseline`/);
+  assert.match(row0, /Why/, 'Step 0 names Why');
+  assert.match(row0, /rule list under What Changes/, 'Step 0 has the rule list under What Changes');
+  assert.match(row0, /one line per rule/, 'Step 0 says one line per rule');
+  assert.match(row0, /`## OPEN-DECISION`/, 'Step 0 has OPEN-DECISION');
+  assert.match(row0, /empty `## Baseline`/, 'Step 0 has an empty Baseline');
   assert.match(row0, /Run `openspec new change` first/);
   assert.match(row0, /commit within 2 minutes; read no code/);
-  // A one-line rule list is the plan; the baseline read is owed before the spec delta.
-  assert.match(author, /The Step 0 one-line rule list is a plan and needs no baseline read; before writing a rule into its spec delta or `## MODIFIED Requirements` block, read the baseline it lands on/);
+  // Two separate points: the Step 0 list is a plan needing no baseline read, and a
+  // rule written out in full anywhere still needs its baseline read. A narrowing to
+  // "only spec delta / MODIFIED" must fail the second check.
+  assert.match(author, /The Step 0 one-line rule list is a plan and needs no baseline read/);
+  assert.match(author, /before a rule is written out in full in any artifact[^\n]*read the baseline it lands on/);
+  assert.doesNotMatch(author, /before writing a rule into its spec delta or `## MODIFIED Requirements` block/);
   // The rule list is written from approved inputs, not from research.
   assert.match(author, /Writing the Step 0 proposal skeleton does not depend on research being complete/);
   // Code reads serve a listed rule and persist findings as found.
