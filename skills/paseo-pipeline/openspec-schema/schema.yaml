@@ -127,11 +127,14 @@ artifacts:
       edit `openspec/specs/<capability-path>/spec.md` directly.
 
       MODIFIED requirements workflow:
-      1. Locate the existing requirement in openspec/specs/<capability-path>/spec.md
-      2. Copy the ENTIRE requirement block (from `### Requirement:` through all scenarios)
-      3. Paste under `## MODIFIED Requirements` and edit to reflect new behavior
-      4. Ensure header text matches exactly (whitespace-insensitive)
+      1. Read the baseline requirement in openspec/specs/<capability-path>/spec.md.
+      2. Put the complete updated requirement under `## MODIFIED Requirements`;
+         keep unchanged scenarios verbatim and update only behavior this change authorizes.
+      3. Put baseline evidence and `path:line` references in the proposal's `## Baseline`.
+      4. Ensure header text matches exactly (whitespace-insensitive).
 
+      An accidental collision with an old constraint is a contract defect to fix.
+      When the change authorizes changing old behavior, put affected tests in the same task.
       Common pitfall: Using MODIFIED with partial content loses detail at archive time.
       If adding new concerns without changing existing behavior, use ADDED instead.
 
@@ -441,5 +444,9 @@ apply:
   requires: [tasks]
   tracks: tasks.md
   instruction: |
-    Read context files, work through pending tasks, mark complete as you go.
-    Pause if you hit blockers or need clarification.
+    Stop unless R0 has passed and the human has approved CP-1 for the exact
+    contract commit. After that freeze, defer execution to
+    `pipeline-run.mjs plan`; workers do the assigned work. Never hand-tick
+    task Done boxes. `requires: [tasks]` is a validation dependency, not
+    authorization to execute tasks.
+    Read context files only as needed to prepare the package.
