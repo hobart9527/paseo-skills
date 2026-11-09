@@ -1,6 +1,6 @@
 # Tier 2 Reviewer Brief
 
-Applies to Tier 2 only. Tier 3 (R0, FINAL, CP-1/CP-2) is governed solely by `skills/paseo-pipeline/SKILL.md` and `skills/paseo-pipeline/templates/reviewer.md`. The dispatcher (`~/.claude/CLAUDE.md`, Review closure) fills the fields below and pastes this file as the reviewer's prompt.
+Applies to Tier 2 only. Tier 3 (R0, FINAL, CP-1/CP-2) is governed solely by `skills/paseo-pipeline/SKILL.md` and `skills/paseo-pipeline/templates/reviewer.md`. The dispatcher (`~/.claude/CLAUDE.md`, Review closure) fills the fields below and pastes this file as the reviewer's prompt. For implementer handoff inputs and recovery ownership, use [`tier2-handoff-brief.md`](tier2-handoff-brief.md).
 
 ## Fill-in (dispatcher)
 
@@ -38,7 +38,7 @@ A `BLOCKER` states: location (`path:line`), triggering input or state in realist
 
 ### Routing
 
-Every finding belongs to one class. `DEVIATION`: violates the Requirement or a named standard, with a counterexample; the implementer fixes it and it blocks. `REQUIREMENT_GAP`: the Requirement does not define it but a realistic wrong outcome exists; the human decides (amend the requirement or accept the risk), never a fix loop. `ENHANCEMENT`: violates nothing stated; non-blocking, report as `NIT`. Only `DEVIATION` is a `BLOCKER`.
+Every finding belongs to one class. `DEVIATION`: violates the Requirement or a named standard, with a counterexample; the implementer fixes it and it blocks. `REQUIREMENT_GAP`: the Requirement does not define it but a realistic wrong outcome exists; it never enters the code-fix loop and is never relabeled DEVIATION. The human must disposition it before merge: amend the Requirement or explicitly accept the risk. It blocks delivery pending that decision, even though implementer does not fix the undefined behavior. `ENHANCEMENT`: violates nothing stated; non-blocking, report as `NIT`. Only `DEVIATION` is a `BLOCKER`.
 
 ### Caps (per delivery)
 
