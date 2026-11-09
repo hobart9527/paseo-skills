@@ -284,3 +284,52 @@ test('scenarios prints a human-readable report and a usage error otherwise', () 
   assert.equal(run(f.cwd, ['scenarios', f.dir, '--bogus']).status, 2);
   assert.equal(run(f.cwd, ['scenarios']).status, 2);
 });
+// ---- BLOCKER 1: an acceptance.md that exists but has no scenario table --------------------
+// Reality check for the failure this guards: `parseAcceptanceTable` still recognises `SCEN-`
+// rows without a header, so a header-less file used to produce a full, plausible report and
+// candidates while the gate rejected the same file with BAD_ACCEPTANCE_HEADER.
+test('scenarios fails loudly when acceptance.md exists without a scenario table header', () => {
+  // No header at all: prose only. The gate rejects this; the helper must not report a clean
+  // package, and must not print a candidate that looks freezable.
+  const f = fixture({ 'openspec/changes/chg/acceptance.md': '# Acceptance\n\nThe matrix will land later.\n' });
+  const before = snapshot(f.cwd);
+  const r = run(f.cwd, ['scenarios', f.dir, '--json']);
+  assert.notEqual(r.status, 0, r.out);
+  const report = JSON.parse(r.stdout);
+  assert.equal(report.scenarios, undefined, 'a header-less table must not look like a valid report');
+  assert.ok(report.errors.some((error) => error.code === 'BAD_ACCEPTANCE_HEADER'), r.stdout);
+  assert.doesNotMatch(r.stdout, /candidate/, 'no candidate may be printed for unparseable input');
+  assert.deepEqual(snapshot(f.cwd), before, 'failing must not write anything');
+});
+
+test('scenarios fails loudly when rows exist but the table has no header', () => {
+  // The dangerous shape: the rows themselves parse (seven cells each), so only the header is
+  // wrong. Everything downstream — claimants, gaps, candidates — would otherwise look valid.
+  const f = fixture({
+    'openspec/changes/chg/acceptance.md': [
+      '| SCEN-CAP-01 | CLI `node src/api.mjs` | | node --test test/api.test.mjs | yes | PENDING | pending |',
+      '| SCEN-CAP-02 | CLI `node src/api-error.mjs` | | node --test test/api-error.test.mjs | yes | PENDING | pending |',
+      '',
+    ].join('\n'),
+  });
+  const before = snapshot(f.cwd);
+  const r = run(f.cwd, ['scenarios', f.dir, '--json']);
+  assert.notEqual(r.status, 0, r.out);
+  const report = JSON.parse(r.stdout);
+  assert.equal(report.scenarios, undefined);
+  assert.ok(report.errors.some((error) => error.code === 'BAD_ACCEPTANCE_HEADER'), r.stdout);
+  assert.doesNotMatch(r.stdout, /candidate/);
+  assert.deepEqual(snapshot(f.cwd), before);
+
+  // The gate's own verdict on the same directory: same code, so the helper is not stricter or
+  // looser than what will actually freeze the package.
+  const gate = spawnSync('node', [path.join(path.dirname(script), 'freeze-check.mjs'), f.dir, '--json', '--structural', '--skip-signer-check'], { cwd: f.cwd, env, encoding: 'utf8' });
+  assert.equal(gate.status, 1);
+  const blocking = JSON.parse(gate.stdout).blocking;
+  assert.ok(blocking.some((item) => item.startsWith('BAD_ACCEPTANCE_HEADER')), blocking.join('\n'));
+
+  // The human-readable run fails the same way and still prints no candidate line.
+  const human = run(f.cwd, ['scenarios', f.dir]);
+  assert.notEqual(human.status, 0, human.out);
+  assert.doesNotMatch(human.stdout, /candidate/);
+});

@@ -91,8 +91,11 @@ export function buildScenariosReport(changeDir) {
   for (const malformed of table.malformed) {
     errors.push(errorOf('MALFORMED_ACCEPTANCE_ROW', `${malformed.cells} cells, header has ${malformed.expectedColumns}`, { file: 'acceptance.md', line: malformed.line }));
   }
-  if (acceptancePresent && table.headerLine && !table.headerOk) {
-    errors.push(errorOf('BAD_ACCEPTANCE_HEADER', 'Scenario, Entry, Tasks, Verify, Required, Result, Evidence must appear in that order', { file: 'acceptance.md' }));
+  if (acceptancePresent && !table.headerOk) {
+    // Same rule as the gate: an acceptance.md that exists must carry the documented header. Rows
+    // alone are still recognisable, so a header-less file previously produced a complete report
+    // with plausible candidates for a package freeze-check rejects outright.
+    errors.push(errorOf('BAD_ACCEPTANCE_HEADER', 'acceptance.md needs exactly Scenario, Entry, Tasks, Verify, Required, Result, Evidence in that order', { file: 'acceptance.md' }));
   }
 
   if (errors.length) return failure(errors);
