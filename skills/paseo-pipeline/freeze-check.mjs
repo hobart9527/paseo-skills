@@ -8,6 +8,7 @@ import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo-agents
 import { parseTasks, graphErrors, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, isTaskId, legPaths, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
 import { dispatchDeps, weightedSpeedup, weightedCriticalPath, verifyScope, readsOnlyEdges, pathWithin, resolveModel, LIVE_MODEL } from './lib/schedule.mjs';
 import { runGit } from './lib/git.mjs';
+import { walkSpecFiles, visibleLines, scanScenarios, collectSpecSources, externalScenarios, classifyScenCollisions } from './lib/spec-scan.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
@@ -28,120 +29,6 @@ if (!changeDir) {
 
 function read(file) {
   try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
-}function walk(dir, out = []) {
-  if (!fs.existsSync(dir)) return out;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) walk(full, out);
-    else if (entry.name === 'spec.md') out.push(full);
-  }
-  return out;
-}
-function walkMarkdown(dir, out = []) {
-  if (!fs.existsSync(dir)) return out;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) walkMarkdown(full, out);
-    else if (entry.name.endsWith('.md')) out.push(full);
-  }
-  return out;
-}
-// Visible markdown lines: HTML comments contribute nothing and a fenced block is an example, not
-// prose. Both the spec scanners and the design.md scan must agree on what counts as a declaration.
-const FENCE_MARKER = /^ {0,3}(`{3,}|~{3,})/;
-// Returns `{ text, rawIndex }` so a caller can recover the raw line behind a visible one: the
-// scenario comparison needs the raw body, while the declaration scan needs the visible heading.
-function visibleLines(markdown) {
-  const out = [];
-  let fence = null;
-  let comment = false;
-  const raw = markdown.split(/\r?\n/);
-  for (let rawIndex = 0; rawIndex < raw.length; rawIndex += 1) {
-    const original = raw[rawIndex];
-    let line = original;
-    // A fence marker on the raw line wins over comment stripping: ```html <!-- opens a fence, and the
-    // comment opener inside it belongs to the fenced example, so it must not leak past the closer.
-    const rawOpens = !fence && !comment && FENCE_MARKER.test(original);
-    if (!fence && !rawOpens) {
-      let visible = '';
-      while (line) {
-        if (comment) {
-          const end = line.indexOf('-->');
-          if (end < 0) { line = ''; break; }
-          comment = false;
-          line = line.slice(end + 3);
-        } else {
-          const start = line.indexOf('<!--');
-          if (start < 0) { visible += line; break; }
-          visible += line.slice(0, start);
-          line = line.slice(start + 4);
-          comment = true;
-        }
-      }
-      line = visible;
-    }
-    const marker = line.match(FENCE_MARKER);
-    if (fence) {
-      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && /^\s*$/.test(line.slice(marker[0].length))) fence = null;
-      continue;
-    }
-    if (marker) { fence = marker[1]; continue; }
-    out.push({ text: line, rawIndex });
-  }
-  return out;
-}
-// Body of a `### Scenario:` heading AS COMPARED for the verbatim exemption. This is deliberately a
-// different function from the declaration scan below: discovery reads visible content (fenced
-// examples and comments are not declarations), while a comparison of two declarations must keep
-// everything a reader would compare. Comparison is conservative CONTENT IDENTITY, not Markdown
-// rendering equivalence. It reads the RAW lines, keeps fenced payloads, and only
-//   1. ends the body at the next VISIBLE heading of the same or higher level — a `#` line inside a
-//      fenced payload or an HTML comment is content, not the end of the scenario,
-//   2. normalizes line endings (CRLF -> LF); the split below does that and nothing else,
-//   3. drops leading and trailing EMPTY lines (a whitespace-only line is content, not empty),
-// and normalizes nothing else: per-line trailing whitespace, interior whitespace, indentation,
-// fence delimiters, fence info strings, and comment/payload content all take part in the
-// comparison. A ``` vs ~~~ pair, or a nested fence whose inner info string changed, is therefore a
-// collision: reuse copies the authoritative text instead of regenerating it. Do not fold this into
-// `visibleLines`.
-function comparedBody(markdown, index, visible = visibleLines(markdown)) {
-  const raw = markdown.split(/\r?\n/);
-  // Not a heading (or no line): there is no scenario body to compare, never a crash.
-  const self = (raw[index] || '').match(/^(#{1,6})\s/);
-  if (!self) return '';
-  const level = self[1].length;
-  // Boundary from visible structure only: the same notion of "heading" every other check uses.
-  let boundary = raw.length;
-  for (const entry of visible) {
-    if (entry.rawIndex <= index) continue;
-    const heading = entry.text.match(/^(#{1,6})\s/);
-    if (heading && heading[1].length <= level) { boundary = entry.rawIndex; break; }
-  }
-  const body = [];
-  for (let next = index + 1; next < boundary; next += 1) body.push(raw[next]);
-  while (body.length && body[0] === '') body.shift();
-  while (body.length && body[body.length - 1] === '') body.pop();
-  return body.join('\n');
-}
-// Every `### Scenario: SCEN-...` declared in a markdown file's visible content.
-function scanScenarios(markdown) {
-  const entries = visibleLines(markdown);
-  const found = [];
-  let section = '';
-  for (const { text, rawIndex } of entries) {
-    const heading = text.match(/^##\s+(.+?)\s*$/);
-    if (heading) { section = heading[1]; continue; }
-    // CommonMark only treats `### ` as an ATX heading when whitespace follows the hashes, so
-    // `####Scenario:` is ordinary text.
-    const match = text.match(/^#{3,6}\s+Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(.*)$/i);
-    if (!match) continue;
-    // The heading/title separator is the only whitespace a title comparison ignores; internal and
-    // trailing whitespace stay part of the title, so two headings that differ there are not the
-    // same declaration.
-    const title = match[2].replace(/^[ \t]+/, '');
-    found.push({ id: match[1].toUpperCase(), title, body: comparedBody(markdown, rawIndex, entries), section, line: rawIndex });
-  }
-  return found;
 }
 
 // One concrete fix per blocking rule, printed by --explain.
@@ -205,7 +92,7 @@ const declared = new Map();
 const declaredSection = new Map();
 const declaredTitle = new Map();
 const declaredBody = new Map();
-for (const file of walk(path.join(changeDir, 'specs'))) {
+for (const file of walkSpecFiles(path.join(changeDir, 'specs'))) {
   for (const found of scanScenarios(read(file))) {
     const source = path.relative(changeDir, file);
     if (declared.has(found.id)) blocking.push(`DUPLICATE_SCEN ${found.id}: declared in ${declared.get(found.id)} and ${source}`);
@@ -240,54 +127,12 @@ for (const [scen, file] of declared) {
   const toplevel = gitIn(changeDir, ['rev-parse', '--show-toplevel']);
   if (toplevel.status === 0) {
     const repoRoot = toplevel.stdout.trim();
-    const realOr = (value) => { try { return fs.realpathSync(value); } catch { return path.resolve(value); } };
-    const current = realOr(changeDir);
-    const baselineFiles = new Set(walkMarkdown(path.join(repoRoot, 'openspec', 'specs')));
-    const sources = [...baselineFiles];
-    const changesRoot = path.join(repoRoot, 'openspec', 'changes');
-    if (fs.existsSync(changesRoot)) {
-      for (const entry of fs.readdirSync(changesRoot, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
-        const dir = path.join(changesRoot, entry.name);
-        if (realOr(dir) === current) continue;
-        sources.push(...walkMarkdown(path.join(dir, 'specs')));
-      }
-    }
-    const external = new Map();
-    // Which external file declares each id, with its visible heading text and body. The section in
-    // that file decides nothing: the external side cannot know whether this change is legitimately
-    // re-declaring the id. Fenced examples and comments are not declarations (same helper as above).
-    for (const file of sources) {
-      for (const found of scanScenarios(read(file))) {
-        if (!external.has(found.id)) external.set(found.id, []);
-        external.get(found.id).push({
-          file: path.relative(repoRoot, file),
-          baseline: baselineFiles.has(file),
-          title: found.title,
-          body: found.body,
-        });
-      }
-    }
-    for (const scen of declared.keys()) {
-      // Baseline hit: allowed only when this change re-declares the id under MODIFIED/REMOVED
-      // Requirements; baseline text is not compared because MODIFIED legitimately rewrites it.
-      // Change hit: a collision when the heading text or body diverges. An identical re-declaration
-      // is legal — `openspec validate` requires an unchanged MODIFIED scenario to repeat its text —
-      // so it is only an advisory about archive/merge order.
-      const currentAllowed = /^(?:MODIFIED|REMOVED) Requirements$/i.test(declaredSection.get(scen) || '');
-      const same = (hit) => hit.title === (declaredTitle.get(scen) || '') && hit.body === (declaredBody.get(scen) || '');
-      const hits = external.get(scen) || [];
-      const collision = hits.find((hit) => (hit.baseline ? !currentAllowed : !same(hit)));
-      if (collision) {
-        blocking.push(`COLLIDING_SCEN ${scen}: already declared in ${collision.file}`);
-        fixes.set('COLLIDING_SCEN', 'choose a new SCEN id, or re-declare a baseline id under MODIFIED/REMOVED Requirements in this change');
-      }
-      for (const hit of hits) {
-        if (!hit.baseline && same(hit)) {
-          advisories.push(`ADVISORY_SHARED_SCEN ${scen}: ${hit.file} declares the same scenario text; confirm archive/merge order with that change before CP-1`);
-        }
-      }
-    }
+    const { baselineFiles, sources } = collectSpecSources({ repoRoot, excludeDir: changeDir });
+    const external = externalScenarios({ repoRoot, baselineFiles, sources });
+    const result = classifyScenCollisions({ declared, declaredSection, declaredTitle, declaredBody, external });
+    for (const message of result.blocking) blocking.push(message);
+    for (const message of result.advisories) advisories.push(message);
+    for (const message of result.blocking) fixes.set('COLLIDING_SCEN', 'choose a new SCEN id, or re-declare a baseline id under MODIFIED/REMOVED Requirements in this change');
   }
 }
 
