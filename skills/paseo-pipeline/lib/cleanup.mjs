@@ -16,7 +16,7 @@ import { parseTasks } from './tasks.mjs';
 import { readTasksMarkdown } from './tasks-source.mjs';
 import { readMergeState } from './merge-state.mjs';
 
-const USAGE = 'usage: pipeline-run.mjs cleanup <change-dir> [--json] [--base <ref>] [--change <name>]';
+const USAGE = 'usage: pipeline-run.mjs cleanup <change-dir> [--json] [--change <name>]';
 const CHANGE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const TASK_ID = String.raw`[A-Za-z][A-Za-z0-9]*-\d+`;
 
@@ -81,14 +81,17 @@ function ownedBranch(branch, change) {
 }
 
 function listWorktrees(cwd) {
-  const result = runGit(cwd, ['worktree', 'list', '--porcelain']);
+  const result = runGit(cwd, ['worktree', 'list', '--porcelain', '-z']);
   if (result.error || result.status !== 0) throw new Error(`git worktree list failed: ${(result.stderr || result.error?.message || '').trim()}`);
   const trees = [];
   let current = null;
-  for (const line of result.stdout.split('\n')) {
-    if (line.startsWith('worktree ')) { current = { path: line.slice('worktree '.length), branch: null, prunable: false }; trees.push(current); }
-    else if (current && line.startsWith('branch ')) current.branch = line.slice('branch '.length).replace(/^refs\/heads\//, '');
-    else if (current && (line === 'prunable' || line.startsWith('prunable '))) current.prunable = true;
+  // `-z` NUL-terminates each field and separates records with an empty field, so a path that
+  // contains a newline stays one field instead of being truncated at the newline.
+  for (const field of result.stdout.split('\0')) {
+    if (field === '') { current = null; continue; }
+    if (field.startsWith('worktree ')) { current = { path: field.slice('worktree '.length), branch: null, prunable: false }; trees.push(current); }
+    else if (current && field.startsWith('branch ')) current.branch = field.slice('branch '.length).replace(/^refs\/heads\//, '');
+    else if (current && (field === 'prunable' || field.startsWith('prunable '))) current.prunable = true;
   }
   return trees;
 }
@@ -185,7 +188,7 @@ export function discoverObjects({ cwd, change }) {
  * Annotate each object with what a human needs before deleting it. This is reported status,
  * never a gate: a dirty worktree or an unmerged branch is still listed, with the fact attached.
  *
- * `git branch -d` does not consult `--base`. It checks the branch's configured upstream when
+ * `git branch -d` does not consult a base ref. It checks the branch's configured upstream when
  * that resolves, and otherwise the current `HEAD`, and it refuses while any worktree
  * registration — including a stale one whose directory is gone — still holds the branch. The
  * listing reports exactly that reference and those registrations instead of guessing from the
@@ -303,7 +306,7 @@ function notes(object) {
  */
 export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => console.log(line), stderr = (line) => console.error(line) } = {}) {
   let parsed;
-  try { parsed = parseOptions(argv, { json: 'boolean', base: 'value', change: 'value' }); }
+  try { parsed = parseOptions(argv, { json: 'boolean', change: 'value' }); }
   catch (error) { stderr(`[pipeline-run] ${error.message}`); return 2; }
   if (parsed.positional.length !== 1) { stderr(`[pipeline-run] cleanup needs <change-dir>\n${USAGE}`); return 2; }
   const changeDir = path.resolve(parsed.positional[0]);
@@ -343,12 +346,7 @@ export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => conso
     stderr(`[pipeline-run] ${changeDir} (${target}) belongs to a different repository than the one this command acts on, ${cwd} (${acting}); run cleanup from that repository's checkout`);
     return 2;
   }
-  const base = parsed.options.base ?? 'main';
   const json = !!parsed.options.json;
-  if (runGit(cwd, ['rev-parse', '--verify', '--quiet', `${base}^{commit}`]).status !== 0) {
-    stderr(`[pipeline-run] base ${base} does not resolve`);
-    return 3;
-  }
 
   let objects;
   let trees;
@@ -365,7 +363,6 @@ export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => conso
   if (json) {
     stdout(JSON.stringify({
       change,
-      base,
       repository: acting,
       tasks: { source: tasks.source, open: tasks.open, errors: tasks.errors },
       pendingMerges: pending,
@@ -374,7 +371,7 @@ export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => conso
       exit,
     }, null, 2));
   } else {
-    stdout(`${change} (base ${base}, repository ${acting})`);
+    stdout(`${change} (repository ${acting})`);
     stdout(`tasks: ${tasks.source ?? 'unreadable'}${tasks.open.length ? `, open: ${tasks.open.join(', ')}` : ', all Done'}`);
     if (tasks.errors.length) stdout(`tasks errors: ${tasks.errors.join('; ')}`);
     for (const marker of pending) stdout(`pending merge marker: ${marker.task} @ ${marker.tip}`);

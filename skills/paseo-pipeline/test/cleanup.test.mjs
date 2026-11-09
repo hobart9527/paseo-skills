@@ -147,7 +147,6 @@ test('the JSON listing has the documented shape', () => {
   const f = fixture();
   const report = discover(f);
   assert.equal(report.change, CHANGE);
-  assert.equal(report.base, 'main');
   assert.ok(path.isAbsolute(report.repository));
   assert.deepEqual(report.tasks.open, []);
   assert.deepEqual(report.pendingMerges, []);
@@ -187,7 +186,7 @@ test('a branch not merged into the checked ref is listed with its pointer and an
   const report = discover(f);
   const branch = report.objects.find((object) => object.kind === 'branch' && object.id === 'task/chg/T-02');
   assert.equal(branch.tip, tip);
-  // No upstream is configured, so `git branch -d` checks HEAD — never `--base`.
+  // No upstream is configured, so `git branch -d` checks HEAD, never a base ref.
   assert.deepEqual(branch.deleteCheck, { ref: 'HEAD', merged: false });
   assert.equal(branch.command, 'git branch -d task/chg/T-02');
   assert.match(cleanup(f).stdout, /tip is not merged into HEAD; branch -d will refuse/);
@@ -243,6 +242,47 @@ test('cleanup never writes the index of the worktree it inspects', () => {
   // The probe still reports the dirty state correctly; it just does it without writing.
   const object = report.objects.find((item) => item.id === worktree);
   assert.equal(object.dirty, true);
+});
+
+test('a worktree path containing a newline is listed with its real path, distinct from its prefix', () => {
+  const f = fixture();
+  // `x` and `x\nT-03` differ only after the newline; a line-based parser truncates the second
+  // to the first, so the two collapse into one object and one of their branches loses its holder.
+  const prefix = path.join(f.root, '..', `${path.basename(f.root)}-wt`);
+  const newlinePath = addWorktree(f, 'task/chg/T-03', `${prefix}\nT-03`);
+  const prefixPath = addWorktree(f, 'task/chg/T-04', prefix);
+  const report = discover(f);
+  const object = report.objects.find((item) => item.kind === 'git-worktree' && item.path === newlinePath);
+  assert.ok(object, report.objects.map((item) => item.path).join('\n'));
+  assert.equal(object.stale, undefined);
+  assert.ok(fs.existsSync(object.path));
+  // Two registrations, two paths, and each branch is held by only its own path.
+  const holders = report.objects.filter((item) => ['task/chg/T-03', 'task/chg/T-04'].includes(item.id));
+  assert.deepEqual(holders.map((item) => item.heldBy.map((held) => held.path)).flat().sort(), [prefixPath, newlinePath].sort());
+});
+
+test('a Paseo-owned worktree path containing a newline is its workspace, not git-worktree', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cleanup-nl-'));
+  const changeDir = path.join(root, 'openspec', 'changes', CHANGE);
+  write(root, `openspec/changes/${CHANGE}/tasks.md`, TASKS_DONE);
+  git(root, 'init', '-q', '-b', 'main');
+  git(root, 'add', '.'); git(root, 'commit', '-qm', 'contract');
+  git(root, 'switch', '-qc', `integration/${CHANGE}`);
+  git(root, 'commit', '-q', '--allow-empty', '-m', 'integration tip');
+  const integrationTip = git(root, 'rev-parse', 'HEAD');
+  const dir = path.join(root, '..', `${path.basename(root)}-wt\nT-04`);
+  git(root, 'worktree', 'add', '-q', '-b', `task/${CHANGE}/T-04`, dir, integrationTip);
+  const registeredPath = spawnSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], { env, encoding: 'utf8' }).stdout.trim();
+  git(root, 'switch', '-q', 'main');
+  const localEnv = fakePaseo(root, root, [{ workspaceId: 'wks_nl', isolation: 'worktree', background: false, cwd: registeredPath }]);
+  const r = spawnSync('node', [script, 'cleanup', changeDir, '--json'], { cwd: root, env: localEnv, encoding: 'utf8' });
+  assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+  const report = JSON.parse(r.stdout);
+  const owned = report.objects.filter((object) => object.kind === 'paseo-workspace');
+  assert.equal(owned.length, 1);
+  assert.equal(owned[0].command, 'paseo workspace archive wks_nl');
+  assert.equal(owned[0].path, registeredPath);
+  assert.ok(!report.objects.some((object) => object.kind === 'git-worktree' && object.path === registeredPath));
 });
 
 test('a worktree path with a space yields a command that removes only that worktree', () => {
