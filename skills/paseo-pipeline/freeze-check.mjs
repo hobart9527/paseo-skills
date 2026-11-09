@@ -18,10 +18,14 @@ const explain = args.includes('--explain');
 const structural = args.includes('--structural');
 // --stage specs: the staged check that runs after specs/ is committed, before tasks.md exists.
 // It is valid only with --structural; any other value is a usage error rather than a fallback,
-// so a typo cannot silently run the full check against a half-written package.
-const stageIndex = args.indexOf('--stage');
-const stage = stageIndex >= 0 ? args[stageIndex + 1] : null;
-if (stageIndex >= 0 && (!structural || stage !== 'specs')) {
+// so a typo cannot silently run the full check against a half-written package. Every occurrence
+// is validated: a second `--stage` (even an identical one) is ambiguous, so it is also an error.
+const stagePositions = args.flatMap((arg, index) => (arg === '--stage' ? [index] : []));
+const stage = stagePositions.length ? args[stagePositions[0] + 1] : null;
+const validStage = stagePositions.length === 1
+  && stage === 'specs'
+  && stagePositions[0] + 1 < args.length;
+if (stagePositions.length && (!structural || !validStage)) {
   console.error('Usage: freeze-check.mjs <change-dir> --structural --stage specs [--json]');
   process.exit(2);
 }
@@ -29,12 +33,11 @@ if (stageIndex >= 0 && (!structural || stage !== 'specs')) {
 const skipSignerCheck = args.includes('--skip-signer-check');
 // --strict: promote drift advisories (currently: frozen base behind the default branch) to blocks.
 const strict = args.includes('--strict');
-const positional = [];
-for (let index = 0; index < args.length; index += 1) {
-  const arg = args[index];
-  if (arg === '--stage') { index += 1; continue; }
-  if (!arg.startsWith('--')) positional.push(arg);
-}
+// The value after `--stage` is the stage value, not the change directory; every other non-flag
+// token (including a second `--stage`'s stray value, which the validation above already rejected)
+// is positional.
+const stageValueIndex = stagePositions.length && stage === args[stagePositions[0] + 1] ? stagePositions[0] + 1 : -1;
+const positional = args.filter((arg, index) => index !== stageValueIndex && !arg.startsWith('--'));
 const changeDir = positional[0];
 if (!changeDir) {
   console.error('Usage: freeze-check.mjs <change-dir> [--json] [--explain] [--structural] [--skip-signer-check] [--strict]');
@@ -145,7 +148,12 @@ for (const [scen, file] of declared) {
   if (toplevel.status === 0) {
     const repoRoot = toplevel.stdout.trim();
     const { baselineFiles, sources } = collectSpecSources({ repoRoot, excludeDir: changeDir });
-    const external = externalScenarios({ repoRoot, baselineFiles, sources });
+    const { external, unreadable } = externalScenarios({ repoRoot, baselineFiles, sources });
+    // An unreadable baseline or other-change spec is a fatal error, not an empty declaration set:
+    // silently skipping it would let the collision gate pass over a file it never saw. This is the
+    // base behavior (it threw on the same input); the explicit message just names the file.
+    for (const entry of unreadable) console.error(`[freeze-check] unreadable spec ${entry.file}: ${entry.reason}`);
+    if (unreadable.length) process.exit(1);
     const result = classifyScenCollisions({ declared, declaredSection, declaredTitle, declaredBody, external });
     for (const message of result.blocking) blocking.push(message);
     for (const message of result.advisories) advisories.push(message);

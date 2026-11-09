@@ -120,3 +120,22 @@ test('a change outside a git repository is a usage error, not a crash', () => {
   assert.equal(result.status, 2);
   assert.match(result.stderr, /not inside a git repository/);
 });
+
+test('an unreadable spec is reported, never silently skipped, and makes the exit status nonzero', () => {
+  const dir = repo();
+  const dangling = path.join(dir, 'openspec/changes/other/specs/payee/dangling.md');
+  fs.symlinkSync(path.join(dir, 'missing-target.md'), dangling);
+  try {
+    const human = run(dir);
+    assert.equal(human.status, 1, human.stdout + human.stderr);
+    assert.match(human.stdout, /Unreadable spec files \(1/);
+    assert.match(human.stdout, /openspec\/changes\/other\/specs\/payee\/dangling\.md/);
+    assert.match(human.stdout, /SCEN-PAD/);
+    const machine = run(dir, ['--json']);
+    assert.equal(machine.status, 1);
+    const report = JSON.parse(machine.stdout);
+    assert.deepEqual(report.unreadable.map((entry) => entry.file), ['openspec/changes/other/specs/payee/dangling.md']);
+  } finally { fs.rmSync(dangling, { force: true }); }
+  // The same repo without the dangling link is clean again.
+  assert.equal(run(dir).status, 0);
+});

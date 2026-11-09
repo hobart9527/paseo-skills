@@ -168,14 +168,27 @@ export function collectSpecSources({ repoRoot, excludeDir = null, excludeName = 
   }
   return { baselineFiles, sources };
 }
-const readFile = (file) => { try { return fs.readFileSync(file, 'utf8'); } catch { return ''; } };
+// A spec file that cannot be read (dangling symlink, permissions) must never be treated as empty:
+// an empty file declares nothing, so the collision gate would silently pass over it. Callers turn
+// `error` into a block (freeze-check) or a reported unreadable file (namespace.mjs).
+export function readSpecText(file) {
+  try { return { text: fs.readFileSync(file, 'utf8'), error: null }; }
+  catch (error) { return { text: null, error: error.message }; }
+}
 // Which external file declares each scenario id, with its visible heading text and body. The
 // section in that file decides nothing: the external side cannot know whether this change is
-// legitimately re-declaring the id.
+// legitimately re-declaring the id. `unreadable` lists sources whose text could not be read, so
+// the caller can fail instead of scanning an implicit empty string.
 export function externalScenarios({ repoRoot, baselineFiles, sources }) {
   const external = new Map();
+  const unreadable = [];
   for (const file of sources) {
-    for (const found of scanScenarios(readFile(file))) {
+    const { text, error } = readSpecText(file);
+    if (error) {
+      unreadable.push({ file: path.relative(repoRoot, file), reason: error });
+      continue;
+    }
+    for (const found of scanScenarios(text)) {
       if (!external.has(found.id)) external.set(found.id, []);
       external.get(found.id).push({
         file: path.relative(repoRoot, file),
@@ -185,7 +198,7 @@ export function externalScenarios({ repoRoot, baselineFiles, sources }) {
       });
     }
   }
-  return external;
+  return { external, unreadable };
 }
 // Classify this change's declared scenario ids against the external declarations. One definition
 // for the full structural run and the staged specs run, so both reject the same things for the

@@ -1759,3 +1759,67 @@ test('the full run without --stage is byte-identical to main on a complete packa
     assert.deepEqual(rendered, golden[flags.join(' ') || '(none)'], flags.join(' ') || '(none)');
   }
 });
+
+// ---- unreadable external specs and repeated --stage ----
+// An unreadable baseline or other-change spec must not be scanned as an empty declaration set.
+// Base freeze-check threw on it (exit 1); the fix must keep that outcome, so the base script is
+// the oracle here, not a hand-written expectation.
+const BASE_FREEZE_CHECK = path.join(os.tmpdir(), `freeze-base-${process.pid}.mjs`);
+function writeBaseFreezeCheck() {
+  // The base module imports ./lib/*, so it lives in this checkout's directory.
+  const text = execFileSync('git', ['-C', root, 'show', 'ab13b9d:skills/paseo-pipeline/freeze-check.mjs'], { encoding: 'utf8' });
+  const file = path.join(root, 'test', `.base-freeze-check-${process.pid}.mjs`);
+  fs.writeFileSync(file, text);
+  return file;
+}
+function unreadableFixture(where) {
+  const dir = change({
+    'tasks.md': contract,
+    'proposal.md': 'x',
+    'design.md': design,
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node -e "0" | yes | PENDING | pending |'),
+    'specs/a/spec.md': '### Scenario: SCEN-1\n',
+  });
+  const sh = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
+  sh('init', '-q', '-b', 'main');
+  const dirOf = where === 'baseline' ? path.join(dir, 'openspec/specs/cap') : path.join(dir, 'openspec/changes/other/specs/cap');
+  fs.mkdirSync(dirOf, { recursive: true });
+  fs.writeFileSync(path.join(dirOf, 'spec.md'), '## ADDED Requirements\n#### Scenario: SCEN-8 foreign\n');
+  fs.symlinkSync(path.join(dir, 'missing-target.md'), path.join(dirOf, 'dangling.md'));
+  return dir;
+}
+
+test('an unreadable baseline or other-change spec keeps base behavior (exit 1) and never scans as empty', () => {
+  const base = writeBaseFreezeCheck();
+  try {
+    for (const where of ['baseline', 'other']) {
+      const dir = unreadableFixture(where);
+      const baseRun = spawnSync('node', [base, dir, '--structural', '--skip-signer-check'], { encoding: 'utf8' });
+      const tipRun = spawnSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--structural', '--skip-signer-check'], { encoding: 'utf8' });
+      assert.equal(baseRun.status, 1, `${where}: base must fail loudly`);
+      assert.equal(tipRun.status, baseRun.status, `${where}: same exit code as base`);
+      assert.notEqual(tipRun.stdout.includes('RESULT freeze ok'), true, `${where}: never a pass`);
+      assert.match(tipRun.stderr, /unreadable spec .*dangling\.md/, where);
+      // Stage mode is not a weaker pass either.
+      const stage = spawnSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--structural', '--skip-signer-check', '--stage', 'specs'], { encoding: 'utf8' });
+      assert.equal(stage.status, 1, `${where}: stage specs must not pass`);
+      assert.doesNotMatch(stage.stdout, /RESULT specs ok/);
+    }
+  } finally { fs.rmSync(base, { force: true }); }
+});
+
+test('--stage alone is not the last arg and repeated --stage is a usage error', () => {
+  const dir = stageRepo();
+  const script = path.join(root, 'freeze-check.mjs');
+  const cases = [
+    ['--structural', '--stage', 'specs', '--stage', 'tasks'],
+    ['--structural', '--stage', 'specs', '--stage', 'specs'],
+    ['--structural', '--stage'],
+    ['--stage', 'specs'],
+  ];
+  for (const args of cases) {
+    const result = spawnSync('node', [script, dir, ...args], { encoding: 'utf8' });
+    assert.equal(result.status, 2, args.join(' '));
+    assert.match(result.stderr, /Usage:/, args.join(' '));
+  }
+});

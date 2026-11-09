@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { runGit } from './lib/git.mjs';
-import { walkSpecFiles, scanScenarios, scanRequirements, capabilityOf, collectSpecSources } from './lib/spec-scan.mjs';
+import { walkSpecFiles, scanScenarios, scanRequirements, capabilityOf, collectSpecSources, readSpecText } from './lib/spec-scan.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
@@ -43,11 +43,20 @@ const { sources } = collectSpecSources({ repoRoot, excludeDir, excludeName });
 const ID = /^SCEN-(.*)-(\d+)$/;
 const prefixes = new Map();
 const unparsed = [];
+// A spec file that cannot be read is never silently skipped: the free-range numbers would be
+// wrong and the report would look complete. It is listed and makes the exit status nonzero, while
+// the rest of the report still prints so the author can act on it.
+const unreadable = [];
 for (const file of sources) {
   const relative = path.relative(repoRoot, file).split(path.sep).join('/');
   const changeMatch = /^openspec\/changes\/([^/]+)\//.exec(relative);
   const source = changeMatch ? { kind: 'change', name: changeMatch[1] } : { kind: 'baseline', name: 'baseline' };
-  for (const found of scanScenarios(fs.readFileSync(file, 'utf8'))) {
+  const { text, error } = readSpecText(file);
+  if (error) {
+    unreadable.push({ file: relative, reason: error });
+    continue;
+  }
+  for (const found of scanScenarios(text)) {
     const match = ID.exec(found.id);
     if (!match || !match[1]) {
       unparsed.push({ id: found.id, file: relative });
@@ -88,7 +97,10 @@ for (const file of sources) {
   if (!changeMatch) continue;
   const change = changeMatch[1];
   const capability = capabilityOf(path.join(repoRoot, 'openspec', 'changes', change, 'specs'), file);
-  for (const found of scanRequirements(fs.readFileSync(file, 'utf8'))) {
+  // Already reported above as unreadable; one entry per file is enough.
+  const { text, error } = readSpecText(file);
+  if (error) continue;
+  for (const found of scanRequirements(text)) {
     if (!ACTIVE_SECTIONS.has(found.section)) continue;
     requirements.push({ change, capability, section: found.section, name: found.name, file: relative });
   }
@@ -113,6 +125,7 @@ if (json) {
     changeDir,
     scenarios,
     unparsed,
+    unreadable,
     capabilities,
   }, null, 2));
 } else {
@@ -121,6 +134,10 @@ if (json) {
   for (const entry of scenarios) {
     const used = entry.sources.map((source) => `${source.name}(${source.ids.length})`).join(', ');
     lines.push(`  SCEN-${entry.prefix}  max=${entry.max} next=${entry.next} ids=${entry.occurrences}  ${used}`);
+  }
+  if (unreadable.length) {
+    lines.push('', `Unreadable spec files (${unreadable.length}, NOT scanned; free-range numbers may be incomplete):`);
+    for (const entry of [...unreadable].sort((a, b) => a.file.localeCompare(b.file))) lines.push(`  ${entry.file}: ${entry.reason}`);
   }
   if (unparsed.length) {
     const byFile = new Map();
@@ -144,3 +161,5 @@ if (json) {
   }
   console.log(lines.join('\n'));
 }
+// Nonzero when any source could not be read: the report is incomplete, so a clean exit would lie.
+if (unreadable.length) process.exitCode = 1;
