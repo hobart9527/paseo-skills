@@ -192,8 +192,11 @@ test('contract authoring order freezes findings, SCEN ids and briefed constants'
   assert.match(table, /structural check on the complete package/);
   assert.match(table, /commit with done\/remaining in the message/);
   assert.match(table, /`openspec validate`\/`openspec status`/);
-  assert.match(table, /No staged freeze-check exists; the first structural check runs when the package is complete, and failures are fixed and rerun until it succeeds or a required command is denied/);
-  assert.match(table, /Before\s+step\s+2\s+assigns\s+ids,\s+run\s+one\s+`rg`\s+over\s+scenario\s+headings\s+in\s+baseline\s+`openspec\/specs\/\*\*`\s+and\s+other\s+changes'\s+`openspec\/changes\/\*\/specs\/\*\*`,\s+choose\s+ids\s+outside\s+that\s+set,\s+then\s+commit\s+as\s+the\s+frozen\s+set/);
+  // A staged specs check exists; the full structural check still runs on the complete package.
+  assert.match(table, /After committing `specs\/`, run the supplied structural check with `--stage specs` appended \(`--structural --stage specs`\) and fix what it blocks before design\/tasks/);
+  assert.match(table, /The full structural check still runs once the package is complete, and failures are fixed and rerun until it succeeds or a required command is denied/);
+  assert.match(table, /run `node "\$PIPELINE_HOME"\/namespace\.mjs openspec\/changes\/<change>` once: it lists every `SCEN-<PFX>` prefix in baseline `openspec\/specs\/\*\*` and the other unarchived changes' `openspec\/changes\/\*\/specs\/\*\*` with the next free number/);
+  assert.match(table, /This one call is the baseline\/active-change sweep; the four bounded collision checks below are unchanged/);
   // Main-session brief fields.
   assert.match(author, /\*\*Project constants\*\*: how Verify runs in a fresh worktree/);
   assert.match(author, /the author must not write `openspec\/config\.yaml`, which belongs to the target project/);

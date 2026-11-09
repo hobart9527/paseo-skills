@@ -53,9 +53,9 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output location: `openspec/changes/<c
 | 4 | `tasks.md`, then `acceptance.md` | commit each |
 | 5 | structural check on the complete package | fix, rerun |
 
-Before step 2 assigns ids, run one `rg` over scenario headings in baseline `openspec/specs/**` and other changes' `openspec/changes/*/specs/**`, choose ids outside that set, then commit as the frozen set.
+Before step 2 assigns ids, run `node "$PIPELINE_HOME"/namespace.mjs openspec/changes/<change>` once: it lists every `SCEN-<PFX>` prefix in baseline `openspec/specs/**` and the other unarchived changes' `openspec/changes/*/specs/**` with the next free number, plus the requirement headings those changes touch. Choose ids from its free ranges and commit as the frozen set. This one call is the baseline/active-change sweep; the four bounded collision checks below are unchanged.
 
-Each step: write, commit with done/remaining in the message, and run `openspec validate`/`openspec status` as a mid-run check when available. No staged freeze-check exists; the first structural check runs when the package is complete, and failures are fixed and rerun until it succeeds or a required command is denied.
+Each step: write, commit with done/remaining in the message, and run `openspec validate`/`openspec status` as a mid-run check when available. After committing `specs/`, run the supplied structural check with `--stage specs` appended (`--structural --stage specs`) and fix what it blocks before design/tasks; it needs no tasks.md and checks only the declaration rules. The full structural check still runs once the package is complete, and failures are fixed and rerun until it succeeds or a required command is denied.
 
 ## Write-first budget
 Measured failure: two authors spent ~55 min each on analysis and wrote no file, because the plan lived only in thinking and was re-derived every turn. Context compaction then discarded it. The budget below is an experiment target, not a guarantee; it never lowers a gate.
