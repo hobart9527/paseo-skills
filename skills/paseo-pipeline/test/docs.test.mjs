@@ -209,6 +209,29 @@ test('contract authoring order freezes findings, SCEN ids and briefed constants'
   assert.match(author, /`COMPLETE` still requires the structural check to succeed on committed content/);
 });
 
+test('authoring order commits a proposal skeleton before any code read', () => {
+  const author = read('templates/author.md');
+  const order = author.indexOf('## Authoring order');
+  const table = author.slice(order, author.indexOf('## Write-first budget'));
+  // Step 0 exists with the skeleton scope, the 2-minute commit and the no-code constraint.
+  assert.match(table, /\| 0 \| `proposal\.md` skeleton:/);
+  assert.match(table, /Run `openspec new change` first/);
+  assert.match(table, /commit within 2 minutes; read no code/);
+  // The rule list is written from approved inputs, not from research.
+  assert.match(author, /Writing the Step 0 proposal skeleton does not depend on research being complete/);
+  // Code reads serve a listed rule and persist findings as found.
+  assert.match(author, /Once the Step 0 rule list is committed, code reads are allowed[^\n]*each read must serve one rule on that list/);
+  assert.match(author, /Append each `path:line` fact to `## Baseline` as found and commit it small/);
+  // namespace.mjs runs after the rule list is committed and before ids are assigned.
+  assert.match(author, /After the rule list is committed and before step 2 assigns ids, run `node "\$PIPELINE_HOME"\/namespace\.mjs/);
+  // Collision checks are bounded to after the rule list too.
+  assert.match(author, /These happen only after the Step 0 rule list is committed\. Exactly four: the Requirement text you modify/);
+  // The measured anchors are unchanged.
+  assert.match(author, /first files committed by minute 10/);
+  assert.match(author, /complete package plus the structural check by minute 20/);
+  assert.match(author, /stop at minute 25/);
+});
+
 test('task design self-checks scenario ownership, falsifiable Verify and named symbols', () => {
   const author = read('templates/author.md');
   const schema = read('openspec-schema/schema.yaml');
