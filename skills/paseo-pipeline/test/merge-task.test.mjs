@@ -299,6 +299,26 @@ test('a prefix suite on an already-Done task is skipped and only its narrow leg 
   assert.match(fs.readFileSync(path.join(f.cwd, `openspec/changes/${f.change}/run-log.md`), 'utf8'), /"replayed":1/);
 });
 
+test('a repeated working-directory option is a broad leg, so replay still runs the narrow one', () => {
+  // Prior T-00 lists a package suite behind two `--prefix` options beside a narrow test. npm runs
+  // the last package's whole suite, so that leg must be skipped as broad — and the narrow leg
+  // must still replay. Reading the first prefix only would make the "suite" look like a path:
+  // the skip would then not apply, and the replay would fail trying to run the real npm suite in
+  // a fixture that has no packages.
+  const tasks = '- [x] T-00 prior\n  - Write scope: test/prior.test.mjs\n  - Reads: src/poison.txt\n  - Review: mechanical\n  - Verify with: npm --prefix packages/a --prefix packages/b test && node --test test/prior.test.mjs\n  - Done: source=abcdef1 review=worker\n- [ ] T-01 target\n  - Write scope: src,test\n  - Verify with: node --test test/a.test.mjs\n';
+  const f = taggedFixture(tasks);
+  write(f.cwd, 'test/prior.test.mjs', `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\ntest('legacy', () => { assert.equal(fs.existsSync('src/poison.txt'), false); });\n`);
+  write(f.cwd, 'test/a.test.mjs', PASSING_TEST);
+  write(f.cwd, 'src/a.txt', 'a');
+  git(f.cwd, 'add', '.');
+  git(f.cwd, 'commit', '-qm', `w\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
+  const tip = git(f.cwd, 'rev-parse', 'HEAD'); git(f.cwd, 'switch', '-q', `integration/${f.change}`);
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
+  assert.equal(r.status, 0, r.out);
+  const log = fs.readFileSync(path.join(f.cwd, `openspec/changes/${f.change}/run-log.md`), 'utf8');
+  assert.match(log, /"replayed":1/);
+});
+
 test('attempt breaker: -a4 is exit 37 unless a human approved it', () => {
   const f = fixture();
   git(f.cwd, 'branch', '-m', `task/${f.change}/T-01`, `task/${f.change}/T-01-a4`);
@@ -406,4 +426,39 @@ test('rejects a task missing Verify with without crashing child_process', () => 
   assert.equal(result.status, 1, result.out);
   assert.match(result.out, /invalid task T-01/);
   assert.match(result.out, /MISSING_VERIFY/);
+});
+
+test('replay executes an npm-prefix narrow target instead of skipping it as a package suite', () => {
+  // The prior Verify is a single narrow leg behind two `--prefix` options: npm runs it in the last
+  // package. Replay must execute it, so a failing target blocks the merge with the regression
+  // message. If that leg were classified broad it would be filtered out, the prior would have no
+  // legs left, and the merge would sail through with `replayed:0`.
+  const npm = spawnSync('npm', ['--version'], { encoding: 'utf8' });
+  assert.equal(npm.status, 0, `npm is needed for this replay test: ${npm.error?.message ?? npm.stderr}`);
+  const tasks = '- [x] T-00 prior\n  - Write scope: test/prior.test.mjs\n  - Reads: src/poison.txt\n  - Review: mechanical\n  - Verify with: npm --prefix packages/a --prefix packages/b test -- test/x.test.ts\n  - Done: source=abcdef1 review=worker\n- [ ] T-01 target\n  - Write scope: src,test\n  - Verify with: node --test test/a.test.mjs\n';
+  const f = taggedFixture(tasks);
+  // The packages belong to the integration base, not to the task branch: a file the worker adds
+  // would fall outside its Write scope, and the replay only needs the runner to exist.
+  git(f.cwd, 'switch', '-q', `integration/${f.change}`);
+  const pkg = (name) => JSON.stringify({ name, version: '1.0.0', scripts: { test: 'node --test test/x.test.ts' } }, null, 2);
+  write(f.cwd, 'packages/a/package.json', pkg('a'));
+  write(f.cwd, 'packages/b/package.json', pkg('b'));
+  // Only package b has the target, and it emits a unique marker before failing. The merge report
+  // must contain that child's captured stdout as well as the regression command; this proves the
+  // package-b test really executed, rather than merely proving merge-task attempted npm.
+  write(f.cwd, 'packages/b/test/x.test.ts', `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport path from 'node:path';\ntest('runs in package b', () => {\n  assert.equal(path.basename(process.cwd()), 'b');\n  console.log('D4_NPM_PREFIX_TARGET_EXECUTED_B');\n  assert.fail('deliberate replay failure');\n});\n`);
+  git(f.cwd, 'add', '.'); git(f.cwd, 'commit', '-qm', 'packages');
+  git(f.cwd, 'switch', '-q', `task/${f.change}/T-01`);
+  write(f.cwd, 'test/prior.test.mjs', `import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('legacy', () => { assert.ok(true); });\n`);
+  write(f.cwd, 'test/a.test.mjs', PASSING_TEST);
+  write(f.cwd, 'src/a.txt', 'a');
+  git(f.cwd, 'add', '.');
+  git(f.cwd, 'commit', '-qm', `w\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
+  const tip = git(f.cwd, 'rev-parse', 'HEAD'); git(f.cwd, 'switch', '-q', `integration/${f.change}`);
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
+  assert.equal(r.status, 21, r.out);
+  assert.match(r.out, /merge would regress already-Done T-00: npm --prefix packages\/a --prefix packages\/b test -- test\/x\.test\.ts/);
+  assert.match(r.out, /D4_NPM_PREFIX_TARGET_EXECUTED_B/, 'the last-prefix package test must have run');
+  // The merge aborted, so the integration branch is unchanged.
+  assert.equal(git(f.cwd, 'status', '--porcelain'), '');
 });

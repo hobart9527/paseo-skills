@@ -9,6 +9,7 @@ import { parseTasks, graphErrors, computeWaves, normalizeScope, isFileWithinScop
 import { dispatchDeps, weightedSpeedup, weightedCriticalPath, verifyScope, readsOnlyEdges, pathWithin, resolveModel, LIVE_MODEL } from './lib/schedule.mjs';
 import { runGit } from './lib/git.mjs';
 import { loadSpecTree, visibleLines, scanScenarios, scanRequirements, classifyScenCollisions } from './lib/spec-scan.mjs';
+import { parseAcceptanceTable } from './lib/acceptance.mjs';
 
 const args = process.argv.slice(2);
 // One pass over argv. Any token that is `--stage` or starts with it is stage syntax: its value is
@@ -540,57 +541,56 @@ else {
   const rowsByScen = new Map();
   const claimsByScen = new Map(tasks.flatMap((task) => task.scenarios.map((scen) => [scen.toUpperCase(), task.id]))
     .reduce((acc, [scen, id]) => { if (!acc.has(scen)) acc.set(scen, new Set()); acc.get(scen).add(id); return acc; }, new Map()));
-  // A literal `|` inside a cell silently changed the column count and the old parser
-  // just skipped the row. Count against the header instead, and accept `\|`.
-  const cellsOf = (line) => line.split(/(?<!\\)\|/).slice(1, -1)
-    .map((cell) => cell.trim().replace(/\\\|/g, '|').replace(/^`|`$/g, ''));
-  const lines = acceptanceMarkdown.split(/\r?\n/);
-  const header = lines.find((line) => /^\s*\|.*\|\s*$/.test(line) && /\bScenario\b/i.test(line));
-  if (!header || cellsOf(header).join('|').toLowerCase() !== 'scenario|entry|tasks|verify|required|result|evidence') {
+  // Column parsing lives in lib/acceptance.mjs so the read-only `scenarios` helper reads exactly
+  // the same rows this gate judges; the rules and messages below stay here, unchanged.
+  const parsedTable = parseAcceptanceTable(acceptanceMarkdown);
+  if (!parsedTable.headerOk) {
     blocking.push('BAD_ACCEPTANCE_HEADER: acceptance.md needs exactly Scenario, Entry, Tasks, Verify, Required, Result, Evidence in that order');
   }
-  const expectedColumns = header ? cellsOf(header).length : 7;
-  let rowNumber = 0;
-  for (const line of lines) {
-    rowNumber += 1;
-    if (!/^\s*\|\s*SCEN-[A-Za-z0-9-]+\s*\|/.test(line)) continue;
-    const cells = cellsOf(line);
-    if (cells.length !== expectedColumns) {
-      blocking.push(`MALFORMED_ACCEPTANCE_ROW acceptance.md:${rowNumber}: ${cells.length} cells, header has ${expectedColumns}; a literal \`|\` must be written \`\\|\``);
+  // One pass in file order: base reported a malformed row where it stood, not after every valid
+  // row's diagnostics, and it echoed the id as written. Grouping or uppercasing here would change
+  // the output of an invalid package without changing any verdict.
+  for (const entry of parsedTable.entries) {
+    if (entry.malformed) {
+      const malformed = entry.malformed;
+      blocking.push(`MALFORMED_ACCEPTANCE_ROW acceptance.md:${malformed.line}: ${malformed.cells} cells, header has ${malformed.expectedColumns}; a literal \`|\` must be written \`\\|\``);
       continue;
     }
-    const scen = cells[0].toUpperCase();
+    const row = entry.row;
+    const rowNumber = row.line;
+    const scen = row.scen;
+    const scenLabel = row.scenRaw;
     acceptanceScenarios.add(scen);
-    if (!/^(yes|no)$/i.test(cells[4])) {
-      blocking.push(`BAD_ACCEPTANCE_REQUIRED acceptance.md:${rowNumber}: ${cells[0]} Required must be yes or no`);
+    if (!/^(yes|no)$/i.test(row.required)) {
+      blocking.push(`BAD_ACCEPTANCE_REQUIRED acceptance.md:${rowNumber}: ${scenLabel} Required must be yes or no`);
       continue;
     }
     // Column 3 is the Tasks cell; the old parser never read it, so the two files could
     // assign the same SCEN to different tasks (or acceptance could omit a scenario entirely).
-    const rawTasks = cells[2].trim();
+    const rawTasks = row.tasksRaw;
     const listed = rawTasks.split(',').map((item) => item.trim()).filter(Boolean);
     const ids = listed.filter((item) => isTaskId(item));
-    const required = /^yes$/i.test(cells[4]);
+    const required = /^yes$/i.test(row.required);
     // An empty cell means "derive the owners from tasks.md": the task list is then a
     // hand-maintained duplicate of the Scenarios column and drifts (D4: 10 of 34 blocks).
     // A non-task token is still an error on every row; it is not an intentional omission, and
     // deriving owners from it would silently paper over a placeholder like `TBD`.
     const bad = listed.filter((item) => !isTaskId(item));
     if (rawTasks && !listed.length) {
-      blocking.push(`BAD_ACCEPTANCE_TASKS acceptance.md:${rowNumber} ${cells[0]}: Tasks cell ${rawTasks} names no task id`);
+      blocking.push(`BAD_ACCEPTANCE_TASKS acceptance.md:${rowNumber} ${scenLabel}: Tasks cell ${rawTasks} names no task id`);
     }
     if (bad.length) {
-      blocking.push(`BAD_ACCEPTANCE_TASKS acceptance.md:${rowNumber} ${cells[0]}: Tasks token ${bad.join(', ')} is not a task id`);
+      blocking.push(`BAD_ACCEPTANCE_TASKS acceptance.md:${rowNumber} ${scenLabel}: Tasks token ${bad.join(', ')} is not a task id`);
     }
     for (const id of ids) {
-      if (!byId.has(id)) blocking.push(`UNKNOWN_ACCEPTANCE_TASK ${cells[0]}: ${id} is not a task in tasks.md`);
+      if (!byId.has(id)) blocking.push(`UNKNOWN_ACCEPTANCE_TASK ${scenLabel}: ${id} is not a task in tasks.md`);
     }
     // Derived owners are the claimers, and only a truly empty cell derives; a non-empty cell that
     // yields no id (`,`, `TBD`) is already reported above and keeps its (empty) explicit meaning.
     const owners = rawTasks ? ids : [...(claimsByScen.get(scen) ?? [])];
     if (!rowsByScen.has(scen)) rowsByScen.set(scen, []);
-    rowsByScen.get(scen).push({ ids, owners, entry: cells[1], line: rowNumber });
-    if (required) requiredRows.push(cells);
+    rowsByScen.get(scen).push({ ids, owners, entry: row.entry, line: rowNumber });
+    if (required) requiredRows.push({ scen: scenLabel, verify: row.verify, result: row.result });
   }
   for (const scenario of acceptanceScenarios) {
     if (!declared.has(scenario)) blocking.push(`UNKNOWN_ACCEPTANCE_SCEN: ${scenario} is not declared`);
@@ -633,9 +633,9 @@ else {
     }
   }
   if (!requiredRows.length) blocking.push('MISSING_REQUIRED_ACCEPTANCE: acceptance.md has no Required=yes row');
-  for (const cells of requiredRows) {
-    if (cells[5] !== 'PENDING') blocking.push(`ACCEPTANCE_NOT_FROZEN ${cells[0]}: Result must start PENDING`);
-    if (/^`?\s*(?:!|manual|手工|自然语言)/i.test(cells[3])) blocking.push(`BAD_ACCEPTANCE_VERIFY ${cells[0]}: Required=yes needs one executable command`);
+  for (const row of requiredRows) {
+    if (row.result !== 'PENDING') blocking.push(`ACCEPTANCE_NOT_FROZEN ${row.scen}: Result must start PENDING`);
+    if (/^`?\s*(?:!|manual|手工|自然语言)/i.test(row.verify)) blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: Required=yes needs one executable command`);
   }
 }
 

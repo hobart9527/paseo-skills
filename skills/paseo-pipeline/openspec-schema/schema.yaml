@@ -181,6 +181,19 @@ artifacts:
       and in every other `openspec/changes/*/specs/**` with one `rg` over scenario
       headings only, choose new ids outside that set, and only then commit the specs as
       the frozen set.
+
+      **Identity reuse vs content conflict (paseo-pipeline):** three cases look similar and
+      need different responses. A *new* id is declared by neither baseline nor another
+      unarchived change. Re-declaring a *baseline* id is legitimate only under
+      `## MODIFIED Requirements` / `## REMOVED Requirements`: that is identity reuse, so
+      copy and update the baseline requirement instead of adding a parallel scenario. A
+      *content conflict* is another active change declaring the same id with different
+      heading text or body; a byte-identical shared declaration is legal (an unchanged
+      MODIFIED scenario must be repeated) and only makes archive/merge order matter. Expose
+      and coordinate a conflict with the owning change; never rename or reword an id to
+      make it look independent, and never edit the other change to get past the check.
+      Collision semantics are the current conservative content comparison — no archive scan,
+      no ownership registry, and `lib/spec-scan.mjs` is the only scenario scanner.
     requires:
       - proposal
 
@@ -350,17 +363,25 @@ artifacts:
 
       Every `SCEN-*` declared in the change's spec delta needs at least one row;
       rows may share an Entry and Verify and may reuse an existing test, so a
-      scenario does not require a new test of its own. Leave a row's `Tasks` cell empty
+      scenario does not require a new test of its own. The claim source is
+      `Scenarios:` in `tasks.md`; a row's `Tasks` cell is its projection, not a second
+      claim. Leave a row's `Tasks` cell empty
       and the owners are derived from the `Scenarios` claims in `tasks.md` (recommended
       default); fill it only to split owners across rows. A non-empty `Tasks` cell may
       list only tasks that claim that scenario in `tasks.md` `Scenarios`, and the union
-      of all rows for a scenario must name every task that claims it. When `Entry` names
+      of all rows for a scenario must name every task that claims it. A row naming a
+      non-claimant is wrong even when the union looks complete. `Entry`, `Verify` and
+      `Required` are authored judgements: `Required` follows real delivery semantics
+      rather than setting every row `no`. When `Entry` names
       a file that a task in this change writes, a row owner must write it or depend on
       the task that does (`freeze-check` reports `ENTRY_OWNER_UNCLAIMED`); when several
       components share one assembly file, let the assembler claim the user-facing
       scenarios, or add a Wave 0 `Kind: skeleton` that pre-wires the entry with stubs and
       have the components `Uses` it (see the shared-assembly pattern in the author brief). Several rows may
       split the owners; no single row needs all of them.
+      A read-only derivation is available while authoring:
+      `pipeline-run.mjs scenarios <change-dir>` lists declared scenarios, claimants,
+      existing rows and gaps; it is not validation and not a substitute for this gate or R0.
 
       Format is fixed because `CP-2 human acceptance review`
       parses it:

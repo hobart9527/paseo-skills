@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { normalizeScope, parseTasks, parseTaskLine, computeWaves, isFileWithinScopes, parseReviewTag, isTestPath, verifyLegs } from '../lib/tasks.mjs';
 
 const md = `
@@ -114,6 +118,48 @@ test('verify legs: a working-directory option scopes the runner instead of namin
   assert.deepEqual(verifyLegs('npm --prefix . test -- ../x/test/a.test.ts').map((leg) => leg.paths), [['../x/test/a.test.ts']]);
   // Without any working-directory option, paths normalize the same way.
   assert.deepEqual(verifyLegs('node --test packages/web/../shared/test/a.test.ts').map((leg) => leg.paths), [['packages/shared/test/a.test.ts']]);
+});
+
+test('verify legs: a repeated working-directory option does not turn a suite into a narrow leg', () => {
+  // npm honours the last `--prefix` (`npm --prefix a --prefix b test` runs b's suite; verified
+  // against npm 11). Reading only the first left `packages/b` as a target path, so a whole
+  // package suite was classified narrow and could satisfy a non-sink Verify or escape the
+  // sink's full-leg accounting. Every occurrence is now a directory, never a target.
+  for (const command of [
+    'npm --prefix packages/a --prefix packages/b test',
+    'npm --prefix packages/a test --prefix packages/b',
+    'npm --prefix=packages/a --prefix=packages/b test',
+    'pnpm -C packages/a -C packages/b test',
+  ]) {
+    assert.deepEqual(verifyLegs(command).map((leg) => ({ paths: leg.paths, broad: leg.broad })), [{ paths: [], broad: true }], command);
+  }
+  // A real target stays a target and resolves against the last working directory npm uses.
+  assert.deepEqual(verifyLegs('npm --prefix packages/a --prefix packages/b test -- test/x.test.ts').map((leg) => ({ paths: leg.paths, broad: leg.broad })),
+    [{ paths: ['packages/b/test/x.test.ts'], broad: false }]);
+  // The same option in a later leg does not leak into this one.
+  assert.deepEqual(verifyLegs('npm --prefix packages/a test && npm test').map((leg) => leg.broad), [true, true]);
+});
+
+test('verify legs: the real npm runner agrees with the classification', () => {
+  // Established from the real command, not from the option's documentation: in a temp repo with
+  // two packages, `npm --prefix a --prefix b test` runs b's suite. The parser must therefore treat
+  // that leg as broad, and a target under it as b-relative. npm is a hard prerequisite of this
+  // repository's own Verify commands; if it is missing, say so instead of passing silently.
+  const probe = spawnSync('npm', ['--version'], { encoding: 'utf8' });
+  assert.equal(probe.status, 0, `npm is needed for this classification test: ${probe.error?.message ?? probe.stderr}`);
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-prefix-'));
+  for (const pkg of ['a', 'b']) {
+    fs.mkdirSync(path.join(cwd, pkg), { recursive: true });
+    fs.writeFileSync(path.join(cwd, pkg, 'package.json'), JSON.stringify({
+      name: pkg, version: '1.0.0', scripts: { test: 'node -e "console.log(process.cwd())"' },
+    }));
+  }
+  const ran = spawnSync('npm', ['--prefix', 'a', '--prefix', 'b', 'test'], { cwd, encoding: 'utf8' });
+  assert.equal(ran.status, 0, ran.stderr);
+  // npm resolves the package directory, so compare the leaf rather than the tmpdir prefix.
+  assert.match(ran.stdout, new RegExp(`[/\\\\]b\\s*$`), ran.stdout);
+  assert.deepEqual(verifyLegs('npm --prefix a --prefix b test').map((leg) => ({ paths: leg.paths, broad: leg.broad })),
+    [{ paths: [], broad: true }]);
 });
 
 test('official task template is parser-compatible', () => {

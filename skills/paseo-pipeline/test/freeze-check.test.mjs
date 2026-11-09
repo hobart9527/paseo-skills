@@ -420,6 +420,17 @@ test('mechanical non-sink still needs narrow Verify', () => {
   const tasks = contract.replace('  - Verify with: node --test test/alpha.test.mjs', '  - Review: mechanical\n  - Verify with: rg -c done src/alpha');
   assert.match(freezeOf(tasks).stdout, /VERIFY_NOT_NARROW T-02/);
 });
+test('a repeated working-directory option stays a full-suite leg at the gate', () => {
+  // Freeze-check must not accept `npm --prefix a --prefix b test` as a narrow non-sink Verify:
+  // npm runs b's whole suite, so classifying it narrow would let an unowned package suite
+  // satisfy the gate. The sink accounting sees one broad leg, not zero.
+  const nonSink = freezeOf(contract.replace('node --test test/alpha.test.mjs', 'npm --prefix packages/a --prefix packages/b test'));
+  assert.equal(nonSink.status, 1);
+  assert.match(nonSink.stdout, /VERIFY_FULL_SUITE_NON_SINK T-02/);
+  // Two broad legs on the sink stay two explicit legs, so the per-package accounting is unchanged.
+  const sink = freezeOf(sinkContract('npm --prefix packages/a --prefix packages/b test'));
+  assert.equal(sink.status, 0, sink.stdout);
+});
 
 // ---- R0: the last sign-off line wins ----
 function signedRepo(review) {
@@ -1866,5 +1877,113 @@ test('--stage alone is not the last arg and repeated --stage is a usage error', 
     const result = spawnSync('node', [script, dir, ...args], { encoding: 'utf8' });
     assert.equal(result.status, 2, args.join(' '));
     assert.match(result.stderr, /Usage:/, args.join(' '));
+  }
+});
+
+test('invalid acceptance diagnostics keep base order and spelling, not a grouped or uppercased variant', () => {
+  // The shared acceptance reader must not reorder diagnostics or normalise the spelling the
+  // author sees: base walked the table line by line and echoed the SCEN id as written. The base
+  // tree is the oracle for both, because the reviewer compared its output with the tip's.
+  const base = baseFreezeCheck();
+  const tasks = `- [ ] 1.1 T-01 shared
+  - Write scope: src/shared,test/shared.test.mjs
+  - Verify with: node --test test/shared.test.mjs
+  - Scen: SCEN-1
+`;
+  const cases = {
+    // A valid-looking row followed by a short one: grouping malformed rows first would flip them.
+    'required error before malformed row': table([
+      '| SCEN-1 | CLI | T-01 | node -e "0" | maybe | PENDING | pending |',
+      '| SCEN-1 | CLI | T-01 | node -e "0" |',
+    ].join('\n')),
+    // Mixed case ids: messages must echo the row's own spelling, keys stay case-insensitive.
+    'mixed-case scenario ids': table([
+      '| SCEN-1 | CLI | T-01 | node -e "0" | maybe | PENDING | pending |',
+      '| SCEN-aB | CLI | T-01 | node -e "0" | maybe | PENDING | pending |',
+    ].join('\n')),
+    'tasks token in mixed case': table([
+      '| SCEN-1 | CLI | t-99 | node -e "0" | yes | PENDING | pending |',
+      '| SCEN-1 | CLI | T-01 | node -e "0" |',
+    ].join('\n')),
+  };
+  for (const [name, acceptanceMarkdown] of Object.entries(cases)) {
+    const dir = change({
+      'tasks.md': tasks, 'proposal.md': 'x', 'acceptance.md': acceptanceMarkdown, 'specs/a/spec.md': '### Scenario: SCEN-1\n',
+    });
+    const render = (script) => {
+      const result = spawnSync('node', [script, dir, '--json', '--skip-signer-check'], { encoding: 'utf8' });
+      const report = JSON.parse(result.stdout);
+      return { status: result.status, blocking: report.blocking.map((item) => item.split(dir).join('<dir>')) };
+    };
+    const oracle = render(base);
+    assert.deepEqual(render(path.join(root, 'freeze-check.mjs')), oracle, name);
+  }
+});
+
+test('short acceptance headers preserve base JSON diagnostics and never crash', () => {
+  const base = baseFreezeCheck();
+  const tasks = '- [ ] 1.1 T-01 shared\n  - Write scope: src/shared,test/shared.test.mjs\n  - Verify with: node --test test/shared.test.mjs\n  - Scen: SCEN-X\n';
+  const headers = [
+    '| Scenario |',
+    '| Scenario | Entry |',
+    '| Scenario | Entry | Tasks |',
+    '| Scenario | Entry | Tasks | Verify |',
+    '| Scenario | Entry | Tasks | Verify | Required |',
+    '| Scenario | Entry | Tasks | Verify | Required | Result |',
+    '| Scenario | Entry | Tasks | Verify | Required | Result | Evidence | Extra |',
+  ];
+  const rows = headers.map((header, index) => {
+    const width = header.split('|').length - 2;
+    const cells = ['SCEN-X', 'x', 'T-01', 'node -e "0"', 'yes', 'PENDING', 'pending', 'extra'].slice(0, width);
+    return [header, `| ${Array(width).fill('---').join(' | ')} |`, `| ${cells.join(' | ')} |`].join('\n');
+  });
+  rows.push('| Scenario | Entry |\n| --- | --- |\n| SCEN-X | x |');
+  rows.push('| SCEN-X |'); // SCEN-id only, no recognized header
+  for (const [index, acceptance] of rows.entries()) {
+    const dir = change({ 'tasks.md': tasks, 'proposal.md': 'x', 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-X\n' });
+    const invoke = (script) => {
+      const result = spawnSync('node', [script, dir, '--json', '--structural', '--skip-signer-check'], { encoding: 'utf8' });
+      return { status: result.status, stdout: result.stdout.replace(dir, '<dir>'), stderr: result.stderr.replace(dir, '<dir>') };
+    };
+    assert.deepEqual(invoke(path.join(root, 'freeze-check.mjs')), invoke(base), `case ${index + 1}`);
+  }
+});
+
+function freezeCheckAtD4Base() {
+  const tree = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-d4-base-'));
+  const toplevel = execFileSync('git', ['-C', root, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+  const archive = execFileSync('git', ['-C', toplevel, 'archive', '9b82233a7aca1868035cf8221a448c10a13228a1', 'skills/paseo-pipeline'], { maxBuffer: 64 << 20 });
+  execFileSync('tar', ['-x', '-C', tree], { input: archive });
+  return path.join(tree, 'skills', 'paseo-pipeline', 'freeze-check.mjs');
+}
+
+test('short and malformed acceptance tables match D4 base JSON output without throwing', () => {
+  const base = freezeCheckAtD4Base();
+  const tasks = '- [ ] 1.1 T-01 shared\n  - Write scope: src/shared,test/shared.test.mjs\n  - Verify with: node --test test/shared.test.mjs\n  - Scen: SCEN-X\n';
+  const headers = [
+    '| Scenario |',
+    '| Scenario | Entry |',
+    '| Scenario | Entry | Tasks |',
+    '| Scenario | Entry | Tasks | Verify |',
+    '| Scenario | Entry | Tasks | Verify | Required |',
+    '| Scenario | Entry | Tasks | Verify | Required | Result |',
+    '| Scenario | Entry | Tasks | Verify | Required | Result | Evidence | Extra |',
+  ];
+  const cases = headers.map((header) => {
+    const width = header.split('|').length - 2;
+    const cells = ['SCEN-X', 'x', 'T-01', 'node -e "0"', 'yes', 'PENDING', 'pending', 'extra'].slice(0, width);
+    return `${header}\n| ${Array(width).fill('---').join(' | ')} |\n| ${cells.join(' | ')} |`;
+  });
+  cases.push('| Scenario | Entry |\n| --- | --- |\n| SCEN-X | x |');
+  cases.push('| SCEN-X |');
+  for (const [index, acceptanceMarkdown] of cases.entries()) {
+    const dir = change({ 'tasks.md': tasks, 'proposal.md': 'x', 'acceptance.md': acceptanceMarkdown, 'specs/a/spec.md': '### Scenario: SCEN-X\n' });
+    const runJson = (script) => {
+      const result = spawnSync('node', [script, dir, '--json', '--structural', '--skip-signer-check'], { encoding: 'utf8' });
+      assert.doesNotMatch(result.stderr, /TypeError|ReferenceError|SyntaxError/, `case ${index + 1}: ${result.stderr}`);
+      assert.doesNotThrow(() => JSON.parse(result.stdout), `case ${index + 1}: ${result.stdout} ${result.stderr}`);
+      return { status: result.status, stdout: result.stdout.replace(dir, '<dir>'), stderr: result.stderr.replace(dir, '<dir>') };
+    };
+    assert.deepEqual(runJson(path.join(root, 'freeze-check.mjs')), runJson(base), `case ${index + 1}`);
   }
 });
