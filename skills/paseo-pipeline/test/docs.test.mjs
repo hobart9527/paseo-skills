@@ -215,8 +215,14 @@ test('authoring order commits a proposal skeleton before any code read', () => {
   const table = author.slice(order, author.indexOf('## Write-first budget'));
   // Step 0 exists with the skeleton scope, the 2-minute commit and the no-code constraint.
   assert.match(table, /\| 0 \| `proposal\.md` skeleton:/);
-  assert.match(table, /Run `openspec new change` first/);
-  assert.match(table, /commit within 2 minutes; read no code/);
+  // Every required skeleton element is pinned inside the Step 0 row itself.
+  const row0 = table.split('\n').find((line) => line.startsWith('| 0 |'));
+  assert.ok(row0, 'Step 0 row exists');
+  assert.match(row0, /skeleton: Why, the rule list under What Changes \(one line per rule; details may be TBD\), `## OPEN-DECISION` for choices the brief already supplies, and an empty `## Baseline`/);
+  assert.match(row0, /Run `openspec new change` first/);
+  assert.match(row0, /commit within 2 minutes; read no code/);
+  // A one-line rule list is the plan; the baseline read is owed before the spec delta.
+  assert.match(author, /The Step 0 one-line rule list is a plan and needs no baseline read; before writing a rule into its spec delta or `## MODIFIED Requirements` block, read the baseline it lands on/);
   // The rule list is written from approved inputs, not from research.
   assert.match(author, /Writing the Step 0 proposal skeleton does not depend on research being complete/);
   // Code reads serve a listed rule and persist findings as found.
