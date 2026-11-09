@@ -66,14 +66,13 @@ test('the stop point is one scheduled instruction, not an enforced kill', () => 
 
 test('the 30-minute reconciliation is recovery only and reads state once', () => {
   const field = reconciliationField();
-  assert.match(field, /reconciliation point at the 30-minute mark and compares Paseo status with `git log`/);
-  assert.match(field, /no commit, or a newest commit older than ~10 minutes/);
-  assert.match(field, /That 30-minute point is recovery only/);
-  assert.match(field, /it is not a poll loop and not a second stop/);
-  assert.match(field, /Do not poll between the two points/);
+  assert.match(field, /At 30 minutes, only recover unreported state by reconciling Paseo status with `git log`/);
+  assert.match(field, /do not poll, steer based on inactivity, or treat this as another stop/);
+  assert.match(field, /The 30-minute recovery does not imply completion or authorization to continue/);
+  assert.match(field, /Record the planned deadline, stop-event delivery/);
   // The two points are distinguished by job, so the 25-minute stop is not restated as the 30.
-  assert.match(field, /experiment control plane schedules one stop event at the 25-minute author mark/);
-  assert.match(field, /Having made a first commit does not clear the point/);
+  assert.match(field, /At 25 minutes, stop and deliver an `INCOMPLETE` snapshot/);
+  assert.match(field, /The 30-minute recovery does not imply completion or authorization to continue/);
 });
 
 test('the brief does not claim a scheduler change or a forced termination', () => {
