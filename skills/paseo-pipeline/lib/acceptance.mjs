@@ -21,6 +21,11 @@ export const isAcceptanceRow = (line) => /^\s*\|\s*SCEN-[A-Za-z0-9-]+\s*\|/.test
  * columns in order; `expectedColumns` is the header's own width when one exists, else seven (the
  * gate's historical fallback). Rows with the wrong cell count are `malformed`, not `rows`, so a
  * caller can report the same row it always reported.
+ *
+ * `entries` keeps the table's own line order, with malformed rows and valid rows interleaved, so
+ * a caller that reports diagnostics can emit them in the order the author sees them. Base
+ * freeze-check walked the lines once and reported in that order; grouping malformed rows first
+ * changed the output of an invalid package for no reason.
  */
 export function parseAcceptanceTable(markdown) {
   const lines = String(markdown || '').split(/\r?\n/);
@@ -30,16 +35,22 @@ export function parseAcceptanceTable(markdown) {
   const expectedColumns = headerCells ? headerCells.length : ACCEPTANCE_COLUMNS.length;
   const rows = [];
   const malformed = [];
+  const entries = [];
   lines.forEach((line, index) => {
     if (!isAcceptanceRow(line)) return;
     const cells = cellsOf(line);
     const lineNumber = index + 1;
     if (cells.length !== expectedColumns) {
-      malformed.push({ line: lineNumber, cells: cells.length, expectedColumns });
+      const problem = { line: lineNumber, cells: cells.length, expectedColumns };
+      malformed.push(problem);
+      entries.push({ line: lineNumber, malformed: problem });
       return;
     }
-    rows.push({
+    const row = {
       line: lineNumber,
+      // `scenRaw` is the id as written: diagnostic messages echo it, the keyed comparisons use
+      // the uppercased `scen` the gate has always keyed on.
+      scenRaw: cells[0],
       scen: cells[0].toUpperCase(),
       entry: cells[1],
       tasksRaw: cells[2].trim(),
@@ -47,7 +58,9 @@ export function parseAcceptanceTable(markdown) {
       required: cells[4],
       result: cells[5],
       evidence: cells[6],
-    });
+    };
+    rows.push(row);
+    entries.push({ line: lineNumber, row });
   });
-  return { headerLine, headerOk, expectedColumns, rows, malformed };
+  return { headerLine, headerOk, expectedColumns, rows, malformed, entries };
 }

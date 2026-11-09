@@ -1879,3 +1879,43 @@ test('--stage alone is not the last arg and repeated --stage is a usage error', 
     assert.match(result.stderr, /Usage:/, args.join(' '));
   }
 });
+
+test('invalid acceptance diagnostics keep base order and spelling, not a grouped or uppercased variant', () => {
+  // The shared acceptance reader must not reorder diagnostics or normalise the spelling the
+  // author sees: base walked the table line by line and echoed the SCEN id as written. The base
+  // tree is the oracle for both, because the reviewer compared its output with the tip's.
+  const base = baseFreezeCheck();
+  const tasks = `- [ ] 1.1 T-01 shared
+  - Write scope: src/shared,test/shared.test.mjs
+  - Verify with: node --test test/shared.test.mjs
+  - Scen: SCEN-1
+`;
+  const cases = {
+    // A valid-looking row followed by a short one: grouping malformed rows first would flip them.
+    'required error before malformed row': table([
+      '| SCEN-1 | CLI | T-01 | node -e "0" | maybe | PENDING | pending |',
+      '| SCEN-1 | CLI | T-01 | node -e "0" |',
+    ].join('\n')),
+    // Mixed case ids: messages must echo the row's own spelling, keys stay case-insensitive.
+    'mixed-case scenario ids': table([
+      '| SCEN-1 | CLI | T-01 | node -e "0" | maybe | PENDING | pending |',
+      '| SCEN-aB | CLI | T-01 | node -e "0" | maybe | PENDING | pending |',
+    ].join('\n')),
+    'tasks token in mixed case': table([
+      '| SCEN-1 | CLI | t-99 | node -e "0" | yes | PENDING | pending |',
+      '| SCEN-1 | CLI | T-01 | node -e "0" |',
+    ].join('\n')),
+  };
+  for (const [name, acceptanceMarkdown] of Object.entries(cases)) {
+    const dir = change({
+      'tasks.md': tasks, 'proposal.md': 'x', 'acceptance.md': acceptanceMarkdown, 'specs/a/spec.md': '### Scenario: SCEN-1\n',
+    });
+    const render = (script) => {
+      const result = spawnSync('node', [script, dir, '--json', '--skip-signer-check'], { encoding: 'utf8' });
+      const report = JSON.parse(result.stdout);
+      return { status: result.status, blocking: report.blocking.map((item) => item.split(dir).join('<dir>')) };
+    };
+    const oracle = render(base);
+    assert.deepEqual(render(path.join(root, 'freeze-check.mjs')), oracle, name);
+  }
+});
