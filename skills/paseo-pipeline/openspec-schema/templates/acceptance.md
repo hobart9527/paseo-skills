@@ -17,9 +17,16 @@
     写的是本 change 某个任务会写的文件时，行所有者必须写它或依赖写它的任务（freeze-check 报
     ENTRY_OWNER_UNCLAIMED）；多个组件共用一个装配文件时，让装配任务认领用户可见场景，或加
     Wave 0 `Kind: skeleton` 预接线并让组件 `Uses` 它（见 author brief 的 shared-assembly 模式）。
-  - Tasks：承载这一行的任务 ID，逗号分隔。留空则从 tasks.md 的 Scenarios 认领自动推导（推荐默认）；
-    填了就只能列在 tasks.md 的 Scenarios 里认领了该场景的任务。同一场景多行可以分摊，
-    但所有行的并集必须覆盖全部认领者，单行不必列全；填值只用于把所有者分摊到多行。
+  - Tasks：承载这一行的任务 ID，逗号分隔。**认领来源是 tasks.md 的 `Scenarios:`，这一格是它的投影，不是第二份认领。**
+    留空则从 tasks.md 的 Scenarios 认领自动推导（推荐默认）；填了就只能列在 tasks.md 的 Scenarios 里
+    认领了该场景的任务，且同一场景所有行的并集必须覆盖全部认领者，单行不必列全；填值只用于把所有者分摊到多行。
+    一行里出现未认领该场景的任务就是错，即使并集看起来仍然完整。Entry、Verify、Required 仍是作者的判断：
+    Required 按真实交付语义决定，不能为省事把全部行设为 no —— 那只是隐藏交付证据，并没有通过门禁。
+  - 场景身份要分清三件事：**新编号**是 baseline 和所有其他未归档 change 都没声明过的编号；复用
+    **baseline 编号**必须写在 `## MODIFIED Requirements` / `## REMOVED Requirements` 下，那是同一个场景的
+    身份复用，应引用并更新原需求，而不是另造一个平行场景；与 **active change 内容冲突**指另一个 change
+    用同一个编号声明了不同的标题或正文（逐字相同的共享声明是合法的，只影响归档/合并顺序）。冲突要暴露并协调，
+    不能改名或改写正文把它伪装成独立行为。`../../pipeline-run.mjs scenarios <change-dir>` 可以只读列出这些关系与缺口。
   - Verify：真正跑一遍 Entry 的**单条可执行命令**。收尾由主会话逐条真跑并留证；命令必须是单条可执行语句：
     自然语言、手工步骤、以 `!` 开头的取反写法都会被拒。预期失败（如退出码 1）写成 `sh -c '! node x.mjs'`；
     多步骤写进一个脚本再调用。只有 Required=no 的行允许写手工步骤（它只留档，不进入执行）。
