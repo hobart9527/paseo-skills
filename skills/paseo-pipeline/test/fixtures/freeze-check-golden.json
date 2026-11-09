@@ -1,0 +1,22 @@
+{
+  "(none)": {
+    "status": 1,
+    "stdout": "[freeze-check] <dir>\ntasks=2 waves=2 maxWidth=1 criticalPath=2\nmaxWidth is a wave-width heuristic, not exact maximum concurrency; weighted estimates are unmeasured.\n[ROUTE] handoff: wave-width/task-count gate not met; use Tier 2 handoff\nWAVE 1: T-01\nWAVE 2: T-02\nCRITICAL T-01 -logical-> T-02\nRESULT freeze rejected (1)\n",
+    "stderr": "BLOCK MISSING_R0_SIGNOFF: review.md must contain `R0: pass(<reviewer-uuid>@<sha>)` — run hanlin R0 review before freeze — or `R0: human-accept(@<sha>)` when the human accepted the residual risk\n"
+  },
+  "--json": {
+    "status": 1,
+    "stdout": "{\n  \"change\": \"<dir>\",\n  \"tasks\": 2,\n  \"waves\": [\n    {\n      \"wave\": 1,\n      \"ids\": [\n        \"T-01\"\n      ]\n    },\n    {\n      \"wave\": 2,\n      \"ids\": [\n        \"T-02\"\n      ]\n    }\n  ],\n  \"maxWidth\": 1,\n  \"maxWidthMeaning\": \"largest dispatch-dependency wave; heuristic, not exact maximum concurrency\",\n  \"criticalPath\": 2,\n  \"criticalChain\": [\n    {\n      \"id\": \"T-01\",\n      \"via\": null\n    },\n    {\n      \"id\": \"T-02\",\n      \"via\": \"logical\"\n    }\n  ],\n  \"speedup\": 1,\n  \"weightedSpeedup\": 1,\n  \"weightedSpeedupMeaning\": \"unmeasured worker implementation weights; excludes coordination and FINAL review\",\n  \"route\": \"handoff\",\n  \"blocking\": [\n    \"MISSING_R0_SIGNOFF: review.md must contain `R0: pass(<reviewer-uuid>@<sha>)` — run hanlin R0 review before freeze — or `R0: human-accept(@<sha>)` when the human accepted the residual risk\"\n  ],\n  \"advisories\": [],\n  \"explanations\": [\n    {\n      \"code\": \"MISSING_R0_SIGNOFF\",\n      \"reason\": \"review.md must contain `R0: pass(<reviewer-uuid>@<sha>)` — run hanlin R0 review before freeze — or `R0: human-accept(@<sha>)` when the human accepted the residual risk\",\n      \"fix\": \"correct the contract field named in the reason and re-run freeze-check\"\n    }\n  ]\n}\n",
+    "stderr": ""
+  },
+  "--structural --skip-signer-check": {
+    "status": 0,
+    "stdout": "[freeze-check] <dir>\ntasks=2 waves=2 maxWidth=1 criticalPath=2\nmaxWidth is a wave-width heuristic, not exact maximum concurrency; weighted estimates are unmeasured.\n[ROUTE] handoff: wave-width/task-count gate not met; use Tier 2 handoff\nWAVE 1: T-01\nWAVE 2: T-02\nCRITICAL T-01 -logical-> T-02\nRESULT freeze ok\n",
+    "stderr": ""
+  },
+  "--strict --json": {
+    "status": 1,
+    "stdout": "{\n  \"change\": \"<dir>\",\n  \"tasks\": 2,\n  \"waves\": [\n    {\n      \"wave\": 1,\n      \"ids\": [\n        \"T-01\"\n      ]\n    },\n    {\n      \"wave\": 2,\n      \"ids\": [\n        \"T-02\"\n      ]\n    }\n  ],\n  \"maxWidth\": 1,\n  \"maxWidthMeaning\": \"largest dispatch-dependency wave; heuristic, not exact maximum concurrency\",\n  \"criticalPath\": 2,\n  \"criticalChain\": [\n    {\n      \"id\": \"T-01\",\n      \"via\": null\n    },\n    {\n      \"id\": \"T-02\",\n      \"via\": \"logical\"\n    }\n  ],\n  \"speedup\": 1,\n  \"weightedSpeedup\": 1,\n  \"weightedSpeedupMeaning\": \"unmeasured worker implementation weights; excludes coordination and FINAL review\",\n  \"route\": \"handoff\",\n  \"blocking\": [\n    \"MISSING_R0_SIGNOFF: review.md must contain `R0: pass(<reviewer-uuid>@<sha>)` — run hanlin R0 review before freeze — or `R0: human-accept(@<sha>)` when the human accepted the residual risk\"\n  ],\n  \"advisories\": [],\n  \"explanations\": [\n    {\n      \"code\": \"MISSING_R0_SIGNOFF\",\n      \"reason\": \"review.md must contain `R0: pass(<reviewer-uuid>@<sha>)` — run hanlin R0 review before freeze — or `R0: human-accept(@<sha>)` when the human accepted the residual risk\",\n      \"fix\": \"correct the contract field named in the reason and re-run freeze-check\"\n    }\n  ]\n}\n",
+    "stderr": ""
+  }
+}

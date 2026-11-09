@@ -8,7 +8,7 @@ import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo-agents
 import { parseTasks, graphErrors, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, isTaskId, legPaths, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
 import { dispatchDeps, weightedSpeedup, weightedCriticalPath, verifyScope, readsOnlyEdges, pathWithin, resolveModel, LIVE_MODEL } from './lib/schedule.mjs';
 import { runGit } from './lib/git.mjs';
-import { walkSpecFiles, visibleLines, scanScenarios, collectSpecSources, externalScenarios, classifyScenCollisions } from './lib/spec-scan.mjs';
+import { walkSpecFiles, visibleLines, scanScenarios, scanRequirements, collectSpecSources, externalScenarios, classifyScenCollisions } from './lib/spec-scan.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
@@ -16,11 +16,25 @@ const explain = args.includes('--explain');
 // --structural: validate the contract the authors wrote, before hanlin reviews it. The R0
 // sign-off is the output of that review, so requiring it here would deadlock the entry flow.
 const structural = args.includes('--structural');
+// --stage specs: the staged check that runs after specs/ is committed, before tasks.md exists.
+// It is valid only with --structural; any other value is a usage error rather than a fallback,
+// so a typo cannot silently run the full check against a half-written package.
+const stageIndex = args.indexOf('--stage');
+const stage = stageIndex >= 0 ? args[stageIndex + 1] : null;
+if (stageIndex >= 0 && (!structural || stage !== 'specs')) {
+  console.error('Usage: freeze-check.mjs <change-dir> --structural --stage specs [--json]');
+  process.exit(2);
+}
 // --skip-signer-check: offline escape hatch; the R0 signer uuid is then format-checked only.
 const skipSignerCheck = args.includes('--skip-signer-check');
 // --strict: promote drift advisories (currently: frozen base behind the default branch) to blocks.
 const strict = args.includes('--strict');
-const positional = args.filter((arg) => !arg.startsWith('--'));
+const positional = [];
+for (let index = 0; index < args.length; index += 1) {
+  const arg = args[index];
+  if (arg === '--stage') { index += 1; continue; }
+  if (!arg.startsWith('--')) positional.push(arg);
+}
 const changeDir = positional[0];
 if (!changeDir) {
   console.error('Usage: freeze-check.mjs <change-dir> [--json] [--explain] [--structural] [--skip-signer-check] [--strict]');
@@ -63,6 +77,7 @@ const RULE_FIXES = {
   UNKNOWN_DECISION: 'add a decision heading (e.g. `- **D-01 <title>**` under `## Decisions`) in design.md',
   UNKNOWN_SCEN: 'claim a SCEN declared under specs/',
   DUPLICATE_SCEN: 'give each scenario declaration a unique SCEN id and update its task claims',
+  NO_SPEC_SCEN: 'declare at least one `### Scenario: SCEN-<PREFIX>-NN` in specs/ before committing the frozen set',
   UNCLAIMED_SCEN: 'assign each declared SCEN to at least one task',
   NO_SCEN: 'claim at least one SCEN, or mark the task Review: mechanical',
   EMPTY_TASKS: 'write at least one parseable task line',
@@ -72,13 +87,15 @@ const RULE_FIXES = {
 };
 
 const tasksMarkdown = read(path.join(changeDir, 'tasks.md'));
-if (tasksMarkdown === null) {
+// The staged specs check runs exactly when tasks.md does not exist yet; any other mode still
+// requires it.
+if (tasksMarkdown === null && stage !== 'specs') {
   if (json) console.log(JSON.stringify({ error: 'tasks.md not found' }));
   else console.error('[freeze-check] tasks.md not found');
   process.exit(1);
 }
 
-const { tasks, errors } = parseTasks(tasksMarkdown);
+const { tasks, errors } = parseTasks(tasksMarkdown ?? '');
 const blocking = errors.map((error) => `${error.code}${error.task ? ` ${error.task}` : ''}: ${error.message}`);
 const advisories = [];
 const fixes = new Map();
@@ -134,6 +151,68 @@ for (const [scen, file] of declared) {
     for (const message of result.advisories) advisories.push(message);
     for (const message of result.blocking) fixes.set('COLLIDING_SCEN', 'choose a new SCEN id, or re-declare a baseline id under MODIFIED/REMOVED Requirements in this change');
   }
+}
+
+// With --stage specs, only the declaration rules run: duplicates, cross-change collisions and an
+// empty scenario set. Full-run rules that need tasks.md, acceptance.md and design.md are skipped
+// because those artifacts do not exist yet.
+if (stage === 'specs') {
+  const specBlocking = [];
+  for (const message of blocking) {
+    const code = message.match(/^([A-Z][A-Z0-9_]*)/)?.[1] ?? '';
+    if (['DUPLICATE_SCEN', 'COLLIDING_SCEN', 'NO_SPEC_SCEN'].includes(code)) specBlocking.push(message);
+  }
+  // A specs-only change that declares scenarios is fine; one that declares none is not. The name
+  // says what is wrong without borrowing the task-level NO_SCEN rule.
+  if (declared.size === 0) specBlocking.push('NO_SPEC_SCEN: specs/ declares no SCEN scenario; every capability delta needs at least one');
+  const stageAdvisories = advisories.filter((message) => /^ADVISORY_SHARED_SCEN\b/.test(message));
+  // Requirement overlap: another active change already adds, modifies or removes a requirement
+  // this change modifies or removes. Structural misses it because each side is a valid delta alone;
+  // the merge gives the capability two intentions for one requirement.
+  const toplevel = gitIn(changeDir, ['rev-parse', '--show-toplevel']);
+  if (toplevel.status === 0) {
+    const repoRoot = toplevel.stdout.trim();
+    const current = { ADDED: new Set(), MODIFIED: new Set(), REMOVED: new Set(), RENAMED: new Set() };
+    for (const file of walkSpecFiles(path.join(changeDir, 'specs'))) {
+      for (const found of scanRequirements(read(file) || '')) current[found.section]?.add(found.name);
+    }
+    const { sources } = collectSpecSources({ repoRoot, excludeDir: changeDir });
+    const external = new Map();
+    for (const file of sources) {
+      const relative = path.relative(repoRoot, file).split(path.sep).join('/');
+      const changeMatch = /^openspec\/changes\/([^/]+)\//.exec(relative);
+      if (!changeMatch) continue;
+      for (const found of scanRequirements(read(file) || '')) {
+        if (!['ADDED', 'MODIFIED', 'REMOVED', 'RENAMED'].includes(found.section)) continue;
+        if (!external.has(found.name)) external.set(found.name, new Map());
+        if (!external.get(found.name).has(changeMatch[1])) external.get(found.name).set(changeMatch[1], new Set());
+        external.get(found.name).get(changeMatch[1]).add(found.section);
+      }
+    }
+    const touched = [...new Set([...current.MODIFIED, ...current.REMOVED])].sort();
+    for (const name of touched) {
+      const mine = current.MODIFIED.has(name) ? 'MODIFIED' : 'REMOVED';
+      for (const [other, sections] of [...(external.get(name) ?? new Map()).entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+        const theirs = ['ADDED', 'MODIFIED', 'REMOVED', 'RENAMED'].filter((section) => sections.has(section));
+        if (!theirs.length) continue;
+        stageAdvisories.push(`ADVISORY_REQ_OVERLAP ${name}: this change ${mine} it, and ${other} also ${theirs.join('/')} it`);
+      }
+    }
+  }
+  const summary = {
+    change: path.resolve(changeDir),
+    stage: 'specs',
+    blocking: [...new Set(specBlocking)],
+    advisories: [...new Set(stageAdvisories)],
+  };
+  if (json) console.log(JSON.stringify(summary, null, 2));
+  else {
+    console.log(`[freeze-check] ${summary.change} (stage specs)`);
+    for (const item of summary.advisories) console.log(`ADVISE ${item}`);
+    for (const item of summary.blocking) console.error(`BLOCK ${item}`);
+    console.log(summary.blocking.length ? `RESULT specs rejected (${summary.blocking.length})` : 'RESULT specs ok');
+  }
+  process.exit(summary.blocking.length ? 1 : 0);
 }
 
 // Dispatch-dependency wave width is a planning heuristic, not exact maximum concurrency.

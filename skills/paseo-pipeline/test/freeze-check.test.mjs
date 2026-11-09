@@ -1601,3 +1601,161 @@ test('structural result: blocking rejects with non-zero, advisories keep exit 0 
   assert.equal(blocked.status, 1);
   assert.ok(JSON.parse(blocked.stdout).blocking.length > 0);
 });
+
+// ---- staged specs check: --structural --stage specs ----
+// A change that has specs but no tasks.md yet. `runStage` passes the stage flags explicitly; a
+// passing case must not be what the full run happens to allow.
+const runStage = (dir, extra = []) => run(dir, ['--structural', '--skip-signer-check', '--stage', 'specs', ...extra]);
+const stageReport = (result) => { try { return JSON.parse(result.stdout); } catch { return { blocking: [], advisories: [] }; } };
+// `ownId` is unique per fixture because a baseline id re-declared under ADDED is a collision too;
+// each test can then decide which external declaration it is exercising.
+function stageRepo({
+  ownSection = 'ADDED Requirements',
+  ownRequirement = '收款人档案',
+  ownId = 'SCEN-CAP-01',
+  ownText = 'WHEN a\nTHEN b\n',
+  ownTitle = 'own',
+  otherTitle = 'other',
+  otherSection = 'MODIFIED Requirements',
+  otherRequirement = '收款人入口',
+  otherId = 'SCEN-CAP-91',
+  otherText = 'WHEN c\nTHEN d\n',
+  baselineId = 'SCEN-CAP-81',
+} = {}) {
+  const dir = change({
+    'proposal.md': 'x',
+    'specs/cap/spec.md': `## ${ownSection}\n### Requirement: ${ownRequirement}\n#### Scenario: ${ownId} ${ownTitle}\n${ownText}`,
+  });
+  const sh = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
+  sh('init', '-q', '-b', 'main');
+  fs.mkdirSync(path.join(dir, 'openspec/specs/cap'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'openspec/specs/cap/spec.md'), `## Requirements\n#### Scenario: ${baselineId} baseline\n`);
+  fs.mkdirSync(path.join(dir, 'openspec/changes/other/specs/cap'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'openspec/changes/other/specs/cap/spec.md'), `## ${otherSection}\n### Requirement: ${otherRequirement}\n#### Scenario: ${otherId} ${otherTitle}\n${otherText}`);
+  return dir;
+}
+
+test('stage specs passes with specs present and no tasks.md', () => {
+  const dir = stageRepo();
+  const result = runStage(dir);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stderr, /tasks\.md not found/);
+  const report = stageReport(runStage(dir, ['--json']));
+  assert.equal(report.stage, 'specs');
+  assert.deepEqual(report.blocking, []);
+  assert.ok(Array.isArray(report.advisories));
+});
+
+test('stage specs blocks with the same code as the full run for another change\'s id', () => {
+  // Same id, different heading text: the full run's collision classification, not a reimplementation.
+  const dir = stageRepo({ ownId: 'SCEN-CAP-91' });
+  const stage = runStage(dir);
+  assert.equal(stage.status, 1);
+  assert.match(stageReport(stage).blocking.join('\n'), /^COLLIDING_SCEN SCEN-CAP-91: already declared in openspec\/changes\/other\/specs\/cap\/spec\.md$/m);
+  const human = spawnSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--structural', '--skip-signer-check', '--stage', 'specs'], { encoding: 'utf8' });
+  assert.equal(human.status, 1);
+  assert.match(human.stdout, /RESULT specs rejected/);
+});
+
+test('stage specs allows a baseline id re-declared under MODIFIED/REMOVED Requirements, and blocks it under ADDED', () => {
+  for (const section of ['MODIFIED Requirements', 'REMOVED Requirements']) {
+    const dir = stageRepo({ ownSection: section, ownId: 'SCEN-CAP-81' });
+    const pass = runStage(dir);
+    assert.equal(pass.status, 0, `${section}: ${pass.stdout}${pass.stderr}`);
+  }
+  const blocked = stageRepo({ ownSection: 'ADDED Requirements', ownId: 'SCEN-CAP-81' });
+  const fail = runStage(blocked);
+  assert.equal(fail.status, 1);
+  assert.match(stageReport(fail).blocking.join('\n'), /^COLLIDING_SCEN SCEN-CAP-81: already declared in openspec\/specs\/cap\/spec\.md$/m);
+});
+
+test('stage specs keeps an identical body from another change advisory-only', () => {
+  const dir = stageRepo({ ownSection: 'MODIFIED Requirements', ownId: 'SCEN-CAP-91', ownRequirement: '收款人入口', ownTitle: 'shared', otherTitle: 'shared', otherRequirement: '收款人入口', otherText: 'WHEN c\nTHEN d\n', ownText: 'WHEN c\nTHEN d\n' });
+  const result = runStage(dir);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const report = stageReport(result);
+  assert.match(report.advisories.join('\n'), /^ADVISORY_SHARED_SCEN SCEN-CAP-91: openspec\/changes\/other\/specs\/cap\/spec\.md declares the same scenario text/m);
+  assert.deepEqual(report.blocking, []);
+});
+
+test('stage specs blocks duplicate ids inside this change', () => {
+  const dir = stageRepo();
+  fs.mkdirSync(path.join(dir, 'specs/other'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'specs/other/spec.md'), '## ADDED Requirements\n#### Scenario: SCEN-CAP-01 second declaration\n');
+  const result = runStage(dir);
+  assert.equal(result.status, 1);
+  assert.match(stageReport(result).blocking.join('\n'), /^DUPLICATE_SCEN SCEN-CAP-01: declared in specs\/cap\/spec\.md and specs\/other\/spec\.md$/m);
+});
+
+test('stage specs blocks a specs tree with no scenario at all', () => {
+  const dir = change({ 'proposal.md': 'x', 'specs/cap/spec.md': '## ADDED Requirements\n### Requirement: no scenarios here\n\nWHEN x\nTHEN y\n' });
+  const result = runStage(dir);
+  assert.equal(result.status, 1);
+  assert.match(stageReport(result).blocking.join('\n'), /^NO_SPEC_SCEN: specs\/ declares no SCEN scenario/m);
+  // The full run still fails on its own terms (tasks.md absent); NO_SPEC_SCEN is stage-only.
+  const full = run(change({ 'proposal.md': 'x', 'specs/cap/spec.md': '## ADDED Requirements\n### Requirement: r\n' }), ['--structural', '--skip-signer-check']);
+  assert.equal(full.status, 1);
+  assert.doesNotMatch(full.stdout, /NO_SPEC_SCEN/);
+});
+
+test('ADVISORY_REQ_OVERLAP names a requirement both this and another change modify/remove, and stays exit 0', () => {
+  const dir = stageRepo({ ownSection: 'MODIFIED Requirements', ownRequirement: '收款人名录与报销单双向数据沉淀', ownId: 'SCEN-CAP-02', otherSection: 'REMOVED Requirements', otherRequirement: '收款人名录与报销单双向数据沉淀', otherId: 'SCEN-CAP-92' });
+  const result = runStage(dir);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const report = stageReport(result);
+  assert.deepEqual(report.blocking, []);
+  assert.match(report.advisories.join('\n'), /^ADVISORY_REQ_OVERLAP 收款人名录与报销单双向数据沉淀: this change MODIFIED it, and other also REMOVED it$/m);
+  // Never appears in the full run.
+  const full = run(change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': 'x', 'specs/a/spec.md': '### Scenario: SCEN-1\n' }), ['--structural', '--skip-signer-check']);
+  assert.doesNotMatch(stageReport(full).advisories.join('\n'), /ADVISORY_REQ_OVERLAP/);
+});
+
+test('--stage is valid only with --structural and the value specs; anything else is a usage error', () => {
+  const dir = stageRepo();
+  const check = spawnSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--stage', 'specs'], { encoding: 'utf8' });
+  assert.equal(check.status, 2, check.stdout + check.stderr);
+  for (const args of [['--structural', '--stage', 'tasks'], ['--structural', '--stage'], ['--structural', '--stage', '--json']]) {
+    const result = spawnSync('node', [path.join(root, 'freeze-check.mjs'), dir, ...args], { encoding: 'utf8' });
+    assert.equal(result.status, 2, args.join(' '));
+    assert.match(result.stderr, /Usage:/);
+  }
+});
+
+test('the full run without --stage is byte-identical to main on a complete package', () => {
+  // `test/fixtures/freeze-check-golden.json` was captured by running the base revision's
+  // freeze-check.mjs against this exact fixture; regenerate it only when main's output changes
+  // deliberately. This pins "existing modes are unchanged", not a hand-written expectation.
+  const dir = change({
+    'tasks.md': `- [ ] 1.1 T-01 shared
+  - Write scope: src/shared,test/shared.test.mjs
+  - Verify with: node --test test/shared.test.mjs
+  - Scen: SCEN-1
+- [ ] 1.2 T-02 sink
+  - Depends on: T-01
+  - Write scope: src/app.mjs,test/sink.test.mjs
+  - Verify with: npm test
+  - Scen: SCEN-1,SCEN-2
+`,
+    'proposal.md': 'x\n',
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node -e "0" | yes | PENDING | pending |\n| SCEN-2 | CLI | T-02 | node -e "0" | no | PENDING | pending |'),
+    'specs/cap/spec.md': '## ADDED Requirements\n### Requirement: Added one\n#### Scenario: SCEN-1 one\nWHEN a\nTHEN b\n',
+    'specs/other/spec.md': '## MODIFIED Requirements\n### Requirement: Changed\n#### Scenario: SCEN-2 two\nWHEN c\nTHEN d\n',
+  });
+  const sh = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
+  sh('init', '-q', '-b', 'main');
+  fs.mkdirSync(path.join(dir, 'openspec/specs/cap'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'openspec/specs/cap/spec.md'), '## Requirements\n### Scenario: SCEN-9 base\n');
+  fs.mkdirSync(path.join(dir, 'openspec/changes/other/specs/cap'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'openspec/changes/other/specs/cap/spec.md'), '## MODIFIED Requirements\n### Requirement: Added one\n#### Scenario: SCEN-3 foreign\n');
+  const golden = JSON.parse(fs.readFileSync(path.join(root, 'test/fixtures/freeze-check-golden.json'), 'utf8'));
+  for (const flags of [[], ['--json'], ['--structural', '--skip-signer-check'], ['--strict', '--json']]) {
+    // Raw flags, not `run`: the golden includes the human (non-JSON) mode too.
+    const result = spawnSync('node', [path.join(root, 'freeze-check.mjs'), dir, ...flags], { encoding: 'utf8' });
+    const rendered = {
+      status: result.status,
+      stdout: result.stdout.split(dir).join('<dir>'),
+      stderr: result.stderr.split(dir).join('<dir>'),
+    };
+    assert.deepEqual(rendered, golden[flags.join(' ') || '(none)'], flags.join(' ') || '(none)');
+  }
+});
