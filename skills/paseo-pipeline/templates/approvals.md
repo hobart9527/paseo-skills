@@ -13,7 +13,7 @@ Use before any destructive or production step: deploy, `archive_workspace`, bran
    For CP-2 cleanup, take the list verbatim from `pipeline-run.mjs cleanup <change-dir>`
    (`--json` for the same objects): one `paseo-workspace`, `git-worktree` or `branch` object
    per line, each with its own exact `command`. That command is read-only — it lists and exits;
-   the human runs each listed command by hand after approval. A stale registration whose
+   after per-object approval, the named executor runs each listed command and records who ran it. A stale registration whose
    directory is gone is an ordinary `git-worktree` object removed individually with `git
    worktree remove <path>`; a dirty or locked worktree refuses, and that refusal is reported,
    never forced (`-D`, `--force`) and never replaced with `rm -rf`. The listing marks a dirty
@@ -29,10 +29,11 @@ Use before any destructive or production step: deploy, `archive_workspace`, bran
    Approval: <ISO timestamp> <the user's words, unedited>
    Object: <the object's exact id copied from step 1>
    Command: <the exact command>
+   Executor: <named person or agent>
    ```
    Do not paraphrase, translate or compress the user's words. The record is evidence of what
    was approved. Nothing reads it back automatically, so after compaction or resume re-read it
    instead of trusting the summary, and re-ask if the object list or a command differs.
-4. **You run it.** After approval, run exactly the recorded commands, one object at a time.
+4. **Named executor.** For each object, name the authorized executor in the approval record. That executor runs exactly the recorded command after approval, one object at a time, and records who ran it.
    Never force, and never widen a command to cover an object it did not name.
 5. Push and history rewrite need their own approval even when cleanup was approved.

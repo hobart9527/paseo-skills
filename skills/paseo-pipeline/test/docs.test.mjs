@@ -7,8 +7,53 @@ test('skill documents converged core and hard limits', () => {
   const text = read('SKILL.md');
   for (const needle of ['Vertical slices', 'Narrow Verify', 'One worker per task', 'Wave 0', 'finish notification', 'merge-task.mjs', 'freeze-check.mjs', 'worker', 'integrated', 'CP-2']) assert.ok(text.includes(needle), needle);
   // The prompt is allowed room to explain the model; it is not padded to a budget.
-  assert.ok(text.length < 20000);
+  assert.ok(text.length < 22000);
 });
+test('pipeline prompts align execution, contract, review, and handoff rules', () => {
+  const schema = read('openspec-schema/schema.yaml');
+  assert.match(schema, /Stop unless R0 is closed[\s\S]*`pipeline-run\.mjs plan`[\s\S]*Never hand-tick[\s\S]*validation dependency, not[\s\S]*authorization to execute tasks/);
+  assert.match(schema, /R0 is closed by either[\s\S]*`R0: pass\(<uuid>@<sha>\)` in `review\.md`[\s\S]*`R0: human-accept\(@<sha>\)` in `review\.md`[\s\S]*`Approval: R0 residual risk accepted for <sha> — <reason>` in `run-log\.md`/);
+  assert.match(schema, /Human-accept is never a reviewer pass/);
+  assert.match(schema, /complete updated requirement under `## MODIFIED Requirements`/);
+  assert.match(schema, /keep unchanged scenarios verbatim/);
+  const author = read('templates/author.md');
+  assert.match(author, /complete updated requirement under `## MODIFIED Requirements`/);
+  assert.match(author, /Accidentally colliding with an old constraint is a contract defect to fix/);
+  assert.match(author, /when the change authorizes changing old behavior, include affected tests in the same task/);
+  assert.match(author, /applicable standards source and scope/);
+  assert.match(author, /At 25 minutes, stop and deliver an `INCOMPLETE` snapshot/);
+  assert.match(author, /At 30 minutes, only recover unreported state/);
+  const approvals = read('templates/approvals.md');
+  assert.match(approvals, /after per-object approval, the named executor runs each listed command/);
+  assert.match(approvals, /Executor: <named person or agent>/);
+  assert.match(approvals, /records who ran it/);
+  assert.match(approvals, /Push and history rewrite need their own approval/);
+  const tier2 = read('../../docs/tier2-reviewer-brief.md');
+  assert.match(tier2, /never enters the code-fix loop/);
+  assert.match(tier2, /must disposition it before merge/);
+  for (const file of ['templates/reviewer.md', 'templates/final-recovery.md', 'SKILL.md']) {
+    const text = read(file);
+    assert.match(text, /CONTRACT_GAP|REQUIREMENT_GAP/);
+    assert.match(text, /before CP-2/);
+    if (file === 'templates/reviewer.md') assert.match(text, /not a new review round/);
+    else assert.match(text, /not a loophole for substantive changes/);
+  }
+  const sessionHook = read('hooks/tier-session-hook.mjs');
+  const reminderHook = read('hooks/tier-reminder-hook.mjs');
+  for (const text of [sessionHook, reminderHook]) {
+    assert.match(text, /src\/test\/tests\/__tests__\/spec\/e2e/);
+    assert.match(text, /空闲重置账本不代表/);
+    assert.match(text, /已获批准/);
+  }
+  const skill = read('SKILL.md');
+  assert.match(skill, /business delivery complete does not mean workspace cleanup is complete/);
+  assert.match(skill, /After archive moves the change directory, logs live under the archive path/);
+  assert.match(skill, /cleanup` must receive `--change <name>`/);
+  const handoff = read('../../docs/tier2-handoff-brief.md');
+  assert.match(handoff, /Implementer delivers commits and report only/);
+  assert.match(handoff, /user resumes parent session and asks for recovery/);
+});
+
 test('skill documents the real handoff sequence and profile-notes override', () => {
   const text = read('SKILL.md');
   for (const needle of ['Start after CP-1', 'integration/<change>', 'task/<change>/<T-id>', '确认冻结并交给主会话执行', 'Profile notes describe a role', 'Bootstrap dependencies']) {
@@ -137,8 +182,8 @@ test('author brief carries a write-first budget without lowering any gate', () =
   assert.match(author, /`MISSING_DEPENDENCIES`/);
   assert.match(author, /Budget exhaustion is never a `COMPLETE`/);
   assert.match(author, /Do not read `freeze-check`, parser or scheduler source/);
-  assert.match(author, /30-minute mark and compares Paseo status with `git log`/);
-  assert.match(author, /Having made a first commit does not clear the point/);
+  assert.match(author, /At 30 minutes, only recover unreported state by reconciling Paseo status with `git log`/);
+  assert.match(author, /do not poll, steer based on inactivity, or treat this as another stop/);
   assert.match(author, /complete package plus the structural check by minute 20/);
   assert.match(author, /roughly 30 \/ 60 \/ 75 calls approximate the same anchors/);
   assert.match(author, /Return `BLOCKED` only if the choice changes the task graph or ownership/);
@@ -205,7 +250,7 @@ test('contract authoring order freezes findings, SCEN ids and briefed constants'
   assert.match(author, /answered by the brief's Project constants when supplied/);
   assert.match(read('SKILL.md'), /supplies project constants and at most 5 pending decisions with defaults/);
   // Gates untouched.
-  assert.match(author, /30-minute mark/);
+  assert.match(author, /At 30 minutes, only recover unreported state/);
   assert.match(author, /`COMPLETE` still requires the structural check to succeed on committed content/);
 });
 
@@ -374,12 +419,12 @@ test('FINAL findings are ledgered and routed by class; ledger survives SHAs and 
   assert.match(reviewer, /confirmed fixed is closed; reopening it needs new evidence/);
   assert.match(reviewer, /replacement reviewer reads the ledger first and inherits the budget/);
   const recovery = read('templates/final-recovery.md');
-  assert.match(recovery, /Only DEVIATION .* enters a repair task/);
-  assert.match(recovery, /CONTRACT_GAP goes to the human/);
-  assert.match(recovery, /ENHANCEMENT goes to the backlog/);
+  assert.match(recovery, /Only DEVIATION .* enters a code-fix task/);
+  assert.match(recovery, /CONTRACT_GAP and REQUIREMENT_GAP never enter that loop/);
+  assert.match(recovery, /ENHANCEMENT goes to non-blocking backlog/);
   const skill = read('SKILL.md');
   assert.match(skill, /DEVIATION → one batched repair wave/);
-  assert.match(skill, /CONTRACT_GAP → human/);
+  assert.match(skill, /CONTRACT_GAP\/REQUIREMENT_GAP → human disposition before CP-2\/merge/);
 });
 
 test('FINAL is capped at two rounds with a mandatory three-way human exit mirroring R0', () => {
@@ -439,6 +484,8 @@ test('FINAL evidence binds to the reviewed SHA; record commits touch only three 
   assert.doesNotMatch(recovery, /verify integration HEAD still equals the recorded SHA,/);
   assert.match(read('templates/reviewer.md'), /record commits only/);
   assert.match(read('SKILL.md'), /Later commits touch only `review\.md`, `rulings\.md`, `run-log\.md`/);
+  assert.match(read('SKILL.md'), /A record-only SHA update is not a new review round/);
+  assert.match(read('templates/final-recovery.md'), /A change that only updates the record file's SHA is not a new review round/);
 });
 
 test('pre-authorization is a recorded human approval applied to a named amendment SHA', () => {
@@ -586,11 +633,10 @@ test('FINAL depth follows the diff content and R0 rulings have a record format',
 test('R0 has a legal exit: reviewer pass, recorded human exception, or blocking', () => {
   const skill = read('SKILL.md');
   // The two approval kinds are distinct and neither may be written as the other.
-  assert.match(skill, /R0: pass\(<agent-uuid>@<reviewed-sha>\)/);
-  assert.match(skill, /R0: human-accept\(@<sha>\)/);
-  assert.match(skill, /never written as a reviewer pass/);
-  // A human exception needs its own record, not just the sign-off line.
-  assert.match(skill, /approval in `run-log\.md`/);
+  assert.match(skill, /R0: pass\(<reviewer-uuid>@<sha>\)` in `review\.md`/);
+  assert.match(skill, /R0: human-accept\(@<sha>\)` in `review\.md`/);
+  assert.match(skill, /Approval: R0 residual risk accepted for <sha> — <reason>` in `run-log\.md`/);
+  assert.match(skill, /never a reviewer pass/);
   assert.match(skill, /open item and reason in `rulings\.md`/);
   // Whole-package rounds are capped; a directed repair is verified as a delta.
   assert.match(skill, /at most two whole-package rounds/);
