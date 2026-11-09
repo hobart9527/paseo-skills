@@ -9,11 +9,13 @@
 //   pipeline-run.mjs merge  <change-dir> <task-id> [--timeout=ms] [--allow-attempt-over]
 //   pipeline-run.mjs status <change-dir>
 //   pipeline-run.mjs cleanup <change-dir> [--json] [--change <name>]
+//   pipeline-run.mjs scenarios <change-dir> [--json]
 //   pipeline-run.mjs acceptance run|check <change-dir> --evidence <file> ...
 //   pipeline-run.mjs install-hook <worktree> [<worktree>...]
 //
 // `merge` must run inside the integration worktree (`integration/<change>`).
-// Exit: plan/status 0 ok, 3 invalid or unreadable state; merge forwards merge-task's exit code.
+// Exit: plan/status 0 ok, 3 invalid or unreadable state; scenarios 0 ok, 1 unparseable input,
+// 2 usage; merge forwards merge-task's exit code.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -123,6 +125,11 @@ if (command === 'acceptance') {
   process.exit(result.status ?? 1);
 } else if (command === 'cleanup') {
   process.exit(runCleanup(rest));
+} else if (command === 'scenarios') {
+  // Read-only derivation: it reads the change directory once and prints relations. It is a
+  // separate process so it cannot even import the scheduler; the child's exit code is the answer.
+  const result = spawnSync(process.execPath, [path.join(HOME, 'scenarios.mjs'), ...rest], { stdio: 'inherit' });
+  process.exit(result.status ?? 1);
 } else if (command === 'status') {
   let parsed;
   try { parsed = parseOptions(rest, { json: 'boolean' }); } catch (error) { die(error.message); }
@@ -154,5 +161,5 @@ if (command === 'acceptance') {
     for (const task of tasks.filter((item) => !item.done)) console.log(`OPEN ${task.id}: ${task.title}`);
   }
 } else {
-  die('usage: pipeline-run.mjs plan|merge|status|cleanup|acceptance <change-dir> ...', 2);
+  die('usage: pipeline-run.mjs plan|merge|status|cleanup|scenarios|acceptance <change-dir> ...', 2);
 }
