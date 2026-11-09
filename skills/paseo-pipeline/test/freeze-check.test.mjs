@@ -1919,3 +1919,71 @@ test('invalid acceptance diagnostics keep base order and spelling, not a grouped
     assert.deepEqual(render(path.join(root, 'freeze-check.mjs')), oracle, name);
   }
 });
+
+test('short acceptance headers preserve base JSON diagnostics and never crash', () => {
+  const base = baseFreezeCheck();
+  const tasks = '- [ ] 1.1 T-01 shared\n  - Write scope: src/shared,test/shared.test.mjs\n  - Verify with: node --test test/shared.test.mjs\n  - Scen: SCEN-X\n';
+  const headers = [
+    '| Scenario |',
+    '| Scenario | Entry |',
+    '| Scenario | Entry | Tasks |',
+    '| Scenario | Entry | Tasks | Verify |',
+    '| Scenario | Entry | Tasks | Verify | Required |',
+    '| Scenario | Entry | Tasks | Verify | Required | Result |',
+    '| Scenario | Entry | Tasks | Verify | Required | Result | Evidence | Extra |',
+  ];
+  const rows = headers.map((header, index) => {
+    const width = header.split('|').length - 2;
+    const cells = ['SCEN-X', 'x', 'T-01', 'node -e "0"', 'yes', 'PENDING', 'pending', 'extra'].slice(0, width);
+    return [header, `| ${Array(width).fill('---').join(' | ')} |`, `| ${cells.join(' | ')} |`].join('\n');
+  });
+  rows.push('| Scenario | Entry |\n| --- | --- |\n| SCEN-X | x |');
+  rows.push('| SCEN-X |'); // SCEN-id only, no recognized header
+  for (const [index, acceptance] of rows.entries()) {
+    const dir = change({ 'tasks.md': tasks, 'proposal.md': 'x', 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-X\n' });
+    const invoke = (script) => {
+      const result = spawnSync('node', [script, dir, '--json', '--structural', '--skip-signer-check'], { encoding: 'utf8' });
+      return { status: result.status, stdout: result.stdout.replace(dir, '<dir>'), stderr: result.stderr.replace(dir, '<dir>') };
+    };
+    assert.deepEqual(invoke(path.join(root, 'freeze-check.mjs')), invoke(base), `case ${index + 1}`);
+  }
+});
+
+function freezeCheckAtD4Base() {
+  const tree = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-d4-base-'));
+  const toplevel = execFileSync('git', ['-C', root, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+  const archive = execFileSync('git', ['-C', toplevel, 'archive', '9b82233a7aca1868035cf8221a448c10a13228a1', 'skills/paseo-pipeline'], { maxBuffer: 64 << 20 });
+  execFileSync('tar', ['-x', '-C', tree], { input: archive });
+  return path.join(tree, 'skills', 'paseo-pipeline', 'freeze-check.mjs');
+}
+
+test('short and malformed acceptance tables match D4 base JSON output without throwing', () => {
+  const base = freezeCheckAtD4Base();
+  const tasks = '- [ ] 1.1 T-01 shared\n  - Write scope: src/shared,test/shared.test.mjs\n  - Verify with: node --test test/shared.test.mjs\n  - Scen: SCEN-X\n';
+  const headers = [
+    '| Scenario |',
+    '| Scenario | Entry |',
+    '| Scenario | Entry | Tasks |',
+    '| Scenario | Entry | Tasks | Verify |',
+    '| Scenario | Entry | Tasks | Verify | Required |',
+    '| Scenario | Entry | Tasks | Verify | Required | Result |',
+    '| Scenario | Entry | Tasks | Verify | Required | Result | Evidence | Extra |',
+  ];
+  const cases = headers.map((header) => {
+    const width = header.split('|').length - 2;
+    const cells = ['SCEN-X', 'x', 'T-01', 'node -e "0"', 'yes', 'PENDING', 'pending', 'extra'].slice(0, width);
+    return `${header}\n| ${Array(width).fill('---').join(' | ')} |\n| ${cells.join(' | ')} |`;
+  });
+  cases.push('| Scenario | Entry |\n| --- | --- |\n| SCEN-X | x |');
+  cases.push('| SCEN-X |');
+  for (const [index, acceptanceMarkdown] of cases.entries()) {
+    const dir = change({ 'tasks.md': tasks, 'proposal.md': 'x', 'acceptance.md': acceptanceMarkdown, 'specs/a/spec.md': '### Scenario: SCEN-X\n' });
+    const runJson = (script) => {
+      const result = spawnSync('node', [script, dir, '--json', '--structural', '--skip-signer-check'], { encoding: 'utf8' });
+      assert.doesNotMatch(result.stderr, /TypeError|ReferenceError|SyntaxError/, `case ${index + 1}: ${result.stderr}`);
+      assert.doesNotThrow(() => JSON.parse(result.stdout), `case ${index + 1}: ${result.stdout} ${result.stderr}`);
+      return { status: result.status, stdout: result.stdout.replace(dir, '<dir>'), stderr: result.stderr.replace(dir, '<dir>') };
+    };
+    assert.deepEqual(runJson(path.join(root, 'freeze-check.mjs')), runJson(base), `case ${index + 1}`);
+  }
+});

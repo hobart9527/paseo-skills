@@ -46,18 +46,24 @@ export function parseAcceptanceTable(markdown) {
       entries.push({ line: lineNumber, malformed: problem });
       return;
     }
+    // A wrong-width header can still have rows with exactly its width. The gate must report the
+    // bad header and continue validating fields that are absent from those short rows; treating
+    // absent cells as empty preserves its historical BAD_ACCEPTANCE_REQUIRED diagnostic instead
+    // of throwing while constructing the shared row.
+    const cell = (index) => cells[index] ?? '';
+    const scenRaw = cell(0);
     const row = {
       line: lineNumber,
       // `scenRaw` is the id as written: diagnostic messages echo it, the keyed comparisons use
       // the uppercased `scen` the gate has always keyed on.
-      scenRaw: cells[0],
-      scen: cells[0].toUpperCase(),
-      entry: cells[1],
-      tasksRaw: cells[2].trim(),
-      verify: cells[3],
-      required: cells[4],
-      result: cells[5],
-      evidence: cells[6],
+      scenRaw,
+      scen: scenRaw.toUpperCase(),
+      entry: cell(1),
+      tasksRaw: cell(2).trim(),
+      verify: cell(3),
+      required: cell(4),
+      result: cell(5),
+      evidence: cell(6),
     };
     rows.push(row);
     entries.push({ line: lineNumber, row });

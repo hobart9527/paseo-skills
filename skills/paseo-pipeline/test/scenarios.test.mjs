@@ -413,3 +413,29 @@ ${body}`);
   const parsed = JSON.parse(gate.stdout);
   assert.ok(!parsed.blocking.some((item) => item.startsWith('COLLIDING_SCEN SCEN-CAP-01')), parsed.blocking.join('\n'));
 });
+
+test('odd acceptance tables fail structurally without crashing or printing candidates', () => {
+  const variants = [
+    '',
+    '| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |',
+    '| --- | --- | --- | --- | --- | --- | --- |',
+    '| Scenario | Entry |\n| --- | --- |\n| SCEN-CAP-01 | x |',
+    '| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |\n| --- | --- | --- | --- | --- | --- | --- |\n| SCEN-CAP-01 | x | T-01 | node -e "0" | yes | PENDING | pending | trailing |',
+    '| SCEN-CAP-01 |',
+  ];
+  for (const [index, acceptance] of variants.entries()) {
+    const f = fixture({ 'openspec/changes/chg/acceptance.md': acceptance });
+    const helper = run(f.cwd, ['scenarios', f.dir, '--json']);
+    assert.doesNotMatch(helper.stderr, /TypeError|ReferenceError|SyntaxError/, `scenario ${index + 1}: ${helper.out}`);
+    assert.doesNotThrow(() => JSON.parse(helper.stdout), `scenario ${index + 1}: ${helper.out}`);
+    const report = JSON.parse(helper.stdout);
+    if (helper.status !== 0) {
+      assert.doesNotMatch(helper.stdout, /candidate/);
+      assert.ok(report.errors.some((error) => error.code === 'BAD_ACCEPTANCE_HEADER' || error.code === 'MALFORMED_ACCEPTANCE_ROW'), JSON.stringify(report.errors));
+    }
+    const gate = spawnSync('node', [path.join(path.dirname(script), 'freeze-check.mjs'), f.dir, '--json', '--structural', '--skip-signer-check'], { cwd: f.cwd, env, encoding: 'utf8' });
+    assert.doesNotMatch(gate.stderr, /TypeError|ReferenceError|SyntaxError/);
+    assert.doesNotThrow(() => JSON.parse(gate.stdout));
+    assert.equal(gate.status, JSON.parse(gate.stdout).blocking.length ? 1 : 0);
+  }
+});

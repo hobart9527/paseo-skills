@@ -443,10 +443,10 @@ test('replay executes an npm-prefix narrow target instead of skipping it as a pa
   const pkg = (name) => JSON.stringify({ name, version: '1.0.0', scripts: { test: 'node --test test/x.test.ts' } }, null, 2);
   write(f.cwd, 'packages/a/package.json', pkg('a'));
   write(f.cwd, 'packages/b/package.json', pkg('b'));
-  // Only package b has the target, and it fails on purpose: the merge must report a regression at
-  // the npm command. Resolution against the first prefix would instead fail with "no such test",
-  // which is a different message, so this also pins where the target resolves.
-  write(f.cwd, 'packages/b/test/x.test.ts', `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport path from 'node:path';\ntest('runs in package b', () => {\n  assert.equal(path.basename(process.cwd()), 'b');\n  assert.fail('deliberate replay failure');\n});\n`);
+  // Only package b has the target, and it emits a unique marker before failing. The merge report
+  // must contain that child's captured stdout as well as the regression command; this proves the
+  // package-b test really executed, rather than merely proving merge-task attempted npm.
+  write(f.cwd, 'packages/b/test/x.test.ts', `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport path from 'node:path';\ntest('runs in package b', () => {\n  assert.equal(path.basename(process.cwd()), 'b');\n  console.log('D4_NPM_PREFIX_TARGET_EXECUTED_B');\n  assert.fail('deliberate replay failure');\n});\n`);
   git(f.cwd, 'add', '.'); git(f.cwd, 'commit', '-qm', 'packages');
   git(f.cwd, 'switch', '-q', `task/${f.change}/T-01`);
   write(f.cwd, 'test/prior.test.mjs', `import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('legacy', () => { assert.ok(true); });\n`);
@@ -458,6 +458,7 @@ test('replay executes an npm-prefix narrow target instead of skipping it as a pa
   const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01', passTag(tip, f.base)]);
   assert.equal(r.status, 21, r.out);
   assert.match(r.out, /merge would regress already-Done T-00: npm --prefix packages\/a --prefix packages\/b test -- test\/x\.test\.ts/);
+  assert.match(r.out, /D4_NPM_PREFIX_TARGET_EXECUTED_B/, 'the last-prefix package test must have run');
   // The merge aborted, so the integration branch is unchanged.
   assert.equal(git(f.cwd, 'status', '--porcelain'), '');
 });
