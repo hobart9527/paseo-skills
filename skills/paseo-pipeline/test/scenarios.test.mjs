@@ -333,3 +333,83 @@ test('scenarios fails loudly when rows exist but the table has no header', () =>
   assert.notEqual(human.status, 0, human.out);
   assert.doesNotMatch(human.stdout, /candidate/);
 });
+
+// ---- BLOCKER 2: baseline hit must not swallow an active-change content conflict -----------
+test('scenarios reports an active-change conflict even when a baseline hit exists', () => {
+  const f = fixture();
+  const write = (file, text) => {
+    const target = path.join(f.cwd, file);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, text);
+  };
+  // Baseline declares SCEN-CAP-01. This change re-declares it under MODIFIED (identity reuse),
+  // and another active change declares the SAME id with different content. A baseline hit alone
+  // is legal reuse; the active declaration still makes it a collision the gate will block.
+  write('openspec/specs/cap/spec.md', '## Requirements\n### Requirement: Legacy\n#### Scenario: SCEN-CAP-01 legacy run\nWHEN a\nTHEN b\n');
+  write('openspec/changes/other/specs/cap/spec.md', `## MODIFIED Requirements\n### Requirement: Export\n#### Scenario: SCEN-CAP-01 export retries instead\nWHEN flaky\nTHEN retried\n`);
+  write('openspec/changes/chg/specs/cap/spec.md', `## MODIFIED Requirements
+
+### Requirement: Export
+
+#### Scenario: SCEN-CAP-01 export runs again
+WHEN invoked again
+THEN it exports
+`);
+  git(f.cwd, 'add', '.');
+  git(f.cwd, 'commit', '-qm', 'baseline plus competing active declaration');
+
+  const r = run(f.cwd, ['scenarios', f.dir, '--json']);
+  assert.equal(r.status, 0, r.out);
+  const entry = JSON.parse(r.stdout).scenarios.find((item) => item.id === 'SCEN-CAP-01');
+  // Not `baseline-reuse`: reuse of the baseline identity is legitimate, but the competing active
+  // declaration is a content conflict and must not be hidden behind the baseline hit.
+  assert.equal(entry.identity.kind, 'conflict');
+  assert.ok(entry.identity.files.includes('openspec/changes/other/specs/cap/spec.md'), JSON.stringify(entry.identity));
+  assert.ok(entry.identity.files.includes('openspec/specs/cap/spec.md'), JSON.stringify(entry.identity));
+
+  // The gate agrees: the same fixture blocks with COLLIDING_SCEN naming the other change.
+  write('openspec/changes/chg/acceptance.md', table(
+    '| SCEN-CAP-01 | CLI | | node --test test/api.test.mjs | yes | PENDING | pending |',
+    '| SCEN-CAP-02 | CLI | | node --test test/api-error.test.mjs | yes | PENDING | pending |',
+  ));
+  const gate = spawnSync('node', [path.join(path.dirname(script), 'freeze-check.mjs'), f.dir, '--json', '--structural', '--skip-signer-check'], { cwd: f.cwd, env, encoding: 'utf8' });
+  const blocking = JSON.parse(gate.stdout).blocking;
+  assert.ok(blocking.some((item) => /^COLLIDING_SCEN SCEN-CAP-01: already declared in openspec\/changes\/other\/specs\/cap\/spec\.md$/.test(item)), blocking.join('\n'));
+});
+
+test('scenarios keeps an identical shared declaration non-conflict, baseline or not', () => {
+  const f = fixture();
+  const write = (file, text) => {
+    const target = path.join(f.cwd, file);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, text);
+  };
+  // Baseline plus another change repeating SCEN-CAP-01 byte-identically: the gate accepts this
+  // (an unchanged MODIFIED scenario must be repeated) and only advises about merge order, so the
+  // helper must not call it a conflict either.
+  const body = 'WHEN invoked again\nTHEN it exports\n';
+  write('openspec/specs/cap/spec.md', '## Requirements\n### Requirement: Legacy\n#### Scenario: SCEN-CAP-01 legacy run\nWHEN a\nTHEN b\n');
+  write('openspec/changes/other/specs/cap/spec.md', `## MODIFIED Requirements\n### Requirement: Export\n#### Scenario: SCEN-CAP-01 export runs again\n${body}`);
+  write('openspec/changes/chg/specs/cap/spec.md', `## MODIFIED Requirements
+
+### Requirement: Export
+
+#### Scenario: SCEN-CAP-01 export runs again
+${body}`);
+  git(f.cwd, 'add', '.');
+  git(f.cwd, 'commit', '-qm', 'identical shared declaration');
+
+  const r = run(f.cwd, ['scenarios', f.dir, '--json']);
+  assert.equal(r.status, 0, r.out);
+  const entry = JSON.parse(r.stdout).scenarios.find((item) => item.id === 'SCEN-CAP-01');
+  assert.equal(entry.identity.kind, 'baseline-reuse');
+
+  // Gate: no COLLIDING_SCEN for this id, only the shared-declaration advisory.
+  write('openspec/changes/chg/acceptance.md', table(
+    '| SCEN-CAP-01 | CLI | | node --test test/api.test.mjs | yes | PENDING | pending |',
+    '| SCEN-CAP-02 | CLI | | node --test test/api-error.test.mjs | yes | PENDING | pending |',
+  ));
+  const gate = spawnSync('node', [path.join(path.dirname(script), 'freeze-check.mjs'), f.dir, '--json', '--structural', '--skip-signer-check'], { cwd: f.cwd, env, encoding: 'utf8' });
+  const parsed = JSON.parse(gate.stdout);
+  assert.ok(!parsed.blocking.some((item) => item.startsWith('COLLIDING_SCEN SCEN-CAP-01')), parsed.blocking.join('\n'));
+});

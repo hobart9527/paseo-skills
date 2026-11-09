@@ -175,6 +175,9 @@ export function buildScenariosReport(changeDir) {
 //   baseline-id-unreused    a baseline id re-declared under ADDED — the gate reports a collision
 //   shared-identical        another active change declares byte-identical text (legal, order matters)
 //   conflict                another active change declares a different text for the same id
+// The order of these checks mirrors the gate (`classifyScenCollisions`): a baseline hit only
+// excuses reuse of that identity, never a diverging declaration in another active change, so a
+// conflict is reported even when a baseline hit exists.
 function identityOf(entry, specTree, repoRoot) {
   const same = (hit) => hit.title === entry.title && hit.body === entry.body;
   const baseline = specTree.baseline.flatMap((source) => scanScenarios(source.text)
@@ -186,9 +189,8 @@ function identityOf(entry, specTree, repoRoot) {
   const files = [...baseline, ...others]
     .map((hit) => (repoRoot ? path.relative(repoRoot, hit.file) : hit.file).split(path.sep).join('/'));
   if (!baseline.length && !others.length) return { kind: 'new', files: [] };
-  if (baseline.length) {
-    const allowed = /^(?:MODIFIED|REMOVED) Requirements$/i.test(entry.section || '');
-    return { kind: allowed ? 'baseline-reuse' : 'baseline-id-unreused', files };
-  }
-  return { kind: others.every(same) ? 'shared-identical' : 'conflict', files };
+  const allowed = /^(?:MODIFIED|REMOVED) Requirements$/i.test(entry.section || '');
+  if (others.some((hit) => !same(hit))) return { kind: 'conflict', files };
+  if (baseline.length) return { kind: allowed ? 'baseline-reuse' : 'baseline-id-unreused', files };
+  return { kind: 'shared-identical', files };
 }
