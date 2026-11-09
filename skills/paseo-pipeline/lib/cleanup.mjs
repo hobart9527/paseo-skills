@@ -356,9 +356,9 @@ export function runCleanup(argv, { cwd = process.cwd(), stdout = (line) => conso
   annotate(objects, { cwd, trees });
   const tasks = taskStatus(changeDir, change);
   const { pending, errors: markerErrors } = pendingMerges(cwd, change, tasks.ids);
-  // A damaged marker is unreadable state, never a clean pass; the list is still printed,
-  // because the human needs it either way.
-  const exit = markerErrors.length ? 3 : 0;
+  // A damaged marker or unparseable tasks.md is unreadable state, never a clean pass; the
+  // list is still printed, because the human needs it either way.
+  const exit = markerErrors.length || tasks.errors.length ? 3 : 0;
 
   if (json) {
     stdout(JSON.stringify({

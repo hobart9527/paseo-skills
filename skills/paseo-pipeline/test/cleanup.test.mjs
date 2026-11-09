@@ -413,6 +413,21 @@ test('an unreadable merge marker is reported and exits 3, never a clean pass', (
   assert.match(text.stdout, /\[branch\] integration\/chg/);
 });
 
+test('unparseable tasks.md is reported and exits 3, never a clean pass', () => {
+  const f = fixture({ tasks: '- [x] 1.1 no id\n  - Write scope: src\n  - Verify with: v\n  - Done: source=abcdef1 review=worker\n' });
+  const r = cleanup(f, '--json');
+  assert.equal(r.status, 3, r.out);
+  const report = JSON.parse(r.stdout);
+  assert.equal(report.exit, 3);
+  assert.match(report.tasks.errors[0], /MALFORMED_LINE/);
+  // The objects the human needs are still listed; the error sits beside them.
+  assert.ok(report.objects.some((object) => object.kind === 'branch'));
+  const text = cleanup(f);
+  assert.equal(text.status, 3, text.out);
+  assert.match(text.stdout, /tasks errors: MALFORMED_LINE/);
+  assert.match(text.stdout, /\[branch\] integration\/chg/);
+});
+
 test('a Paseo-owned worktree yields only the archive command, never worktree remove', () => {
   const f = fixture({ paseoWorkspaceFor: 'T-01' });
   const report = discover(f);
