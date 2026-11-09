@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseTasks, parseTaskLine, computeWaves, isFileWithinScopes, parseReviewTag, isTestPath, verifyLegs } from '../lib/tasks.mjs';
+import { normalizeScope, parseTasks, parseTaskLine, computeWaves, isFileWithinScopes, parseReviewTag, isTestPath, verifyLegs } from '../lib/tasks.mjs';
 
 const md = `
 - [ ] 1.1 T-01 contract
@@ -85,6 +85,37 @@ test('verify legs: paths decide narrowness, not runner names', () => {
   assert.deepEqual(verifyLegs('go test ./pkg/a').map((leg) => leg.paths), [['pkg/a']]);
 });
 
+test('verify legs: a working-directory option scopes the runner instead of naming a target', () => {
+  // `--prefix <dir>` and friends move the runner into a package; the package itself is not
+  // the test target, so a bare `test` under them is the package's whole suite.
+  for (const command of ['npm --prefix packages/server test', 'pnpm -C packages/x test', 'yarn --cwd packages/x test', 'npm --prefix=packages/server test']) {
+    assert.deepEqual(verifyLegs(command).map((leg) => ({ paths: leg.paths, broad: leg.broad })), [{ paths: [], broad: true }], command);
+  }
+  // Remaining relative paths resolve against the working directory, so the leg stays narrow.
+  assert.deepEqual(verifyLegs('npm --prefix packages/web test -- test/a.test.ts').map((leg) => ({ paths: leg.paths, broad: leg.broad })),
+    [{ paths: ['packages/web/test/a.test.ts'], broad: false }]);
+  assert.deepEqual(verifyLegs('pnpm --dir=packages/x test src/a.test.ts').map((leg) => ({ paths: leg.paths, broad: leg.broad })),
+    [{ paths: ['packages/x/src/a.test.ts'], broad: false }]);
+  // Working directories normalize segment-wise, not by string concatenation.
+  for (const [command, expected] of [
+    ['npm --prefix ./packages/web test -- test/a.test.ts', ['packages/web/test/a.test.ts']],
+    ['npm --prefix . test -- test/a.test.ts', ['test/a.test.ts']],
+    ['npm --prefix packages/web/ test test/a.test.ts', ['packages/web/test/a.test.ts']],
+    ['npm --prefix packages/web test -- ../shared/test/x.test.ts', ['packages/shared/test/x.test.ts']],
+  ]) {
+    assert.deepEqual(verifyLegs(command).map((leg) => leg.paths), [expected], command);
+  }
+  // `packages/web` is two levels deep, so `../../x.test.ts` lands at the root: still resolved.
+  assert.deepEqual(verifyLegs('npm --prefix packages/web test -- ../../x.test.ts').map((leg) => leg.paths), [['x.test.ts']]);
+  // One more level escapes the repo root; the path stays unresolved so the scope gate rejects it.
+  assert.deepEqual(verifyLegs('npm --prefix packages/web test -- ../../../x.test.ts').map((leg) => leg.paths), [['../../../x.test.ts']]);
+  // `--prefix .` is the repo root: the target still normalizes, and one level up escapes.
+  assert.deepEqual(verifyLegs('npm --prefix . test -- packages/web/../shared/test/a.test.ts').map((leg) => leg.paths), [['packages/shared/test/a.test.ts']]);
+  assert.deepEqual(verifyLegs('npm --prefix . test -- ../x/test/a.test.ts').map((leg) => leg.paths), [['../x/test/a.test.ts']]);
+  // Without any working-directory option, paths normalize the same way.
+  assert.deepEqual(verifyLegs('node --test packages/web/../shared/test/a.test.ts').map((leg) => leg.paths), [['packages/shared/test/a.test.ts']]);
+});
+
 test('official task template is parser-compatible', () => {
   const { tasks, errors } = parseTasks('- [ ] 1.1 T-01 contract\n  - Depends on: none\n  - Write scope: src/a,test/a.test.mjs\n  - Verify with: `node --test test/a.test.mjs`\n');
   assert.deepEqual(errors, []);
@@ -133,6 +164,10 @@ test('parses uses, reads, est, skeleton, interface and deferred review', () => {
   assert.deepEqual(consumer.uses, ['T-00', 'T-02']);
   assert.deepEqual(consumer.reads, ['src/shared/data.ts', 'scripts/specs/probe.mjs']);
   assert.equal(consumer.est, 'L');
+  assert.deepEqual(consumer.implements, []);
+  const decisions = parseTasks('- [ ] 1.1 T-09 x\n  - Write scope: a\n  - Implements: D-01, D-02\n  - Verify with: true\n');
+  assert.deepEqual(decisions.tasks[0].implements, ['D-01', 'D-02']);
+  assert.deepEqual(decisions.errors, []);
   assert.deepEqual(consumer.riskSurface, ['public-api', 'ui']);
   assert.equal(consumer.review, 'deferred');
   // Defaults stay stable when optional scheduling fields are absent.
@@ -154,10 +189,11 @@ test('rejects malformed Reads, Est, Interface and Kind values', () => {
   - Kind: partial
   - Interface: a.ts#two words
   - Interface: a.ts#sym#extra
+  - Implements: D-1, decision
   - Verify with: true
 `;
   const { errors } = parseTasks(text);
-  for (const code of ['BAD_READS', 'BAD_EST', 'BAD_KIND', 'BAD_INTERFACE']) {
+  for (const code of ['BAD_READS', 'BAD_EST', 'BAD_KIND', 'BAD_INTERFACE', 'BAD_IMPLEMENTS']) {
     assert.ok(errors.some((error) => error.code === code), code);
   }
   assert.equal(errors.filter((error) => error.code === 'BAD_INTERFACE').length, 2);
@@ -184,4 +220,17 @@ test('graph validation rejects cycles across Depends on and Uses merge edges', a
   const indirect = make('Depends on: T-02', 'Uses: T-03')
     + '- [ ] T-03 third\n  - Depends on: T-01\n  - Write scope: src/c\n  - Verify with: true\n';
   assert.ok(graphErrors(parseTasks(indirect).errors).some((error) => error.code === 'CYCLE'));
+});
+
+test('normalizeScope strips leading ./ segments and keeps its rejections', () => {
+  assert.equal(normalizeScope('./src/a'), 'src/a');
+  assert.equal(normalizeScope('././src/a'), 'src/a');
+  assert.equal(normalizeScope('.//src//a/'), 'src/a');
+  assert.equal(normalizeScope('src/a'), 'src/a');
+  assert.equal(normalizeScope('/src/a'), null);
+  assert.equal(normalizeScope('./../a'), null);
+  assert.equal(normalizeScope('src/../a'), null);
+  assert.equal(normalizeScope('./'), null);
+  assert.equal(normalizeScope(''), null);
+  assert.equal(isFileWithinScopes('./src/main.c', ['src/main.c']), true);
 });

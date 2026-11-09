@@ -57,6 +57,14 @@ artifacts:
       implementation details belong in design.md. Skip repeated motivation and broad
       repository surveys; cite only the relevant baseline needed to identify the change.
 
+      **Baseline (paseo-pipeline):** add a short `## Baseline` section. Write each
+      code-reading finding there (or beside the rule in specs/design) AS FOUND, as
+      `path:line` plus one line of consequence, and commit; a finding that exists only
+      in thinking does not count. List only facts that support a changed rule - no
+      survey, no alignment tables, no digest. A material product choice the inputs do
+      not settle goes under `## OPEN-DECISION`: options, consequences, a recommended
+      default.
+
       This is the foundation - specs, design, and tasks all build on this.
     requires: []
 
@@ -163,6 +171,16 @@ artifacts:
       producer implementation is done. Keep behavior scenarios for observable semantics
       that must hold across those tasks. Cite `path:line` only for baseline facts that
       support a changed rule; do not write a separate survey document.
+
+      **SCEN freeze:** once the last spec file is committed, the declared SCEN id set is
+      frozen for downstream artifacts. Never renumber, rename, move or delete a declared
+      id after tasks.md or acceptance.md reference it; additions are allowed. An
+      unavoidable id change must update every reference (tasks.md Scenarios,
+      acceptance.md) in the same commit and be followed by the structural check.
+      Before assigning ids, list the ids already declared in baseline `openspec/specs/**`
+      and in every other `openspec/changes/*/specs/**` with one `rg` over scenario
+      headings only, choose new ids outside that set, and only then commit the specs as
+      the frozen set.
     requires:
       - proposal
 
@@ -212,6 +230,9 @@ artifacts:
     instruction: |
       Create the task list that breaks down the implementation work.
 
+      When design.md exists, write and commit it before tasks.md; tasks reference only
+      committed SCEN ids.
+
       Before writing tasks, check design.md (when present) for Open Questions.
       If any of them would change what gets built, resolve them with the user
       first - do not bake an unstated assumption into the task list.
@@ -248,12 +269,17 @@ artifacts:
         paths, no `..` escaping the repo root.
       - `Depends on` must name task IDs that exist in this file; no self-dependency,
         no cycles.
-      - `Uses` is a consumer edge: dispatch starts once the target's frozen interface
-        (and its skeleton ancestors) exist, while merge still waits for the target's
-        Done. A `Uses` target must declare `Interface:`; a `Uses` pair with overlapping
+      - `Uses` is a consumer edge: dispatch waits for the target's skeleton ancestors,
+        while merge still waits for the target's Done. A `Uses` target must declare
+        `Interface:` and an owning skeleton must be a dispatch dependency of the consumer;
+        scope alone does not prove the file or its contents were committed. A pair with overlapping
         Write scopes also needs a real `Depends on` edge.
       - `Reads` lists paths a Verify leg may execute against without writing them. It
-        never joins scope-conflict checks and never authorises source edits.
+        never joins scope-conflict checks and never authorises source edits. Ensure final
+        worker Verify can pass in its own branch: use `Depends on` if it needs another
+        task's future file or behavior. Initial Verify may be red. Existing baseline files,
+        task-created files and optional regression reads do not by themselves require an edge.
+        Structural checks cannot prove existence, correct content, access or a commit.
       - `Est` is `S`, `M` or `L` (default `M`). `Kind: skeleton` marks the interface-stub
         task and requires `Review: mechanical`; every `Interface:` path must sit inside
         some skeleton's Write scope.
@@ -268,7 +294,9 @@ artifacts:
         it executes or proves the claimed behavior. Each non-sink Verify leg, including
         for `mechanical`, must name a test/spec path within `Write scope` or `Reads`.
         A `mechanical` sink may use a non-test check; other command checks still apply.
-        Full-suite legs are reserved for sinks, with at most one per sink. Write the full
+        A sink may run one full-suite leg per package/runner it must regress; list each
+        package suite explicitly (e.g. `npm --prefix packages/server test`) rather than
+        hiding them in a wrapper script. Write the full
         invocation when the command needs env vars:
         PYTHONPATH=runtime python3 -m pytest tests/x_test.py.
       - `Scenarios` lists the `SCEN-*` ids from the spec delta that this task carries.
@@ -280,8 +308,25 @@ artifacts:
         tags such as `pass(<reviewer>@<tip>/<base>)` remain readable; do not rewrite
         frozen history to this format.
 
+      Before committing tasks.md, self-check every SCEN against its owning task and fix
+      the task, not the check: the entry point named for the SCEN in acceptance.md (where
+      the outcome is observed, e.g. the submit handler) is inside the owner's Write scope,
+      or the owner `Depends on` the task that owns it, and a component or unit test beside
+      the entry does not stand in for it; the owner's Verify runs a test that exercises
+      that entry or function and would fail before the change, with the test file in the
+      owner's Write scope or created by it, since an existing test that already passes and
+      never calls the code under change cannot carry the SCEN; and every field, symbol or
+      route a task or design names is confirmed once with `rg` in the tree (or in a file
+      the task creates); design.md names decisions (`D-01`) and affected modules only,
+      never task ids; when design.md exists, tasks declare `Implements:` decision ids and
+      every id must exist in design.md; when it does not exist, omit `Implements:`
+      because there are no decision ids to reference.
+
       Guidelines:
-      - Vertical slices: behavior + wiring + affected fixtures + tests together.
+      - Vertical slices: behavior + wiring + affected fixtures + tests together. A final
+        integration verification task may write tests only when the entry it verifies is
+        owned upstream; freeze-check reports that sink shape as an advisory, not as proof
+        of a missing owner. Do not fabricate a production path to satisfy the checker.
       - Concurrent tasks have fully disjoint Write scopes, including test paths.
       - Do not pad the DAG to qualify for a tier.
       - Keep task titles and metadata concise; include optional fields only when they
@@ -303,6 +348,20 @@ artifacts:
       which tasks.md and the test suite do not: a task can be merged and its unit
       tests green while the feature is unreachable from the real entry point.
 
+      Every `SCEN-*` declared in the change's spec delta needs at least one row;
+      rows may share an Entry and Verify and may reuse an existing test, so a
+      scenario does not require a new test of its own. Leave a row's `Tasks` cell empty
+      and the owners are derived from the `Scenarios` claims in `tasks.md` (recommended
+      default); fill it only to split owners across rows. A non-empty `Tasks` cell may
+      list only tasks that claim that scenario in `tasks.md` `Scenarios`, and the union
+      of all rows for a scenario must name every task that claims it. When `Entry` names
+      a file that a task in this change writes, a row owner must write it or depend on
+      the task that does (`freeze-check` reports `ENTRY_OWNER_UNCLAIMED`); when several
+      components share one assembly file, let the assembler claim the user-facing
+      scenarios, or add a Wave 0 `Kind: skeleton` that pre-wires the entry with stubs and
+      have the components `Uses` it (see the shared-assembly pattern in the author brief). Several rows may
+      split the owners; no single row needs all of them.
+
       Format is fixed because `CP-2 human acceptance review`
       parses it:
 
@@ -318,9 +377,13 @@ artifacts:
       - **Scenario**: a `SCEN-*` id declared in this change's spec delta. Must exist.
       - **Entry**: the real entry point - HTTP route, UI path, CLI command, or the
         wiring point that makes the capability reachable. Not an internal function.
-      - **Tasks**: comma-separated task ids from tasks.md that carry this row.
-      - **Verify**: the command or manual procedure that exercises Entry.
-      - **Required**: `yes` blocks delivery; `no` is recorded but does not block.
+      - **Tasks**: comma-separated task ids from tasks.md that carry this row; a required
+        row must list at least one, and every id must claim this scenario in `Scenarios`.
+      - **Verify**: the command that exercises Entry. Required=yes needs one executable
+        command; a manual procedure, a `!` prefix, or natural language is rejected. Judge
+        it by its own exit code, not by the pipeline tail's.
+      - **Required**: `yes` blocks delivery; `no` is recorded but does not block. Decide
+        from real delivery semantics rather than setting every row `no`.
       - **Result**: leave `PENDING` in the frozen matrix. Record closeout results externally.
       - **Evidence**: leave `pending` in the frozen matrix. Record output and the full
         source SHA in the external execution record.

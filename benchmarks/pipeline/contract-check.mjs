@@ -31,18 +31,27 @@ export function checkContract(tasksMarkdown, changeName = 'benchmark') {
   };
   write(`openspec/changes/${changeName}/tasks.md`, tasksMarkdown);
   write(`openspec/changes/${changeName}/proposal.md`, '# Proposal\n');
+  // design.md names decisions and affected modules only: task ids there would be circular
+  // (design is written before tasks) and freeze-check rejects them.
   write(`openspec/changes/${changeName}/design.md`,
-    `# Design\n\n## Impact Inventory\n${parsed.tasks.map((task) => `- ${task.id}: ${task.scope.join(', ')}`).join('\n')}\n`);
+    `# Design\n\n## Decisions\n${parsed.tasks.map((task, index) => `- **D-${String(index + 1).padStart(2, '0')} ${task.title || 'task'}** 影响模块/路径: ${task.scope.join(', ')}`).join('\n')}\n`);
 
   const scenarios = [...new Set(parsed.tasks.flatMap((task) => task.scenarios))];
   write(`openspec/changes/${changeName}/specs/spec.md`,
     scenarios.map((scenario) => `#### Scenario: ${scenario} behaviour\n`).join(''));
 
-  const row = parsed.tasks.find((task) => task.scenarios.length) ?? parsed.tasks[0];
+  // Every declared SCEN needs an acceptance row, and each row must list every task that claims it
+  // (freeze-check now cross-checks the Tasks cell against tasks.md Scenarios in both directions).
+  const rows = scenarios.map((scenario) => {
+    const owners = parsed.tasks.filter((task) => task.scenarios.includes(scenario));
+    const row = owners[0] ?? parsed.tasks[0];
+    // A verify command may contain `|`: escape it so the row keeps the header column count.
+    return `| ${scenario} | CLI | ${owners.map((task) => task.id).join(',')} | ${row.verify.replace(/\|/g, '\\|')} | yes | PENDING | pending |`;
+  });
   write(`openspec/changes/${changeName}/acceptance.md`, [
     '| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |',
     '| --- | --- | --- | --- | --- | --- | --- |',
-    `| ${row.scenarios[0] ?? 'SCEN-BENCH-01'} | CLI | ${row.id} | ${row.verify} | yes | PENDING | pending |`,
+    ...rows,
     '',
   ].join('\n'));
 

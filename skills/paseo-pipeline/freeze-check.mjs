@@ -5,8 +5,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo-agents.mjs';
-import { parseTasks, graphErrors, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, legPaths, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
-import { weightedSpeedup, weightedCriticalPath, verifyScope, readsOnlyEdges, pathWithin, resolveModel, LIVE_MODEL } from './lib/schedule.mjs';
+import { parseTasks, graphErrors, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, isTaskId, legPaths, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
+import { dispatchDeps, weightedSpeedup, weightedCriticalPath, verifyScope, readsOnlyEdges, pathWithin, resolveModel, LIVE_MODEL } from './lib/schedule.mjs';
 import { runGit } from './lib/git.mjs';
 
 const args = process.argv.slice(2);
@@ -37,57 +37,27 @@ function read(file) {
   }
   return out;
 }
-
-// One concrete fix per blocking rule, printed by --explain.
-const RULE_FIXES = {
-  MALFORMED_LINE: 'rewrite the task line as `- [ ] <n> T-<id> <title>` with a valid id',
-  DUPLICATE_ID: 'give every task a unique id',
-  MISSING_SCOPE: 'add a non-empty `Write scope:` of repo-relative paths',
-  MISSING_VERIFY: 'add an executable `Verify with:` command',
-  UNKNOWN_REVIEW: 'use Review: strict, standard, mechanical or deferred',
-  UNKNOWN_DEP: 'point Depends on at an existing task id',
-  SELF_DEP: 'remove the self-dependency',
-  USES_UNKNOWN: 'point Uses at an existing task id (never the task itself)',
-  CYCLE: 'break the dependency cycle into a DAG',
-  BAD_READS: 'use repo-relative paths without `..` or a leading slash',
-  MISSING_READS_PATH: 'point Reads at a path that already exists in the repository; Reads is a read-only anchor, not a file the task creates',
-  BAD_ACCEPTANCE_HEADER: 'use the seven columns Scenario, Entry, Tasks, Verify, Required, Result, Evidence in that order',
-  BAD_ACCEPTANCE_REQUIRED: 'set Required to yes or no (case-insensitive)',
-  MALFORMED_ACCEPTANCE_ROW: 'escape a literal pipe inside a cell as `\\|`, or keep one cell free of `|`; the row must have the header column count',
-  VERIFY_JUNK_LEG: 'put shell setup inside the leg it belongs to: `bash -c \'set -e; <command>\'`, or use `&&` between real commands',
-  BAD_EST: 'use Est: S, M or L',
-  BAD_INTERFACE: 'use Interface: <repo-path>[#<symbol>]',
-  BAD_KIND: 'use Kind: skeleton (or omit it)',
-  UNKNOWN_SCEN: 'claim a SCEN declared under specs/',
-  DUPLICATE_SCEN: 'give each scenario declaration a unique SCEN id and update its task claims',
-  UNCLAIMED_SCEN: 'assign each declared SCEN to at least one task',
-  NO_SCEN: 'claim at least one SCEN, or mark the task Review: mechanical',
-  EMPTY_TASKS: 'write at least one parseable task line',
-  TEST_FILE_UNOWNED: 'add the referenced file to the Write scope of the task that changes it, or narrow the test',
-  FROZEN_BEHIND_MAIN: 'rebase the contract onto the default branch (or re-verify it at its tip) and re-run R0',
-  R0_HUMAN_ACCEPT_UNRECORDED: 'record the human approval verbatim in run-log.md for the exact reviewed SHA, or get a hanlin pass',
-};
-
-const tasksMarkdown = read(path.join(changeDir, 'tasks.md'));
-if (tasksMarkdown === null) {
-  if (json) console.log(JSON.stringify({ error: 'tasks.md not found' }));
-  else console.error('[freeze-check] tasks.md not found');
-  process.exit(1);
+function walkMarkdown(dir, out = []) {
+  if (!fs.existsSync(dir)) return out;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) walkMarkdown(full, out);
+    else if (entry.name.endsWith('.md')) out.push(full);
+  }
+  return out;
 }
-
-const { tasks, errors } = parseTasks(tasksMarkdown);
-const blocking = errors.map((error) => `${error.code}${error.task ? ` ${error.task}` : ''}: ${error.message}`);
-const advisories = [];
-const fixes = new Map();
-if (blocking.length) fixes.set('CONTRACT', 'fix the field named in the message; see openspec-schema/templates/tasks.md for the exact shape');
-
-// Scenario mapping.
-const declared = new Map();
+// Visible markdown lines: HTML comments contribute nothing and a fenced block is an example, not
+// prose. Both the spec scanners and the design.md scan must agree on what counts as a declaration.
 const FENCE_MARKER = /^ {0,3}(`{3,}|~{3,})/;
-for (const file of walk(path.join(changeDir, 'specs'))) {
+// Returns `{ text, rawIndex }` so a caller can recover the raw line behind a visible one: the
+// scenario comparison needs the raw body, while the declaration scan needs the visible heading.
+function visibleLines(markdown) {
+  const out = [];
   let fence = null;
   let comment = false;
-  for (const original of read(file).split(/\r?\n/)) {
+  const raw = markdown.split(/\r?\n/);
+  for (let rawIndex = 0; rawIndex < raw.length; rawIndex += 1) {
+    const original = raw[rawIndex];
     let line = original;
     // A fence marker on the raw line wins over comment stripping: ```html <!-- opens a fence, and the
     // comment opener inside it belongs to the fenced example, so it must not leak past the closer.
@@ -116,12 +86,134 @@ for (const file of walk(path.join(changeDir, 'specs'))) {
       continue;
     }
     if (marker) { fence = marker[1]; continue; }
-    const match = line.match(/^#{3,6}\s*Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(?:\s+.*)?$/i);
-    if (match) {
-      const id = match[1].toUpperCase();
-      const source = path.relative(changeDir, file);
-      if (declared.has(id)) blocking.push(`DUPLICATE_SCEN ${id}: declared in ${declared.get(id)} and ${source}`);
-      else declared.set(id, source);
+    out.push({ text: line, rawIndex });
+  }
+  return out;
+}
+// Body of a `### Scenario:` heading AS COMPARED for the verbatim exemption. This is deliberately a
+// different function from the declaration scan below: discovery reads visible content (fenced
+// examples and comments are not declarations), while a comparison of two declarations must keep
+// everything a reader would compare. Comparison is conservative CONTENT IDENTITY, not Markdown
+// rendering equivalence. It reads the RAW lines, keeps fenced payloads, and only
+//   1. ends the body at the next VISIBLE heading of the same or higher level — a `#` line inside a
+//      fenced payload or an HTML comment is content, not the end of the scenario,
+//   2. normalizes line endings (CRLF -> LF); the split below does that and nothing else,
+//   3. drops leading and trailing EMPTY lines (a whitespace-only line is content, not empty),
+// and normalizes nothing else: per-line trailing whitespace, interior whitespace, indentation,
+// fence delimiters, fence info strings, and comment/payload content all take part in the
+// comparison. A ``` vs ~~~ pair, or a nested fence whose inner info string changed, is therefore a
+// collision: reuse copies the authoritative text instead of regenerating it. Do not fold this into
+// `visibleLines`.
+function comparedBody(markdown, index, visible = visibleLines(markdown)) {
+  const raw = markdown.split(/\r?\n/);
+  // Not a heading (or no line): there is no scenario body to compare, never a crash.
+  const self = (raw[index] || '').match(/^(#{1,6})\s/);
+  if (!self) return '';
+  const level = self[1].length;
+  // Boundary from visible structure only: the same notion of "heading" every other check uses.
+  let boundary = raw.length;
+  for (const entry of visible) {
+    if (entry.rawIndex <= index) continue;
+    const heading = entry.text.match(/^(#{1,6})\s/);
+    if (heading && heading[1].length <= level) { boundary = entry.rawIndex; break; }
+  }
+  const body = [];
+  for (let next = index + 1; next < boundary; next += 1) body.push(raw[next]);
+  while (body.length && body[0] === '') body.shift();
+  while (body.length && body[body.length - 1] === '') body.pop();
+  return body.join('\n');
+}
+// Every `### Scenario: SCEN-...` declared in a markdown file's visible content.
+function scanScenarios(markdown) {
+  const entries = visibleLines(markdown);
+  const found = [];
+  let section = '';
+  for (const { text, rawIndex } of entries) {
+    const heading = text.match(/^##\s+(.+?)\s*$/);
+    if (heading) { section = heading[1]; continue; }
+    // CommonMark only treats `### ` as an ATX heading when whitespace follows the hashes, so
+    // `####Scenario:` is ordinary text.
+    const match = text.match(/^#{3,6}\s+Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(.*)$/i);
+    if (!match) continue;
+    // The heading/title separator is the only whitespace a title comparison ignores; internal and
+    // trailing whitespace stay part of the title, so two headings that differ there are not the
+    // same declaration.
+    const title = match[2].replace(/^[ \t]+/, '');
+    found.push({ id: match[1].toUpperCase(), title, body: comparedBody(markdown, rawIndex, entries), section, line: rawIndex });
+  }
+  return found;
+}
+
+// One concrete fix per blocking rule, printed by --explain.
+const RULE_FIXES = {
+  MALFORMED_LINE: 'rewrite the task line as `- [ ] <n> T-<id> <title>` with a valid id',
+  DUPLICATE_ID: 'give every task a unique id',
+  MISSING_SCOPE: 'add a non-empty `Write scope:` of repo-relative paths',
+  MISSING_VERIFY: 'add an executable `Verify with:` command',
+  UNKNOWN_REVIEW: 'use Review: strict, standard, mechanical or deferred',
+  UNKNOWN_DEP: 'point Depends on at an existing task id',
+  SELF_DEP: 'remove the self-dependency',
+  USES_UNKNOWN: 'point Uses at an existing task id (never the task itself)',
+  CYCLE: 'break the dependency cycle into a DAG',
+  BAD_READS: 'use repo-relative paths without `..` or a leading slash',
+  MISSING_READS_PATH: 'point Reads at an existing path or one covered by a task Write scope; separately verify readiness and content',
+  BAD_ACCEPTANCE_HEADER: 'use the seven columns Scenario, Entry, Tasks, Verify, Required, Result, Evidence in that order',
+  BAD_ACCEPTANCE_REQUIRED: 'set Required to yes or no (case-insensitive)',
+  MALFORMED_ACCEPTANCE_ROW: 'escape a literal pipe inside a cell as `\\|`, or keep one cell free of `|`; the row must have the header column count',
+  VERIFY_JUNK_LEG: 'put shell setup inside the leg it belongs to: `bash -c \'set -e; <command>\'`, or use `&&` between real commands',
+  BAD_EST: 'use Est: S, M or L',
+  BAD_INTERFACE: 'use Interface: <repo-path>[#<symbol>]',
+  BAD_IMPLEMENTS: 'use Implements: D-<number>[, D-<number>] (decision ids from design.md)',
+  BAD_KIND: 'use Kind: skeleton (or omit it)',
+  BAD_ACCEPTANCE_TASKS: 'leave Tasks empty to derive the owners from tasks.md Scenarios, or list the task ids that carry this scenario',
+  UNKNOWN_ACCEPTANCE_TASK: 'point Tasks at ids declared in tasks.md',
+  UNOWNED_ACCEPTANCE_SCEN: 'list a task that claims this SCEN in tasks.md Scenarios',
+  UNACCEPTED_SCEN: 'add an acceptance row for every declared SCEN',
+  UNACCEPTED_TASK_SCEN: 'list the claiming task id in that scenario\'s acceptance row Tasks cell, or leave the cell empty to derive it',
+  ENTRY_OWNER_UNCLAIMED: 'let the task that writes the Entry claim the SCEN, or make a row owner depend on that writer (e.g. a Kind: skeleton that pre-wires the entry)',
+  COLLIDING_SCEN: 'choose a new SCEN id, or re-declare a baseline id under MODIFIED/REMOVED Requirements in this change',
+  DESIGN_NAMES_TASK: 'name decisions and affected modules in design.md; let tasks.md declare Implements:',
+  UNKNOWN_DECISION: 'add a decision heading (e.g. `- **D-01 <title>**` under `## Decisions`) in design.md',
+  UNKNOWN_SCEN: 'claim a SCEN declared under specs/',
+  DUPLICATE_SCEN: 'give each scenario declaration a unique SCEN id and update its task claims',
+  UNCLAIMED_SCEN: 'assign each declared SCEN to at least one task',
+  NO_SCEN: 'claim at least one SCEN, or mark the task Review: mechanical',
+  EMPTY_TASKS: 'write at least one parseable task line',
+  TEST_FILE_UNOWNED: 'add the referenced file to the Write scope of the task that changes it, or narrow the test',
+  FROZEN_BEHIND_MAIN: 'rebase the contract onto the default branch (or re-verify it at its tip) and re-run R0',
+  R0_HUMAN_ACCEPT_UNRECORDED: 'record the human approval verbatim in run-log.md for the exact reviewed SHA, or get a hanlin pass',
+};
+
+const tasksMarkdown = read(path.join(changeDir, 'tasks.md'));
+if (tasksMarkdown === null) {
+  if (json) console.log(JSON.stringify({ error: 'tasks.md not found' }));
+  else console.error('[freeze-check] tasks.md not found');
+  process.exit(1);
+}
+
+const { tasks, errors } = parseTasks(tasksMarkdown);
+const blocking = errors.map((error) => `${error.code}${error.task ? ` ${error.task}` : ''}: ${error.message}`);
+const advisories = [];
+const fixes = new Map();
+if (blocking.length) fixes.set('CONTRACT', 'fix the field named in the message; see openspec-schema/templates/tasks.md for the exact shape');
+
+// Scenario mapping.
+const declared = new Map();
+// Section (`## ...`), heading text and body each id is declared under in THIS change; the
+// cross-change check below needs them to tell a legitimate MODIFIED/REMOVED re-declaration from a
+// collision, and to recognise a verbatim re-declaration shared with another change.
+const declaredSection = new Map();
+const declaredTitle = new Map();
+const declaredBody = new Map();
+for (const file of walk(path.join(changeDir, 'specs'))) {
+  for (const found of scanScenarios(read(file))) {
+    const source = path.relative(changeDir, file);
+    if (declared.has(found.id)) blocking.push(`DUPLICATE_SCEN ${found.id}: declared in ${declared.get(found.id)} and ${source}`);
+    else {
+      declared.set(found.id, source);
+      declaredSection.set(found.id, found.section);
+      declaredTitle.set(found.id, found.title);
+      declaredBody.set(found.id, found.body);
     }
   }
 }
@@ -133,6 +225,70 @@ for (const task of tasks) {
 }
 for (const [scen, file] of declared) {
   if (!claimed.has(scen)) blocking.push(`UNCLAIMED_SCEN: ${scen} (${file}) has no task`);
+}
+
+// Cross-change SCEN collision. `declared` above only knows this change's own files, so a scenario id
+// another unarchived change already declares goes unnoticed and the two contracts disagree at merge.
+// Classification uses THIS change's declaration section plus the kind of external hit: a baseline id
+// may be re-declared under MODIFIED/REMOVED Requirements, while another change's hit is a collision
+// unless both the heading text and the scenario body are identical (a verbatim re-declaration is
+// legal and mandatory for an unchanged MODIFIED scenario). Identity is byte equality of the compared
+// title and body — conservative content identity, not Markdown rendering equivalence. Git history,
+// archives and branches are out of scope: only the current checkout is read, and a missing repo
+// silently skips the check.
+{
+  const toplevel = gitIn(changeDir, ['rev-parse', '--show-toplevel']);
+  if (toplevel.status === 0) {
+    const repoRoot = toplevel.stdout.trim();
+    const realOr = (value) => { try { return fs.realpathSync(value); } catch { return path.resolve(value); } };
+    const current = realOr(changeDir);
+    const baselineFiles = new Set(walkMarkdown(path.join(repoRoot, 'openspec', 'specs')));
+    const sources = [...baselineFiles];
+    const changesRoot = path.join(repoRoot, 'openspec', 'changes');
+    if (fs.existsSync(changesRoot)) {
+      for (const entry of fs.readdirSync(changesRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const dir = path.join(changesRoot, entry.name);
+        if (realOr(dir) === current) continue;
+        sources.push(...walkMarkdown(path.join(dir, 'specs')));
+      }
+    }
+    const external = new Map();
+    // Which external file declares each id, with its visible heading text and body. The section in
+    // that file decides nothing: the external side cannot know whether this change is legitimately
+    // re-declaring the id. Fenced examples and comments are not declarations (same helper as above).
+    for (const file of sources) {
+      for (const found of scanScenarios(read(file))) {
+        if (!external.has(found.id)) external.set(found.id, []);
+        external.get(found.id).push({
+          file: path.relative(repoRoot, file),
+          baseline: baselineFiles.has(file),
+          title: found.title,
+          body: found.body,
+        });
+      }
+    }
+    for (const scen of declared.keys()) {
+      // Baseline hit: allowed only when this change re-declares the id under MODIFIED/REMOVED
+      // Requirements; baseline text is not compared because MODIFIED legitimately rewrites it.
+      // Change hit: a collision when the heading text or body diverges. An identical re-declaration
+      // is legal — `openspec validate` requires an unchanged MODIFIED scenario to repeat its text —
+      // so it is only an advisory about archive/merge order.
+      const currentAllowed = /^(?:MODIFIED|REMOVED) Requirements$/i.test(declaredSection.get(scen) || '');
+      const same = (hit) => hit.title === (declaredTitle.get(scen) || '') && hit.body === (declaredBody.get(scen) || '');
+      const hits = external.get(scen) || [];
+      const collision = hits.find((hit) => (hit.baseline ? !currentAllowed : !same(hit)));
+      if (collision) {
+        blocking.push(`COLLIDING_SCEN ${scen}: already declared in ${collision.file}`);
+        fixes.set('COLLIDING_SCEN', 'choose a new SCEN id, or re-declare a baseline id under MODIFIED/REMOVED Requirements in this change');
+      }
+      for (const hit of hits) {
+        if (!hit.baseline && same(hit)) {
+          advisories.push(`ADVISORY_SHARED_SCEN ${scen}: ${hit.file} declares the same scenario text; confirm archive/merge order with that change before CP-1`);
+        }
+      }
+    }
+  }
 }
 
 // Dispatch-dependency wave width is a planning heuristic, not exact maximum concurrency.
@@ -205,6 +361,18 @@ for (let i = 0; i < tasks.length; i += 1) {
 // Depends on edge to serialise the writers.
 const dependsBetween = (a, b) => ancestorsOf(a).has(b) || ancestorsOf(b).has(a);
 const skeletons = tasks.filter((task) => task.kind === 'skeleton');
+const dispatchAncestors = (task) => {
+  const seen = new Set();
+  const stack = dispatchDeps(task, tasks);
+  while (stack.length) {
+    const id = stack.pop();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const node = byId.get(id);
+    if (node) stack.push(...dispatchDeps(node, tasks));
+  }
+  return seen;
+};
 for (const task of tasks) {
   for (const used of task.uses || []) {
     if (used === task.id || !byId.has(used)) {
@@ -214,6 +382,14 @@ for (const task of tasks) {
     if (!target.interface.length) {
       blocking.push(`USES_WITHOUT_INTERFACE ${task.id}: Uses ${used} but ${used} declares no Interface; freeze the symbol on the producer`);
       fixes.set('USES_WITHOUT_INTERFACE', `add Interface: <path>#<symbol> to ${used}, or use Depends on if the implementation is required`);
+    }
+    const ready = dispatchAncestors(task);
+    for (const entry of target.interface) {
+      const owners = skeletons.filter((skeleton) => isFileWithinScopes(entry.split('#')[0], skeleton.scope));
+      if (owners.length && !owners.some((owner) => ready.has(owner.id))) {
+        blocking.push(`INTERFACE_NOT_READY ${task.id}: Uses ${used} but Interface ${entry} has no skeleton owner in its dispatch dependencies`);
+        fixes.set('INTERFACE_NOT_READY', 'connect the actual skeleton owner to dispatch readiness, or use Depends on when implementation is required');
+      }
     }
     if (scopesClash(task, target) && !dependsBetween(task.id, target.id)) {
       blocking.push(`USES_SCOPE_OVERLAP ${task.id} and ${used}: Write scopes overlap but no Depends on edge exists; Uses only skips the implementation wait`);
@@ -243,11 +419,8 @@ for (const task of tasks) {
   }
 }
 
-// Reads is a read-only anchor: it must already exist, unless another task's Write scope
-// will create it. A greenfield consumer legitimately verifies against a module a sibling
-// produces (and `merge-task` must replay it when that sibling merges), so a forward
-// reference inside a Write scope is allowed. A path that is neither on disk nor inside any
-// Write scope is a typo and still blocks; it must not silently degrade to "no anchor".
+// A scope permits a forward reference but does not establish file existence or readiness.
+// Authors and R0 must check that each worker can complete its Verify in its own branch.
 {
   const toplevel = gitIn(changeDir, ['rev-parse', '--show-toplevel']);
   if (toplevel.status === 0) {
@@ -309,8 +482,9 @@ const CLAIMABLE_FILE = /\.(?:[cm]?[jt]sx?|py|go|rs|rb|java|kt|swift|php|sh|bash)
 
 // Narrow verification. A leg is narrow when its paths all sit inside the task
 // Write scope (or its reads-only anchors); a leg without paths must not invoke a
-// whole-suite runner. One sink may run one broad leg; final acceptance always
-// runs on integration HEAD.
+// whole-suite runner. A sink may run one full-suite leg per package/runner it
+// regresses (a monorepo sink runs each package suite explicitly); final acceptance
+// always runs on integration HEAD.
 const SHELL_CONSTRUCT = /\b(?:for|while|if|case|until)\b/;
 // `set -e; cmd` and `a || exit 1` are shell setup, not verify legs. commandParts
 // splits them into legs that prove nothing; name the real cause instead of the
@@ -367,15 +541,18 @@ for (const task of tasks) {
     blocking.push(`VERIFY_NOT_NARROW ${task.id}: every Verify leg must name a test/spec path inside Write scope${unscoped.length ? ` (outside: ${unscoped.map((leg) => leg.command).join(', ')})` : ''}`);
     fixes.set('VERIFY_NOT_NARROW', 'name a runnable test path inside Write scope or Reads, or add that anchor to Reads (Reads never authorises edits)');
   }
-  if (sinkIds.has(task.id) && broadLegs > 1) {
-    blocking.push(`VERIFY_TOO_BROAD ${task.id}: sole sink may run at most one full-suite leg`);
-  }
-  if (sinkIds.has(task.id) && broadLegs === 1 && unscoped.length > 0) {
-    blocking.push(`VERIFY_TOO_BROAD ${task.id}: combine full-suite and narrow checks on separate tasks/acceptance`);
-  }
+  // A sink may mix full-suite legs (one per package) with narrow checks; broad-free sinks
+  // still fall under VERIFY_NOT_NARROW above like any other task.
 }
 // Vertical slices: behavior tasks must claim a SCEN and own production code, not only tests.
 for (const task of tasks) {
+  // A test-only sink is not proof of a missing assembly owner: the DAG sink is defined by graph
+  // edges, not by who wires the pieces together. Upstream behavior slices may already own the real
+  // production entry, and a final integration verification task may legitimately write tests only.
+  // A block here would force a fabricated production path, so this is an advisory for R0 to judge.
+  if (sinkIds.has(task.id) && task.scope.length && task.scope.every((scope) => isTestPath(scope))) {
+    advisories.push(`ADVISORY_SINK_TEST_ONLY ${task.id}: sink Write scope has only test paths; check that an upstream scenario task owns the assembly/wiring entry and that this sink's integration verification is legitimate test-only work`);
+  }
   if (task.review === 'mechanical') continue;
   if (!task.scenarios.length) blocking.push(`NO_SCEN ${task.id}: non-mechanical task must claim at least one SCEN (or be Review: mechanical)`);
   if (!sinkIds.has(task.id) && task.scope.length && task.scope.every((scope) => isTestPath(scope))) {
@@ -392,11 +569,30 @@ for (const task of tasks) {
 const fullSuiteSinks = tasks.filter((task) => verifyLegs(task.verify).some((leg) => leg.broad));
 if (fullSuiteSinks.length > 1) blocking.push(`TOO_MANY_FULL_SUITE_SINKS: ${fullSuiteSinks.map((task) => task.id).join(', ')}`);
 
+// Entry cells mix prose with a real entry point, so a check has to pull the file-shaped tokens
+// out. Route, CLI and prose entries have no extension and are left to R0. Extensions run from
+// one char (`main.c`) to long compound forms (`application.properties`); the extension must
+// contain a letter so version-like numbers (`1.5`) are not read as files.
+const entryFileTokens = (cell) => cell.split(/[\s,;()]+/).map((word) => word.replace(/^[`'"]+|[`'"]+$/g, '').replace(/#.*$/, '').replace(/[.:]+$/, ''))
+  .filter((word) => /^[^`'"]*\.[A-Za-z0-9]{1,12}$/.test(word) && /[A-Za-z]/.test(word.split('.').pop()) && !word.includes('*'));
+// Write scopes are directories or files; a short entry like `ExpenseBillForm.tsx` names the file
+// without its directory, so match it as a path suffix too. No repo lookup: the tasks.md scope is
+// the only authority here, which keeps the check independent of the worktree.
+const entryWriters = (token) => {
+  const normalized = normalizeScope(token);
+  if (!normalized) return [];
+  return tasks.filter((task) => isFileWithinScopes(normalized, task.scope)
+    || task.scope.some((scope) => scope === normalized || scope.endsWith(`/${normalized}`))).map((task) => task.id);
+};
 const acceptanceMarkdown = read(path.join(changeDir, 'acceptance.md'));
 if (!acceptanceMarkdown) blocking.push('MISSING_ACCEPTANCE: acceptance.md not found');
 else {
   const acceptanceScenarios = new Set();
   const requiredRows = [];
+  // Tasks cells actually read, so tasks.md and acceptance.md must agree in both directions.
+  const rowsByScen = new Map();
+  const claimsByScen = new Map(tasks.flatMap((task) => task.scenarios.map((scen) => [scen.toUpperCase(), task.id]))
+    .reduce((acc, [scen, id]) => { if (!acc.has(scen)) acc.set(scen, new Set()); acc.get(scen).add(id); return acc; }, new Map()));
   // A literal `|` inside a cell silently changed the column count and the old parser
   // just skipped the row. Count against the header instead, and accept `\|`.
   const cellsOf = (line) => line.split(/(?<!\\)\|/).slice(1, -1)
@@ -416,20 +612,112 @@ else {
       blocking.push(`MALFORMED_ACCEPTANCE_ROW acceptance.md:${rowNumber}: ${cells.length} cells, header has ${expectedColumns}; a literal \`|\` must be written \`\\|\``);
       continue;
     }
-    acceptanceScenarios.add(cells[0].toUpperCase());
+    const scen = cells[0].toUpperCase();
+    acceptanceScenarios.add(scen);
     if (!/^(yes|no)$/i.test(cells[4])) {
       blocking.push(`BAD_ACCEPTANCE_REQUIRED acceptance.md:${rowNumber}: ${cells[0]} Required must be yes or no`);
       continue;
     }
-    if (/^yes$/i.test(cells[4])) requiredRows.push(cells);
+    // Column 3 is the Tasks cell; the old parser never read it, so the two files could
+    // assign the same SCEN to different tasks (or acceptance could omit a scenario entirely).
+    const rawTasks = cells[2].trim();
+    const listed = rawTasks.split(',').map((item) => item.trim()).filter(Boolean);
+    const ids = listed.filter((item) => isTaskId(item));
+    const required = /^yes$/i.test(cells[4]);
+    // An empty cell means "derive the owners from tasks.md": the task list is then a
+    // hand-maintained duplicate of the Scenarios column and drifts (D4: 10 of 34 blocks).
+    // A non-task token is still an error on every row; it is not an intentional omission, and
+    // deriving owners from it would silently paper over a placeholder like `TBD`.
+    const bad = listed.filter((item) => !isTaskId(item));
+    if (rawTasks && !listed.length) {
+      blocking.push(`BAD_ACCEPTANCE_TASKS acceptance.md:${rowNumber} ${cells[0]}: Tasks cell ${rawTasks} names no task id`);
+    }
+    if (bad.length) {
+      blocking.push(`BAD_ACCEPTANCE_TASKS acceptance.md:${rowNumber} ${cells[0]}: Tasks token ${bad.join(', ')} is not a task id`);
+    }
+    for (const id of ids) {
+      if (!byId.has(id)) blocking.push(`UNKNOWN_ACCEPTANCE_TASK ${cells[0]}: ${id} is not a task in tasks.md`);
+    }
+    // Derived owners are the claimers, and only a truly empty cell derives; a non-empty cell that
+    // yields no id (`,`, `TBD`) is already reported above and keeps its (empty) explicit meaning.
+    const owners = rawTasks ? ids : [...(claimsByScen.get(scen) ?? [])];
+    if (!rowsByScen.has(scen)) rowsByScen.set(scen, []);
+    rowsByScen.get(scen).push({ ids, owners, entry: cells[1], line: rowNumber });
+    if (required) requiredRows.push(cells);
   }
   for (const scenario of acceptanceScenarios) {
     if (!declared.has(scenario)) blocking.push(`UNKNOWN_ACCEPTANCE_SCEN: ${scenario} is not declared`);
+  }
+  // Symmetric with UNCLAIMED_SCEN: every declared scenario needs a row, not only the
+  // ones acceptance happens to mention.
+  for (const [scen, file] of declared) {
+    if (!acceptanceScenarios.has(scen)) blocking.push(`UNACCEPTED_SCEN ${scen} (${file}): every declared SCEN needs an acceptance row`);
+  }
+  // Ownership is checked per row, not on the union across rows: a Required=no row naming the real
+  // owner must not excuse a Required=yes row that assigns the scenario to a task which does not
+  // claim it. Applied to every row that lists ids — a Tasks cell means "these tasks carry this
+  // scenario" whatever the Required value, and Required=no rows name owners too.
+  for (const [scen, rows] of rowsByScen) {
+    const union = new Set(rows.flatMap((row) => row.owners));
+    const claims = claimsByScen.get(scen);
+    for (const row of rows) {
+      // Every id in the cell is a claim about that id, so one real owner cannot carry a fabricated
+      // one. Naming the id also covers the "none of them claim it" case: it reports each offender.
+      for (const id of row.ids) {
+        if (!(claims && claims.has(id))) blocking.push(`UNOWNED_ACCEPTANCE_SCEN ${scen}: ${id} does not claim it in tasks.md Scenarios`);
+      }
+    }
+    // ... and every task claiming a SCEN must appear in that SCEN's Tasks cell, so a
+    // second owner cannot be silently dropped from acceptance.
+    for (const id of claims ?? []) {
+      if (!union.has(id)) blocking.push(`UNACCEPTED_TASK_SCEN ${id}: ${scen} is claimed but no acceptance row lists ${id}`);
+    }
+    // A row can name the right owner and still observe the wrong entry: a component task whose
+    // acceptance Entry is assembled by an unrelated downstream task passes the checks above
+    // (D4: a component claimed the form scenario whose Entry was ExpenseBillForm.tsx). Only
+    // file-path tokens are judged; route/CLI entries and unchanged baseline files stay with R0.
+    for (const row of rows) {
+      for (const token of entryFileTokens(row.entry)) {
+        const writers = entryWriters(token);
+        if (!writers.length) continue;
+        const covered = row.owners.some((owner) => writers.includes(owner) || writers.some((writer) => reaches(owner, writer)));
+        if (!covered) blocking.push(`ENTRY_OWNER_UNCLAIMED ${scen} acceptance.md:${row.line}: Entry ${token} is written by ${writers.join(', ')} but no row owner writes it or depends on its writer`);
+      }
+    }
   }
   if (!requiredRows.length) blocking.push('MISSING_REQUIRED_ACCEPTANCE: acceptance.md has no Required=yes row');
   for (const cells of requiredRows) {
     if (cells[5] !== 'PENDING') blocking.push(`ACCEPTANCE_NOT_FROZEN ${cells[0]}: Result must start PENDING`);
     if (/^`?\s*(?:!|manual|手工|自然语言)/i.test(cells[3])) blocking.push(`BAD_ACCEPTANCE_VERIFY ${cells[0]}: Required=yes needs one executable command`);
+  }
+}
+
+// design.md names decisions, tasks name task ids. design is written before tasks, so it cannot
+// cite task ids without becoming circular: a decision is `- **D-01 <title>**` under `## Decisions`,
+// and tasks.md points back at it with `Implements:`. Only ids declared in tasks.md are matched, so
+// unrelated prose numbers are not mistaken for tasks.
+{
+  const designMarkdown = read(path.join(changeDir, 'design.md'));
+  // With no design.md there are no decision headings, so every Implements id is unresolved. This
+  // runs outside the `if` so the ids are not silently accepted just because design.md is missing.
+  if (!designMarkdown) {
+    for (const task of tasks) {
+      for (const decision of task.implements) blocking.push(`UNKNOWN_DECISION ${task.id}: Implements ${decision} is not a decision heading in design.md`);
+    }
+  } else {
+    // Only visible prose counts: the scaffold's HTML comment explains the rule with an example task
+    // id, and a fenced example is not a claim about this package.
+    const designVisible = visibleLines(designMarkdown).map((entry) => entry.text).join('\n');
+    const decisions = new Set([...designVisible.matchAll(/^\s*[-*]\s*\*\*(D-\d+)\b/gm)].map((match) => match[1]));
+    for (const task of tasks) {
+      const pattern = new RegExp(`(^|[^A-Za-z0-9_-])${task.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])`);
+      if (pattern.test(designVisible)) {
+        blocking.push(`DESIGN_NAMES_TASK ${task.id}: design.md must not name task ids; name decisions and let tasks.md declare Implements:`);
+      }
+      for (const decision of task.implements) {
+        if (!decisions.has(decision)) blocking.push(`UNKNOWN_DECISION ${task.id}: Implements ${decision} is not a decision heading in design.md`);
+      }
+    }
   }
 }
 

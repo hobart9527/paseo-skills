@@ -73,7 +73,7 @@ const TASKS = `- [ ] 1.1 T-00 interface skeleton
   - Scen: SCEN-CORE
 - [ ] 1.5 T-03 sole sink
   - Depends on: T-00,T-01,T-02,T-04
-  - Write scope: test/all.test.mjs
+  - Write scope: src/all.mjs,test/all.test.mjs
   - Est: S
   - Review: mechanical
   - Verify with: node --test test/all.test.mjs
@@ -81,7 +81,7 @@ const TASKS = `- [ ] 1.1 T-00 interface skeleton
 
 const acceptance = `| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| SCEN-CORE | CLI | T-03 | node -e "0" | yes | PENDING | pending |
+| SCEN-CORE | CLI | T-01,T-02,T-04 | node -e "0" | yes | PENDING | pending |
 `;
 
 function redTest(file, marker) {
@@ -223,11 +223,12 @@ test('sandbox: a converged contract freezes, then merges in dependency order wit
   const afterReplay = s.git('rev-parse', 'HEAD');
   branch(s.env, s.cwd, 'task/sandbox/T-03', afterReplay);
   commit(s.env, s.cwd, `sink\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`, {
+    'src/all.mjs': impl('all'),
     'test/all.test.mjs': `import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 test('all', () => {
-  for (const file of ['src/iface.mjs', 'src/prod.mjs', 'src/consumer.mjs', 'src/extra.mjs']) assert.equal(fs.existsSync(file), true);
+  for (const file of ['src/iface.mjs', 'src/prod.mjs', 'src/consumer.mjs', 'src/extra.mjs', 'src/all.mjs']) assert.equal(fs.existsSync(file), true);
 });
 `,
   });

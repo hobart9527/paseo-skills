@@ -32,7 +32,8 @@
     安全风险标为 strict；freeze-check 不强制所有此类任务为 strict，也不验证风险标签是否完整。
     mechanical 不代表安全，也不免除语义审查。
   - Verify with：非汇点必须点名本任务 Write scope 或 Reads 内的测试/spec 路径；
-    全量套件只允许一个汇点任务运行。需要环境变量就写全调用：
+    全量套件只允许汇点任务运行，汇点可以按包/runner 各跑一个全量腿（monorepo 就逐包显式列出，
+    不要藏进包装脚本）。需要环境变量就写全调用：
     PYTHONPATH=runtime python3 -m pytest tests/x_test.py
     带路径即为窄跑（`pytest tests/x_test.py`、`pnpm test src/a.test.ts`、`go test ./pkg/a`）；
     不带路径的 `pytest`、`npm test`、`go test ./...` 判为全量，只能出现在汇点。
@@ -41,15 +42,21 @@
   - Scenarios：本任务承载的 spec 场景编号（SCEN-*）。编号必须在本 change 的 spec 里声明过，
     且每个声明的编号至少被一个任务认领 —— 由 freeze-check 双向核对。mechanical 任务可不认领
     场景，也可只写测试路径；这些结构豁免不证明任务没有行为风险。
-  - 可选调度字段（全部参与 freeze-check，写错分别报 BAD_READS / BAD_EST / BAD_INTERFACE / BAD_KIND）：
-    - `Uses: T-03, T-05` — 消费边。派发只等目标的接口（含其 skeleton 祖先），不等实现合流；
+  - 可选调度字段（全部参与 freeze-check，写错分别报 BAD_READS / BAD_EST / BAD_INTERFACE / BAD_KIND / BAD_IMPLEMENTS）：
+    - `Uses: T-03, T-05` — 消费边。派发等待目标及其依赖链中的 skeleton，不等目标实现合流；
       merge 仍要求目标 Done。目标必须声明 `Interface:`，且若两者 Write scope 重叠则还必须有 `Depends on`。
+      Interface 的 skeleton owner 必须是消费者实际派发依赖；scope 只表示所有权，不证明文件或内容已提交。
     - `Reads: path/a, path/b` — 只读锚点：Verify 可以跑这些路径，但它们不算 Write scope，
       不参与 scope 冲突，也不授权改源码。
+      worker 完成自身任务后必须能在自己的分支跑通 Verify；首次 Verify 允许 red。若最终 Verify 确需其他任务未来的文件或行为，使用 `Depends on`；merge 重跑不能代替 worker Verify。已有 baseline 文件、自建文件或仅用于回归的 Reads 不应自动加依赖。静态检查不证明文件存在、内容正确、权限可用或已提交。
     - `Est: S|M|L` — 工期权重，缺省 M。
     - `Kind: skeleton` — 接口桩任务，必须有 `Review: mechanical`，其 Write scope 必须覆盖
       所有 `Interface:` 路径。
     - `Interface: path/to/file.ts#symbol` — 本任务向 `Uses` 消费者提供的路径/符号；可逗号分隔或重复多行。
+    - `Implements: D-01, D-02` — 本任务落实的 design.md 决策编号。**仅在存在 design.md 时填写**：
+      design.md 是可选的，没有 design.md 就没有决策标题，写了 Implements 会被判 UNKNOWN_DECISION。
+      design.md 只写决策（`- **D-01 <标题>**`）与影响模块，不写任务 ID；任务在这里反指决策，
+      每个编号必须在 design.md 有对应决策标题（freeze-check 核对 DESIGN_NAMES_TASK / UNKNOWN_DECISION）。
   - 可选元数据（`Reads`、`Est`、`Kind`、`Interface`、`Risk-surface`）：仅在影响 Verify、调度、共享接口或风险时填写。
   - Done 行由 merge gate 写入 `- Done: source=<tip7> review=worker`；worker 标记执行，不是审查结论。
     历史 `pass(<reviewer>@<tip>/<base>)` 标签仍可读取，不必改写已冻结内容。

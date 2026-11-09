@@ -14,6 +14,7 @@ const REVIEWER_ID = String.raw`mechanical|deferred|[0-9a-f]{7,40}|[0-9a-f]{8}-[0
 const REVIEW_TAG = new RegExp(String.raw`^pass\((${REVIEWER_ID})@([0-9a-f]{7,40})\/([0-9a-f]{7,40})\)$`);
 export const REVIEW_MODES = ['standard', 'strict', 'mechanical', 'deferred'];
 const INTERFACE_SYMBOL = /^[^\s#]+$/;
+const DECISION_ID = /^D-\d+$/;
 
 
 export function isTaskId(value) {
@@ -31,7 +32,8 @@ export function parseReviewTag(value) {
 }
 
 export function normalizeScope(value) {
-  const raw = String(value || '').trim().replace(/\/+$/, '');
+  // `./src/a` and `src/a` name the same repo-relative path; leave the spelling to neither side.
+  const raw = String(value || '').trim().replace(/^(?:\.\/+)+/, '').replace(/\/+$/, '');
   if (!raw || raw.startsWith('/') || raw.includes('..')) return null;
   return raw.split('/').filter(Boolean).join('/');
 }
@@ -88,6 +90,7 @@ export function parseTasks(markdown) {
         est: 'M',
         kind: null,
         interface: [],
+        implements: [],
         riskSurface: [],
         verify: '',
         scenarios: [],
@@ -139,6 +142,11 @@ export function parseTasks(markdown) {
         if (!normalized || parts.length > 2 || (parts.length === 2 && !INTERFACE_SYMBOL.test(symbol))) {
           errors.push({ code: 'BAD_INTERFACE', task: current.id, message: `bad Interface entry: ${entry}` });
         } else current.interface.push(symbol ? `${normalized}#${symbol}` : normalized);
+      }
+    } else if (key === 'implements') {
+      for (const entry of splitList(value)) {
+        if (!DECISION_ID.test(entry)) errors.push({ code: 'BAD_IMPLEMENTS', task: current.id, message: `bad Implements entry: ${entry}` });
+        else current.implements.push(entry);
       }
     } else if (key === 'risk-surface' || key === 'risk surface') {
       current.riskSurface.push(...splitList(value.replace(/[\[\]]/g, '')).map((item) => item.toLowerCase()));
@@ -241,14 +249,64 @@ export function legPaths(part) {
     .filter((token) => token && token !== '.' && token !== '...' && (token.includes('/') || /\.[A-Za-z0-9]+$/.test(token)));
 }
 
+// A working-directory option (`npm --prefix packages/server test`, `pnpm -C dir test`,
+// `yarn --cwd dir test`) moves the runner into a package; its value names where the suite
+// runs, not a test path. Resolve the leg's own paths against it so a scoped run stays narrow
+// and a bare runner becomes broad. Bounded to these options; no general shell parsing.
+const CWD_OPTION = /^(?:--prefix|-C|--dir|--cwd)(?:=(\S+))?$/;
+
+/** Segment-wise `./`, `dir/` and `a/../b` normalization; null when absolute or escapes the root. */
+function normalizeRelativeDir(value) {
+  const raw = String(value || '').replace(/^['"]|['"]$/g, '');
+  if (raw.startsWith('/')) return null;
+  const segments = [];
+  for (const segment of raw.split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      if (!segments.length) return null;
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  return segments.join('/');
+}
+
+/** Resolve a leg path against its working directory; an escaping or absolute path stays as written. */
+function resolveLegPath(cwd, path) {
+  if (path.startsWith('/')) return path;
+  // `cwd` is `null` without the option and `''` for `--prefix .`; both mean the repo root,
+  // which still normalizes `a/../b`. Only a non-empty working directory is prefixed.
+  return normalizeRelativeDir(cwd ? `${cwd}/${path}` : path) ?? path;
+}
+
+function legWorkingDirectory(part) {
+  const tokens = String(part || '').split(/\s+/).map((token) => token.replace(/^['"]|['"]$/g, ''));
+  for (let i = 0; i < tokens.length; i += 1) {
+    const match = CWD_OPTION.exec(tokens[i]);
+    if (!match) continue;
+    const value = match[1] ?? tokens[i + 1];
+    const cwd = value && !value.startsWith('-') ? normalizeRelativeDir(value) : null;
+    // Strip the option's value token only when it resolves; otherwise leave the leg as it was.
+    // `cwd === ''` is the repo root and still strips the option.
+    return { cwd, strip: cwd !== null ? (match[1] ? [i] : [i, i + 1]) : [] };
+  }
+  return { cwd: null, strip: [] };
+}
+
 /**
  * Parse `Verify with` into legs. `broad` marks a leg that may run the whole suite;
  * `paths` are the scoped anchors it names (repo-relative).
  */
 export function verifyLegs(value) {
   return commandParts(value).map((command) => {
-    const paths = [...new Set(legPaths(command))];
-    return { command, paths, broad: paths.length === 0 && FULL_SUITE_LEG.test(command) };
+    const { cwd, strip } = legWorkingDirectory(command);
+    // Drop the working-directory option and its value before reading paths, so the package
+    // directory is not mistaken for the target of the run.
+    const tokens = command.split(/\s+/);
+    const scoped = strip.length ? tokens.filter((_, i) => !strip.includes(i)).join(' ') : command;
+    const paths = [...new Set(legPaths(scoped).map((path) => resolveLegPath(cwd, path)))];
+    return { command, paths, broad: paths.length === 0 && FULL_SUITE_LEG.test(scoped) };
   });
 }
 
