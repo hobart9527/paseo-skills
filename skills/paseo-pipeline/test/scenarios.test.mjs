@@ -181,15 +181,15 @@ test('scenarios reports a declared scenario that no task claims', () => {
   assert.deepEqual(entry.gaps, ['NO_CLAIMANT_TASK', 'NO_ACCEPTANCE_ROW']);
 });
 
-test('scenarios offers a Scenario/Tasks candidate but never Entry, Verify or Required', () => {
-  const f = fixture();
+test('scenarios offers a claimant-backed Scenario/Tasks candidate but never Entry, Verify or Required', () => {
+  const f = fixture({ 'openspec/changes/chg/acceptance.md': table() });
   const r = run(f.cwd, ['scenarios', f.dir, '--json']);
   assert.equal(r.status, 0, r.out);
   const report = JSON.parse(r.stdout);
   const entry = report.scenarios.find((item) => item.id === 'SCEN-CAP-01');
-  assert.equal(Object.hasOwn(entry, 'candidate'), false);
+  assert.deepEqual(entry.candidate, { Scenario: 'SCEN-CAP-01', Tasks: 'T-01, T-02' });
   const human = run(f.cwd, ['scenarios', f.dir]);
-  assert.doesNotMatch(human.stdout, /candidate:/);
+  assert.match(human.stdout, /candidate: \| SCEN-CAP-01 \| <Entry: author> \| T-01, T-02 \| <Verify: author> \| <Required: author>/);
 });
 
 test('scenarios fails loudly on an unparseable tasks.md and emits no candidate', () => {

@@ -162,9 +162,9 @@ export function buildScenariosReport(changeDir) {
         result: row.result,
       })),
       gaps,
-      // The safe default only: an empty Tasks cell. Entry, business expectation and Required are
+      // Claimant task ids are derived from tasks.md; Entry, business expectation and Required are
       // authored judgements and are deliberately absent.
-      ...(table.rows.length ? {} : { candidate: { Scenario: entry.id, Tasks: '' } }),
+      ...(table.rows.length ? {} : { candidate: { Scenario: entry.id, Tasks: claimants.join(', ') } }),
     };
   });
 

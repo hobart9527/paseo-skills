@@ -780,7 +780,7 @@ if (!structural) {
   if (defaultBranch) {
     const own = `integration/${path.basename(path.resolve(changeDir))}`;
     for (const branch of refs.stdout.split('\n').map((line) => line.trim()).filter((line) => line && line !== own)) {
-      const diff = gitIn(changeDir, ['diff', '--name-only', '-z', `${defaultBranch}...${branch}`]);
+      const diff = gitIn(changeDir, ['diff', '--no-renames', '--name-only', '-z', `${defaultBranch}...${branch}`]);
       if (diff.status !== 0) continue;
       const changed = nulList(diff);
       for (const task of tasks) {

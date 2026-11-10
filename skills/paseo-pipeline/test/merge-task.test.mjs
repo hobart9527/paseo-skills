@@ -349,9 +349,35 @@ function advanceMain(f, file, text) {
   write(f.cwd, file, text); git(f.cwd, 'add', '.'); git(f.cwd, 'commit', '-qm', `main: ${file}`);
   git(f.cwd, 'switch', '-q', `integration/${f.change}`);
 }
+test('integration rename away from a task path is detected as drift', () => {
+  const f = fixture({ baseFiles: { 'src/hot.txt': 'original' } });
+  git(f.cwd, 'switch', '-q', `integration/${f.change}`);
+  fs.mkdirSync(path.join(f.cwd, 'docs'), { recursive: true });
+  fs.renameSync(path.join(f.cwd, 'src/hot.txt'), path.join(f.cwd, 'docs/renamed.txt'));
+  git(f.cwd, 'add', '-A'); git(f.cwd, 'commit', '-qm', 'rename on integration');
+  git(f.cwd, 'switch', '-q', `task/${f.change}/T-01`);
+  write(f.cwd, 'src/hot.txt', 'task changed old path');
+  git(f.cwd, 'add', '.'); git(f.cwd, 'commit', '-qm', `work\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
+  git(f.cwd, 'switch', '-q', `integration/${f.change}`);
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01']);
+  assert.equal(r.status, 34, r.out);
+  assert.match(r.out, /integration drift overlaps task files/);
+});
+
 test('main advanced on a task scope file → exit 34', () => {
   const f = fixture();
   advanceMain(f, 'src/hot.txt', 'changed on main');
+  const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01']);
+  assert.equal(r.status, 34, r.out);
+  assert.match(r.out, /main advanced on task scope \(src\/hot\.txt\)/);
+});
+test('main rename away from a task-scope path is detected as drift', () => {
+  const f = fixture({ baseFiles: { 'src/hot.txt': 'original' } });
+  git(f.cwd, 'switch', '-q', 'main');
+  fs.mkdirSync(path.join(f.cwd, 'docs'), { recursive: true });
+  fs.renameSync(path.join(f.cwd, 'src/hot.txt'), path.join(f.cwd, 'docs/renamed.txt'));
+  git(f.cwd, 'add', '-A'); git(f.cwd, 'commit', '-qm', 'rename on main');
+  git(f.cwd, 'switch', '-q', `integration/${f.change}`);
   const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01']);
   assert.equal(r.status, 34, r.out);
   assert.match(r.out, /main advanced on task scope \(src\/hot\.txt\)/);

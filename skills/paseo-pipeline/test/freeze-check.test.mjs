@@ -511,6 +511,21 @@ test('CROSS_CHANGE_SCOPE_OVERLAP: another integration branch touching this Write
     assert.match(hits[0], /^CROSS_CHANGE_SCOPE_OVERLAP T-01 vs integration\/other-change: src\/shared\/x\.mjs$/);
   }
 });
+test('CROSS_CHANGE_SCOPE_OVERLAP: rename away from scoped path retains both paths', () => {
+  const { dir, sh } = signedRepo(() => '');
+  fs.mkdirSync(path.join(dir, 'src/shared'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'src/shared/x.mjs'), 'seed');
+  sh('add', '.'); sh('commit', '--amend', '-qm', 'draft');
+  const sha = sh('rev-parse', '--short', 'HEAD');
+  fs.writeFileSync(path.join(dir, 'review.md'), `R0: pass(hanlin-uuid@${sha})\\n`);
+  sh('switch', '-q', '-c', 'integration/other-change');
+  fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
+  fs.renameSync(path.join(dir, 'src/shared/x.mjs'), path.join(dir, 'docs/renamed.mjs'));
+  sh('add', '-A'); sh('commit', '-qm', 'rename scoped file');
+  const result = spawnSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--json', '--skip-signer-check'], { encoding: 'utf8' });
+  const report = JSON.parse(result.stdout);
+  assert.ok(report.advisories.some((item) => item.includes('src/shared/x.mjs')), report.advisories.join('\n'));
+});
 test('CROSS_CHANGE_SCOPE_OVERLAP: outside a git repo it is silently skipped', () => {
   const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
   const report = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--json', '--structural'], { encoding: 'utf8' }));

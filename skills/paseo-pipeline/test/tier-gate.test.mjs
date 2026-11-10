@@ -739,6 +739,16 @@ test('Stop 核对：CP-2 合流（--no-ff）不算主 checkout 原地写', () =>
   assert.equal(stop(root).verdict, 'ok');
 }));
 
+test('Stop 核对：本地提交重命名计入旧路径和新路径', () => withState(() => {
+  const root = makeRepo();
+  snap(root, 'rename');
+  fs.renameSync(path.join(root, 'src/seed.txt'), path.join(root, 'src/renamed.txt'));
+  sh(root, 'add', '-A'); sh(root, 'commit', '-q', '-m', 'rename');
+  const result = stop(root, 'rename');
+  assert.equal(result.verdict, 'ok');
+  assert.deepEqual(result.files, ['src/renamed.txt', 'src/seed.txt']);
+}));
+
 test('Stop 核对：fast-forward 拉取远端提交不算主 checkout 原地写', () => withState(() => {
   const root = makeRepo();
   snap(root);
