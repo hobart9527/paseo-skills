@@ -76,6 +76,17 @@ function taggedFixture(tasks) {
   return { cwd, change, base };
 }
 
+test('refuses to abort or finalize when MERGE_HEAD belongs to another merge', () => {
+  const f = fixture({ verify: 'node --test test/a.test.mjs && false' });
+  const foreign = git(f.cwd, 'rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(f.cwd, '.git', 'MERGE_HEAD'), `${foreign}\n`);
+  const result = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01']);
+  assert.notEqual(result.status, 0, result.out);
+  assert.match(result.out, /MERGE_HEAD.*not owned.*reconcile/i);
+  assert.equal(git(f.cwd, 'rev-parse', 'MERGE_HEAD'), foreign);
+  assert.notEqual(git(f.cwd, 'rev-parse', 'HEAD'), f.tip);
+});
+
 test('merges a valid worker branch without any review tag and records Done', () => {
   const f = fixture();
   const r = invoke(f.cwd, [`task/${f.change}/T-01`, 'T-01']);
