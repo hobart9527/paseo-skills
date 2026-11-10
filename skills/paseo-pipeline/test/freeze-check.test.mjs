@@ -702,14 +702,20 @@ test('Reads anchors a narrow Verify without joining scope conflicts', () => {
   assert.equal(freezeStructural(sharedRead).status, 0, freezeStructural(sharedRead).stdout);
 });
 
-test('rulings.md is not contract drift; any other new file is', () => {
+test('only root R0 record files are exempt from contract drift', () => {
   const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
   const sh = (...a) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8' }).trim();
   sh('init', '-q'); sh('config', 'user.email', 't@t'); sh('config', 'user.name', 't');
   sh('add', '.'); sh('commit', '-qm', 'draft');
   fs.writeFileSync(path.join(dir, 'review.md'), `R0: pass(hanlin-uuid@${sh('rev-parse', '--short', 'HEAD')})\n`);
   fs.writeFileSync(path.join(dir, 'rulings.md'), '# Rulings\n');
+  fs.writeFileSync(path.join(dir, 'run-log.md'), 'approval log\n');
   assert.equal(run(dir).status, 0, run(dir).stdout);
+  for (const file of ['specs/a/review.md', 'specs/a/run-log.md']) {
+    fs.writeFileSync(path.join(dir, file), 'nested record name\n');
+    assert.match(run(dir).stdout, /STALE_R0_SIGNOFF.*specs\/a/);
+    fs.unlinkSync(path.join(dir, file));
+  }
   fs.writeFileSync(path.join(dir, 'extra.md'), 'x');
   assert.match(run(dir).stdout, /STALE_R0_SIGNOFF.*extra\.md/);
 });
