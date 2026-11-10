@@ -301,16 +301,19 @@ else {
   }
   for (const item of report.dispatch) console.log(`DISPATCH ${item.task}: ${item.action} — ${item.reason}`);
   for (const item of report.waiting) {
-    const chain = [];
-    const seen = new Set();
-    const visit = (id) => {
-      if (seen.has(id)) return;
-      seen.add(id);
+    const paths = [];
+    const pathsTo = (id, trail = []) => {
+      if (trail.includes(id)) return [];
+      const prefix = [...trail, id];
       const blocked = report.waiting.find((entry) => entry.task === id);
-      for (const dep of blocked?.on ?? []) { visit(dep); chain.push(dep); }
+      if (!blocked) return [prefix];
+      return blocked.on.flatMap((dep) => pathsTo(dep, prefix));
     };
-    visit(item.task);
-    console.log(`WAIT ${item.task}: on ${item.on.join(', ')}${chain.length ? ` (dependency chain: ${[...new Set(chain)].join(' → ')})` : ''}`);
+    for (const dep of item.on) {
+      for (const path of pathsTo(dep)) paths.push([...path].reverse().concat(item.task));
+    }
+    const summaries = [...new Set(paths.map((path) => path.join(' → ')))];
+    console.log(`WAIT ${item.task}: on ${item.on.join(', ')}${summaries.length ? ` (dependency chain: ${summaries.join('; ')})` : ''}`);
   }
   for (const item of report.mergeWaiting) console.log(`MERGE-WAIT ${item.task}: on ${item.on.join(', ')}`);
   for (const item of report.scopeWaiting) console.log(`SCOPE-WAIT ${item.task}: waiting for ${item.on.join(', ')}`);

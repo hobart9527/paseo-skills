@@ -145,6 +145,41 @@ test('human-readable plan lists active workers and dependency-chain summaries', 
   assert.match(result.stdout, /dependency chain: T-01/);
 });
 
+test('human-readable plan prints real dependency paths for fan-in and diamond waits', () => {
+  const f = fixture();
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  const tasksFile = path.join(dir, 'tasks.md');
+  const task = (number, id, dependency = '') => `- [ ] 1.${number} ${id} task\n`
+    + `${dependency ? `  - Depends on: ${dependency}\n` : ''}`
+    + `  - Write scope: src/${id},test/${id}\n  - Verify with: node --test test/${id}.test.mjs\n`;
+  const tasks = (items) => items.map((item) => task(...item)).join('');
+  const cases = [
+    {
+      name: 'fan-in',
+      tasks: tasks([[1, 'T-01'], [2, 'T-02', 'T-01'], [3, 'T-03', 'T-01']]),
+      paths: ['T-01 → T-02', 'T-01 → T-03'],
+    },
+    {
+      name: 'linear chain',
+      tasks: tasks([[1, 'T-01'], [2, 'T-02', 'T-01'], [3, 'T-03', 'T-02']]),
+      paths: ['T-01 → T-02 → T-03'],
+    },
+    {
+      name: 'diamond',
+      tasks: tasks([[1, 'T-01'], [2, 'T-02', 'T-01'], [3, 'T-03', 'T-01'], [4, 'T-04', 'T-02,T-03']]),
+      paths: ['T-01 → T-02 → T-04', 'T-01 → T-03 → T-04'],
+    },
+  ];
+  for (const item of cases) {
+    fs.writeFileSync(tasksFile, item.tasks);
+    git(f.cwd, 'add', 'openspec/changes/chg/tasks.md');
+    git(f.cwd, 'commit', '-qm', `scenario ${item.name}`);
+    const result = run(f.cwd, f.localEnv, ['plan', dir]);
+    assert.equal(result.status, 0, result.out);
+    for (const expected of item.paths) assert.ok(result.stdout.includes(expected), `${item.name}: missing ${expected}\n${result.stdout}`);
+  }
+});
+
 test('plan and status flag forged Done source against first-parent merge trailers', () => {
   const f = fixture();
   implement(f.cwd, 'task/chg/T-01');
