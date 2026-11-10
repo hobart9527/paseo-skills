@@ -50,7 +50,7 @@ export function attemptsOf(taskId, branches = {}) {
 /**
  * @param {Array} tasks parsed tasks.md tasks
  * @param {object} state { done: string[], agents: [], branches: {}, now?: Date|string }
- * @param {object} options { workerCap, idleMinutes, maxAttempts }
+ * @param {object} options { workerCap, idleMinutes, maxAttempts, allowAttemptOver }
  */
 export function frontier(tasks, state = {}, options = {}) {
   const opts = { ...DEFAULTS, ...options };
@@ -101,8 +101,8 @@ export function frontier(tasks, state = {}, options = {}) {
       continue;
     }
     const attempts = attemptsOf(task.id, branches);
-    if (attempts > opts.maxAttempts) {
-      blocked.push({ task: task.id, kind: 'BLOCKED_ATTEMPTS', reason: `${attempts} branches; cap is ${opts.maxAttempts}` });
+    if (attempts > opts.maxAttempts && !(opts.allowAttemptOver || []).includes(task.id)) {
+      blocked.push({ task: task.id, kind: 'BLOCKED_ATTEMPTS', reason: `${attempts} branches; cap is ${opts.maxAttempts}; human approval required: record in run-log.md using templates/approvals.md, then plan --allow-attempt-over ${task.id}` });
       continue;
     }
     // A live worker on the same files would race. Depends-on pairs are serialised by

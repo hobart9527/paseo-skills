@@ -34,6 +34,7 @@ function option(name, fallback) {
   return value;
 }
 const extraChanges = flags['other-change'] ?? [];
+const allowAttemptOver = flags['allow-attempt-over'] ?? [];
 if (extraChanges.some((value) => !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value))) {
   console.error('[next-actions] --other-change needs a change ID'); process.exit(2);
 }
@@ -262,7 +263,7 @@ for (const agent of listedAgents) {
   });
 }
 
-const result = frontier(tasks, { done, branches, agents }, options);
+const result = frontier(tasks, { done, branches, agents }, { ...options, allowAttemptOver });
 // The integration branch is created after CP-1, so its absence is a precise signal that the
 // contract is not frozen yet. The DAG preview is still useful before then, but a DISPATCH shown
 // here is not execution authorization: the freeze check and the recorded human CP-1 are.

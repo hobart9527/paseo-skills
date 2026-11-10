@@ -93,9 +93,19 @@ test('scope overlap with a task in flight holds the pair, not the whole frontier
   ]);
 });
 
+test('human-approved attempt override releases one capped task only', () => {
+  const branches = {
+    'T-01': { attempts: 4, ownCommits: 2 },
+    'T-02': { attempts: 4, ownCommits: 2 },
+  };
+  const report = frontier(dag, { done: ['T-00'], branches }, { allowAttemptOver: ['T-01'] });
+  assert.ok(report.dispatch.some((item) => item.task === 'T-01' && item.action === 'merge'));
+  assert.deepEqual(report.blocked, [{ task: 'T-02', kind: 'BLOCKED_ATTEMPTS', reason: '4 branches; cap is 3; human approval required: record in run-log.md using templates/approvals.md, then plan --allow-attempt-over T-02' }]);
+});
+
 test('branch attempts above the cap are blocked and stop dispatch', () => {
   const report = frontier(dag, { done: ['T-00'], branches: { 'T-01': { attempts: 4, implementationCommits: 2 } } });
-  assert.deepEqual(report.blocked, [{ task: 'T-01', kind: 'BLOCKED_ATTEMPTS', reason: '4 branches; cap is 3' }]);
+  assert.deepEqual(report.blocked, [{ task: 'T-01', kind: 'BLOCKED_ATTEMPTS', reason: '4 branches; cap is 3; human approval required: record in run-log.md using templates/approvals.md, then plan --allow-attempt-over T-01' }]);
   assert.ok(!report.dispatch.some((item) => item.task === 'T-01'));
 });
 

@@ -78,6 +78,34 @@ function implement(cwd, branch) {
   return tip;
 }
 
+test('plan --allow-attempt-over releases only named capped tasks', () => {
+  const f = fixture();
+  const tasks = path.join(f.cwd, 'openspec/changes/chg/tasks.md');
+  fs.writeFileSync(tasks, fs.readFileSync(tasks, 'utf8').replace('  - Depends on: T-01\n', ''));
+  git(f.cwd, 'add', 'openspec/changes/chg/tasks.md');
+  git(f.cwd, 'commit', '-qm', 'independent task');
+  for (const task of ['T-01', 'T-02']) for (const attempt of [1, 2, 3, 4]) {
+    const branch = `task/chg/${task}${attempt === 1 ? '' : `-a${attempt}`}`;
+    if (attempt !== 4) git(f.cwd, 'branch', branch);
+    else {
+      git(f.cwd, 'switch', '-qc', branch);
+      write(f.cwd, `src/${task}.txt`, task);
+      git(f.cwd, 'add', '.');
+      git(f.cwd, 'commit', '-qm', `work\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
+      git(f.cwd, 'switch', '-q', 'integration/chg');
+    }
+  }
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  let result = run(f.cwd, f.localEnv, ['plan', dir, '--json']);
+  assert.equal(result.status, 0, result.out);
+  assert.deepEqual(JSON.parse(result.stdout).dispatch, []);
+  result = run(f.cwd, f.localEnv, ['plan', dir, '--json', '--allow-attempt-over', 'T-01']);
+  assert.equal(result.status, 0, result.out);
+  const report = JSON.parse(result.stdout);
+  assert.deepEqual(report.dispatch.map((item) => item.task), ['T-01']);
+  assert.deepEqual(report.blocked.map((item) => item.task), ['T-02']);
+});
+
 test('plan delegates to the frontier and prints the ready task', () => {
   const f = fixture();
   const r = run(f.cwd, f.localEnv, ['plan', path.join(f.cwd, 'openspec/changes/chg'), '--json']);
