@@ -777,7 +777,7 @@ export function takeSnapshot({ cwd, sessionId, isHumanTurn = true }) {
  * 本机直连 `main` 的普通提交仍会出现在这里——那正是「Bash 写完直接提交」要补的洞。
  */
 function localCommitFiles(root, from, to) {
-  return git(root, ['log', '--first-parent', '--no-merges', '--pretty=format:', '--name-only', `${from}..${to}`, '--not', '--remotes'])
+  return git(root, ['log', '--first-parent', '--no-merges', '--pretty=format:', '--name-only', '--no-renames', `${from}..${to}`, '--not', '--remotes'])
     .split('\n').map((line) => line.trim()).filter(Boolean);
 }
 

@@ -234,7 +234,7 @@ for (const commit of commits) {
 }
 
 if (base !== preMergeHead) {
-  const integrationFiles = new Set(gitMaybe(['diff', '--name-only', '-z', `${base}..${preMergeHead}`]).stdout.split('\0').filter(Boolean));
+  const integrationFiles = new Set(gitMaybe(['diff', '--no-renames', '--name-only', '-z', `${base}..${preMergeHead}`]).stdout.split('\0').filter(Boolean));
   if (files.some((file) => integrationFiles.has(file))) fail('integration drift overlaps task files; re-run after rebasing', 34);
 }
 
@@ -244,7 +244,7 @@ if (base !== preMergeHead) {
 {
   const defaultBranch = ['main', 'master'].find((name) => gitMaybe(['rev-parse', '--verify', '--quiet', `refs/heads/${name}`]).status === 0);
   if (defaultBranch) {
-    const mainFiles = gitMaybe(['diff', '--name-only', '-z', `HEAD...${defaultBranch}`]).stdout.split('\0').filter(Boolean);
+    const mainFiles = gitMaybe(['diff', '--no-renames', '--name-only', '-z', `HEAD...${defaultBranch}`]).stdout.split('\0').filter(Boolean);
     const clash = mainFiles.filter((file) => isFileWithinScopes(file, task.scope) || files.includes(file));
     if (clash.length) fail(`${defaultBranch} advanced on task scope (${clash.join(', ')}); rebase integration/${change} onto ${defaultBranch} and re-verify`, 34);
   }
@@ -279,7 +279,7 @@ if (result.error || result.status !== 0 || result.signal || result.timedOut || v
 // observe a file this merge changed must still pass its narrow Verify. Broad (whole-suite)
 // legs are skipped here; they belong to the sink and final acceptance.
 requirePreMergeHead();
-const changedFiles = git(['diff', '--name-only', '-z', 'HEAD']).split('\0').filter(Boolean);
+const changedFiles = git(['diff', '--no-renames', '--name-only', '-z', 'HEAD']).split('\0').filter(Boolean);
 const replayIds = new Set(regressionReplays(task, parsed.tasks.filter((item) => item.done && item.verify), changedFiles));
 const regressionStart = Date.now();
 let replayed = 0;

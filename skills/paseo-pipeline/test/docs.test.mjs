@@ -182,6 +182,7 @@ test('author brief carries a write-first budget without lowering any gate', () =
   assert.match(author, /`MISSING_DEPENDENCIES`/);
   assert.match(author, /Budget exhaustion is never a `COMPLETE`/);
   assert.match(author, /Do not read `freeze-check`, parser or scheduler source/);
+  assert.match(author, /claiming task id\(s\) from `tasks\.md` in the `Tasks` cell/);
   assert.match(author, /At 30 minutes, only recover unreported state by reconciling Paseo status with `git log`/);
   assert.match(author, /do not poll, steer based on inactivity, or treat this as another stop/);
   assert.match(author, /complete package plus the structural check by minute 20/);
