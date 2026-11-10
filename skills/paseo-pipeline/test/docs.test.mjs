@@ -716,21 +716,20 @@ test('acceptance guidance matches the gate: every declared SCEN is covered, jour
   assert.doesNotMatch(author, /not a second list of unit tests or every spec scenario/);
   assert.match(author, /not a second list of unit tests, but every declared `SCEN-\*` still needs at least one row/);
   assert.match(author, /Rows may share an Entry and Verify, and reuse an existing test: a scenario does not need a new test of its own/);
-  // Ownership: an empty cell derives owners from tasks.md; a filled one is a per-row subset
-  // whose union covers every claimant.
-  assert.match(author, /Leave the `Tasks` cell empty and it is derived from the `Scenarios` claims in `tasks\.md`/);
-  assert.match(author, /A non-empty cell may list only tasks that claim that SCEN in `tasks\.md` `Scenarios`/);
+  // Every row projects claimant ids explicitly; tasks.md remains the claim source.
+  assert.match(author, /every row's `Tasks` cell must list its claiming task\(s\) explicitly/);
+  assert.match(author, /cell may list only tasks that claim that SCEN in `tasks\.md` `Scenarios`/);
   assert.match(author, /their union lists every claiming task/);
   // Required is a semantic decision, not a blanket `no`.
   assert.match(author, /`Required` follows real delivery semantics — do not set every row `no`/);
   assert.match(template, /每个声明过的场景至少一行/);
-  assert.match(template, /留空则从 tasks\.md 的 Scenarios 认领自动推导/);
+  assert.match(template, /必须明确列出该行承载的认领任务/);
   assert.match(template, /所有行的并集必须覆盖全部认领者/);
   assert.match(template, /不要为省事把全部行设为 no/);
   // Schema acceptance instruction carries the same rule, scoped to its own block.
   const acceptanceInstr = schema.slice(schema.indexOf('  - id: acceptance'), schema.indexOf('  - id: review'));
   assert.match(acceptanceInstr, /Every `SCEN-\*` declared in the change's spec delta needs at least one row/);
-  assert.match(acceptanceInstr, /Leave a row's `Tasks` cell empty\s+and the owners are derived/);
+  assert.match(acceptanceInstr, /Every row's `Tasks` cell must explicitly list its claiming task\(s\)/);
   assert.match(acceptanceInstr, /union\s+of all rows for a scenario must name every task that claims it/);
   assert.match(acceptanceInstr, /rather than setting every row `no`/);
 });

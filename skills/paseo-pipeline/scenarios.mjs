@@ -31,7 +31,7 @@ if (json) {
     lines.push(`  acceptance rows: ${rows}`);
     for (const row of entry.acceptanceRows) lines.push(`    acceptance.md:${row.line} tasks=${row.tasks.join(',') || 'derived'} required=${row.required}`);
     if (entry.gaps.length) for (const gap of entry.gaps) lines.push(`  GAP ${gap}`);
-    lines.push(`  candidate: | ${entry.candidate.Scenario} | <Entry: author> | ${entry.candidate.Tasks || '<empty: owners derived from tasks.md>'} | <Verify: author> | <Required: author> | PENDING | pending |`);
+    lines.push(`  candidate: | ${entry.candidate.Scenario} | <Entry: author> | ${entry.candidate.Tasks || '<empty: fill before freeze>'} | <Verify: author> | <Required: author> | PENDING | pending |`);
   }
   if (report.undeclaredClaims.length) {
     lines.push('', `Claims with no declared scenario (${report.undeclaredClaims.length}):`);

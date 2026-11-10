@@ -90,29 +90,38 @@ function packageFiles({ acceptanceRows, tasksOverride } = {}) {
   };
 }
 
-// The recommended default: leave Tasks empty and let the gate derive the owners from tasks.md.
-const ROWS_DERIVED = `| SCEN-CAP-01 | CLI \`node src/app.mjs\` | | node --test test/app.test.mjs | yes | PENDING | pending |\n`
-  + '| SCEN-CAP-02 | CLI `node src/nav.mjs` | | node --test test/nav.test.mjs | yes | PENDING | pending |\n';
+// Tasks explicitly projects each SCEN's task claims.
+const ROWS_DERIVED = `| SCEN-CAP-01 | CLI \`node src/app.mjs\` | T-01,T-03 | node --test test/app.test.mjs | yes | PENDING | pending |\n`
+  + '| SCEN-CAP-02 | CLI `node src/nav.mjs` | T-02 | node --test test/nav.test.mjs | yes | PENDING | pending |\n';
 const header = '| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |\n| --- | --- | --- | --- | --- | --- | --- |\n';
 const table = (...rows) => header + rows.join('\n') + '\n';
 
 const baseFiles = () => packageFiles({ acceptanceRows: { positive: '' } });
 const withAcceptance = (rows) => ({ ...baseFiles(), 'openspec/changes/chg/acceptance.md': table(...rows) });
 
-test('filled templates: derived owners satisfy the union rule for a multi-claimant scenario', () => {
+test('filled templates: every acceptance row explicitly projects all claimants', () => {
   const result = freeze(change(withAcceptance([
-    '| SCEN-CAP-01 | CLI `node src/app.mjs` | | node --test test/app.test.mjs | yes | PENDING | pending |',
-    '| SCEN-CAP-02 | CLI `node src/nav.mjs` | | node --test test/nav.test.mjs | yes | PENDING | pending |',
+    '| SCEN-CAP-01 | CLI `node src/app.mjs` | T-01,T-03 | node --test test/app.test.mjs | yes | PENDING | pending |',
+    '| SCEN-CAP-02 | CLI `node src/nav.mjs` | T-02 | node --test test/nav.test.mjs | yes | PENDING | pending |',
   ])));
   assert.equal(result.status, 0, result.out);
   assert.deepEqual(result.report.blocking, []);
+});
+
+test('filled templates: blank Tasks cells across 19 acceptance rows block freeze', () => {
+  const rows = Array.from({ length: 19 }, (_, index) => index % 2 === 0
+    ? '| SCEN-CAP-01 | CLI `node src/app.mjs` | | node --test test/app.test.mjs | yes | PENDING | pending |'
+    : '| SCEN-CAP-02 | CLI `node src/nav.mjs` | | node --test test/nav.test.mjs | yes | PENDING | pending |');
+  const result = freeze(change(withAcceptance(rows)));
+  assert.equal(result.status, 1, result.out);
+  assert.ok(result.report.blocking.some((item) => /BAD_ACCEPTANCE_TASKS.*SCEN-CAP-01.*empty/.test(item)), result.out);
 });
 
 test('filled templates: a non-empty Tasks cell must be a subset of claimants and union to all of them', () => {
   const split = freeze(change(withAcceptance([
     '| SCEN-CAP-01 | CLI `node src/app.mjs` | T-01 | node --test test/app.test.mjs | yes | PENDING | pending |',
     '| SCEN-CAP-01 | CLI `node src/export.mjs` | T-03 | node --test test/export.test.mjs | yes | PENDING | pending |',
-    '| SCEN-CAP-02 | CLI `node src/nav.mjs` | | node --test test/nav.test.mjs | yes | PENDING | pending |',
+    '| SCEN-CAP-02 | CLI `node src/nav.mjs` | T-02 | node --test test/nav.test.mjs | yes | PENDING | pending |',
   ])));
   assert.equal(split.status, 0, split.out);
 });
@@ -120,7 +129,7 @@ test('filled templates: a non-empty Tasks cell must be a subset of claimants and
 // Three negatives, each the real gate error for a package the templates produce.
 test('filled templates: a missing row is UNACCEPTED_SCEN', () => {
   const result = freeze(change(withAcceptance([
-    '| SCEN-CAP-01 | CLI `node src/app.mjs` | | node --test test/app.test.mjs | yes | PENDING | pending |',
+    '| SCEN-CAP-01 | CLI `node src/app.mjs` | T-01,T-03 | node --test test/app.test.mjs | yes | PENDING | pending |',
   ])));
   assert.equal(result.status, 1);
   assert.ok(result.report.blocking.some((item) => /^UNACCEPTED_SCEN SCEN-CAP-02 /.test(item)), result.out);
@@ -132,7 +141,7 @@ test('filled templates: an extra owner on a row is UNOWNED_ACCEPTANCE_SCEN', () 
     // though the union still covers every real claimant.
     '| SCEN-CAP-01 | CLI `node src/app.mjs` | T-01,T-02 | node --test test/app.test.mjs | yes | PENDING | pending |',
     '| SCEN-CAP-01 | CLI `node src/export.mjs` | T-03 | node --test test/export.test.mjs | yes | PENDING | pending |',
-    '| SCEN-CAP-02 | CLI `node src/nav.mjs` | | node --test test/nav.test.mjs | yes | PENDING | pending |',
+    '| SCEN-CAP-02 | CLI `node src/nav.mjs` | T-02 | node --test test/nav.test.mjs | yes | PENDING | pending |',
   ])));
   assert.equal(result.status, 1);
   assert.ok(result.report.blocking.some((item) => /^UNOWNED_ACCEPTANCE_SCEN SCEN-CAP-01: T-02 /.test(item)), result.out);
@@ -144,7 +153,7 @@ test('filled templates: cross-row masking is UNACCEPTED_TASK_SCEN', () => {
     // actually carries the journey names only T-01. The gate checks the union per scenario, so
     // this passes — and the *masked* shape is the one where the row disappears entirely.
     '| SCEN-CAP-01 | CLI `node src/app.mjs` | T-01 | node --test test/app.test.mjs | yes | PENDING | pending |',
-    '| SCEN-CAP-02 | CLI `node src/nav.mjs` | | node --test test/nav.test.mjs | yes | PENDING | pending |',
+    '| SCEN-CAP-02 | CLI `node src/nav.mjs` | T-02 | node --test test/nav.test.mjs | yes | PENDING | pending |',
   ])));
   assert.equal(result.status, 1);
   // T-03 claims SCEN-CAP-01 and no row lists it: the union is short by exactly one owner.
@@ -157,7 +166,7 @@ test('filled templates: a Required=no row cannot mask a missing owner on the Req
     // accept is the row naming an owner that does not claim the scenario at all.
     '| SCEN-CAP-01 | CLI `node src/app.mjs` | T-01 | node --test test/app.test.mjs | yes | PENDING | pending |',
     '| SCEN-CAP-01 | CLI `node src/export.mjs` | T-03 | node --test test/export.test.mjs | no | PENDING | pending |',
-    '| SCEN-CAP-02 | CLI `node src/nav.mjs` | | node --test test/nav.test.mjs | yes | PENDING | pending |',
+    '| SCEN-CAP-02 | CLI `node src/nav.mjs` | T-02 | node --test test/nav.test.mjs | yes | PENDING | pending |',
   ])));
   assert.equal(result.status, 0, result.out);
 });
@@ -185,9 +194,10 @@ test('the acceptance template states the claim-consistency rules the gate enforc
 test('the author brief states the same claim rules and the identity distinctions', () => {
   const text = brief();
   // Claim rules: the source, the projection, and both directions.
-  assert.match(text, /`Scenarios:` is the claim source and a row's `Tasks` is its projection, not a second claim/);
+  assert.match(text, /`Scenarios:` in `tasks\.md` remains the claim source/);
+  assert.match(text, /every row's `Tasks` cell must list its claiming task\(s\) explicitly/);
   assert.match(text, /provided their union lists every claiming task/);
-  assert.match(text, /one row naming a non-claimant is misused even when the union would still be complete/);
+  assert.match(text, /one row naming a non-claimant is misused even when union is complete/);
   // Identity: a new id vs baseline identity reuse vs a conflict with an active change.
   assert.match(text, /A \*new\* SCEN id is one no baseline spec and no other active change declares/);
   assert.match(text, /Re-declaring a \*baseline\* id is legitimate only under `## MODIFIED Requirements` \/ `## REMOVED Requirements`/);

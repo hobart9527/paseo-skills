@@ -63,8 +63,8 @@ function fixture(overrides = {}) {
     'openspec/changes/chg/proposal.md': 'p\n',
     'openspec/changes/chg/specs/cap/spec.md': SPECS,
     'openspec/changes/chg/acceptance.md': table(
-      '| SCEN-CAP-01 | CLI `node src/api.mjs` | | node --test test/api.test.mjs | yes | PENDING | pending |',
-      '| SCEN-CAP-02 | CLI `node src/api-error.mjs` | | node --test test/api-error.test.mjs | yes | PENDING | pending |',
+      '| SCEN-CAP-01 | CLI `node src/api.mjs` | T-01,T-02 | node --test test/api.test.mjs | yes | PENDING | pending |',
+      '| SCEN-CAP-02 | CLI `node src/api-error.mjs` | T-02 | node --test test/api-error.test.mjs | yes | PENDING | pending |',
     ),
     ...overrides,
   };
@@ -95,6 +95,18 @@ function snapshot(cwd) {
   return out;
 }
 
+test('scenarios rejects blank Tasks cells once acceptance rows exist', () => {
+  const f = fixture({ 'openspec/changes/chg/acceptance.md': table(
+    '| SCEN-CAP-01 | CLI `node src/api.mjs` | | node --test test/api.test.mjs | yes | PENDING | pending |',
+    '| SCEN-CAP-02 | CLI `node src/api-error.mjs` | T-02 | node --test test/api-error.test.mjs | yes | PENDING | pending |',
+  ) });
+  const r = run(f.cwd, ['scenarios', f.dir, '--json']);
+  assert.notEqual(r.status, 0, r.out);
+  const report = JSON.parse(r.stdout);
+  assert.equal(report.scenarios, undefined);
+  assert.ok(report.errors.some((error) => /SCEN-CAP-01.*T-01/.test(error.message)), r.stdout);
+});
+
 test('scenarios reports declared scenarios, claimants and existing acceptance relations', () => {
   const f = fixture();
   const r = run(f.cwd, ['scenarios', f.dir, '--json']);
@@ -104,10 +116,9 @@ test('scenarios reports declared scenarios, claimants and existing acceptance re
   assert.deepEqual([...byId.keys()].sort(), ['SCEN-CAP-01', 'SCEN-CAP-02']);
   assert.deepEqual(byId.get('SCEN-CAP-01').claimants, ['T-01', 'T-02']);
   assert.deepEqual(byId.get('SCEN-CAP-02').claimants, ['T-02']);
-  // The empty Tasks cells derived the owners; the report shows the relation that already holds.
-  // Both rows leave `Tasks` empty, so the owner list is derived rather than restated.
-  assert.deepEqual(byId.get('SCEN-CAP-01').acceptanceRows.map((row) => row.tasks), [[]]);
-  assert.deepEqual(byId.get('SCEN-CAP-02').acceptanceRows.map((row) => row.tasks), [[]]);
+  // Explicit row projection matches each claim set.
+  assert.deepEqual(byId.get('SCEN-CAP-01').acceptanceRows.map((row) => row.tasks), [['T-01', 'T-02']]);
+  assert.deepEqual(byId.get('SCEN-CAP-02').acceptanceRows.map((row) => row.tasks), [['T-02']]);
   assert.deepEqual(byId.get('SCEN-CAP-01').gaps, []);
   assert.deepEqual(byId.get('SCEN-CAP-02').gaps, []);
 });
@@ -161,13 +172,16 @@ test('scenarios reports an acceptance row that names a non-claimant task', () =>
 test('scenarios reports a declared scenario that no task claims', () => {
   const f = fixture({
     'openspec/changes/chg/tasks.md': TASKS.replace('  - Scenarios: SCEN-CAP-01,SCEN-CAP-02\n', '  - Scenarios: SCEN-CAP-01\n'),
+    'openspec/changes/chg/acceptance.md': table(
+      '| SCEN-CAP-01 | CLI `node src/api.mjs` | T-01,T-02 | node --test test/api.test.mjs | yes | PENDING | pending |',
+    ),
   });
   const r = run(f.cwd, ['scenarios', f.dir, '--json']);
   assert.equal(r.status, 0, r.out);
   const report = JSON.parse(r.stdout);
   const entry = report.scenarios.find((item) => item.id === 'SCEN-CAP-02');
   assert.deepEqual(entry.claimants, []);
-  assert.deepEqual(entry.gaps, ['NO_CLAIMANT_TASK']);
+  assert.deepEqual(entry.gaps, ['NO_CLAIMANT_TASK', 'NO_ACCEPTANCE_ROW']);
 });
 
 test('scenarios offers a Scenario/Tasks candidate but never Entry, Verify or Required', () => {
@@ -197,7 +211,7 @@ test('scenarios fails loudly on a malformed acceptance row and emits no candidat
   const f = fixture({
     'openspec/changes/chg/acceptance.md': table(
       // An unescaped literal `|` widens the row: its cells can no longer be trusted.
-      '| SCEN-CAP-01 | CLI `node src/api.mjs` | | node --test test/api.test.mjs | yes | PENDING | pending |',
+      '| SCEN-CAP-01 | CLI `node src/api.mjs` | T-01,T-02 | node --test test/api.test.mjs | yes | PENDING | pending |',
       '| SCEN-CAP-02 | CLI a | b | | node --test x | yes | PENDING | pending |',
     ),
   });
@@ -307,8 +321,8 @@ test('scenarios fails loudly when rows exist but the table has no header', () =>
   // wrong. Everything downstream — claimants, gaps, candidates — would otherwise look valid.
   const f = fixture({
     'openspec/changes/chg/acceptance.md': [
-      '| SCEN-CAP-01 | CLI `node src/api.mjs` | | node --test test/api.test.mjs | yes | PENDING | pending |',
-      '| SCEN-CAP-02 | CLI `node src/api-error.mjs` | | node --test test/api-error.test.mjs | yes | PENDING | pending |',
+      '| SCEN-CAP-01 | CLI `node src/api.mjs` | T-01,T-02 | node --test test/api.test.mjs | yes | PENDING | pending |',
+      '| SCEN-CAP-02 | CLI `node src/api-error.mjs` | T-02 | node --test test/api-error.test.mjs | yes | PENDING | pending |',
       '',
     ].join('\n'),
   });

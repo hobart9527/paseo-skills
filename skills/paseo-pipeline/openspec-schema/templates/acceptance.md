@@ -18,8 +18,8 @@
     ENTRY_OWNER_UNCLAIMED）；多个组件共用一个装配文件时，让装配任务认领用户可见场景，或加
     Wave 0 `Kind: skeleton` 预接线并让组件 `Uses` 它（见 author brief 的 shared-assembly 模式）。
   - Tasks：承载这一行的任务 ID，逗号分隔。**认领来源是 tasks.md 的 `Scenarios:`，这一格是它的投影，不是第二份认领。**
-    留空则从 tasks.md 的 Scenarios 认领自动推导（推荐默认）；填了就只能列在 tasks.md 的 Scenarios 里
-    认领了该场景的任务，且同一场景所有行的并集必须覆盖全部认领者，单行不必列全；填值只用于把所有者分摊到多行。
+    必须明确列出该行承载的认领任务，且只能列在 tasks.md 的 Scenarios 里认领了该场景的任务。
+    同一场景所有行的并集必须覆盖全部认领者，单行不必列全；可把所有者分摊到多行。
     一行里出现未认领该场景的任务就是错，即使并集看起来仍然完整。Entry、Verify、Required 仍是作者的判断：
     Required 按真实交付语义决定，不能为省事把全部行设为 no —— 那只是隐藏交付证据，并没有通过门禁。
   - 场景身份要分清三件事：**新编号**是 baseline 和所有其他未归档 change 都没声明过的编号；复用

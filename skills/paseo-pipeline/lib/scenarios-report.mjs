@@ -8,8 +8,8 @@
 //
 // It never executes Verify, writes a file, renumbers an id, changes a claim, invents scope or a
 // dependency, or generates Entry / business expectation / Required. Those stay judgements.
-// Candidates are the safe default (an empty `Tasks` cell, whose owners the gate derives from
-// tasks.md) and are not a freezable acceptance row: structural freeze and R0 still decide.
+// Candidates are empty-Tasks scaffolds only before acceptance rows exist; they are not freezable
+// rows, and structural freeze and R0 still decide.
 //
 // Any parse or read error is fatal for the whole report: a partial report could be mistaken for a
 // complete one, and a candidate derived from a half-read table could look valid. Exit: 0 ok,
@@ -125,10 +125,10 @@ export function buildScenariosReport(changeDir) {
     if (!rows.length) gaps.push('NO_ACCEPTANCE_ROW');
     const union = new Set();
     for (const row of rows) {
-      // An empty cell derives its owners from tasks.md; that is the recommended default and can
-      // never be missing a claimant. A filled cell is a per-row subset the union must complete.
-      const owners = row.tasksRaw ? row.ids : claimants;
+      // Rows must explicitly project their owners; the union must cover every claimant.
+      const owners = row.ids;
       owners.forEach((id) => union.add(id));
+      if (!row.tasksRaw) errors.push(errorOf('BLANK_ACCEPTANCE_TASKS', `${entry.id} acceptance.md:${row.line}: Tasks cell is empty; list claimant task id(s): ${claimants.join(', ') || '(none)'}`));
       for (const id of row.ids) {
         if (!taskIds.has(id)) gaps.push(`ROW_NAMES_UNKNOWN_TASK ${id}`);
         else if (!claimants.includes(id)) gaps.push(`ROW_NAMES_NON_CLAIMANT ${id}`);
@@ -158,6 +158,8 @@ export function buildScenariosReport(changeDir) {
       candidate: { Scenario: entry.id, Tasks: '' },
     };
   });
+
+  if (errors.length) return failure(errors);
 
   const declaredIds = new Set(declared.map((entry) => entry.id));
   const undeclaredClaims = parsedTasks.tasks.flatMap((task) => task.scenarios
