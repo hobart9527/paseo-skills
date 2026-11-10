@@ -29,9 +29,9 @@ if (json) {
     lines.push(`  claimants: ${entry.claimants.join(', ') || 'none'}`);
     lines.push(`  identity: ${entry.identity.kind}${entry.identity.files.length ? ` (${entry.identity.files.join(', ')})` : ''}`);
     lines.push(`  acceptance rows: ${rows}`);
-    for (const row of entry.acceptanceRows) lines.push(`    acceptance.md:${row.line} tasks=${row.tasks.join(',') || 'derived'} required=${row.required}`);
+    for (const row of entry.acceptanceRows) lines.push(`    acceptance.md:${row.line} tasks=${row.tasks.join(',') || 'empty'} required=${row.required}`);
     if (entry.gaps.length) for (const gap of entry.gaps) lines.push(`  GAP ${gap}`);
-    lines.push(`  candidate: | ${entry.candidate.Scenario} | <Entry: author> | ${entry.candidate.Tasks || '<empty: fill before freeze>'} | <Verify: author> | <Required: author> | PENDING | pending |`);
+    if (entry.candidate) lines.push(`  candidate: | ${entry.candidate.Scenario} | <Entry: author> | ${entry.candidate.Tasks || '<empty: fill before freeze>'} | <Verify: author> | <Required: author> | PENDING | pending |`);
   }
   if (report.undeclaredClaims.length) {
     lines.push('', `Claims with no declared scenario (${report.undeclaredClaims.length}):`);

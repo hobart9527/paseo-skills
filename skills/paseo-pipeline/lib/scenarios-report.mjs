@@ -114,7 +114,11 @@ export function buildScenariosReport(changeDir) {
   for (const row of table.rows) {
     if (!rowsByScen.has(row.scen)) rowsByScen.set(row.scen, []);
     const listed = row.tasksRaw.split(',').map((item) => item.trim()).filter(Boolean);
-    rowsByScen.get(row.scen).push({ ...row, listed, ids: listed.filter((item) => isTaskId(item)) });
+    const badIds = listed.filter((item) => !isTaskId(item));
+    const unknownIds = listed.filter((item) => isTaskId(item) && !taskIds.has(item));
+    for (const id of badIds) errors.push(errorOf('BAD_ACCEPTANCE_TASKS', `${row.scen} acceptance.md:${row.line}: Tasks token ${id} is not a task id`, { file: 'acceptance.md', line: row.line }));
+    for (const id of unknownIds) errors.push(errorOf('UNKNOWN_ACCEPTANCE_TASK', `${row.scen} acceptance.md:${row.line}: ${id} is not a task in tasks.md`, { file: 'acceptance.md', line: row.line }));
+    rowsByScen.get(row.scen).push({ ...row, listed, ids: listed.filter((item) => isTaskId(item) && taskIds.has(item)) });
   }
 
   const scenarios = declared.map((entry) => {
@@ -130,12 +134,17 @@ export function buildScenariosReport(changeDir) {
       owners.forEach((id) => union.add(id));
       if (!row.tasksRaw) errors.push(errorOf('BLANK_ACCEPTANCE_TASKS', `${entry.id} acceptance.md:${row.line}: Tasks cell is empty; list claimant task id(s): ${claimants.join(', ') || '(none)'}`));
       for (const id of row.ids) {
-        if (!taskIds.has(id)) gaps.push(`ROW_NAMES_UNKNOWN_TASK ${id}`);
-        else if (!claimants.includes(id)) gaps.push(`ROW_NAMES_NON_CLAIMANT ${id}`);
+        if (!claimants.includes(id)) {
+          gaps.push(`ROW_NAMES_NON_CLAIMANT ${id}`);
+          errors.push(errorOf('UNOWNED_ACCEPTANCE_SCEN', `${entry.id} acceptance.md:${row.line}: ${id} does not claim this scenario in tasks.md Scenarios`, { file: 'acceptance.md', line: row.line }));
+        }
       }
     }
     // A missing row is already the whole gap; the union only says something once rows exist.
-    if (rows.length) for (const id of claimants) if (!union.has(id)) gaps.push(`ROW_UNION_MISSING ${id}`);
+    if (rows.length) for (const id of claimants) if (!union.has(id)) {
+      gaps.push(`ROW_UNION_MISSING ${id}`);
+      errors.push(errorOf('UNACCEPTED_TASK_SCEN', `${id} claims ${entry.id}, but no acceptance row lists ${id}`, { file: 'acceptance.md' }));
+    }
     return {
       id: entry.id,
       title: entry.title,
@@ -155,7 +164,7 @@ export function buildScenariosReport(changeDir) {
       gaps,
       // The safe default only: an empty Tasks cell. Entry, business expectation and Required are
       // authored judgements and are deliberately absent.
-      candidate: { Scenario: entry.id, Tasks: '' },
+      ...(table.rows.length ? {} : { candidate: { Scenario: entry.id, Tasks: '' } }),
     };
   });
 
