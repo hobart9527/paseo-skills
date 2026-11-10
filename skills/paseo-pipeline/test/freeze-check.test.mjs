@@ -702,6 +702,29 @@ test('Reads anchors a narrow Verify without joining scope conflicts', () => {
   assert.equal(freezeStructural(sharedRead).status, 0, freezeStructural(sharedRead).stdout);
 });
 
+test('nested change root R0 records are exempt while nested files and contract edits drift', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-nested-'));
+  const dir = path.join(repo, 'openspec', 'changes', 'c');
+  fs.mkdirSync(path.join(dir, 'specs', 'a'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'tasks.md'), contract);
+  fs.writeFileSync(path.join(dir, 'proposal.md'), 'x');
+  fs.writeFileSync(path.join(dir, 'design.md'), design);
+  fs.writeFileSync(path.join(dir, 'acceptance.md'), acceptance);
+  fs.writeFileSync(path.join(dir, 'specs/a/spec.md'), '### Scenario: SCEN-1\n');
+  const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
+  git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
+  git('add', '.'); git('commit', '-qm', 'draft');
+  fs.writeFileSync(path.join(dir, 'review.md'), `R0: pass(hanlin-uuid@${git('rev-parse', '--short', 'HEAD')})\n`);
+  fs.writeFileSync(path.join(dir, 'rulings.md'), '# Rulings\n');
+  fs.writeFileSync(path.join(dir, 'run-log.md'), 'approval log\n');
+  assert.equal(run(dir).status, 0, run(dir).stdout);
+  fs.writeFileSync(path.join(dir, 'specs/a/review.md'), 'nested record name\n');
+  assert.match(run(dir).stdout, /STALE_R0_SIGNOFF.*specs\/a\/review\.md/);
+  fs.unlinkSync(path.join(dir, 'specs/a/review.md'));
+  fs.writeFileSync(path.join(dir, 'proposal.md'), 'edited after review\n');
+  assert.match(run(dir).stdout, /STALE_R0_SIGNOFF.*proposal\.md/);
+});
+
 test('only root R0 record files are exempt from contract drift', () => {
   const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
   const sh = (...a) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8' }).trim();

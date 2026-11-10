@@ -732,14 +732,15 @@ if (!structural) {
     } else {
       // Working tree (staged, unstaged, untracked) vs the reviewed commit; review.md is written after the review.
       const diff = gitIn(changeDir, ['diff', '--name-only', '-z', sha, '--', '.']);
-      const untracked = gitIn(changeDir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.']);
+      const untracked = gitIn(changeDir, ['ls-files', '--others', '--exclude-standard', '--full-name', '-z', '--', '.']);
       // review.md is written after the review; rulings.md records accepted non-obvious
       // decisions made during it; run-log.md records approvals and merge timings. None of
       // them changes the contract, so none is drift.
-      const changeRoot = fs.realpathSync(changeDir);
+      const repositoryRoot = fs.realpathSync(gitIn(changeDir, ['rev-parse', '--show-toplevel']).stdout.trim());
+      const changeRoot = path.relative(repositoryRoot, fs.realpathSync(changeDir));
       const exemptRecords = new Set(['review.md', 'rulings.md', 'run-log.md'].map((file) => path.join(changeRoot, file)));
       const drift = [...new Set([...nulList(diff), ...nulList(untracked)])]
-        .filter((file) => !exemptRecords.has(path.resolve(gitIn(changeDir, ['rev-parse', '--show-toplevel']).stdout.trim(), file)));
+        .filter((file) => !exemptRecords.has(file));
       if (diff.status !== 0) blocking.push(`STALE_R0_SIGNOFF: cannot diff contract against reviewed commit ${sha}`);
       else if (drift.length) blocking.push(`STALE_R0_SIGNOFF: contract changed after R0 reviewed ${sha}: ${drift.slice(0, 5).join(', ')} — re-run hanlin R0`);
       // A frozen base can be valid and still predate main: the contract was written on an older
