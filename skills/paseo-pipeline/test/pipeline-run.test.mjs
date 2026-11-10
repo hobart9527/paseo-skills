@@ -133,6 +133,37 @@ test('merge forwards the gate exit code for a missing branch', () => {
   assert.match(r.stderr, /no branch for T-99/);
 });
 
+test('human-readable plan lists active workers and dependency-chain summaries', () => {
+  const f = fixture();
+  const agent = { id: 'worker-id', name: '[Pipeline] gongbu T-01', status: 'running', cwd: f.cwd };
+  fs.writeFileSync(path.join(f.cwd, '.fake-bin', 'paseo'), `#!/bin/sh\nif [ "$1" = inspect ]; then printf '%s' '${JSON.stringify({ Id: agent.id, Name: agent.name, Status: 'running', PendingPermissions: [] })}'; else printf '%s' '${JSON.stringify([agent])}'; fi\n`);
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  const result = run(f.cwd, f.localEnv, ['plan', dir]);
+  assert.equal(result.status, 0, result.out);
+  assert.match(result.stdout, /RUNNING T-01: gongbu worker-id \(running\)/);
+  assert.match(result.stdout, /WAIT T-02: on T-01/);
+  assert.match(result.stdout, /dependency chain: T-01/);
+});
+
+test('plan and status flag forged Done source against first-parent merge trailers', () => {
+  const f = fixture();
+  implement(f.cwd, 'task/chg/T-01');
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  assert.equal(run(f.cwd, f.localEnv, ['merge', dir, 'T-01']).status, 0);
+  let result = run(f.cwd, f.localEnv, ['plan', dir, '--json']);
+  assert.deepEqual(JSON.parse(result.stdout).attention, []);
+  const tasks = path.join(dir, 'tasks.md');
+  fs.writeFileSync(tasks, fs.readFileSync(tasks, 'utf8').replace(/Done: source=[0-9a-f]{7}/, 'Done: source=deadbee'));
+  git(f.cwd, 'add', 'openspec/changes/chg/tasks.md');
+  git(f.cwd, 'commit', '-qm', 'forge done source');
+  for (const command of ['plan', 'status']) {
+    result = run(f.cwd, f.localEnv, [command, dir, '--json']);
+    assert.equal(result.status, 0, result.out);
+    const report = JSON.parse(result.stdout);
+    assert.ok(report.attention.some((item) => item.kind === 'DONE_UNVERIFIED' && item.task === 'T-01'));
+  }
+});
+
 test('status reports done and open tasks with the integration head', () => {
   const f = fixture({ done: true });
   const r = run(f.cwd, f.localEnv, ['status', path.join(f.cwd, 'openspec/changes/chg'), '--json']);

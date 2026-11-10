@@ -43,6 +43,21 @@ function changeDirOf(arg) {
 
 const HOOKS_DIR = path.join(HOME, 'hooks', 'git');
 
+function doneVerification(change, tasks, cwd) {
+  const head = runGit(cwd, ['rev-parse', '--verify', '--quiet', `refs/heads/integration/${change}`]);
+  if (head.status !== 0) return [];
+  const history = runGit(cwd, ['log', '--first-parent', '--merges', '--format=%H', head.stdout.trim()]);
+  if (history.status !== 0) return tasks.filter((task) => task.done).map((task) => ({ task: task.id, kind: 'DONE_UNVERIFIED', reason: 'cannot read integration first-parent history' }));
+  const merges = history.stdout.split('\n').filter(Boolean).map((sha) => {
+    const task = runGit(cwd, ['show', '-s', '--format=%(trailers:key=Pipeline-Task,valueonly)', sha]);
+    const source = runGit(cwd, ['show', '-s', '--format=%(trailers:key=Pipeline-Source,valueonly)', sha]);
+    return { task: task.status === 0 ? task.stdout.trim() : '', source: source.status === 0 ? source.stdout.trim() : '' };
+  }).filter((commit) => commit.task && commit.source);
+  return tasks.filter((task) => task.done && (runGit(cwd, ['rev-parse', '--verify', '--quiet', `${task.done.source}^{commit}`]).status !== 0
+    || !merges.some((commit) => commit.task === task.id && commit.source.startsWith(task.done.source))))
+    .map((task) => ({ task: task.id, kind: 'DONE_UNVERIFIED', reason: `Done source ${task.done.source} has no matching first-parent merge trailer` }));
+}
+
 // The hook is what stamps Pipeline-Author; without it a worker's commit reaches the merge gate
 // with no trailer and exits 31, long after the mistake. Check every worktree this change owns,
 // including the integration worktree, where merge-task also runs.
@@ -155,11 +170,13 @@ if (command === 'acceptance') {
       tasksSource,
       done: done.map((task) => task.id),
       open: tasks.filter((task) => !task.done).map((task) => task.id),
+      attention: doneVerification(change, tasks, dir),
     }, null, 2));
   } else {
     console.log(`${change}${headSha ? ` @ ${headSha.slice(0, 7)}` : ''} (tasks: ${tasksSource})`);
     console.log(`done ${done.length}/${tasks.length}: ${done.map((task) => task.id).join(', ') || 'none'}`);
     for (const task of tasks.filter((item) => !item.done)) console.log(`OPEN ${task.id}: ${task.title}`);
+    for (const item of doneVerification(change, tasks, dir)) console.log(`ATTENTION ${item.task}: ${item.kind} — ${item.reason}`);
   }
 } else {
   die('usage: pipeline-run.mjs plan|merge|status|cleanup|scenarios|acceptance <change-dir> ...', 2);
