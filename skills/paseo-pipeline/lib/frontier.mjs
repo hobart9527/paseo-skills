@@ -64,6 +64,7 @@ export function frontier(tasks, state = {}, options = {}) {
   const open = tasks.filter((task) => !done.has(task.id));
 
   const runningWorkers = agents.filter((agent) => WORKER_ROLES.has(agent.role) && active(agent));
+  const heldBy = new Map();
   const capacity = {
     workers: { used: new Set(runningWorkers.map((agent) => agent.task).filter(Boolean)).size, cap: opts.workerCap },
   };
@@ -92,6 +93,7 @@ export function frontier(tasks, state = {}, options = {}) {
   }
 
   const waiting = [];
+  const scopeWaiting = [];
   const blocked = [];
   const ready = [];
   for (const task of open) {
@@ -113,7 +115,16 @@ export function frontier(tasks, state = {}, options = {}) {
       && !ancestors(task.id).has(other.id) && !ancestors(other.id).has(task.id)
       && scopesOverlap(task, other)
       && (runningWorkers.some((agent) => agent.task === other.id) || (!ownCommits && branches[other.id])));
-    if (overlap) continue;
+    if (overlap) {
+      const conflicting = open.filter((other) => other.id !== task.id
+        && !ancestors(task.id).has(other.id) && !ancestors(other.id).has(task.id)
+        && scopesOverlap(task, other)
+        && (runningWorkers.some((agent) => agent.task === other.id) || (!ownCommits && branches[other.id])));
+      const waitingFor = conflicting.map((other) => other.id).sort();
+      heldBy.set(task.id, waitingFor);
+      scopeWaiting.push({ task: task.id, on: waitingFor });
+      continue;
+    }
     ready.push(task);
   }
 
@@ -182,7 +193,7 @@ export function frontier(tasks, state = {}, options = {}) {
         blocked.push({
           task: task.id,
           kind: 'BLOCKED_SCOPE_COLLISION',
-          reason: `scope overlaps with ${conflicting.map((c) => c.id).sort().join(', ')}; serialize with Depends on or resolve branch collision`,
+          reason: `scope overlaps with ${conflicting.map((c) => c.id).sort().join(', ')}; waits for ${heldBy.get(task.id)?.join(', ') || conflicting.map((c) => c.id).sort().join(', ')}; serialize with Depends on or resolve branch collision`,
         });
       }
     }
@@ -193,6 +204,7 @@ export function frontier(tasks, state = {}, options = {}) {
     dispatch,
     waiting: waiting.sort((a, b) => (a.task < b.task ? -1 : 1)),
     mergeWaiting: mergeWaiting.sort((a, b) => (a.task < b.task ? -1 : 1)),
+    scopeWaiting: scopeWaiting.sort((a, b) => (a.task < b.task ? -1 : 1)),
     attention: attention.sort((a, b) => `${a.task}${a.kind}`.localeCompare(`${b.task}${b.kind}`)),
     blocked: blocked.sort((a, b) => (a.task < b.task ? -1 : 1)),
     capacity,

@@ -107,6 +107,28 @@ test('next-actions: integration merge commits do not count as this task\'s imple
   assert.deepEqual(dispatch, ['T-01:dispatch-worker'], JSON.stringify(result.json));
 });
 
+test('next-actions: human-approved attempt override releases only named tasks', () => {
+  const { cwd, localEnv } = fixture();
+  const git = (...args) => spawnSync('git', args, { cwd, env: localEnv, encoding: 'utf8' });
+  git('branch', 'task/c1/T-01-a2', 'integration/c1');
+  git('branch', 'task/c1/T-01-a3', 'integration/c1');
+  git('branch', 'task/c1/T-01-a4', 'integration/c1');
+  let result = spawnSync('node', [script, 'openspec/changes/c1', '--json', '--allow-attempt-over', 'T-01'], { cwd, env: localEnv, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.deepEqual(report.dispatch.map((item) => [item.task, item.action]), [['T-01', 'dispatch-worker']]);
+  assert.deepEqual(report.blocked, []);
+});
+
+test('next-actions: attempt suffix gaps still trip the merge gate breaker', () => {
+  const { cwd, localEnv } = fixture();
+  const git = (...args) => spawnSync('git', args, { cwd, env: localEnv, encoding: 'utf8' });
+  git('branch', 'task/c1/T-01-a4', 'integration/c1');
+  const result = run(cwd, localEnv);
+  assert.equal(result.status, 0, result.out);
+  assert.deepEqual(result.json.blocked.map((item) => [item.task, item.kind]), [['T-01', 'BLOCKED_ATTEMPTS']]);
+});
+
 test('next-actions: four branches trip the breaker', () => {
   const { cwd, localEnv } = fixture();
   const git = (...args) => spawnSync('git', args, { cwd, env: localEnv, encoding: 'utf8' });
@@ -349,7 +371,7 @@ test('next-actions: inspect pending permission holds idle worker with commit', (
   const result = run(cwd, localEnv);
   assert.equal(result.status, 0, result.out);
   assert.deepEqual(result.json.dispatch, []);
-  assert.equal(result.json.attention[0].kind, 'PENDING_PERMISSION');
+  assert.ok(result.json.attention.some((item) => item.kind === 'PENDING_PERMISSION'));
 });
 
 test('next-actions rejects invalid options and missing change directory', () => {

@@ -74,6 +74,10 @@ function gitMaybe(gitArgs) {
   const result = runGit(changeDir, gitArgs);
   return result.status === 0 ? result.stdout.trim() : null;
 }
+function gitReadOnly(gitArgs) {
+  const result = runGit(changeDir, gitArgs);
+  return result.status === 0 ? result.stdout : null;
+}
 git(['rev-parse', '--is-inside-work-tree']);
 
 // Branch state per task: attempts are `task/<change>/<T-id>` and `<T-id>-aN`; an
@@ -85,16 +89,32 @@ const integrationSha = (() => {
   const head = runGit(changeDir, ['rev-parse', '--verify', '--quiet', `refs/heads/integration/${change}`]);
   return head.status === 0 ? head.stdout.trim() : null;
 })();
+const doneUnverified = [];
+if (integrationSha) {
+  const history = gitReadOnly(['log', '--first-parent', '--merges', '--format=%H', integrationSha]);
+  const merges = history?.split('\n').filter(Boolean).map((sha) => {
+    const task = gitReadOnly(['show', '-s', '--format=%(trailers:key=Pipeline-Task,valueonly)', sha]);
+    const source = gitReadOnly(['show', '-s', '--format=%(trailers:key=Pipeline-Source,valueonly)', sha]);
+    return { task: task?.trim() ?? '', source: source?.trim() ?? '' };
+  }).filter((commit) => commit.task && commit.source) ?? [];
+  for (const item of tasks.filter((task) => task.done)) {
+    const source = gitMaybe(['rev-parse', '--verify', '--quiet', `${item.done.source}^{commit}`]);
+    if (!source || !merges.some((commit) => commit.task === item.id && commit.source.startsWith(item.done.source))) {
+      doneUnverified.push({ task: item.id, kind: 'DONE_UNVERIFIED', reason: `Done source ${item.done.source} has no matching first-parent merge trailer` });
+    }
+  }
+}
+
 const refs = git(['for-each-ref', '--format=%(refname:short)', `refs/heads/task/${change}/`])
   .split('\n').map((line) => line.trim()).filter(Boolean);
 for (const ref of refs) {
   const id = ref.slice(`task/${change}/`.length).replace(/-a\d+$/, '');
   if (!tasks.some((task) => task.id === id)) continue;
   const entry = branches[id] ?? { attempts: 0, implementationCommits: 0, ownCommits: 0 };
-  // Every branch is an attempt, even one with no commits yet: `merge-task` caps a task at 3
-  // branches and refuses `-a4`, so counting only non-empty branches would let
-  // the breaker drift from both.
-  entry.attempts += 1;
+  // Attempt number comes from the branch suffix, matching merge-task's `-aN` cap.
+  // Gaps still consume earlier attempts; empty branches count too.
+  const attemptNumber = Number(ref.match(/-a(\d+)$/)?.[1] ?? 1);
+  entry.attempts = Math.max(entry.attempts, attemptNumber);
   // Only this attempt's own commits count. Branching from the integration tip carries
   // every earlier merge commit, and those trailers are not this task's work: counting
   // them made a fresh Red-only branch look implemented, so the main session dispatched a
@@ -110,7 +130,6 @@ for (const ref of refs) {
     // still needs a worker dispatch.
     if (role.trim() && role.trim() !== 'ceshi') workerCommits += 1;
   }
-  const attemptNumber = Number(ref.match(/-a(\d+)$/)?.[1] ?? 1);
   const tip = git(['rev-parse', '--verify', `refs/heads/${ref}^{commit}`]).trim();
   branches[id] = {
     latestAttempt: Math.max(entry.latestAttempt || 0, attemptNumber),
@@ -264,6 +283,8 @@ for (const agent of listedAgents) {
 }
 
 const result = frontier(tasks, { done, branches, agents }, { ...options, allowAttemptOver });
+result.attention.push(...doneUnverified);
+result.attention.sort((a, b) => `${a.task}${a.kind}`.localeCompare(`${b.task}${b.kind}`));
 // The integration branch is created after CP-1, so its absence is a precise signal that the
 // contract is not frozen yet. The DAG preview is still useful before then, but a DISPATCH shown
 // here is not execution authorization: the freeze check and the recorded human CP-1 are.
@@ -275,9 +296,24 @@ else {
   console.log(`[next-actions] ${change}${report.integrationHead ? ` @ ${report.integrationHead.slice(0, 7)}` : ''} (tasks: ${tasksSource})`);
   if (!frozen) console.log('PLANNING PREVIEW: no integration branch yet, so the contract is not frozen; DISPATCH lines are not execution authorization until freeze-check passes and CP-1 is recorded');
   console.log(`capacity: workers ${report.capacity.workers.used}/${report.capacity.workers.cap}`);
+  for (const agent of agents.filter((item) => ['running', 'initializing'].includes(item.status)).sort((a, b) => a.id.localeCompare(b.id))) {
+    console.log(`RUNNING ${agent.task}: ${agent.role} ${agent.id} (${agent.status})`);
+  }
   for (const item of report.dispatch) console.log(`DISPATCH ${item.task}: ${item.action} — ${item.reason}`);
-  for (const item of report.waiting) console.log(`WAIT ${item.task}: on ${item.on.join(', ')}`);
+  for (const item of report.waiting) {
+    const chain = [];
+    const seen = new Set();
+    const visit = (id) => {
+      if (seen.has(id)) return;
+      seen.add(id);
+      const blocked = report.waiting.find((entry) => entry.task === id);
+      for (const dep of blocked?.on ?? []) { visit(dep); chain.push(dep); }
+    };
+    visit(item.task);
+    console.log(`WAIT ${item.task}: on ${item.on.join(', ')}${chain.length ? ` (dependency chain: ${[...new Set(chain)].join(' → ')})` : ''}`);
+  }
   for (const item of report.mergeWaiting) console.log(`MERGE-WAIT ${item.task}: on ${item.on.join(', ')}`);
+  for (const item of report.scopeWaiting) console.log(`SCOPE-WAIT ${item.task}: waiting for ${item.on.join(', ')}`);
   for (const item of report.blocked) console.log(`BLOCKED ${item.task}: ${item.kind} — ${item.reason}`);
   for (const item of report.attention) console.log(`ATTENTION ${item.task || '?'} ${item.agent}: ${item.kind} — ${item.reason}`);
   if (!report.dispatch.length && !report.attention.length) console.log('nothing to dispatch');
