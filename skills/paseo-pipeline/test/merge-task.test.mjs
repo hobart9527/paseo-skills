@@ -293,6 +293,31 @@ test('a merge that regresses an already-Done task is exit 21 and leaves the tree
   assert.equal(git(f.cwd, 'status', '--porcelain'), '');
 });
 
+test('renaming away from a prior task read path replays its Verify', () => {
+  const tasks = '- [x] T-01 prior\n  - Write scope: test/prior.test.mjs\n  - Reads: src/hot.txt\n  - Review: mechanical\n  - Verify with: node --test test/prior.test.mjs\n  - Done: source=abcdef1 review=worker\n- [ ] T-02 rename\n  - Write scope: docs,src,test\n  - Verify with: node --test test/rename.test.mjs\n';
+  const f = taggedFixture(tasks);
+  fs.mkdirSync(path.join(f.cwd, 'src'), { recursive: true });
+  write(f.cwd, 'src/hot.txt', 'present');
+  write(f.cwd, 'test/prior.test.mjs', `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\ntest('prior path remains present', () => { assert.equal(fs.existsSync('src/hot.txt'), true); });\n`);
+  git(f.cwd, 'add', '.'); git(f.cwd, 'commit', '-qm', 'prior task files');
+  f.base = git(f.cwd, 'rev-parse', 'HEAD');
+  git(f.cwd, 'switch', '-q', `integration/${f.change}`);
+  git(f.cwd, 'merge', '-q', '--ff-only', `task/${f.change}/T-01`);
+  git(f.cwd, 'branch', `task/${f.change}/T-02`);
+  git(f.cwd, 'switch', '-q', `task/${f.change}/T-02`);
+  fs.mkdirSync(path.join(f.cwd, 'docs'), { recursive: true });
+  fs.renameSync(path.join(f.cwd, 'src/hot.txt'), path.join(f.cwd, 'docs/renamed.txt'));
+  write(f.cwd, 'test/rename.test.mjs', PASSING_TEST);
+  write(f.cwd, 'src/a.txt', 'a');
+  git(f.cwd, 'add', '-A');
+  git(f.cwd, 'commit', '-qm', `rename\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
+  git(f.cwd, 'switch', '-q', `integration/${f.change}`);
+
+  const r = invoke(f.cwd, [`task/${f.change}/T-02`, 'T-02']);
+  assert.equal(r.status, 21, r.out);
+  assert.match(r.out, /regress already-Done T-01/);
+});
+
 test('a prefix suite on an already-Done task is skipped and only its narrow leg replays', () => {
   // Prior T-00 mixes a package full suite with a narrow test. `npm` itself does not exist in
   // this fixture, so replaying that leg would fail; the narrow leg passes. This pins the
