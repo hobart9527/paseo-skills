@@ -731,7 +731,7 @@ if (!structural) {
       blocking.push(`STALE_R0_SIGNOFF: reviewed commit ${sha} does not exist in this repository`);
     } else {
       // Working tree (staged, unstaged, untracked) vs the reviewed commit; review.md is written after the review.
-      const diff = gitIn(changeDir, ['diff', '--name-only', '-z', sha, '--', '.']);
+      const diff = gitIn(changeDir, ['diff', '--no-renames', '--name-only', '-z', sha, '--', '.']);
       const untracked = gitIn(changeDir, ['ls-files', '--others', '--exclude-standard', '--full-name', '-z', '--', '.']);
       // review.md is written after the review; rulings.md records accepted non-obvious
       // decisions made during it; run-log.md records approvals and merge timings. None of
