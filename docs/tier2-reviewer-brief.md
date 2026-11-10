@@ -8,7 +8,7 @@ Applies to Tier 2 only. Tier 3 (R0, FINAL, CP-1/CP-2) is governed solely by `ski
 - **Risk watchlist (optional):** `<hardening concerns beyond the user's request, e.g. races, focus, nested dialogs. Reviewed, but only blocking at blocking severity below>`
 - **Target:** `<committed: base SHA + tip SHA | uncommitted: absolute workspace path, base SHA, `git status --porcelain=v2`, frozen index list and worktree list with per-entry status/mode/fingerprint, untracked and in-scope ignored files listed individually>`
 - **Review tier:** `light | heavy` (see below)
-- **Delivery evidence from implementer:** base SHA; changed-file list and in-scope check; test command, output, and the version it ran against; lint/typecheck result; known gaps. Runtime-behavior changes (UI interaction, focus, layout, async ordering) also need the implementer's own runtime evidence (real browser or app run, or an explicit statement of what could only be simulated). Without it the dispatcher returns the delivery instead of dispatching review.
+- **Delivery evidence from implementer:** base SHA; changed-file list and in-scope check; test command, output, and the version it ran against; lint/typecheck result; known gaps. Runtime-behavior changes (UI interaction, focus, layout, async ordering) also need the implementer's own runtime evidence (real browser or app run, or an explicit statement of what could only be simulated). Without it the dispatcher returns the delivery instead of dispatching review. Suite failures that also fail on the base SHA are listed with that comparison as baseline failures; they do not block unless the diff touches the failing area.
 - **Entry points:** `<files / functions to start from>`
 
 ## Rules (reviewer)
