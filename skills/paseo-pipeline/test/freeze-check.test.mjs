@@ -726,15 +726,20 @@ test('nested change root R0 records are exempt while nested files and contract e
 });
 
 test('rename into a root R0 record name does not hide nested contract drift', () => {
-  const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'specs/a/run-log.md': 'nested record\n' });
-  const sh = (...a) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8' }).trim();
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-rename-'));
+  const dir = path.join(repo, 'openspec', 'changes', 'c');
+  fs.mkdirSync(path.join(dir, 'specs', 'a'), { recursive: true });
+  const sh = (...a) => execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8' }).trim();
   sh('init', '-q'); sh('config', 'user.email', 't@t'); sh('config', 'user.name', 't');
+  for (const [file, text] of Object.entries({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'specs/a/rulings.md': 'nested record\n' })) {
+    fs.writeFileSync(path.join(dir, file), text);
+  }
   sh('add', '.'); sh('commit', '-qm', 'draft');
-  fs.writeFileSync(path.join(dir, 'review.md'), `R0: pass(hanlin-uuid@${sh('rev-parse', '--short', 'HEAD')})\n`);
-  fs.rmSync(path.join(dir, 'run-log.md'), { force: true });
-  sh('mv', 'specs/a/run-log.md', 'run-log.md');
+  const signoff = `R0: pass(hanlin-uuid@${sh('rev-parse', '--short', 'HEAD')})\n`;
+  fs.writeFileSync(path.join(dir, 'review.md'), signoff);
+  sh('mv', 'openspec/changes/c/specs/a/rulings.md', 'openspec/changes/c/rulings.md');
   sh('add', '-A');
-  assert.match(run(dir).stdout, /STALE_R0_SIGNOFF.*specs\/a\/run-log\.md/);
+  assert.match(run(dir).stdout, /STALE_R0_SIGNOFF.*specs\/a\/rulings\.md/);
 });
 
 test('only root R0 record files are exempt from contract drift', () => {
