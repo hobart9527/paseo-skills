@@ -378,14 +378,15 @@ for (const task of tasks) {
       for (const read of task.reads) {
         const baseline = gitIn(repoRoot, ['ls-tree', '-r', '--name-only', 'HEAD', '--', read]);
         if (baseline.status === 0 && baseline.stdout.trim()) continue;
-        const writers = tasks.filter((other) => other.id !== task.id && isFileWithinScopes(read, other.scope));
+        const writers = tasks.filter((other) => isFileWithinScopes(read, other.scope));
         if (!writers.length) {
           blocking.push(`MISSING_READS_PATH ${task.id}: Reads ${read} does not exist in the repository`);
           continue;
         }
         for (const writer of writers) {
-          if (!dispatchAncestors(task).has(writer.id)) {
-            blocking.push(`READ_BEFORE_WRITE ${task.id}: Reads ${read}, which is written by concurrent ${writer.id}; add Depends on ${writer.id}`);
+          if (writer.id === task.id) continue;
+          if (!dispatchAncestors(task).has(writer.id) && !dispatchAncestors(writer).has(task.id)) {
+            blocking.push(`READ_BEFORE_WRITE ${task.id}: Reads ${read}, which is written by concurrent ${writer.id}; order reader and writer with Depends on`);
           }
         }
       }

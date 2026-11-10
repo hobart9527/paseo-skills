@@ -693,6 +693,25 @@ test('skeleton Write-scope overlap is exempt against transitive dependents', () 
   assert.match(freezeStructural(race).stdout, /SCOPE_CONFLICT T-00 and T-04/);
 });
 
+test('accepts Reads ordered in either dependency direction', () => {
+  const base = `- [ ] 1.1 T-01 reader\n  - Write scope: src/reader.mjs,test/read.test.mjs\n  - Reads: src/generated.mjs\n  - Verify with: node --test test/read.test.mjs\n  - Scenarios: SCEN-1\n- [ ] 1.2 T-02 writer\n  - Write scope: src/generated.mjs,test/write.test.mjs\n  - Verify with: node --test test/write.test.mjs\n  - Scenarios: SCEN-1`;
+  for (const tasks of [
+    base.replace('  - Reads: src/generated.mjs', '  - Depends on: T-02\n  - Reads: src/generated.mjs'),
+    base.replace('  - Write scope: src/generated.mjs,test/write.test.mjs', '  - Depends on: T-01\n  - Write scope: src/generated.mjs,test/write.test.mjs'),
+  ]) {
+    const dir = change({ ...scheduleFiles(tasks), 'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node -e "0" | yes | PENDING | pending |') });
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    assert.equal(run(dir, ['--structural', '--skip-signer-check']).status, 0, run(dir, ['--structural', '--skip-signer-check']).stdout);
+  }
+});
+
+test('accepts a task reading a path it writes itself', () => {
+  const tasks = `- [ ] 1.1 T-01 self reader\n  - Write scope: src/generated.mjs,test/read.test.mjs\n  - Reads: src/generated.mjs\n  - Verify with: node --test test/read.test.mjs\n  - Scenarios: SCEN-1`;
+  const dir = change({ ...scheduleFiles(tasks), 'acceptance.md': table('| SCEN-1 | CLI | T-01 | node -e "0" | yes | PENDING | pending |') });
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  assert.equal(run(dir, ['--structural', '--skip-signer-check']).status, 0, run(dir, ['--structural', '--skip-signer-check']).stdout);
+});
+
 test('rejects a concurrent Read of an artifact another task writes', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-read-write-'));
   const dir = path.join(repo, 'openspec/changes/chg');
