@@ -91,11 +91,22 @@ test('scope overlap with a task in flight holds the pair, not the whole frontier
   assert.deepEqual(report.dispatch.map((item) => [item.task, item.action]), [
     ['T-03', 'create-branch+dispatch-worker'],
   ]);
+  assert.deepEqual(report.scopeWaiting, [{ task: 'T-02', on: ['T-01'] }]);
+});
+
+test('human-approved attempt override releases one capped task only', () => {
+  const branches = {
+    'T-01': { attempts: 4, ownCommits: 2 },
+    'T-02': { attempts: 4, ownCommits: 2 },
+  };
+  const report = frontier(dag, { done: ['T-00'], branches }, { allowAttemptOver: ['T-01'] });
+  assert.ok(report.dispatch.some((item) => item.task === 'T-01' && item.action === 'merge'));
+  assert.deepEqual(report.blocked, [{ task: 'T-02', kind: 'BLOCKED_ATTEMPTS', reason: '4 branches; cap is 3; human approval required: record in run-log.md using templates/approvals.md, then plan --allow-attempt-over T-02' }]);
 });
 
 test('branch attempts above the cap are blocked and stop dispatch', () => {
   const report = frontier(dag, { done: ['T-00'], branches: { 'T-01': { attempts: 4, implementationCommits: 2 } } });
-  assert.deepEqual(report.blocked, [{ task: 'T-01', kind: 'BLOCKED_ATTEMPTS', reason: '4 branches; cap is 3' }]);
+  assert.deepEqual(report.blocked, [{ task: 'T-01', kind: 'BLOCKED_ATTEMPTS', reason: '4 branches; cap is 3; human approval required: record in run-log.md using templates/approvals.md, then plan --allow-attempt-over T-01' }]);
   assert.ok(!report.dispatch.some((item) => item.task === 'T-01'));
 });
 
@@ -314,6 +325,7 @@ test('unstarted scope-overlapping tasks do not race dispatch in the same wave', 
   const report = frontier(tasks, { done: [], branches: {}, agents: [] });
   assert.deepEqual(report.dispatch.map((item) => item.task), ['T-01']);
   assert.equal(report.dispatch[0].action, 'create-branch+dispatch-worker');
+  assert.deepEqual(report.scopeWaiting, [{ task: 'T-02', on: ['T-01'] }]);
 });
 
 test('unresolved scope deadlock surfaces as BLOCKED_SCOPE_COLLISION', () => {
@@ -331,6 +343,7 @@ test('unresolved scope deadlock surfaces as BLOCKED_SCOPE_COLLISION', () => {
   const collision = report.blocked.find((b) => b.kind === 'BLOCKED_SCOPE_COLLISION');
   assert.ok(collision, JSON.stringify(report.blocked));
   assert.match(collision.reason, /serialize with Depends on or resolve branch collision/);
+  assert.match(collision.reason, /waits for T-02/);
 });
 
 test('unresolved scope collision surfaces even when downstream tasks are waiting', () => {

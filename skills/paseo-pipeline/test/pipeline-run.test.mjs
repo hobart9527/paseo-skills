@@ -78,6 +78,34 @@ function implement(cwd, branch) {
   return tip;
 }
 
+test('plan --allow-attempt-over releases only named capped tasks', () => {
+  const f = fixture();
+  const tasks = path.join(f.cwd, 'openspec/changes/chg/tasks.md');
+  fs.writeFileSync(tasks, fs.readFileSync(tasks, 'utf8').replace('  - Depends on: T-01\n', ''));
+  git(f.cwd, 'add', 'openspec/changes/chg/tasks.md');
+  git(f.cwd, 'commit', '-qm', 'independent task');
+  for (const task of ['T-01', 'T-02']) for (const attempt of [1, 2, 3, 4]) {
+    const branch = `task/chg/${task}${attempt === 1 ? '' : `-a${attempt}`}`;
+    if (attempt !== 4) git(f.cwd, 'branch', branch);
+    else {
+      git(f.cwd, 'switch', '-qc', branch);
+      write(f.cwd, `src/${task}.txt`, task);
+      git(f.cwd, 'add', '.');
+      git(f.cwd, 'commit', '-qm', `work\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
+      git(f.cwd, 'switch', '-q', 'integration/chg');
+    }
+  }
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  let result = run(f.cwd, f.localEnv, ['plan', dir, '--json']);
+  assert.equal(result.status, 0, result.out);
+  assert.deepEqual(JSON.parse(result.stdout).dispatch, []);
+  result = run(f.cwd, f.localEnv, ['plan', dir, '--json', '--allow-attempt-over', 'T-01']);
+  assert.equal(result.status, 0, result.out);
+  const report = JSON.parse(result.stdout);
+  assert.deepEqual(report.dispatch.map((item) => item.task), ['T-01']);
+  assert.deepEqual(report.blocked.map((item) => item.task), ['T-02']);
+});
+
 test('plan delegates to the frontier and prints the ready task', () => {
   const f = fixture();
   const r = run(f.cwd, f.localEnv, ['plan', path.join(f.cwd, 'openspec/changes/chg'), '--json']);
@@ -103,6 +131,72 @@ test('merge forwards the gate exit code for a missing branch', () => {
   const r = run(f.cwd, f.localEnv, ['merge', path.join(f.cwd, 'openspec/changes/chg'), 'T-99']);
   assert.equal(r.status, 3, r.out);
   assert.match(r.stderr, /no branch for T-99/);
+});
+
+test('human-readable plan lists active workers and dependency-chain summaries', () => {
+  const f = fixture();
+  const agent = { id: 'worker-id', name: '[Pipeline] gongbu T-01', status: 'running', cwd: f.cwd };
+  fs.writeFileSync(path.join(f.cwd, '.fake-bin', 'paseo'), `#!/bin/sh\nif [ "$1" = inspect ]; then printf '%s' '${JSON.stringify({ Id: agent.id, Name: agent.name, Status: 'running', PendingPermissions: [] })}'; else printf '%s' '${JSON.stringify([agent])}'; fi\n`);
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  const result = run(f.cwd, f.localEnv, ['plan', dir]);
+  assert.equal(result.status, 0, result.out);
+  assert.match(result.stdout, /RUNNING T-01: gongbu worker-id \(running\)/);
+  assert.match(result.stdout, /WAIT T-02: on T-01/);
+  assert.match(result.stdout, /dependency chain: T-01/);
+});
+
+test('human-readable plan prints real dependency paths for fan-in and diamond waits', () => {
+  const f = fixture();
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  const tasksFile = path.join(dir, 'tasks.md');
+  const task = (number, id, dependency = '') => `- [ ] 1.${number} ${id} task\n`
+    + `${dependency ? `  - Depends on: ${dependency}\n` : ''}`
+    + `  - Write scope: src/${id},test/${id}\n  - Verify with: node --test test/${id}.test.mjs\n`;
+  const tasks = (items) => items.map((item) => task(...item)).join('');
+  const cases = [
+    {
+      name: 'fan-in',
+      tasks: tasks([[1, 'T-01'], [2, 'T-02', 'T-01'], [3, 'T-03', 'T-01']]),
+      paths: ['T-01 → T-02', 'T-01 → T-03'],
+    },
+    {
+      name: 'linear chain',
+      tasks: tasks([[1, 'T-01'], [2, 'T-02', 'T-01'], [3, 'T-03', 'T-02']]),
+      paths: ['T-01 → T-02 → T-03'],
+    },
+    {
+      name: 'diamond',
+      tasks: tasks([[1, 'T-01'], [2, 'T-02', 'T-01'], [3, 'T-03', 'T-01'], [4, 'T-04', 'T-02,T-03']]),
+      paths: ['T-01 → T-02 → T-04', 'T-01 → T-03 → T-04'],
+    },
+  ];
+  for (const item of cases) {
+    fs.writeFileSync(tasksFile, item.tasks);
+    git(f.cwd, 'add', 'openspec/changes/chg/tasks.md');
+    git(f.cwd, 'commit', '-qm', `scenario ${item.name}`);
+    const result = run(f.cwd, f.localEnv, ['plan', dir]);
+    assert.equal(result.status, 0, result.out);
+    for (const expected of item.paths) assert.ok(result.stdout.includes(expected), `${item.name}: missing ${expected}\n${result.stdout}`);
+  }
+});
+
+test('plan and status flag forged Done source against first-parent merge trailers', () => {
+  const f = fixture();
+  implement(f.cwd, 'task/chg/T-01');
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  assert.equal(run(f.cwd, f.localEnv, ['merge', dir, 'T-01']).status, 0);
+  let result = run(f.cwd, f.localEnv, ['plan', dir, '--json']);
+  assert.deepEqual(JSON.parse(result.stdout).attention, []);
+  const tasks = path.join(dir, 'tasks.md');
+  fs.writeFileSync(tasks, fs.readFileSync(tasks, 'utf8').replace(/Done: source=[0-9a-f]{7}/, 'Done: source=deadbee'));
+  git(f.cwd, 'add', 'openspec/changes/chg/tasks.md');
+  git(f.cwd, 'commit', '-qm', 'forge done source');
+  for (const command of ['plan', 'status']) {
+    result = run(f.cwd, f.localEnv, [command, dir, '--json']);
+    assert.equal(result.status, 0, result.out);
+    const report = JSON.parse(result.stdout);
+    assert.ok(report.attention.some((item) => item.kind === 'DONE_UNVERIFIED' && item.task === 'T-01'));
+  }
 });
 
 test('status reports done and open tasks with the integration head', () => {
@@ -297,6 +391,26 @@ test('pending marker after completed merge does not trigger repeat or rewrite ma
   assert.notEqual(r.status, 0);
   assert.match(r.out, /already Done/);
   assert.equal(git(f.cwd, 'rev-parse', 'refs/pipeline/merge-failures/chg/T-01'), object.stdout.trim());
+});
+
+test('merge driver forwards --allow-test-infra and releases only that gate', () => {
+  const f = fixture();
+  const tasks = path.join(f.cwd, 'openspec/changes/chg/tasks.md');
+  fs.writeFileSync(tasks, fs.readFileSync(tasks, 'utf8').replace('Write scope: src,test', 'Write scope: src,test,vitest.config.ts'));
+  git(f.cwd, 'add', 'openspec/changes/chg/tasks.md');
+  git(f.cwd, 'commit', '-qm', 'extend test infrastructure scope');
+  implement(f.cwd, 'task/chg/T-01');
+  git(f.cwd, 'switch', '-q', 'task/chg/T-01');
+  write(f.cwd, 'vitest.config.ts', 'export default {};\n');
+  git(f.cwd, 'add', 'vitest.config.ts');
+  git(f.cwd, 'commit', '-qm', `infra\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
+  git(f.cwd, 'switch', '-q', 'integration/chg');
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  const denied = run(f.cwd, f.localEnv, ['merge', dir, 'T-01']);
+  assert.equal(denied.status, 38, denied.out);
+  assert.match(denied.out, /test infrastructure changes require human approval/);
+  const approved = run(f.cwd, f.localEnv, ['merge', dir, 'T-01', '--allow-test-infra']);
+  assert.equal(approved.status, 0, approved.out);
 });
 
 test('merge driver forwards both timeout forms and rejects unknown options', () => {

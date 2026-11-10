@@ -50,7 +50,7 @@ export function attemptsOf(taskId, branches = {}) {
 /**
  * @param {Array} tasks parsed tasks.md tasks
  * @param {object} state { done: string[], agents: [], branches: {}, now?: Date|string }
- * @param {object} options { workerCap, idleMinutes, maxAttempts }
+ * @param {object} options { workerCap, idleMinutes, maxAttempts, allowAttemptOver }
  */
 export function frontier(tasks, state = {}, options = {}) {
   const opts = { ...DEFAULTS, ...options };
@@ -64,6 +64,7 @@ export function frontier(tasks, state = {}, options = {}) {
   const open = tasks.filter((task) => !done.has(task.id));
 
   const runningWorkers = agents.filter((agent) => WORKER_ROLES.has(agent.role) && active(agent));
+  const heldBy = new Map();
   const capacity = {
     workers: { used: new Set(runningWorkers.map((agent) => agent.task).filter(Boolean)).size, cap: opts.workerCap },
   };
@@ -92,6 +93,7 @@ export function frontier(tasks, state = {}, options = {}) {
   }
 
   const waiting = [];
+  const scopeWaiting = [];
   const blocked = [];
   const ready = [];
   for (const task of open) {
@@ -101,8 +103,8 @@ export function frontier(tasks, state = {}, options = {}) {
       continue;
     }
     const attempts = attemptsOf(task.id, branches);
-    if (attempts > opts.maxAttempts) {
-      blocked.push({ task: task.id, kind: 'BLOCKED_ATTEMPTS', reason: `${attempts} branches; cap is ${opts.maxAttempts}` });
+    if (attempts > opts.maxAttempts && !(opts.allowAttemptOver || []).includes(task.id)) {
+      blocked.push({ task: task.id, kind: 'BLOCKED_ATTEMPTS', reason: `${attempts} branches; cap is ${opts.maxAttempts}; human approval required: record in run-log.md using templates/approvals.md, then plan --allow-attempt-over ${task.id}` });
       continue;
     }
     // A live worker on the same files would race. Depends-on pairs are serialised by
@@ -113,7 +115,16 @@ export function frontier(tasks, state = {}, options = {}) {
       && !ancestors(task.id).has(other.id) && !ancestors(other.id).has(task.id)
       && scopesOverlap(task, other)
       && (runningWorkers.some((agent) => agent.task === other.id) || (!ownCommits && branches[other.id])));
-    if (overlap) continue;
+    if (overlap) {
+      const conflicting = open.filter((other) => other.id !== task.id
+        && !ancestors(task.id).has(other.id) && !ancestors(other.id).has(task.id)
+        && scopesOverlap(task, other)
+        && (runningWorkers.some((agent) => agent.task === other.id) || (!ownCommits && branches[other.id])));
+      const waitingFor = conflicting.map((other) => other.id).sort();
+      heldBy.set(task.id, waitingFor);
+      scopeWaiting.push({ task: task.id, on: waitingFor });
+      continue;
+    }
     ready.push(task);
   }
 
@@ -143,13 +154,21 @@ export function frontier(tasks, state = {}, options = {}) {
     // Callers that only pass {attempts, implementationCommits} keep the old meaning: a branch
     // with attempts already carries one of its own commits.
     if (!branch.attempts) {
-      if (dispatchedWorkerScopes.some((other) => scopesOverlap(task, other))) continue;
+      const scopeHolder = dispatchedWorkerScopes.find((other) => scopesOverlap(task, other));
+      if (scopeHolder) {
+        scopeWaiting.push({ task: task.id, on: [scopeHolder.id] });
+        continue;
+      }
       workerItems.push({ task: task.id, action: 'create-branch+dispatch-worker', reason: 'deps Done; scope disjoint' });
       dispatchedWorkerScopes.push(task);
     } else if (!ownCommits) {
       // The branch exists but carries no commit yet: dispatch onto it, do not create a
       // second branch (that would burn an attempt).
-      if (dispatchedWorkerScopes.some((other) => scopesOverlap(task, other))) continue;
+      const scopeHolder = dispatchedWorkerScopes.find((other) => scopesOverlap(task, other));
+      if (scopeHolder) {
+        scopeWaiting.push({ task: task.id, on: [scopeHolder.id] });
+        continue;
+      }
       workerItems.push({ task: task.id, action: 'dispatch-worker', reason: 'branch present; no commit yet' });
       dispatchedWorkerScopes.push(task);
     } else {
@@ -182,7 +201,7 @@ export function frontier(tasks, state = {}, options = {}) {
         blocked.push({
           task: task.id,
           kind: 'BLOCKED_SCOPE_COLLISION',
-          reason: `scope overlaps with ${conflicting.map((c) => c.id).sort().join(', ')}; serialize with Depends on or resolve branch collision`,
+          reason: `scope overlaps with ${conflicting.map((c) => c.id).sort().join(', ')}; waits for ${heldBy.get(task.id)?.join(', ') || conflicting.map((c) => c.id).sort().join(', ')}; serialize with Depends on or resolve branch collision`,
         });
       }
     }
@@ -193,6 +212,7 @@ export function frontier(tasks, state = {}, options = {}) {
     dispatch,
     waiting: waiting.sort((a, b) => (a.task < b.task ? -1 : 1)),
     mergeWaiting: mergeWaiting.sort((a, b) => (a.task < b.task ? -1 : 1)),
+    scopeWaiting: scopeWaiting.sort((a, b) => (a.task < b.task ? -1 : 1)),
     attention: attention.sort((a, b) => `${a.task}${a.kind}`.localeCompare(`${b.task}${b.kind}`)),
     blocked: blocked.sort((a, b) => (a.task < b.task ? -1 : 1)),
     capacity,

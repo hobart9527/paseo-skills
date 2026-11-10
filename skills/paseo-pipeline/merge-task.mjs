@@ -40,6 +40,28 @@ function gitMaybe(args) {
   return runGit(undefined, args);
 }
 
+function mergeHead() {
+  const result = gitMaybe(['rev-parse', '--verify', '--quiet', 'MERGE_HEAD']);
+  return result.status === 0 ? result.stdout.trim() : null;
+}
+
+function requireOwnedMerge() {
+  const current = mergeHead();
+  if (current && current !== tip) fail('MERGE_HEAD is not owned by this merge; stop and reconcile integration state', 3);
+}
+
+// Anomaly guard only; this does not provide mutual exclusion.
+function abortOwnedMerge() {
+  const current = mergeHead();
+  if (current && current !== tip) fail('MERGE_HEAD is not owned by this merge; stop and reconcile integration state', 3);
+  if (current === tip) gitMaybe(['merge', '--abort']);
+}
+
+function requirePreMergeHead() {
+  requireOwnedMerge();
+  if (git(['rev-parse', 'HEAD']) !== preMergeHead) fail('integration HEAD changed during merge; stop and reconcile integration state', 3);
+}
+
 function filesInCommit(commit) {
   const result = gitMaybe(['diff-tree', '--no-commit-id', '--name-only', '-r', '-z', commit]);
   if (result.status !== 0) fail(`cannot inspect files in commit ${commit.slice(0, 7)}`, 31);
@@ -108,6 +130,7 @@ if (Number(match[3] ?? 1) > 3 && !allowAttemptOver) fail(`${branch} is attempt $
 if (git(['branch', '--show-current']) !== `integration/${change}`) fail(`current branch must be integration/${change}`);
 const preMergeHead = git(['rev-parse', 'HEAD']);
 const tip = git(['rev-parse', '--verify', `${branch}^{commit}`]);
+if (mergeHead()) fail('MERGE_HEAD is not owned by this merge; stop and reconcile integration state', 3);
 // A clean committed Done state can survive a crash before the pending marker clears.
 // Never overwrite that evidence when a caller retries the completed task.
 const doneFile = path.join('openspec', 'changes', change, 'tasks.md');
@@ -229,7 +252,7 @@ if (base !== preMergeHead) {
 
 const merge = gitMaybe(['merge', '--no-ff', '--no-commit', tip]);
 if (merge.status !== 0) {
-  gitMaybe(['merge', '--abort']);
+  abortOwnedMerge();
   fail('merge conflict', 10);
 }
 const before = git(['status', '--porcelain=v1', '--untracked-files=all']);
@@ -243,18 +266,19 @@ const verifyChanged = after !== before;
 if (!verifyChanged && result.status !== 0) {
   const verifyMissing = missingDependency(result.output);
   if (verifyMissing) {
-    gitMaybe(['merge', '--abort']);
+    abortOwnedMerge();
     fail(`frozen Verify: ${dependencyMessage(verifyMissing)}`, 36);
   }
 }
 if (result.error || result.status !== 0 || result.signal || result.timedOut || verifyChanged) {
-  gitMaybe(['merge', '--abort']);
+  abortOwnedMerge();
   fail(`frozen Verify failed or changed worktree: ${task.verify}`, 20);
 }
 
 // Cross-task regression: with the merge applied, every already-Done task whose Verify can
 // observe a file this merge changed must still pass its narrow Verify. Broad (whole-suite)
 // legs are skipped here; they belong to the sink and final acceptance.
+requirePreMergeHead();
 const changedFiles = git(['diff', '--name-only', '-z', 'HEAD']).split('\0').filter(Boolean);
 const replayIds = new Set(regressionReplays(task, parsed.tasks.filter((item) => item.done && item.verify), changedFiles));
 const regressionStart = Date.now();
@@ -266,7 +290,7 @@ for (const prior of parsed.tasks.filter((item) => item.done && item.id !== taskI
   replayed += 1;
   const regression = await run(legs.map((leg) => leg.command).join(' && '), timeout);
   if (regression.error || regression.status !== 0 || regression.signal || regression.timedOut) {
-    gitMaybe(['merge', '--abort']);
+    abortOwnedMerge();
     // A replay failure has two causes and the gate cannot tell them apart: a real regression from
     // this merge, or an environment the Verify needed (a service, a port, a package) that is not
     // present here. Naming both stops the operator from "fixing" a test that is not broken.
@@ -276,13 +300,14 @@ for (const prior of parsed.tasks.filter((item) => item.done && item.id !== taskI
   }
 }
 if (git(['status', '--porcelain=v1', '--untracked-files=all']) !== before) {
-  gitMaybe(['merge', '--abort']);
+  abortOwnedMerge();
   fail('regression check changed worktree', 21);
 }
 timing.regression = Date.now() - regressionStart;
 timing.replayed = replayed;
 timing.total = Date.now() - startedAt;
 
+requirePreMergeHead();
 const lines = fs.readFileSync(tasksFile, 'utf8').split('\n');
 const index = task.line - 1;
 const parsedLine = parseTaskLine(lines[index]);
