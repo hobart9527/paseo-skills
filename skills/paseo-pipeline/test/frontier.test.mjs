@@ -325,6 +325,7 @@ test('unstarted scope-overlapping tasks do not race dispatch in the same wave', 
   const report = frontier(tasks, { done: [], branches: {}, agents: [] });
   assert.deepEqual(report.dispatch.map((item) => item.task), ['T-01']);
   assert.equal(report.dispatch[0].action, 'create-branch+dispatch-worker');
+  assert.deepEqual(report.scopeWaiting, [{ task: 'T-02', on: ['T-01'] }]);
 });
 
 test('unresolved scope deadlock surfaces as BLOCKED_SCOPE_COLLISION', () => {

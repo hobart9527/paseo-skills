@@ -154,13 +154,21 @@ export function frontier(tasks, state = {}, options = {}) {
     // Callers that only pass {attempts, implementationCommits} keep the old meaning: a branch
     // with attempts already carries one of its own commits.
     if (!branch.attempts) {
-      if (dispatchedWorkerScopes.some((other) => scopesOverlap(task, other))) continue;
+      const scopeHolder = dispatchedWorkerScopes.find((other) => scopesOverlap(task, other));
+      if (scopeHolder) {
+        scopeWaiting.push({ task: task.id, on: [scopeHolder.id] });
+        continue;
+      }
       workerItems.push({ task: task.id, action: 'create-branch+dispatch-worker', reason: 'deps Done; scope disjoint' });
       dispatchedWorkerScopes.push(task);
     } else if (!ownCommits) {
       // The branch exists but carries no commit yet: dispatch onto it, do not create a
       // second branch (that would burn an attempt).
-      if (dispatchedWorkerScopes.some((other) => scopesOverlap(task, other))) continue;
+      const scopeHolder = dispatchedWorkerScopes.find((other) => scopesOverlap(task, other));
+      if (scopeHolder) {
+        scopeWaiting.push({ task: task.id, on: [scopeHolder.id] });
+        continue;
+      }
       workerItems.push({ task: task.id, action: 'dispatch-worker', reason: 'branch present; no commit yet' });
       dispatchedWorkerScopes.push(task);
     } else {
