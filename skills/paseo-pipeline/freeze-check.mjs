@@ -59,7 +59,8 @@ const RULE_FIXES = {
   USES_UNKNOWN: 'point Uses at an existing task id (never the task itself)',
   CYCLE: 'break the dependency cycle into a DAG',
   BAD_READS: 'use repo-relative paths without `..` or a leading slash',
-  MISSING_READS_PATH: 'point Reads at an existing path or one covered by a task Write scope; separately verify readiness and content',
+  MISSING_READS_PATH: 'point Reads at a baseline path or one covered by a task Write scope; add a dependency on any writer that must run first',
+  READ_BEFORE_WRITE: 'add Depends on for the reader-to-writer dependency so the artifact exists before dispatch',
   BAD_ACCEPTANCE_HEADER: 'use the seven columns Scenario, Entry, Tasks, Verify, Required, Result, Evidence in that order',
   BAD_ACCEPTANCE_REQUIRED: 'set Required to yes or no (case-insensitive)',
   MALFORMED_ACCEPTANCE_ROW: 'escape a literal pipe inside a cell as `\\|`, or keep one cell free of `|`; the row must have the header column count',
@@ -68,11 +69,11 @@ const RULE_FIXES = {
   BAD_INTERFACE: 'use Interface: <repo-path>[#<symbol>]',
   BAD_IMPLEMENTS: 'use Implements: D-<number>[, D-<number>] (decision ids from design.md)',
   BAD_KIND: 'use Kind: skeleton (or omit it)',
-  BAD_ACCEPTANCE_TASKS: 'leave Tasks empty to derive the owners from tasks.md Scenarios, or list the task ids that carry this scenario',
+  BAD_ACCEPTANCE_TASKS: 'list the task ids that claim this scenario in tasks.md Scenarios',
   UNKNOWN_ACCEPTANCE_TASK: 'point Tasks at ids declared in tasks.md',
   UNOWNED_ACCEPTANCE_SCEN: 'list a task that claims this SCEN in tasks.md Scenarios',
   UNACCEPTED_SCEN: 'add an acceptance row for every declared SCEN',
-  UNACCEPTED_TASK_SCEN: 'list the claiming task id in that scenario\'s acceptance row Tasks cell, or leave the cell empty to derive it',
+  UNACCEPTED_TASK_SCEN: 'list every claiming task id in one or more acceptance row Tasks cells',
   ENTRY_OWNER_UNCLAIMED: 'let the task that writes the Entry claim the SCEN, or make a row owner depend on that writer (e.g. a Kind: skeleton that pre-wires the entry)',
   COLLIDING_SCEN: 'choose a new SCEN id, or re-declare a baseline id under MODIFIED/REMOVED Requirements in this change',
   UNREADABLE_SPEC: 'make the file readable (repair or remove the dangling link/permissions); an unreadable spec cannot be checked',
@@ -258,6 +259,18 @@ const scopesClash = (left, right) => left.scope.some((scope) => right.scope.some
 // so scope overlap is checked on every unordered pair, not only within a wave.
 const byId = new Map(tasks.map((task) => [task.id, task]));
 const ancestors = new Map();
+const dispatchAncestors = (task) => {
+  const seen = new Set();
+  const stack = [...dispatchDeps(task, tasks)];
+  while (stack.length) {
+    const id = stack.pop();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const dependency = byId.get(id);
+    if (dependency) stack.push(...dispatchDeps(dependency, tasks));
+  }
+  return seen;
+};
 const ancestorsOf = (id, trail = new Set()) => {
   if (ancestors.has(id)) return ancestors.get(id);
   const out = new Set();
@@ -309,18 +322,6 @@ for (let i = 0; i < tasks.length; i += 1) {
 // Depends on edge to serialise the writers.
 const dependsBetween = (a, b) => ancestorsOf(a).has(b) || ancestorsOf(b).has(a);
 const skeletons = tasks.filter((task) => task.kind === 'skeleton');
-const dispatchAncestors = (task) => {
-  const seen = new Set();
-  const stack = dispatchDeps(task, tasks);
-  while (stack.length) {
-    const id = stack.pop();
-    if (seen.has(id)) continue;
-    seen.add(id);
-    const node = byId.get(id);
-    if (node) stack.push(...dispatchDeps(node, tasks));
-  }
-  return seen;
-};
 for (const task of tasks) {
   for (const used of task.uses || []) {
     if (used === task.id || !byId.has(used)) {
@@ -375,9 +376,19 @@ for (const task of tasks) {
     const repoRoot = toplevel.stdout.trim();
     for (const task of tasks) {
       for (const read of task.reads) {
-        if (fs.existsSync(path.join(repoRoot, read))) continue;
-        if (tasks.some((other) => isFileWithinScopes(read, other.scope))) continue;
-        blocking.push(`MISSING_READS_PATH ${task.id}: Reads ${read} does not exist in the repository`);
+        const baseline = gitIn(repoRoot, ['ls-tree', '-r', '--name-only', 'HEAD', '--', read]);
+        if (baseline.status === 0 && baseline.stdout.trim()) continue;
+        const writers = tasks.filter((other) => isFileWithinScopes(read, other.scope));
+        if (!writers.length) {
+          blocking.push(`MISSING_READS_PATH ${task.id}: Reads ${read} does not exist in the repository`);
+          continue;
+        }
+        for (const writer of writers) {
+          if (writer.id === task.id) continue;
+          if (!dispatchAncestors(task).has(writer.id) && !dispatchAncestors(writer).has(task.id)) {
+            blocking.push(`READ_BEFORE_WRITE ${task.id}: Reads ${read}, which is written by concurrent ${writer.id}; order reader and writer with Depends on`);
+          }
+        }
       }
     }
   }
@@ -571,10 +582,8 @@ else {
     const listed = rawTasks.split(',').map((item) => item.trim()).filter(Boolean);
     const ids = listed.filter((item) => isTaskId(item));
     const required = /^yes$/i.test(row.required);
-    // An empty cell means "derive the owners from tasks.md": the task list is then a
-    // hand-maintained duplicate of the Scenarios column and drifts (D4: 10 of 34 blocks).
-    // A non-task token is still an error on every row; it is not an intentional omission, and
-    // deriving owners from it would silently paper over a placeholder like `TBD`.
+    // Tasks is a required projection of tasks.md claims; malformed tokens and blank cells must
+    // not silently fall back to a separately derived owner list.
     const bad = listed.filter((item) => !isTaskId(item));
     if (rawTasks && !listed.length) {
       blocking.push(`BAD_ACCEPTANCE_TASKS acceptance.md:${rowNumber} ${scenLabel}: Tasks cell ${rawTasks} names no task id`);
@@ -585,9 +594,9 @@ else {
     for (const id of ids) {
       if (!byId.has(id)) blocking.push(`UNKNOWN_ACCEPTANCE_TASK ${scenLabel}: ${id} is not a task in tasks.md`);
     }
-    // Derived owners are the claimers, and only a truly empty cell derives; a non-empty cell that
-    // yields no id (`,`, `TBD`) is already reported above and keeps its (empty) explicit meaning.
-    const owners = rawTasks ? ids : [...(claimsByScen.get(scen) ?? [])];
+    const claims = claimsByScen.get(scen) ?? new Set();
+    if (!rawTasks) blocking.push(`BAD_ACCEPTANCE_TASKS acceptance.md:${rowNumber} ${scenLabel}: Tasks cell is empty; list claiming task id(s): ${[...claims].join(', ') || '(none)'}`);
+    const owners = ids;
     if (!rowsByScen.has(scen)) rowsByScen.set(scen, []);
     rowsByScen.get(scen).push({ ids, owners, entry: row.entry, line: rowNumber });
     if (required) requiredRows.push({ scen: scenLabel, verify: row.verify, result: row.result });

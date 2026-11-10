@@ -368,10 +368,8 @@ artifacts:
       rows may share an Entry and Verify and may reuse an existing test, so a
       scenario does not require a new test of its own. The claim source is
       `Scenarios:` in `tasks.md`; a row's `Tasks` cell is its projection, not a second
-      claim. Leave a row's `Tasks` cell empty
-      and the owners are derived from the `Scenarios` claims in `tasks.md` (recommended
-      default); fill it only to split owners across rows. A non-empty `Tasks` cell may
-      list only tasks that claim that scenario in `tasks.md` `Scenarios`, and the union
+      claim. Every row's `Tasks` cell must explicitly list its claiming task(s). A `Tasks`
+      cell may list only tasks that claim that scenario in `tasks.md` `Scenarios`, and the union
       of all rows for a scenario must name every task that claims it. A row naming a
       non-claimant is wrong even when the union looks complete. `Entry`, `Verify` and
       `Required` are authored judgements: `Required` follows real delivery semantics

@@ -100,6 +100,7 @@ test('E2E simulation: full SDD pipeline lifecycle with adversarial fault injecti
     scripts: { test: 'node --test test/*.test.mjs' },
   }, null, 2) + '\n');
   write('package-lock.json', JSON.stringify({ name: 'calc-service', lockfileVersion: 3 }, null, 2) + '\n');
+  write('src/mul.mjs', 'export const multiply = (a, b) => a * b;\n');
   git('add', '.');
   git('commit', '-qm', 'chore: initial commit with package manifest');
 
@@ -145,6 +146,7 @@ Composite arithmetic expressions.
 - [ ] 2.1 T-02 add
   - Depends on: T-01
   - Write scope: src/add.mjs,test/add.test.mjs
+  - Reads: src/mul.mjs
   - Reads: src/core.mjs,src/mul.mjs
   - Verify with: node --test test/add.test.mjs
   - Scen: SCEN-ADD

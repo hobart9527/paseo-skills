@@ -693,6 +693,42 @@ test('skeleton Write-scope overlap is exempt against transitive dependents', () 
   assert.match(freezeStructural(race).stdout, /SCOPE_CONFLICT T-00 and T-04/);
 });
 
+test('accepts Reads ordered in either dependency direction', () => {
+  const base = `- [ ] 1.1 T-01 reader\n  - Write scope: src/reader.mjs,test/read.test.mjs\n  - Reads: src/generated.mjs\n  - Verify with: node --test test/read.test.mjs\n  - Scenarios: SCEN-1\n- [ ] 1.2 T-02 writer\n  - Write scope: src/generated.mjs,test/write.test.mjs\n  - Verify with: node --test test/write.test.mjs\n  - Scenarios: SCEN-1`;
+  for (const tasks of [
+    base.replace('  - Reads: src/generated.mjs', '  - Depends on: T-02\n  - Reads: src/generated.mjs'),
+    base.replace('  - Write scope: src/generated.mjs,test/write.test.mjs', '  - Depends on: T-01\n  - Write scope: src/generated.mjs,test/write.test.mjs'),
+  ]) {
+    const dir = change({ ...scheduleFiles(tasks), 'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node -e "0" | yes | PENDING | pending |') });
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    assert.equal(run(dir, ['--structural', '--skip-signer-check']).status, 0, run(dir, ['--structural', '--skip-signer-check']).stdout);
+  }
+});
+
+test('accepts a task reading a path it writes itself', () => {
+  const tasks = `- [ ] 1.1 T-01 self reader\n  - Write scope: src/generated.mjs,test/read.test.mjs\n  - Reads: src/generated.mjs\n  - Verify with: node --test test/read.test.mjs\n  - Scenarios: SCEN-1`;
+  const dir = change({ ...scheduleFiles(tasks), 'acceptance.md': table('| SCEN-1 | CLI | T-01 | node -e "0" | yes | PENDING | pending |') });
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  assert.equal(run(dir, ['--structural', '--skip-signer-check']).status, 0, run(dir, ['--structural', '--skip-signer-check']).stdout);
+});
+
+test('rejects a concurrent Read of an artifact another task writes', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-read-write-'));
+  const dir = path.join(repo, 'openspec/changes/chg');
+  fs.mkdirSync(path.join(dir, 'specs/a'), { recursive: true });
+  const tasks = `- [ ] 1.1 T-01 reader\n  - Write scope: test/read.test.mjs\n  - Reads: src/generated.mjs\n  - Verify with: node --test test/read.test.mjs\n  - Scenarios: SCEN-1\n- [ ] 1.2 T-02 writer\n  - Write scope: src/generated.mjs,test/write.test.mjs\n  - Verify with: node --test test/write.test.mjs\n  - Scenarios: SCEN-1`;
+  for (const [file, text] of Object.entries({
+    'openspec/changes/chg/tasks.md': tasks,
+    'openspec/changes/chg/proposal.md': 'x',
+    'openspec/changes/chg/acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node --test test/read.test.mjs | yes | PENDING | pending |'),
+    'openspec/changes/chg/specs/a/spec.md': '### Scenario: SCEN-1\n',
+  })) { fs.mkdirSync(path.dirname(path.join(repo, file)), { recursive: true }); fs.writeFileSync(path.join(repo, file), text); }
+  execFileSync('git', ['init', '-q', repo]); execFileSync('git', ['-C', repo, 'add', '.']); execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base']);
+  const result = run(dir, ['--structural', '--skip-signer-check']);
+  assert.equal(result.status, 1, result.stdout);
+  assert.ok(result.stdout.includes('READ_BEFORE_WRITE T-01: Reads src/generated.mjs, which is written by concurrent T-02'), result.stdout);
+});
+
 test('Reads anchors a narrow Verify without joining scope conflicts', () => {
   const anchored = scheduleContract
     .replace('Write scope: src/alpha,test/alpha.test.mjs', 'Write scope: src/alpha')
@@ -804,37 +840,42 @@ test('a shell loop is an advisory, not invented legs', () => {
   assert.match(result.stdout, /ADVISORY_SHELL_VERIFY T-04/);
 });
 
-test('Reads must name a path that already exists in the repository', () => {
+test('Reads must name a baseline path or a declared writer path', () => {
   const dir = change({ 'tasks.md': contract.replace('  - Scen: SCEN-1\n- [ ] 1.2', '  - Reads: docs/contract.md\n  - Scen: SCEN-1\n- [ ] 1.2'), 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
   execFileSync('git', ['init', '-q'], { cwd: dir });
+  execFileSync('git', ['-C', dir, 'add', '.']);
+  execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'baseline']);
   assert.match(run(dir, ['--structural', '--skip-signer-check']).stdout, /MISSING_READS_PATH T-01/);
   fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'docs/contract.md'), 'x');
+  execFileSync('git', ['-C', dir, 'add', 'docs/contract.md']);
+  execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'add baseline read']);
   assert.equal(run(dir, ['--structural', '--skip-signer-check']).status, 0);
 });
 
-test('Reads may forward-reference a path another task writes, but not a typo', () => {
-  // The task owns this future file; scope permits the reference, not proof it will exist.
-  const forward = contract
-    .replace('Write scope: src/shared,test/shared.test.mjs', 'Write scope: src/shared,test/shared.test.mjs,src/poison.txt')
-    .replace('  - Scen: SCEN-1\n- [ ] 1.2', '  - Reads: src/poison.txt\n  - Scen: SCEN-1\n- [ ] 1.2');
-  const ok = change({ 'tasks.md': forward, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+test('Reads may reference a dependency-ordered generated path, but not a typo', () => {
+  const generated = contract
+    .replace('  - Write scope: src/shared,test/shared.test.mjs', '  - Write scope: src/shared,test/shared.test.mjs,src/poison.txt')
+    .replace('  - Scen: SCEN-1\n- [ ] 1.3', '  - Scen: SCEN-1\n- [ ] 1.3')
+    .replace('  - Depends on: T-01\n  - Write scope: src/alpha', '  - Depends on: T-01\n  - Reads: src/poison.txt\n  - Write scope: src/alpha');
+  const ok = change({ 'tasks.md': generated, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
   execFileSync('git', ['init', '-q'], { cwd: ok });
-  assert.doesNotMatch(run(ok, ['--structural', '--skip-signer-check']).stdout, /MISSING_READS_PATH/);
-  const typo = change({ 'tasks.md': forward.replace('Reads: src/poison.txt', 'Reads: src/posion.txt'), 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
+  assert.doesNotMatch(run(ok, ['--structural', '--skip-signer-check']).stdout, /MISSING_READS_PATH|READ_BEFORE_WRITE/);
+  const typo = change({ 'tasks.md': generated.replace('Reads: src/poison.txt', 'Reads: src/posion.txt'), 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n' });
   execFileSync('git', ['init', '-q'], { cwd: typo });
-  assert.match(run(typo, ['--structural', '--skip-signer-check']).stdout, /MISSING_READS_PATH T-01/);
+  assert.match(run(typo, ['--structural', '--skip-signer-check']).stdout, /MISSING_READS_PATH T-02/);
 });
 
-test('future sibling Verify input is structurally allowed, not proven ready', () => {
+test('rejects a concurrent Read of a generated path', () => {
   const tasks = scheduleContract
-    .replace('Write scope: src/alpha,test/alpha.test.mjs', 'Write scope: src/alpha,test/alpha.test.mjs,test/future.test.mjs')
-    .replace('  - Review: deferred\n  - Verify with: node --test test/beta.test.mjs', '  - Reads: test/future.test.mjs\n  - Review: deferred\n  - Verify with: node --test test/future.test.mjs');
+    .replace('Write scope: src/beta,test/beta.test.mjs', 'Write scope: src/beta,test/beta.test.mjs,test/future.test.mjs')
+    .replace('  - Uses: T-00\n  - Write scope: src/alpha', '  - Uses: T-00\n  - Reads: test/future.test.mjs\n  - Write scope: src/alpha');
   const dir = change(scheduleFiles(tasks));
   execFileSync('git', ['init', '-q'], { cwd: dir });
   const parsed = parseTasks(tasks).tasks;
-  assert.deepEqual(dispatchDeps(parsed.find((task) => task.id === 'T-02'), parsed), ['T-00']);
-  assert.equal(run(dir, ['--structural', '--skip-signer-check']).status, 0);
+  assert.deepEqual(dispatchDeps(parsed.find((task) => task.id === 'T-01'), parsed), ['T-00']);
+  assert.equal(run(dir, ['--structural', '--skip-signer-check']).status, 1);
+  assert.match(run(dir, ['--structural', '--skip-signer-check']).stdout, /READ_BEFORE_WRITE T-01.*test\/future\.test\.mjs.*T-02/);
   assert.equal(fs.existsSync(path.join(dir, 'test/future.test.mjs')), false);
 });
 
@@ -976,10 +1017,11 @@ const codes = (result) => {
   try { return JSON.parse(result.stdout).blocking; } catch { return []; }
 };
 
-test('BAD_ACCEPTANCE_TASKS: an empty Tasks cell derives its owners, a non-task token is still rejected', () => {
+test('BAD_ACCEPTANCE_TASKS: an empty Tasks cell is rejected, as are non-task tokens', () => {
   const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW };
   const derived = run(change({ ...files, 'acceptance.md': table('| SCEN-1 | CLI |  | node -e "0" | yes | PENDING | pending |') }));
-  assert.equal(derived.status, 0, derived.stdout);
+  assert.equal(derived.status, 1, derived.stdout);
+  assert.match(codes(derived).join('\n'), /^BAD_ACCEPTANCE_TASKS acceptance\.md:3 SCEN-1: Tasks cell is empty/m);
   const bad = run(change({ ...files, 'acceptance.md': table('| SCEN-1 | CLI | T-01 and T-02 | node -e "0" | yes | PENDING | pending |') }));
   assert.equal(bad.status, 1);
   assert.match(codes(bad).join('\n'), /^BAD_ACCEPTANCE_TASKS acceptance\.md:3 SCEN-1: Tasks token T-01 and T-02 is not a task id$/m);
@@ -1137,7 +1179,7 @@ test('ENTRY_OWNER_UNCLAIMED: a leading ./ and a #fragment do not hide the entry 
   assert.equal(entryRun(splitEntry, splitRow('T-01', 'src/**/*.ts')).status, 0);
 });
 
-test('BAD_ACCEPTANCE_TASKS: a comma-only Tasks cell is a placeholder, only a truly empty cell derives', () => {
+test('BAD_ACCEPTANCE_TASKS: a comma-only or empty Tasks cell fails', () => {
   const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW };
   for (const cell of [',', ' , ', ',,', 'TBD,', ', ,']) {
     for (const required of ['no', 'yes']) {
@@ -1147,7 +1189,8 @@ test('BAD_ACCEPTANCE_TASKS: a comma-only Tasks cell is a placeholder, only a tru
     }
   }
   const empty = run(change({ ...files, 'acceptance.md': table('| SCEN-1 | CLI |  | node -e "0" | yes | PENDING | pending |') }));
-  assert.equal(empty.status, 0, empty.stdout);
+  assert.equal(empty.status, 1, empty.stdout);
+  assert.match(codes(empty).join('\n'), /^BAD_ACCEPTANCE_TASKS acceptance\.md:3 SCEN-1: Tasks cell is empty/m);
 });
 
 // A repo with SCEN ids already declared outside `aligned()`: the baseline spec and one other change.
