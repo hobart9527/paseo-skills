@@ -576,6 +576,13 @@ test('Tier 2 brief is requirement-anchored with per-delivery caps and escalation
   assert.match(brief, /same defect class is blocked in two consecutive rounds/);
   assert.match(brief, /independent PASS conflicts with an assigned reviewer's BLOCKED/);
   assert.match(brief, /both verdicts side by side/);
+  assert.match(brief, /at most 5 acceptance points/);
+  assert.match(brief, /Risk watchlist/);
+  assert.match(brief, /`FOLLOWUP`/);
+  assert.match(brief, /sweep its class once/);
+  assert.match(brief, /decision, not a status/);
+  assert.match(brief, /unreviewed until a delta recheck/);
+  assert.match(read('../../docs/tier2-handoff-brief.md'), /fix its whole class/);
 });
 
 test('LESSONS records the review-convergence redesign with health metrics', () => {
