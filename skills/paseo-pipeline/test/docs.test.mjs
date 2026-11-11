@@ -30,7 +30,7 @@ test('pipeline prompts align execution, contract, review, and handoff rules', ()
   assert.match(approvals, /Push and history rewrite need their own approval/);
   const tier2 = read('../../docs/tier2-reviewer-brief.md');
   assert.match(tier2, /never code-fix loop/);
-  assert.match(tier2, /human risk evidence/);
+  assert.match(tier2, /human dispositions it before merge/);
   for (const file of ['templates/reviewer.md', 'templates/final-recovery.md', 'SKILL.md']) {
     const text = read(file);
     assert.match(text, /CONTRACT_GAP|REQUIREMENT_GAP/);
