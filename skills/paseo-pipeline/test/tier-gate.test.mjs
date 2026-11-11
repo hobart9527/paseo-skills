@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { assessTierGate, assessStop, takeSnapshot, logHookError, scopeKey, readDeclaredPlan, readDeclaredPlanStatus } from '../lib/tier-gate.mjs';
+import { assessTierGate, assessStop, takeSnapshot, logHookError, scopeKey, readDeclaredPlan, readDeclaredPlanStatus, TIER_RULES } from '../lib/tier-gate.mjs';
 import { shouldRemind, isSystemNotification, REMINDER } from '../hooks/tier-reminder-hook.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -550,7 +550,13 @@ test('开工前声明：Tier 2 在主 checkout 原地写 → deny，指向 hando
   assert.equal(v.verdict, 'deny');
   assert.match(v.reason, /Tier 2/);
   assert.match(v.reason, /worktree/);
+  assert.match(v.reason, /设计文档/);
 }));
+
+test('TIER_RULES：声明 Tier 2 后直接 handoff，不先写主 checkout', () => {
+  assert.match(TIER_RULES, /声明 Tier 2 后，下一步直接 \/paseo-handoff/);
+  assert.match(REMINDER, /声明 Tier 2 后，下一步直接 \/paseo-handoff/);
+});
 
 test('开工前声明：合规计划放行，后续仍按已写文件计数', () => withState(() => {
   const root = makeRepo();
