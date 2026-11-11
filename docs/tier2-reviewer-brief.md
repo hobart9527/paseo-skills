@@ -41,7 +41,7 @@ A finding blocks only if core Requirement fails on main path, wrong/lost remote 
 
 ### Routing
 
-`DEVIATION`: violates Requirement or named standard with counterexample; only `DEVIATION` can be `BLOCKER`, and only at blocking severity. `REQUIREMENT_GAP`: undefined behavior with realistic wrong outcome; report as `FOLLOWUP` or human risk evidence, never code-fix loop. `ENHANCEMENT`: violates nothing stated; report as `NIT`.
+`DEVIATION`: violates Requirement or named standard with counterexample; only `DEVIATION` can be `BLOCKER`, and only at blocking severity. `REQUIREMENT_GAP`: undefined behavior with realistic wrong outcome; never code-fix loop, never relabeled `DEVIATION`. At blocking severity the human dispositions it before merge (amend Requirement or accept risk); an explicit user instruction to merge counts as accepting it. Below blocking severity it is a `FOLLOWUP`. `ENHANCEMENT`: violates nothing stated; report as `NIT`.
 
 ### Caps (per delivery)
 

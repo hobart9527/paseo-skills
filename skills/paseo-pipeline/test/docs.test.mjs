@@ -569,6 +569,8 @@ test('Tier 2 review is advisory, requirement-anchored and bounded by user author
   assert.match(brief, /verdict is against Requirement, not all problems in diff/);
   assert.match(brief, /`DEVIATION`/);
   assert.match(brief, /`REQUIREMENT_GAP`/);
+  assert.match(brief, /At blocking severity the human dispositions it before merge/);
+  assert.match(brief, /never relabeled `DEVIATION`/);
   assert.match(brief, /`ENHANCEMENT`/);
   assert.match(brief, /only `DEVIATION` can be `BLOCKER`/);
   assert.match(brief, /At most 1 reviewer and 1 verdict for light; heavy gets initial verdict and at most 1 recheck/);
