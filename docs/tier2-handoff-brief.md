@@ -5,6 +5,8 @@
 - **Branch:** `<branch>`
 - **Base SHA:** `<full commit SHA>`
 - **Scope and acceptance:** `<files / behavior / tests>`
+- **Local commits:** `authorized by <user, date> | not authorized`. Dispatcher must ask the human before dispatch and must not leave this blank or contradict it in Constraints. Authorization covers local commits on this branch in this isolated workspace only; never push, merge, amend, reset, or delete.
+- **Pending decisions:** `<open product/design choices, each with a default>`. An open decision with no default is resolved by the dispatcher before dispatch, not by the implementer.
 
 ## Ownership and delivery
 - Implementer delivers commits and report only; never self-declares reviewed or merged.
@@ -14,8 +16,18 @@
 - Report with: `COMPLETE | BLOCKED | INCOMPLETE`; base SHA as assigned and tip SHA; changed-file list; full-suite command with pass and fail counts at the tip; red-then-green evidence per item; known gaps and what you could only simulate. A failing test is reported as failing, never as a fixture problem unless you show why.
 - Runtime behavior (UI interaction, focus, layout, async ordering): before reporting `COMPLETE`, run the real app or browser against local or mock data, never production write paths, and report what passed and what could only be simulated. Do not leave this for the reviewer to infer from code.
 - When a defect is reported, fix its whole class: grep every sibling site (entry points, dialog types, refresh paths, state writers) and add a test per site, not only the cited line.
-- Commit the delivery before reporting; review binds to the tip SHA. Changes made after review (including acceptance-run fixes) go in a separate commit and are reported as unreviewed.
+- With `Local commits: authorized`: commit after each finished item (so work survives context compaction), and commit the delivery before reporting; review binds to the tip SHA, so no per-file hash lists are needed. Existing uncommitted changes in the workspace are committed first as a separate baseline commit (the new Base SHA) so they are not mixed with your work. Changes made after review (including acceptance-run fixes) go in a separate commit and are reported as unreviewed.
+- With `Local commits: not authorized`: do not commit or stage. Report uncommitted state; the dispatcher freezes the target per review closure. The implementer does not build hash lists unless the brief asks for one script-generated file.
 - Commit trailers: `Pipeline-Role: implementer` and `Pipeline-Author: <agent id>`; end commit message with `Co-Authored-By: Claude Code <noreply@anthropic.com>`.
+
+## Context budget
+Context compaction discards file contents you read; re-reading them refills the window and loops. Write first, read narrowly.
+- Read narrowly: locate with `rg -n`, then read at most 150 lines per call. No whole-file `cat`, no `sed -n` range over 150 lines.
+- Item cycle: at most 5 files read before the first write for an item; then failing test, minimal fix, green. Do not re-read a file already read unless you changed it.
+- Progress file: at start create `$(git rev-parse --git-dir)/handoff-progress.md` (untracked, outside the diff). Record per item: done / next, files touched, one-line conclusions. After any compaction, read it first; do not re-explore.
+- Frozen baseline: the assigned Base SHA is the baseline. Per-file hashes or mode lists are produced once by a script into a file, then read from it; never rebuilt by hand or carried in summaries.
+- No-write stop: if one full context window passes with no file write, stop and return `BLOCKED` with what you read and what is unresolved. Do not resume on your own.
+- Sizing (dispatcher): one handoff carries at most 2 items and must fit the profile's context window; split the rest into later handoffs.
 
 ## Missed wake-up recovery
 Finish notification is delivery, not guaranteed parent wake. If parent is never woken, user resumes parent session and asks for recovery. Reconcile Paseo agent status against Git state, then dispatch review. If agent still works, follow up or re-arm and record which; never treat elapsed time as completion or review.
