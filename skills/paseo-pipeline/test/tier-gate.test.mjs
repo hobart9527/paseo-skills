@@ -866,6 +866,19 @@ test('连续多轮原地改：第 3 轮 Stop 汇报一次，用户回话后重�
   }
 }));
 
+test('只提交、不改内容的一轮不推进 churn 计数', () => withState(() => {
+  const root = makeRepo();
+  for (let round = 1; round <= 2; round += 1) {
+    snap(root, 'commit-only');
+    bashWrite(root, ['a']);
+    assert.equal(stop(root, 'commit-only').verdict, 'ok');
+  }
+  // 第 3 轮：只把前两轮已改的文件提交掉，没有新内容。
+  snap(root, 'commit-only');
+  sh(root, 'add', '.'); sh(root, 'commit', '-q', '-m', 'wip');
+  assert.equal(stop(root, 'commit-only').verdict, 'ok');
+}));
+
 test('逐轮新增文件的正常增量工作不触发 churn 汇报', () => withState(() => {
   const root = makeRepo();
   process.env.PIPELINE_TIER_GATE_LIMIT = '20';

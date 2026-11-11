@@ -834,8 +834,15 @@ export function assessStop({ cwd, sessionId }) {
   // 快照里有、现在没了，且 HEAD 没动：只可能是 stash/restore/checkout 把旧脏文件还原了，
   // 不是本轮写的新内容。HEAD 动了的交给下面按提交补（合流与拉取已被排除）。
   const head = git(ctx.root, ['rev-parse', 'HEAD']);
+  // churn 只认本轮真正动过内容的文件。轮首就已是脏的文件，本轮只是被提交走：提交不是
+  // 「又改了一遍」，不能推进原地试错计数（文件数与作用域判定仍按提交补，那是另一条规则）。
+  // 局限：轮首已脏的文件在同一轮里既改又提交，会漏计一轮 churn。
+  const churnTouched = new Set(changed);
   if (head !== snap.head) {
-    for (const rel of localCommitFiles(ctx.root, snap.head, head)) changed.add(rel);
+    for (const rel of localCommitFiles(ctx.root, snap.head, head)) {
+      changed.add(rel);
+      if (!Object.hasOwn(snap.sig, rel)) churnTouched.add(rel);
+    }
   }
 
   const file = stateFile(sessionId);
@@ -863,7 +870,7 @@ export function assessStop({ cwd, sessionId }) {
   // takeSnapshot 重置；否则同一段任务每轮都打断。
   const turnLimit = turnsFromEnv();
   // 原型页与规格草稿的反复调整不计入 churn：那正是文档类产物的正常节奏。
-  const churnRound = round.filter((rel) => !CHURN_EXEMPT(rel));
+  const churnRound = round.filter((rel) => churnTouched.has(rel) && !CHURN_EXEMPT(rel));
   const turnsAfter = churnRound.length > 0 ? seg.turns + 1 : seg.turns;
   const previouslyTouched = new Set([...seg.files, ...seg.stopFiles]);
   const fresh = churnRound.filter((rel) => !previouslyTouched.has(rel));
