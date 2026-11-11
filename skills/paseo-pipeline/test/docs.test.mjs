@@ -571,7 +571,12 @@ test('Tier 2 brief is requirement-anchored with per-delivery caps and escalation
   assert.match(brief, /REQUIREMENT_GAP/);
   assert.match(brief, /ENHANCEMENT/);
   assert.match(brief, /Only `DEVIATION` is a `BLOCKER`/);
-  assert.match(brief, /At most 2 reviewer agents and 4 verdicts in total for one delivery/);
+  assert.match(brief, /At most 1 reviewer agent and 2 verdicts in total for one delivery/);
+  assert.match(brief, /frontend UI\/layout\/drawer\/interaction/);
+  assert.match(brief, /Newly noticed sibling sites or previously unreported issues are `FOLLOWUP`/);
+  assert.match(brief, /not a self-enforcing merge ban/);
+  const handoff = fs.readFileSync(path.join(dir, '..', '..', 'docs', 'tier2-handoff-brief.md'), 'utf8');
+  assert.match(handoff, /BLOCKED \(scope expansion\)/);
   assert.match(brief, /inherits all prior findings and the budget does not reset/);
   assert.match(brief, /same defect class is blocked in two consecutive rounds/);
   assert.match(brief, /independent PASS conflicts with an assigned reviewer's BLOCKED/);
