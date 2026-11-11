@@ -19,19 +19,21 @@ Read-only is task behavior, not an enforced permission. Do not edit files, creat
 
 ### Light tier
 
-Docs, config or copy only; no shared contract, persistence, concurrency, security, deletion/migration, or public interface. Read the diff and the delivery note, and read the surrounding files or authoritative sources the diff depends on when needed to verify a claim. Run no commands that execute code or tests. If a key scope cannot be verified by reading, the result is `INCOMPLETE`, not `PASS`. One round; at most one fix recheck (per delivery, see Caps).
+Applies to every change that does not touch external-system writes, persistence schema/data migration, cross-request/cross-process concurrency or idempotency state, or auth/security/secrets. This includes frontend UI/layout/drawer/interaction, local client state/store, read-only queries, logging/timing instrumentation, tests, docs, and config. One read-only pass over the diff and implementer's test and runtime/browser evidence; about 15 tool calls, no recheck round, and do not rerun suites. If a key scope cannot be verified, result is `INCOMPLETE`, not `PASS`.
 
 ### Heavy tier
 
-Everything else. Unsure means heavy, still budgeted. Cover the whole diff, then follow concrete risk only; extend only with a stated risk reason. Stop once evidence is sufficient; do not keep enumerating the same class of case.
+Only for external-system writes, persistence schema/data migration, cross-request/cross-process concurrency or idempotency state, or auth/security/secrets. Cover the whole diff, then follow concrete risk only; extend only with a stated risk reason. Stop once evidence is sufficient; do not keep enumerating the same class of case.
 
-Budget (initial values, to be calibrated from real runs):
+Budget:
 
-- First round: about 40 Bash calls. On reaching it, report your current conclusion.
-- About 10 minutes in and still running: send one unsolicited progress message. Soft checkpoint, not a stop and not a new timer. Report important findings as soon as confirmed.
-- Fix rechecks: at most 2, each limited to the incremental diff and affected behavior. Still blocked after the 2nd recheck: stop and report to the human; no 3rd round.
+- About 30 minutes light / 60 minutes heavy. Exceeding the applicable budget unfinished is `INCOMPLETE`, never an auto-pass; escalate to the human.
+- Fix rechecks: heavy only, at most 1, limited to the fix diff and affected behavior. Still blocked after it: stop and report to the human.
 - Caps are per delivery, not per session (see Caps).
-- Exceeding the budget unfinished is `INCOMPLETE`, never an auto-pass.
+
+A verdict is evidence for the human's merge decision, not a self-enforcing merge ban. On escalation, default recommendation is to merge the verified scope with remaining non-destructive items recorded as `FOLLOWUP`, or split out the irreversible part. Recommend continuing to fix only when a blocker is a wrong/lost remote write or data, security break, or dead end with no in-product recovery.
+
+Light tier: one verdict. Heavy tier: initial verdict and at most one recheck. Exceeding the applicable wall-clock budget unfinished is `INCOMPLETE`.
 
 ### Blocking standard
 
@@ -43,13 +45,13 @@ Every finding belongs to one class. `DEVIATION`: violates the Requirement or a n
 
 ### Caps (per delivery)
 
-At most 2 reviewer agents and 4 verdicts in total for one delivery. A replacement reviewer inherits all prior findings and the budget does not reset. A defect class confirmed fixed stays closed; reopening needs new evidence. Escalate to the human, with both verdicts side by side, when the same defect class is blocked in two consecutive rounds, or when an independent PASS conflicts with an assigned reviewer's BLOCKED on the same class. Do not start another round.
+At most 1 reviewer agent and 2 verdicts in total for one delivery (light: 1 verdict; heavy: initial verdict and at most 1 recheck). A replacement reviewer inherits all prior findings and the budget does not reset. A defect class confirmed fixed stays closed; reopening needs new evidence. Escalate to the human when the same defect class is blocked in two consecutive rounds, or when an independent PASS conflicts with an assigned reviewer's BLOCKED on the same class. Do not start another round; show both verdicts side by side.
 
-On escalation the dispatcher gives the human a decision, not a status: (a) one delta-only final check of the named paths and the new diff, light tier; (b) accept the remaining items as recorded `FOLLOWUP`s; (c) narrow scope. State a recommendation. Any change made after a verdict (including during acceptance runs) is unreviewed until a delta recheck covers it; the delivery is not reported as reviewed before then.
+On escalation the dispatcher gives the human a decision, not a status: (a) accept remaining items as recorded `FOLLOWUP`s; (b) narrow scope. State a recommendation. Default recommendation is to merge verified scope with remaining non-destructive items as `FOLLOWUP`, or split out irreversible scope. Recommend continuing to fix only for wrong/lost remote write or data, security break, or dead end with no in-product recovery. Any change after a verdict is unreviewed until a delta recheck covers it; the delivery is not reported as reviewed before then.
 
 ### Recheck
 
-Same reviewer, same session (a replacement reads the prior findings first). Check the fix diff and affected behavior; do not restart unrelated review. The verdict binds to the new version (SHA or frozen lists). A recheck verdict is a verdict on the named open items and the delta, and says so; it is not a full-delivery PASS unless an earlier full pass exists.
+Same reviewer, same session (a replacement reads the prior findings first). A recheck may judge only (1) whether the earlier `BLOCKER`s are fixed and (2) whether the fix diff introduced a new regression at blocking severity. Newly noticed sibling sites or previously unreported issues are `FOLLOWUP` and never keep the delivery `BLOCKED`. Check the fix diff and affected behavior; do not restart unrelated review. The verdict binds to the new version (SHA or frozen lists). A recheck verdict is a verdict on the named open items and the delta, and says so; it is not a full-delivery PASS unless an earlier full pass exists.
 
 ## Output
 
