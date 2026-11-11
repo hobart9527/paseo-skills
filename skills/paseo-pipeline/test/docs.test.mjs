@@ -29,8 +29,9 @@ test('pipeline prompts align execution, contract, review, and handoff rules', ()
   assert.match(approvals, /records who ran it/);
   assert.match(approvals, /Push and history rewrite need their own approval/);
   const tier2 = read('../../docs/tier2-reviewer-brief.md');
-  assert.match(tier2, /never code-fix loop/);
-  assert.match(tier2, /human dispositions it before merge/);
+  assert.match(tier2, /`REQUIREMENT_GAP`: realistic wrong outcome from undefined behavior; never code-fix loop/);
+  assert.match(tier2, /Human disposition only at blocking severity/);
+  assert.match(tier2, /Advisory evidence for the human's merge decision, not a merge gate\./);
   for (const file of ['templates/reviewer.md', 'templates/final-recovery.md', 'SKILL.md']) {
     const text = read(file);
     assert.match(text, /CONTRACT_GAP|REQUIREMENT_GAP/);
@@ -50,7 +51,6 @@ test('pipeline prompts align execution, contract, review, and handoff rules', ()
   assert.match(skill, /After archive moves the change directory, logs live under the archive path/);
   assert.match(skill, /cleanup` must receive `--change <name>`/);
   const handoff = read('../../docs/tier2-handoff-brief.md');
-  assert.match(handoff, /Implementer acts within user's Authorization/);
   assert.match(handoff, /user resumes parent session and asks for recovery/);
 });
 
@@ -566,32 +566,21 @@ test('R0 checks the Verify oracle and amendment R0 is delta-only', () => {
 
 test('Tier 2 review is advisory, requirement-anchored and bounded by user authorization', () => {
   const brief = fs.readFileSync(path.join(dir, '..', '..', 'docs', 'tier2-reviewer-brief.md'), 'utf8');
-  assert.match(brief, /verdict is against Requirement, not all problems in diff/);
+  assert.match(brief, /at most 5 acceptance points from user's own words or approved spec/);
+  assert.match(brief, /Risk watchlist/);
+  assert.match(brief, /Read-only behavior/);
   assert.match(brief, /`DEVIATION`/);
   assert.match(brief, /`REQUIREMENT_GAP`/);
-  assert.match(brief, /At blocking severity the human dispositions it before merge/);
-  assert.match(brief, /never relabeled `DEVIATION`/);
   assert.match(brief, /`ENHANCEMENT`/);
-  assert.match(brief, /only `DEVIATION` can be `BLOCKER`/);
-  assert.match(brief, /At most 1 reviewer and 1 verdict for light; heavy gets initial verdict and at most 1 recheck/);
-  assert.match(brief, /Includes UI, local state/);
-  assert.match(brief, /Newly noticed issues are `FOLLOWUP`/);
-  assert.match(brief, /advisory evidence, not a self-enforcing merge ban/);
-  assert.match(brief, /Explicit user authorization overrides any review state/);
+  assert.match(brief, /only this can be `BLOCKER`/);
+  assert.match(brief, /`light`: UI, local state/);
+  assert.match(brief, /one pass and at most one recheck/);
+  assert.match(brief, /At most 1 reviewer; light 1 verdict; heavy initial verdict plus at most 1 recheck/);
+  assert.match(brief, /new findings are `FOLLOWUP`/);
   assert.match(brief, /Advisory evidence for the human's merge decision, not a merge gate\./);
-  assert.match(brief, /`INCOMPLETE` only if target code cannot be read or budget expires/);
-  assert.match(brief, /If a reviewer write is detected, record it and report it to the human/);
-  assert.doesNotMatch(brief, /Any write voids your verdict/);
-  for (const forbidden of [/provenance\/hunk authorship/, /frozen manifests\/hashes\/snapshots/, /prior history or missing whole-delivery PASS/, /real-browser verification unless Requirement asks for it/]) assert.match(brief, forbidden);
-  assert.match(brief, /at most 5 acceptance points/);
-  assert.match(brief, /unreviewed until delta recheck/);
+  assert.match(brief, /`INCOMPLETE` only if target unreadable or budget expires/);
   const handoff = fs.readFileSync(path.join(dir, '..', '..', 'docs', 'tier2-handoff-brief.md'), 'utf8');
   assert.match(handoff, /\*\*Authorization:\*\*/);
-  assert.match(handoff, /Explicit user instruction to commit\/merge\/deploy overrides review state/);
-  assert.match(handoff, /updated Authorization to running implementers/);
-  assert.match(handoff, /Do not carry prior review status/);
-  assert.match(handoff, /Follow present Authorization even if prior review was BLOCKED\/INCOMPLETE/);
-  assert.match(handoff, /relayed “Lead says” authorization quoting user is valid/);
   assert.match(handoff, /BLOCKED \(scope expansion\)/);
 });
 

@@ -5,11 +5,10 @@
 - **Branch:** `<branch>`
 - **Base SHA:** `<full commit SHA>`
 - **Scope and acceptance:** `<files / behavior / tests>`
-- **Authorization:** `<quote user's words and scope, e.g. "user 2026-11-12: commit and merge this worktree, no push"; if user said nothing: "No commit/merge/push without user instruction">`. User alone authorizes commit/merge/deploy. A relayed “Lead says” authorization quoting user is valid; do not demand user restate it directly. When user later authorizes, dispatcher re-sends updated Authorization to running implementers; never forward old prohibition. Follow present Authorization even if prior review was BLOCKED/INCOMPLETE. Do not carry prior review status (“not fully reviewed”, “do not claim PASS”, etc.) into new handoffs.
+- **Authorization:** `<quote user's words and scope; if absent, no commit/merge/push>`.
 - **Pending decisions:** `<open product/design choices, each with a default>`. An open decision with no default is resolved by dispatcher before dispatch, not by implementer.
 
 ## Ownership and delivery
-- Implementer acts within user's Authorization. Dispatcher relays authorization and summarizes review evidence; reviewer reads target and reports risk evidence only. Explicit user instruction to commit/merge/deploy overrides review state; treat state as a one-line risk note, never a reason to stop.
 - Dispatching session owns review dispatch. Human owns merge approval.
 - No recursive handoff. Return blockers or incomplete work to dispatching session.
 - Process choices (commit granularity, order of items, test placement) are yours: take smallest option inside assigned scope and proceed. Return `BLOCKED` only when scope exceeds assignment or required information is missing.
