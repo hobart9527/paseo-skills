@@ -39,7 +39,7 @@ A finding blocks only at blocking severity: the core Requirement fails on its ma
 
 ### Routing
 
-Every finding belongs to one class. `DEVIATION`: violates the Requirement or a named standard, with a counterexample; the implementer fixes it and it blocks. `REQUIREMENT_GAP`: the Requirement does not define it but a realistic wrong outcome exists; it never enters the code-fix loop and is never relabeled DEVIATION. The human must disposition it before merge: amend the Requirement or explicitly accept the risk. It blocks delivery pending that decision, even though implementer does not fix the undefined behavior. `ENHANCEMENT`: violates nothing stated; non-blocking, report as `NIT`. Only `DEVIATION` is a `BLOCKER`, and only at blocking severity; a lower-severity `DEVIATION` is a `FOLLOWUP`.
+Every finding belongs to one class. `DEVIATION`: violates the Requirement or a named standard, with a counterexample; the implementer fixes it, and it blocks when it meets blocking severity (otherwise it is a `FOLLOWUP`). `REQUIREMENT_GAP`: the Requirement does not define it but a realistic wrong outcome exists; it never enters the code-fix loop and is never relabeled DEVIATION. When the wrong outcome meets blocking severity, the human must disposition it before merge: amend the Requirement or explicitly accept the risk. It blocks delivery pending that decision, even though implementer does not fix the undefined behavior. Below blocking severity it is listed as a `FOLLOWUP` for the human, without blocking. `ENHANCEMENT`: violates nothing stated; non-blocking, report as `NIT`. Only `DEVIATION` is a `BLOCKER`, and only at blocking severity; a lower-severity `DEVIATION` is a `FOLLOWUP`.
 
 ### Caps (per delivery)
 
