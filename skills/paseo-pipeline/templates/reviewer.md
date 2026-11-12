@@ -10,13 +10,13 @@ Build bidirectional traceability: every confirmed requirement has a SCEN, and ev
 
 ## R0 — frozen contract
 
-Review Proposal, Specs, Design (when present), Tasks and Acceptance as one package before CP-1. Check confirmed decisions, cited source facts, observable SCENs, task ownership, interfaces, scope conflicts, real concurrency and Verify feasibility. A shared concurrent surface needs one authoritative frozen contract reachable by workers. Do not demand internal DTOs/signatures unless contract makes them observable. If worker Verify needs a sibling's future file/behavior, require dependency. A green oracle must exercise a real entry, not only a fixture or isolated module; state how wrong/unwired behavior would fail.
+Review Proposal, Specs, Design (when present), Tasks and Acceptance as one package before CP-1. Check confirmed decisions supplied to the author, cited source facts, observable SCENs, task ownership, interfaces, scope conflicts, real concurrency and Verify feasibility. A shared concurrent surface needs one authoritative frozen contract reachable by workers. Do not demand internal DTOs/signatures unless contract makes them observable. If worker Verify needs a sibling's future file/behavior, require dependency. A green oracle must exercise a real entry, not only a fixture or isolated module; state how wrong/unwired behavior would fail.
 
 Review the pinned commit and approved external snapshots only. Verify snapshot hashes before and after; stop on missing, inconsistent or changed inputs. The SHA sign-off does not attest snapshot hashes. Do not run full suite; inspect checks and run at most one narrow command per package. Source-text assertions prove text, not runtime behavior.
 
 At most two whole-package R0 rounds: round 1 reports all supported blockers; round 2 checks fixes, not fresh survey. After round 2 blockers, human accepts recorded residual risk or directs a fix. A directed repair gets one same-reviewer delta check, not a third package round. Findings classify `BLOCKER` or `NIT`; blocker needs falsifiable wrong outcome and why current tasks/Verify cannot prevent it. Anchor drift with same symbol is NIT.
 
-R0 sign-off: `R0: pass(<reviewer-uuid>@<sha>)` in `review.md`; human-accept is never reviewer pass. Report reviewed commit SHA. Do not write `review.md`.
+R0 sign-off: `R0: pass(<reviewer-uuid>@<sha>)` in `review.md`; human-accept is never reviewer pass. Report reviewed commit SHA. Do not write `review.md`. Only one narrow R0 round-command per package; no full suite. Pure anchor-drift with the same symbol is a non-blocking NIT; proofread every `path:line` before FINAL.
 
 ## FINAL — integrated conformance
 

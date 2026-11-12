@@ -27,6 +27,8 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output: `openspec/changes/<change>/`.
 
 ## DAG draft and route checks
 
+Claim source is `Scenarios:` in `tasks.md`; acceptance `Tasks` is its projection. Use `pipeline-run.mjs scenarios` when claims and rows may disagree; it is read-only and not validation. Baseline scenario IDs may be reused only in MODIFIED/REMOVED; active changes with different content conflict.
+
 The DAG draft is a routing artifact, not a shortcut around contract. List every task's ID, one-line behavior goal, dependencies, Write scope and Verify sufficiently for `freeze-check` to judge real parallelism. Preserve vertical slices: behavior, wiring, affected fixtures and tests belong together; no fixture-only or wiring-only tasks. Wave 0 only for a genuinely shared contract with actual consumers. Independent parallel tasks need disjoint Write scopes; dependencies reflect actual consumer readiness, not artificial serialization. A sink owns full-suite verification.
 
 After DAG route is known, apply schema's full task format and constraints. In particular, verify every task has real Write scope, dependencies are valid and acyclic, `Scenarios:` claim declared SCENs, and Verify is executable/narrow except sink. Shared files may require split scopes or a real dependency. `Reads` does not grant write ownership or prove content exists. Risk labels do not establish safety. Do not manipulate graph to meet Tier 3 threshold.
@@ -45,6 +47,12 @@ Time bounds are experiment targets, not gates: record start time; first files by
 ## Mode REVISE
 
 Same author and workspace. Fix only confirmed blocker locations from the supplied review round and human rulings. Update only affected interfaces/constraints, SCENs, acceptance rows, owning task scope and Verify; leave other artifacts unchanged. Do not regenerate DAG/package or fix NITs unless they prove behavior, persistence/security semantics, or Verify trust is affected. Re-run structural check and cited narrow checks, commit, and report new reviewed SHA. No review sign-off carries over to changed SHA.
+
+## Structural-check evidence
+
+After the complete package exists, run the exact supplied structural-check command before polishing. A draft run is evidence only about the draft, never `COMPLETE`; checked SHA must match committed package. Report stdout, stderr, true process exit code, `git rev-parse HEAD`, and `git status --porcelain` separately. A shell pipeline's final status is not the checker's status. Record blockers and advisories separately; only blockers reject. Route and structural result are distinct.
+
+At 25 minutes, stop and deliver `INCOMPLETE` snapshot; commit what exists. The stop event is an instruction, not forced termination. Minute 30 is recovery only: reconcile Paseo status with `git log`, do not poll or steer on inactivity. Report planned stop, stop-event delivery, actual stop, and snapshot commit separately. Late notification is not completion.
 
 ## Return envelope
 

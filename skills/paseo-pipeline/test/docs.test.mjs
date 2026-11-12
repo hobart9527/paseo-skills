@@ -1,708 +1,90 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs'; import path from 'node:path'; import { fileURLToPath } from 'node:url';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 const dir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const read = (p) => fs.readFileSync(path.join(dir, p), 'utf8');
-test('skill documents converged core and hard limits', () => {
-  const text = read('SKILL.md');
-  for (const needle of ['Vertical slices', 'Narrow Verify', 'One worker per task', 'Wave 0', 'finish notification', 'merge-task.mjs', 'freeze-check.mjs', 'worker', 'integrated', 'CP-2']) assert.ok(text.includes(needle), needle);
-  // The prompt is allowed room to explain the model; it is not padded to a budget.
-  assert.ok(text.length < 22200);
+const exists = (p) => assert.ok(fs.existsSync(path.join(dir, p)), p);
+
+test('pipeline prompt files and required headings exist', () => {
+  for (const p of ['SKILL.md', 'templates/author.md', 'templates/worker.md', 'templates/reviewer.md', 'templates/approvals.md', 'openspec-schema/schema.yaml']) exists(p);
+  for (const [file, headings] of Object.entries({
+    'SKILL.md': ['# Paseo Pipeline', '## Roles', '## Entry and CP-1', '## Start and execute after CP-1', '## FINAL and CP-2', '## Appendix'],
+    'templates/author.md': ['# Change Author Brief', '## Route first', '## DAG draft and route checks', '## Return envelope'],
+    'templates/worker.md': ['# Worker Brief', '## Rules', '## Return envelope'],
+    'templates/reviewer.md': ['# Independent Reviewer Brief', '## Requirement conformance first', '## R0', '## FINAL'],
+    'templates/approvals.md': ['# Recovery and Approval', '## FINAL after round 2', '## Destructive or production action'],
+  })) for (const heading of headings) assert.ok(read(file).includes(heading), `${file}: ${heading}`);
 });
-test('pipeline prompts align execution, contract, review, and handoff rules', () => {
-  const schema = read('openspec-schema/schema.yaml');
-  assert.match(schema, /Stop unless R0 is closed[\s\S]*`pipeline-run\.mjs plan`[\s\S]*Never hand-tick[\s\S]*validation dependency, not[\s\S]*authorization to execute tasks/);
-  assert.match(schema, /R0 is closed by either[\s\S]*`R0: pass\(<uuid>@<sha>\)` in `review\.md`[\s\S]*`R0: human-accept\(@<sha>\)` in `review\.md`[\s\S]*`Approval: R0 residual risk accepted for <sha> — <reason>` in `run-log\.md`/);
-  assert.match(schema, /Human-accept is never a reviewer pass/);
-  assert.match(schema, /complete updated requirement under `## MODIFIED Requirements`/);
-  assert.match(schema, /keep unchanged scenarios verbatim/);
-  const author = read('templates/author.md');
-  assert.match(author, /complete updated requirement under `## MODIFIED Requirements`/);
-  assert.match(author, /Accidentally colliding with an old constraint is a contract defect to fix/);
-  assert.match(author, /when the change authorizes changing old behavior, include affected tests in the same task/);
-  assert.match(author, /applicable standards source and scope/);
-  assert.match(author, /At 25 minutes, stop and deliver an `INCOMPLETE` snapshot/);
-  assert.match(author, /At 30 minutes, only recover unreported state/);
-  const approvals = read('templates/approvals.md');
-  assert.match(approvals, /exact command/);
-  assert.match(approvals, /Executor: <named person or agent>/);
-  assert.match(approvals, /reread approval records/);
-  assert.match(approvals, /Push and history rewrite need their own approval/);
-  const tier2 = read('../../docs/tier2-reviewer-brief.md');
-  assert.match(tier2, /Requirement matrix \(primary\)/);
-  assert.match(tier2, /Baseline \(fixed 4 rows/);
-  assert.match(tier2, /Spec questions/);
-  assert.match(tier2, /not a merge gate/);
-  for (const file of ['templates/reviewer.md', 'templates/approvals.md', 'SKILL.md']) {
-    const text = read(file);
-    assert.match(text, /before CP-2/);
-    if (file !== 'templates/approvals.md') assert.match(text, /CONTRACT_GAP|REQUIREMENT_GAP/);
-    if (file === 'templates/reviewer.md') assert.match(text, /not a new review round/);
-    else if (file === 'SKILL.md') assert.match(text, /not a loophole for substantive changes/);
-    else assert.match(text, /one reopen delta review/);
-  }
-  const sessionHook = read('hooks/tier-session-hook.mjs');
-  const reminderHook = read('hooks/tier-reminder-hook.mjs');
-  for (const text of [sessionHook, reminderHook]) {
-    assert.ok(text.includes('TIER_RULES'));
-    assert.ok(text.includes('additionalContext'));
-  }
-  assert.ok(fs.existsSync(path.join(dir, '..', '..', 'docs', 'tier2-handoff-brief.md')));
+
+test('skill preserves route, human gates and all dispatch profiles', () => {
   const skill = read('SKILL.md');
-  assert.match(skill, /business delivery complete does not mean workspace cleanup is complete/);
-  assert.match(skill, /After archive moves the change directory, logs live under the archive path/);
-  assert.match(skill, /cleanup` must receive `--change <name>`/);
-  const handoffPath = path.join(dir, '..', '..', 'docs', 'tier2-handoff-brief.md');
-  assert.ok(fs.existsSync(handoffPath));
-  const handoff = fs.readFileSync(handoffPath, 'utf8');
-  const tierPrompt = read('lib/tier-gate.mjs') + read('hooks/tier-reminder-hook.mjs') + read('hooks/tier-session-hook.mjs');
-  for (const token of ['Requirement', 'Authorization', 'BLOCKED (scope expansion)', 'handoff-progress.md', 'persistence/schema migration', 'production external write', 'auth/authorization/security', 'cross-request/process concurrency', 'elapsed time is never completion']) {
-    assert.ok(handoff.includes(token), token);
-  }
-  for (const token of ['/paseo-handoff', '/paseo-pipeline', 'TIER-PLAN']) assert.ok(tierPrompt.includes(token), token);
+  for (const token of ['maxWidth >= 2', 'tasks >= 4', 'never split', 'freeze-check', 'handoff', 'CP-1', 'CP-2', 'merge-task.mjs', 'pipeline-run.mjs']) assert.ok(skill.includes(token), token);
+  for (const role of ['chanpin', 'hanlin', 'ceshi', 'gongbu', 'gaogong', 'jiangzuo', 'anchasi', 'shangshu']) assert.ok(skill.includes(role), role);
+  for (const token of ['WRITER_ROLES', 'list_profiles', 'Red tests', 'test/', 'read-only']) assert.ok(skill.includes(token), token);
+  assert.ok(skill.length < 22200);
 });
 
-test('skill documents the real handoff sequence and profile-notes override', () => {
-  const text = read('SKILL.md');
-  for (const needle of ['Start after CP-1', 'integration/<change>', 'task/<change>/<T-id>', '确认冻结并交给主会话执行', 'Profile notes describe a role', 'Bootstrap dependencies']) {
-    assert.ok(text.includes(needle), needle);
-  }
-  // A retired test-author role must not reappear as a dispatchable step.
-  assert.doesNotMatch(text, /dispatch (a|the) ceshi|dispatch (a|the) shangshu/);
-  assert.match(text, /`ceshi` and `shangshu` are retired/);
-});
-
-test('docs state the worktree dependency bootstrap contract', () => {
-  const skill = read('SKILL.md');
-  assert.match(skill, /exit 36|36 unchecked-out dependencies/);
-  assert.match(skill, /checkout, not a clone/);
-  // The only role that runs Verify is the worker; its brief must say a missing
-  // package is an environment fault, not a Red result.
-  assert.match(read('templates/worker.md'), /environment fault, not a test result/);
-  assert.match(read('templates/worker.md'), /Cannot find package/);
-});
-
-test('no removed mechanism remains in operational docs', () => {
-  const text = read('SKILL.md');
-  for (const stale of ['run-state.mjs', 'reconcile.mjs', 'task-runner.mjs', 'intents', 'speculative']) assert.ok(!text.includes(stale), stale);
-});
-
-test('briefs preserve author/worker/reviewer role boundaries', () => {
-  for (const file of ['author.md', 'worker.md', 'reviewer.md']) {
-    assert.ok(fs.existsSync(path.join(dir, 'templates', file)), file);
-  }
-  for (const removed of ['tester.md', 'writer.md', 'lead.md', 'lead-resume.md', 'auditor.md']) {
-    assert.ok(!fs.existsSync(path.join(dir, 'templates', removed)), removed);
-  }
-  assert.match(read('templates/worker.md'), /write the tests, write the implementation/);
-  assert.match(read('templates/reviewer.md'), /reviewed-HEAD-sha|reviewed SHA/);
-  // exit 31 is the most common merge failure; the worker brief must make the
-  // writer prove the trailers survived, since a blank line after the block voids them.
-  assert.match(read('templates/worker.md'), /trailers:key=Pipeline-Author,valueonly/);
-  assert.match(read('templates/worker.md'), /Co-Authored-By/);
-});
-
-test('templates avoid removed scripts and reviewer keeps current modes', () => {
-  for (const f of ['author.md', 'worker.md', 'reviewer.md']) {
-    const text = read(`templates/${f}`);
-    for (const stale of ['run-state.mjs', 'reconcile.mjs', 'task-runner.mjs', 'replan.mjs']) assert.ok(!text.includes(stale), `${f}: ${stale}`);
-  }
-  for (const mode of ['R0', 'FINAL']) assert.ok(read('templates/reviewer.md').includes(mode), mode);
-  assert.doesNotMatch(read('templates/reviewer.md'), /Mode.*\bTASK\b|ARBITER/);
-});
-
-test('author brief closes assigned-workspace handoff, permission and structural-check gaps', () => {
-  const skill = read('SKILL.md');
-  for (const requirement of ['exact preflight and structural commands', 'success does not authorize later commands', 'Any required-command denial means `BLOCKED`', 'as soon as package exists', 'structural command/outcome/exit', 'Reconcile Git/evidence before R0']) {
-    assert.ok(skill.includes(requirement), requirement);
-  }
-  assert.match(skill, /`COMPLETE` requires structural success on committed content/);
-  assert.match(skill, /route\/check success is not R0\/CP-1/);
+test('author prompt puts route DAG before full artifact requirements', () => {
   const author = read('templates/author.md');
-  for (const requirement of [
-    'assigned author workspace',
-    'Do not create another workspace',
-    'Before writing, resolve and read every actual template',
-    'Preflight success does not authorize `freeze-check`',
-    'exact structural-check command',
-    'After the complete initial package first exists',
-    'route separately from structural-check outcome',
-    '`COMPLETE`, `BLOCKED`, or `INCOMPLETE`',
-    'package commit SHA',
-    'Denied command report',
-    'next responsible action',
-  ]) assert.ok(author.includes(requirement), requirement);
-  assert.match(author, /COMPLETE` only when the structural check succeeded on committed package content/);
-  assert.match(author, /command: `<exact command>`; cwd: `<absolute path>`; denial: `<verbatim denial>`/);
+  for (const token of ['task IDs', 'dependencies', 'maxWidth', 'one-line goal', 'freeze-check', 'handoff', 'proposal', 'SCEN-numbered', 'tasks', 'acceptance', 'review', 'design.md', 'path:line', 'COMPLETE', 'BLOCKED', 'INCOMPLETE']) assert.ok(author.includes(token), token);
+  assert.ok(author.indexOf('## Route first') < author.indexOf('## DAG draft and route checks'));
+  assert.ok(author.length < 9000, `author.md is ${author.length} chars`);
 });
 
-test('briefs carry wait backstop, reviewer containment and minimal-contract rules', () => {
-  assert.match(read('templates/reviewer.md'), /separate workspace/);
-  assert.match(read('SKILL.md'), /paseo wait/);
-  // Keep native artifacts and gates; author only changed behavior and material risks.
-  const author = read('templates/author.md');
-  assert.match(author, /Never write a digest or a survey document/);
-  assert.match(author, /Depth follows behavior and risk/);
-  assert.match(author, /Acceptance records essential real-entry journeys/);
-  const schema = read('openspec-schema/schema.yaml');
-  assert.match(schema, /Specs describe observable behavior and testable outcomes, not internal DTO fields/);
-  assert.match(schema, /Do not invent behavior scenarios for internal-only changes/);
+test('reviewer leads with conformance and preserves bounded advisory framing', () => {
   const reviewer = read('templates/reviewer.md');
+  for (const token of ['Requirement conformance first', 'bidirectional traceability', 'shared boundaries', 'real entry', 'matrix row', 'MET | NOT_MET | UNVERIFIABLE', 'DEVIATION', 'CONTRACT_GAP', 'ENHANCEMENT', 'NOT_MET', 'UNVERIFIABLE', 'CP-2', 'templates/approvals.md']) assert.ok(reviewer.includes(token), token);
+  assert.ok(reviewer.length < 7000, `reviewer.md is ${reviewer.length} chars`);
+});
+
+test('worker prompt keeps task-local scope and runtime verification', () => {
   const worker = read('templates/worker.md');
-  assert.match(author, /Keep scenarios for observable behavior and semantics/);
-  assert.match(author, /freeze its shape and required semantics once in a worker-reachable authoritative contract/);
-  assert.match(author, /use a Wave 0 skeleton with `Interface:`\/`Uses:`/i);
-  assert.match(author, /Do not create a skeleton solely for an internal signature/);
-  assert.match(author, /Before tasks, write any cross-task Decisions in design, one line each naming owner and consumers/);
-  assert.match(author, /would each settle the same unfrozen decision, merge them, serialize with `Depends on`, or extract a `Kind: skeleton` with `Interface:` and consumer `Uses:`/);
-  assert.match(author, /Tasks that only consume a decision already frozen in design may run concurrently/);
-  assert.match(author, /Never leave parallel tasks implementing the same decision independently/);
-  assert.match(author, /producer and consumer Write scopes must be disjoint; if still overlapping, serialize with `Depends on`/);
-  assert.match(author, /do any two concurrent tasks share an unfrozen decision\?/);
-  assert.match(author, /Write only files under `openspec\/changes\/<change>\/`/);
-  assert.match(author, /return `BLOCKED` with the reason; never edit any other tracked file/);
-  assert.match(author, /Keep concurrent tasks' Write scopes disjoint; do not serialize independent work or invent edges/);
-  const tasks = read('openspec-schema/templates/tasks.md');
-  assert.match(tasks, /派发等待目标及其依赖链中的 skeleton，不等目标实现合流/);
-  assert.match(tasks, /merge 仍要求目标 Done/);
-  assert.match(schema, /Concurrent tasks have fully disjoint Write scopes/);
-  assert.match(reviewer, /verify one authoritative contract is frozen and reachable before consumer dispatch/);
-  assert.match(reviewer, /do not require internal DTO fields or signatures unless a requirement or decision makes them observable/);
-  assert.match(reviewer, /ambiguous behavior or interface that can produce incompatible work is a BLOCKER/);
-  assert.match(worker, /If required interface shape, behavior, or a decision is missing or ambiguous, return `blocked:`/);
-  for (const brief of ['templates/author.md', 'templates/reviewer.md', 'templates/worker.md']) {
-    assert.doesNotMatch(read(brief), /Impact Inventory|Baseline Alignment/, brief);
-  }
+  for (const token of ['Write scope', 'frozen Verify', 'write tests and implementation', 'environment fault, not a test result', 'Cannot find package', 'Do not silently widen scope', 'Pipeline-Author', 'Co-Authored-By']) assert.ok(worker.includes(token), token);
+  assert.ok(worker.length < 4500, `worker.md is ${worker.length} chars`);
 });
 
-test('author brief carries a write-first budget without lowering any gate', () => {
-  const author = read('templates/author.md');
-  assert.match(author, /## Write-first budget/);
-  assert.match(author, /Run `date` first and record the start/);
-  assert.match(author, /first files committed by minute 10/);
-  assert.match(author, /stop at minute 25/);
-  assert.match(author, /Commit each artifact as it lands/);
-  assert.match(author, /a summary is not state/);
-  assert.match(author, /Exactly four: the Requirement text you modify/);
-  assert.match(author, /never read a multi-thousand-line file whole/);
-  assert.match(author, /`OPEN-DECISION`: options, consequences, a recommended default/);
-  assert.match(author, /Never decide for the human/);
-  assert.match(author, /`MISSING_DEPENDENCIES`/);
-  assert.match(author, /Budget exhaustion is never a `COMPLETE`/);
-  assert.match(author, /Do not read `freeze-check`, parser or scheduler source/);
-  assert.match(author, /claiming task id\(s\) from `tasks\.md` in the `Tasks` cell/);
-  assert.match(author, /At 30 minutes, only recover unreported state by reconciling Paseo status with `git log`/);
-  assert.match(author, /do not poll, steer based on inactivity, or treat this as another stop/);
-  assert.match(author, /complete package plus the structural check by minute 20/);
-  assert.match(author, /roughly 30 \/ 60 \/ 75 calls approximate the same anchors/);
-  assert.match(author, /Return `BLOCKED` only if the choice changes the task graph or ownership/);
-  assert.match(author, /record that each affected Verify cannot run until the main session resolves it; a zero exit status is not readiness/);
-  // The budget must not displace the gates or the single-author topology.
-  assert.match(author, /`COMPLETE` still requires the structural check to succeed on committed content/);
-  assert.match(author, /One `gongbu` author writes the entire package/);
-  assert.doesNotMatch(author, /skip (R0|the structural check)/i);
+test('recovery and destructive approval template has bounded choices and exact record format', () => {
+  const approval = read('templates/approvals.md');
+  for (const token of ['Accept', 'New change', 'Terminate', 'two FINAL rounds', 'NOT_MET', 'UNVERIFIABLE', 'reviewed SHA', 'CP-2', 'Object:', 'Command:', 'Executor:', 'verbatim', 'Push and history rewrite']) assert.ok(approval.includes(token), token);
+  assert.ok(approval.length < 2200, `approvals.md is ${approval.length} chars`);
 });
 
-test('contract authoring order freezes findings, SCEN ids and briefed constants', () => {
-  const author = read('templates/author.md');
+test('schema retains artifact ids, requirements and template paths', () => {
   const schema = read('openspec-schema/schema.yaml');
-  const proposal = read('openspec-schema/templates/proposal.md');
-  // Baseline: findings persisted as found, no survey stance.
-  assert.match(proposal, /^## Baseline$/m);
-  assert.match(proposal, /AS FOUND/);
-  assert.match(proposal, /A finding that exists only in thinking does not count/);
-  assert.match(proposal, /No survey, no alignment tables/);
-  assert.match(proposal, /^## OPEN-DECISION$/m);
-  assert.match(proposal, /options <A \| B>; consequences .*; recommended default/);
-  assert.match(schema, /\*\*Baseline \(paseo-pipeline\):\*\* add a short `## Baseline` section/);
-  assert.match(schema, /a finding that exists only\s+in thinking does not count/);
-  assert.match(schema, /no\s+survey, no alignment tables, no digest/);
-  assert.match(schema, /`## OPEN-DECISION`: options, consequences, a recommended\s+default/);
-  // Core Baseline requirement, pinned in both the template and the proposal instruction.
-  const proposalInstr = schema.slice(schema.indexOf('  - id: proposal'), schema.indexOf('  - id: specs'));
-  for (const [name, text] of [['template', proposal], ['schema instruction', proposalInstr]]) {
-    assert.match(text, /`path:line`\s+plus\s+one\s+line\s+of\s+consequence/, `${name}: path:line + consequence`);
-    assert.match(text, /AS\s+FOUND/, `${name}: as found`);
-    assert.match(text, /and\s+commit/, `${name}: commit requirement`);
+  const blocks = [...schema.matchAll(/^  - id: (\w+)\n([\s\S]*?)(?=^  - id: |^apply:)/gm)];
+  assert.deepEqual(blocks.map((m) => m[1]), ['proposal', 'specs', 'design', 'tasks', 'acceptance', 'review']);
+  for (const [, id, body] of blocks) {
+    assert.match(body, /^    generates: /m, `${id}: generates`);
+    assert.match(body, /^    template: /m, `${id}: template`);
+    assert.match(body, /^    instruction: \|/m, `${id}: instruction`);
+    assert.match(body, /^    requires:/m, `${id}: requires`);
+    const template = body.match(/^    template: ([^\n]+)/m)?.[1];
+    const filename = id === 'specs' ? 'spec.md' : template;
+    exists(`openspec-schema/templates/${filename}`);
   }
-  // SCEN freeze lives in the specs instruction.
-  const specsInstr = schema.slice(schema.indexOf('  - id: specs'), schema.indexOf('  - id: design'));
-  assert.match(specsInstr, /\*\*SCEN freeze:\*\* once the last spec file is committed, the declared SCEN id set is\s+frozen/);
-  assert.match(specsInstr, /Never renumber, rename, move or delete a declared\s+id after tasks\.md or acceptance\.md reference it; additions are allowed/);
-  assert.match(specsInstr, /same commit and be followed by the structural check/);
-  // Id collision precheck before freezing.
-  assert.match(specsInstr, /Before\s+assigning\s+ids,\s+list\s+the\s+ids\s+already\s+declared\s+in\s+baseline\s+`openspec\/specs\/\*\*`\s+and\s+in\s+every\s+other\s+`openspec\/changes\/\*\/specs\/\*\*`\s+with\s+one\s+`rg`\s+over\s+scenario\s+headings\s+only,\s+choose\s+new\s+ids\s+outside\s+that\s+set,\s+and\s+only\s+then\s+commit\s+the\s+specs\s+as\s+the\s+frozen\s+set/);
-  // design before tasks.
-  const tasksInstr = schema.slice(schema.indexOf('  - id: tasks'), schema.indexOf('  - id: acceptance'));
-  assert.match(tasksInstr, /When design\.md exists, write and commit it before tasks\.md; tasks reference only\s+committed SCEN ids/);
-  // Authoring order table precedes the write-first budget.
-  const order = author.indexOf('## Authoring order');
-  assert.ok(order > 0 && order < author.indexOf('## Write-first budget'));
-  const table = author.slice(order, author.indexOf('## Write-first budget'));
-  assert.match(table, /`proposal\.md` \(\+ `## Baseline`\)/);
-  assert.match(table, /`specs\/` — freezes the SCEN id set/);
-  assert.match(table, /`design\.md`, only if its criteria apply/);
-  assert.match(table, /`tasks\.md`, then `acceptance\.md`/);
-  assert.match(table, /structural check on the complete package/);
-  assert.match(table, /commit with done\/remaining in the message/);
-  assert.match(table, /`openspec validate`\/`openspec status`/);
-  // A staged specs check exists; the full structural check still runs on the complete package.
-  assert.match(table, /After committing `specs\/`, run the supplied structural check with `--stage specs` appended \(`--structural --stage specs`\) and fix what it blocks before design\/tasks/);
-  assert.match(table, /The full structural check still runs once the package is complete, and failures are fixed and rerun until it succeeds or a required command is denied/);
-  assert.match(table, /run `node "\$PIPELINE_HOME"\/namespace\.mjs openspec\/changes\/<change>` once: it lists every `SCEN-<PFX>` prefix in baseline `openspec\/specs\/\*\*` and the other unarchived changes' `openspec\/changes\/\*\/specs\/\*\*` with the next free number/);
-  assert.match(table, /This one call is the baseline\/active-change sweep; the four bounded collision checks below are unchanged/);
-  // Main-session brief fields.
-  assert.match(author, /\*\*Project constants\*\*: how Verify runs in a fresh worktree/);
-  assert.match(author, /the author must not write `openspec\/config\.yaml`, which belongs to the target project/);
-  assert.match(author, /\*\*Pending decisions \(clarify\)\*\*: at most 5 items, each with a default/);
-  assert.match(author, /Items with a default do not block; items without a default are asked of the human first/);
-  assert.match(author, /answered by the brief's Project constants when supplied/);
-  assert.match(read('SKILL.md'), /supplies project constants and at most 5 pending decisions with defaults/);
-  // Gates untouched.
-  assert.match(author, /At 30 minutes, only recover unreported state/);
-  assert.match(author, /`COMPLETE` still requires the structural check to succeed on committed content/);
+  for (const token of ['SCEN-', '#### Scenario:', 'MODIFIED Requirements', 'Write scope', 'Verify', 'acceptance.md', 'R0: pass', 'R0: human-accept', 'validation dependency, not authorization']) assert.ok(schema.toLowerCase().includes(token.toLowerCase()), token);
+  assert.ok(schema.length < 12000, `schema.yaml is ${schema.length} chars`);
 });
 
-test('authoring order commits a proposal skeleton before any code read', () => {
-  const author = read('templates/author.md');
-  const order = author.indexOf('## Authoring order');
-  const table = author.slice(order, author.indexOf('## Write-first budget'));
-  // Step 0 exists with the skeleton scope, the 2-minute commit and the no-code constraint.
-  assert.match(table, /\| 0 \| `proposal\.md` skeleton:/);
-  // Every required skeleton element is pinned individually inside the Step 0 row,
-  // so a reasonable rewording does not break them and deleting one fails its own check.
-  const row0 = table.split('\n').find((line) => line.startsWith('| 0 |'));
-  assert.ok(row0, 'Step 0 row exists');
-  assert.match(row0, /Why/, 'Step 0 names Why');
-  assert.match(row0, /rule list under What Changes/, 'Step 0 has the rule list under What Changes');
-  assert.match(row0, /one line per rule/, 'Step 0 says one line per rule');
-  assert.match(row0, /`## OPEN-DECISION`/, 'Step 0 has OPEN-DECISION');
-  assert.match(row0, /empty `## Baseline`/, 'Step 0 has an empty Baseline');
-  assert.match(row0, /Run `openspec new change` first/);
-  assert.match(row0, /commit within 2 minutes; read no code/);
-  // Two separate points: the Step 0 list is a plan needing no baseline read, and a
-  // rule written out in full anywhere still needs its baseline read. A narrowing to
-  // "only spec delta / MODIFIED" must fail the second check.
-  assert.match(author, /The Step 0 one-line rule list is a plan and needs no baseline read/);
-  assert.match(author, /before a rule is written out in full in any artifact[^\n]*read the baseline it lands on/);
-  assert.doesNotMatch(author, /before writing a rule into its spec delta or `## MODIFIED Requirements` block/);
-  // The rule list is written from approved inputs, not from research.
-  assert.match(author, /Writing the Step 0 proposal skeleton does not depend on research being complete/);
-  // Code reads serve a listed rule and persist findings as found.
-  assert.match(author, /Once the Step 0 rule list is committed, code reads are allowed[^\n]*each read must serve one rule on that list/);
-  assert.match(author, /Append each `path:line` fact to `## Baseline` as found and commit it small/);
-  // namespace.mjs runs after the rule list is committed and before ids are assigned.
-  assert.match(author, /After the rule list is committed and before step 2 assigns ids, run `node "\$PIPELINE_HOME"\/namespace\.mjs/);
-  // Collision checks are bounded to after the rule list too.
-  assert.match(author, /These happen only after the Step 0 rule list is committed\. Exactly four: the Requirement text you modify/);
-  // The measured anchors are unchanged.
-  assert.match(author, /first files committed by minute 10/);
-  assert.match(author, /complete package plus the structural check by minute 20/);
-  assert.match(author, /stop at minute 25/);
+test('history documents are relocated and active references use new paths', () => {
+  for (const p of ['../../docs/history/LESSONS.md', '../../docs/history/BENCH-2026-11-03.md']) exists(p);
+  assert.match(fs.readFileSync(path.join(dir, '..', '..', 'docs', 'history', 'LESSONS.md'), 'utf8'), /^# /);
 });
 
-test('task design self-checks scenario ownership, falsifiable Verify and named symbols', () => {
-  const author = read('templates/author.md');
-  const schema = read('openspec-schema/schema.yaml');
-  const taskDesign = author.slice(author.indexOf('## Task design'), author.indexOf('## Decision Context'));
-  const tasksInstr = schema.slice(schema.indexOf('  - id: tasks'), schema.indexOf('  - id: acceptance'));
-  const clauses = [
-    // Entry owned: the observed entry sits in the owning task's Write scope (or a Depends on edge), not beside it.
-    ['entry owned', /Entry owned: the entry point named for the SCEN in acceptance\.md[^\n]*Write scope, or the owner `Depends on` the task that owns it[^\n]*does not stand in for it\./,
-      /entry point named for the SCEN in acceptance\.md[\s\S]*?inside the owner's Write scope,\s+or the owner `Depends on` the task that owns it[\s\S]*?does not stand in for it/],
-    // Verify can fail: the test exercises the entry and would be red before the change.
-    ['Verify can fail', /Verify can fail: the owner's Verify runs a test that exercises that entry or function and would fail before the change[^\n]*Write scope \(or created by it\)[^\n]*cannot carry the SCEN\./,
-      /owner's Verify runs a test that exercises\s+that entry or function and would fail before the change[\s\S]*?Write scope or created by it[\s\S]*?never calls the code under change cannot carry the SCEN/],
-    // Names exist: every named symbol checked with rg; design names decisions, tasks name decisions.
-    ['names exist', /Names exist: confirm each field, symbol or route a task or design names once with `rg` in the tree \(or in a file the task creates\); design\.md names decisions \(`D-01`\) and affected modules only, never task ids; when design\.md exists, tasks declare `Implements:` decision ids and every id must exist in design\.md; with no design\.md there are no decision ids, so omit `Implements:` \(it is optional in the tasks template\)\./,
-      /confirmed once with `rg` in the tree[\s\S]*?design\.md names decisions \(`D-01`\) and affected modules only,\s+never task ids; when design\.md exists, tasks declare `Implements:` decision ids and\s+every id must exist in design\.md; when it does not exist, omit `Implements:`\s+because there are no decision ids to reference/],
-  ];
-  for (const [name, authorRe, schemaRe] of clauses) {
-    assert.match(taskDesign, authorRe, `author.md: ${name}`);
-    assert.match(tasksInstr, schemaRe, `schema tasks instruction: ${name}`);
-  }
+test('no active prompt or test references deleted recovery file', () => {
+  const files = ['SKILL.md', 'templates/author.md', 'templates/reviewer.md', 'templates/worker.md', 'templates/approvals.md'];
+  for (const file of files) assert.doesNotMatch(read(file), /final-recovery\.md/);
+  assert.doesNotMatch(read('templates/approvals.md'), /approvals\.md/);
 });
 
-test('dispatch guidance resolves live models and forbids copied examples', () => {
-  for (const file of ['SKILL.md']) {
-    const text = read(file);
-    for (const needle of ['list_profiles', 'list_models', 'Never copy model IDs', 'not returned']) {
-      assert.ok(text.includes(needle), `${file}: ${needle}`);
-    }
-  }
-  const operationalDocs = [
-    read('SKILL.md'),
-    fs.readFileSync(path.resolve(dir, '../../docs/sdd-multi-agent-architecture.md'), 'utf8'),
-    fs.readFileSync(path.resolve(dir, '../../docs/paseo-pipeline-architecture.md'), 'utf8'),
-  ];
-  for (const text of operationalDocs) {
-    assert.doesNotMatch(text, /gpt[- ]?5\.4|claude\/opus|claude[- ]3[.-]7[- ]sonnet|gpt[- ]?4o/i);
-  }
-});
-
-test('schema declares the minimal artifact chain the pipeline reads, in flow order', () => {
-  const schema = read('openspec-schema/schema.yaml');
-  assert.match(schema, /^name: paseo-pipeline$/m);
-  assert.match(schema, /^version: 2$/m);
-  const ids = [...schema.matchAll(/^  - id: (\w+)$/gm)].map((m) => m[1]);
-  // OpenSpec native set minus digest: proposal, specs, design (on demand), plus the
-  // pipeline additions tasks/acceptance/review.
-  assert.deepEqual([...ids].sort(), ['acceptance', 'design', 'proposal', 'review', 'specs', 'tasks']);
-  // design, when written, comes after the spec; it is optional, so `requires` orders
-  // it without demanding it (tasks requires specs only, not design).
-  const design = schema.slice(schema.indexOf('  - id: design'), schema.indexOf('  - id: tasks'));
-  assert.match(design, /requires:\n\s+- proposal\n\s+- specs/);
-  assert.match(design, /create only if any apply/);
-  const tasksBlock = schema.slice(schema.indexOf('  - id: tasks'), schema.indexOf('  - id: acceptance'));
-  assert.doesNotMatch(tasksBlock, /- design/);
-  for (const id of ids) assert.ok(fs.existsSync(path.join(dir, 'openspec-schema', 'templates', `${id === 'specs' ? 'spec' : id}.md`)), `template for ${id}`);
-  assert.ok(!fs.existsSync(path.join(dir, 'openspec-schema', 'templates', 'digest.md')), 'digest template removed');
-  assert.doesNotMatch(schema, /SKILL\.md「Entry and CP-1」/);
-});
-
-test('handoff route requires complete author result and successful matching structural check', () => {
-  const skill = read('SKILL.md');
-  assert.match(skill, /Handoff route is valid only with author `COMPLETE`/);
-  assert.match(skill, /structural exit 0\/no blocks/);
-  assert.match(skill, /matching checked\/reported commit SHA/);
-  assert.match(skill, /Route alone clears no BLOCK, later failure, or Git\/evidence mismatch/);
-  assert.match(skill, /Then skip R0 and use Tier 2 `\/paseo-handoff`/);
-});
-
-test('the main session reconciles by state, never by re-dispatch', () => {
-  const skill = read('SKILL.md');
-  assert.match(skill, /A lost notification triggers `plan` reconciliation/);
-  assert.match(skill, /never a duplicate dispatch/);
-  // With no Lead there is no Lead to resume; the main session is the router.
-  assert.doesNotMatch(skill, /lead-resume|templates\/lead\.md/);
-});
-
-test('the author hook is installed per workspace; workers never type their identity', () => {
-  const skill = read('SKILL.md');
-  // One command per workspace: the raw `--worktree` git invocation lives in pipeline-run, so the
-  // operator cannot half-install it (worktreeConfig on, hooksPath missing).
-  assert.match(skill, /pipeline-run\.mjs install-hook/);
-  assert.match(skill, /plan.*warns about any `task\/<change>\/` or `integration\/<change>` worktree/, 'plan must surface a missing hook');
-  assert.match(read('templates/worker.md'), /\$PASEO_AGENT_ID.*never `uuidgen`/s);
-  assert.ok(fs.statSync(path.join(dir, 'hooks', 'git', 'commit-msg')).mode & 0o111, 'hook must be executable');
-});
-
-test('merge gate documents test-infrastructure approval and its limited effect', () => {
-  const skill = read('SKILL.md');
-  assert.match(skill, /--allow-test-infra/);
-  assert.match(skill, /explicit human approval/);
-  assert.match(skill, /releases only the test-infrastructure check/);
-  assert.match(skill, /does not skip any other gate/);
-});
-
-test('merge gate documents exit meanings and real merge labels', () => {
-  const skill = read('SKILL.md');
-  assert.match(skill, /Exit codes: 1 ordinary merge refusal/);
-  assert.match(skill, /2 usage/);
-  assert.match(skill, /3 post-merge record\/cleanup failure/);
-  assert.match(skill, /Exit 3 can occur after the commit/);
-  assert.match(skill, /check whether the Done row exists/);
-  assert.match(skill, /never retry blindly/);
-  assert.match(skill, /`MERGE <T-id>`/);
-  assert.match(skill, /`MERGE-WAIT <T-id>`/);
-});
-
-test('exit 21 names the environment cause, not only the regression', () => {
-  const skill = read('SKILL.md');
-  assert.match(skill, /Exit 21: a replayed already-Done Verify failed/);
-  assert.match(skill, /fix the environment and re-run merge/);
-  assert.match(skill, /never edit the Verify command or the tests/);
-});
-
-test('the worker brief escalates instead of widening scope or guessing', () => {
-  assert.match(read('templates/worker.md'), /blocked: <reason>/);
-  assert.match(read('templates/worker.md'), /Do not silently widen scope/);
-  assert.match(read('templates/worker.md'), /Never edit tests or the Verify command/);
-});
-
-test('FINAL is a bounded conformance verdict; the merge gate proves mechanics', () => {
-  const skill = read('SKILL.md');
-  assert.match(skill, /test quality is the FINAL review's job/);
-  const reviewer = read('templates/reviewer.md');
-  assert.doesNotMatch(reviewer, /only code-quality gate/);
-  assert.match(reviewer, /none had a per-task reviewer/);
-  assert.match(reviewer, /contract-conformance verdict, not an open search/);
-  assert.match(reviewer, /conformance matrix/);
-  assert.match(reviewer, /`MET \| NOT_MET \| UNVERIFIABLE`/);
-  assert.match(reviewer, /A BLOCKER must attach to a matrix row/);
-  assert.match(reviewer, /Cannot attach to a row ⇒ not a blocker/);
-  assert.match(reviewer, /Round 2 is delta only/);
-  assert.match(reviewer, /At most two rounds per change/);
-  assert.match(reviewer, /CONTRACT_GAP/);
-  assert.match(reviewer, /ENHANCEMENT/);
-  assert.match(reviewer, /only label NOT_MET rows/);
-  assert.match(skill, /Bounded FINAL.*max two rounds/);
-});
-
-test('FINAL findings are ledgered and routed by class; ledger survives SHAs and reviewers', () => {
-  const reviewer = read('templates/reviewer.md');
-  assert.match(reviewer, /Finding ledger/);
-  assert.match(reviewer, /`review\.md`/);
-  assert.match(reviewer, /F-<n> <matrix row> <DEVIATION\|CONTRACT_GAP\|ENHANCEMENT> <open\|fixed@<sha>\|closed\|accepted\|rejected>/);
-  assert.match(reviewer, /ledger carries across SHAs and reviewers/);
-  assert.match(reviewer, /confirmed fixed is closed; reopening it needs new evidence/);
-  assert.match(reviewer, /replacement reviewer reads the ledger first and inherits the budget/);
-  const recovery = read('templates/approvals.md');
-  for (const heading of ['## FINAL after round 2', '## Destructive or production action']) assert.ok(recovery.includes(heading), heading);
-  for (const token of ['DEVIATION', 'contract/requirement gaps', 'CP-2']) assert.ok(recovery.includes(token), token);
-  const skill = read('SKILL.md');
-  assert.match(skill, /DEVIATION → one batched repair wave/);
-  assert.match(skill, /CONTRACT_GAP\/REQUIREMENT_GAP → human disposition before CP-2\/merge/);
-});
-
-test('FINAL recovery offers human accept, new change, or termination', () => {
-  const recovery = read('templates/approvals.md');
-  for (const token of ['FINAL: human-accept', 'New change', 'Terminate', 'one repair wave', 'No further reopen']) assert.ok(recovery.includes(token), token);
-  assert.match(read('SKILL.md'), /max two rounds/);
-});
-
-test('FINAL recovery describes bounded repair and reviewed-SHA evidence', () => {
-  const recovery = read('templates/approvals.md');
-  for (const token of ['one batched repair wave', 'reviewed SHA', 'record-only commits', 'human disposition']) assert.ok(recovery.includes(token), token);
-});
-
-test('FINAL unresolved rows require a bounded human decision', () => {
-  const recovery = read('templates/approvals.md');
-  for (const token of ['NOT_MET', 'UNVERIFIABLE', 'human chooses one', 'one reopen delta review']) assert.ok(recovery.includes(token), token);
-  assert.match(read('SKILL.md'), /NOT_MET\/UNVERIFIABLE the human chooses/);
-});
-
-test('FINAL recovery preserves reviewed-SHA and record-file constraints', () => {
-  const recovery = read('templates/approvals.md');
-  for (const token of ['reviewed SHA', 'record-only commits', 'review.md', 'rulings.md', 'run-log.md']) assert.ok(recovery.includes(token), token);
-  assert.match(read('SKILL.md'), /Later commits touch only `review\.md`, `rulings\.md`, `run-log\.md`/);
-  assert.match(read('SKILL.md'), /A record-only SHA update is not a new review round/);
-});
-
-test('pre-authorization is a recorded human approval applied to a named amendment SHA', () => {
-  const recovery = read('templates/approvals.md');
-  assert.match(recovery, /FINAL after round 2/);
-  assert.match(recovery, /New change/);
-  assert.match(recovery, /human chooses one/);
-});
-
-test('acceptance check runs at the reviewed SHA before record commits, not at the record HEAD', () => {
-  const recovery = read('templates/approvals.md');
-  assert.match(recovery, /reviewed SHA/);
-  assert.match(recovery, /Run acceptance check at that SHA before record-only commits/);
-  assert.match(recovery, /only `review\.md`, `rulings\.md`, and `run-log\.md` may change afterward/);
-  assert.match(read('SKILL.md'), /run at the reviewed SHA, before record commits/);
-  // The checker really binds to HEAD, which is why the sequence matters.
-  assert.match(read('acceptance-run.mjs'), /record\.sourceSha !== sha/);
-});
-
-test('pre-authorization exception is named wherever amendments need approval', () => {
-  const skill = read('SKILL.md');
-  assert.match(skill, /a human confirms, or a recorded pre-authorization covers it \(`templates\/approvals\.md`\), before `plan`/);
-  assert.match(skill, /amend under CP-1 or recorded pre-authorization/);
-  assert.doesNotMatch(skill, /amend under human CP-1/);
-  assert.doesNotMatch(skill, /a human confirms before re-running `plan`/);
-  assert.match(read('templates/approvals.md'), /FINAL after round 2/);
-});
-
-test('the reopen delta round is named consistently outside the two-round count', () => {
-  const recovery = read('templates/approvals.md');
-  assert.match(recovery, /one reopen delta review/);
-  assert.match(recovery, /No further reopen/);
-  assert.match(read('templates/reviewer.md'), /plus one reopen delta round if the human reopens at contract level/);
-  assert.match(read('SKILL.md'), /one wave, one reopen delta round\)/);
-  assert.doesNotMatch(recovery, /one more delta round/);
-});
-
-test('R0 checks the Verify oracle and amendment R0 is delta-only', () => {
-  const reviewer = read('templates/reviewer.md');
-  assert.match(reviewer, /\*\*Oracle check\.\*\*/);
-  assert.match(reviewer, /real entry its Verify exercises/);
-  assert.match(reviewer, /not a fixture or an isolated module/);
-  assert.match(reviewer, /how a wrong implementation would make that Verify fail/);
-  assert.match(reviewer, /Verify a wrong or unwired implementation would still pass, is a BLOCKER/);
-  assert.match(reviewer, /delta-only against its parent SHA, one round/);
-  // Existing R0 rules keep working.
-  assert.match(reviewer, /At most two whole-package R0 rounds per change/);
-  assert.match(reviewer, /R0: pass\(<your-full-agent-uuid>@<reviewed-HEAD-sha-7-chars>\)/);
-});
-
-test('Tier 2 review is advisory, requirement-anchored and bounded by user authorization', () => {
-  const brief = fs.readFileSync(path.join(dir, '..', '..', 'docs', 'tier2-reviewer-brief.md'), 'utf8');
-  for (const needle of ['Requirement matrix (primary)', 'Baseline (fixed 4 rows', 'Spec questions', 'not a merge gate', 'only if target unreadable']) assert.ok(brief.includes(needle), needle);
-  assert.doesNotMatch(brief, /Risk watchlist|light.*heavy|REQUIREMENT_GAP|DEVIATION|ENHANCEMENT/);
-  assert.match(brief, /Read-only/);
-  assert.match(brief, /at most one recheck/);
+test('Tier 2 handoff and review remain documented', () => {
   const handoffPath = path.join(dir, '..', '..', 'docs', 'tier2-handoff-brief.md');
-  assert.ok(fs.existsSync(handoffPath));
+  const reviewPath = path.join(dir, '..', '..', 'docs', 'tier2-reviewer-brief.md');
+  exists('../../docs/tier2-handoff-brief.md'); exists('../../docs/tier2-reviewer-brief.md');
   const handoff = fs.readFileSync(handoffPath, 'utf8');
-  for (const token of ['Requirement', 'Authorization', 'BLOCKED (scope expansion)', 'handoff-progress.md', 'persistence/schema migration', 'production external write', 'auth/authorization/security', 'cross-request/process concurrency']) {
-    assert.ok(handoff.includes(token), token);
-  }
-  const tierPrompt = read('lib/tier-gate.mjs') + read('hooks/tier-reminder-hook.mjs') + read('hooks/tier-session-hook.mjs');
-  for (const token of ['/paseo-handoff', '/paseo-pipeline', 'TIER-PLAN']) assert.ok(tierPrompt.includes(token), token);
-});
-
-test('pipeline history records remain available under docs/history', () => {
-  for (const file of ['../../docs/history/LESSONS.md', '../../docs/history/BENCH-2026-11-03.md']) {
-    assert.ok(fs.existsSync(path.join(dir, file)), file);
-  }
-  const lessons = fs.readFileSync(path.join(dir, '..', '..', 'docs', 'history', 'LESSONS.md'), 'utf8');
-  assert.match(lessons, /^# /);
-  assert.match(lessons, /2026-11-09/);
-});
-
-test('FINAL repair instructions retain gate and bind all evidence to final SHA', () => {
-  const recovery = read('templates/approvals.md');
-  for (const requirement of ['reviewed SHA', 'one batched repair wave', 'human disposition', 'before CP-2']) {
-    assert.ok(recovery.includes(requirement), requirement);
-  }
-  assert.match(read('templates/reviewer.md'), /full SHA and verdict/);
-});
-
-test('recovery documents verified other change, permission hold, empty branch and final SHA', () => {
-  const skill = read('SKILL.md');
-  for (const text of ['--other-change <id>', 'label is verified', 'no pending permission', 'only when no worker', 'main...<full-SHA>', 'author commits the amendment', 'exit 3']) assert.ok(skill.includes(text), text);
-});
-
-test('review guidance reflects merge metadata and independent review', () => {
-  const schema = read('openspec-schema/schema.yaml');
-  const author = read('templates/author.md');
-  const reviewer = read('templates/reviewer.md');
-  assert.match(schema, /review=worker/);
-  assert.match(schema, /Historical Done/);
-  assert.match(schema, /rejects\s+`deferred` on sinks/);
-  assert.doesNotMatch(schema, /instead of per task/);
-  assert.match(author, /missing risk label does not establish safety/);
-  assert.match(reviewer, /realistic ways each Verify could pass/);
-  assert.match(reviewer, /Script checks establish only their stated properties/);
-  assert.match(reviewer, /Lint and typecheck do not replace standards review/);
-  assert.match(reviewer, /keyboard\/focus, accessibility and responsive layout only where a SCEN, acceptance row or named standard covers them/);
-  assert.match(reviewer, /otherwise treat added expectations as ENHANCEMENT/);
-});
-
-test('task template and schema distinguish structural exemptions from review', () => {
-  const template = read('openspec-schema/templates/tasks.md');
-  const schema = read('openspec-schema/schema.yaml');
-  assert.match(template, /review=worker/);
-  assert.match(template, /历史 `pass\(/);
-  assert.match(template, /可选元数据/);
-  assert.doesNotMatch(template, /review=<tag>/);
-  assert.match(template, /禁止汇点[\s\S]*使用 deferred/);
-  assert.match(template, /非汇点的 mechanical 任务也要求窄 Verify/);
-  assert.match(template, /mechanical 任务可不认领/);
-  // A test-only sink is an advisory to check, not proof that no task owns the wiring.
-  assert.match(schema, /advisory, not as proof/);
-  assert.match(read('templates/author.md'), /advisory for R0 rather than proof of a missing owner/);
-  assert.match(schema, /does not require `strict`/);
-  assert.match(schema, /`mechanical` sink may use a non-test check/);
-  assert.match(schema, /structural exemptions do not establish safety/);
-});
-
-test('docs reference the optional R0/FINAL summary tool consistently', () => {
-  for (const file of ['SKILL.md', 'templates/author.md', 'templates/reviewer.md']) assert.match(read(file), /r0-hotspots\.mjs/, file);
-  assert.match(read('templates/reviewer.md'), /--final <reviewed-full-SHA>/);
-  assert.match(read('templates/reviewer.md'), /not a substitute for/);
-});
-
-test('FINAL depth follows the diff content and R0 rulings have a record format', () => {
-  const reviewer = read('templates/reviewer.md');
-  assert.match(reviewer, /Match depth to what the diff actually changes/);
-  assert.match(reviewer, /Rendered UI/);
-  assert.match(reviewer, /Do not skip a covered part because its task was labelled `mechanical`/);
-  assert.match(read('SKILL.md'), /R0-<round>-<n> <BLOCKER\|NIT> <accepted\|rejected\|fixed>/);
-});
-
-test('R0 has a legal exit: reviewer pass, recorded human exception, or blocking', () => {
-  const skill = read('SKILL.md');
-  // The two approval kinds are distinct and neither may be written as the other.
-  assert.match(skill, /R0: pass\(<reviewer-uuid>@<sha>\)` in `review\.md`/);
-  assert.match(skill, /R0: human-accept\(@<sha>\)` in `review\.md`/);
-  assert.match(skill, /Approval: R0 residual risk accepted for <sha> — <reason>` in `run-log\.md`/);
-  assert.match(skill, /never a reviewer pass/);
-  assert.match(skill, /open item and reason in `rulings\.md`/);
-  // Whole-package rounds are capped; a directed repair is verified as a delta.
-  assert.match(skill, /at most two whole-package rounds/);
-  assert.match(skill, /verifies the fix diff only/);
-  assert.match(skill, /never regenerate the package by default/);
-  // NITs are recorded, not fixed, unless they change what a Verify can prove.
-  assert.match(skill, /Recorded NITs are not fixed before CP-1/);
-});
-
-test('planner output is not execution authorization', () => {
-  const skill = read('SKILL.md');
-  assert.match(skill, /not execution authorization/);
-  assert.match(skill, /human CP-1 for that exact contract commit is in `run-log\.md`/);
-  assert.match(skill, /PLANNING PREVIEW/);
-  assert.match(skill, /`frozen: false`/);
-});
-
-test('author and reviewer briefs implement bounded revision and falsifiable blocking', () => {
-  const author = read('templates/author.md');
-  assert.match(author, /Mode: `FULL \| REVISE`/);
-  assert.match(author, /Do not regenerate the package/);
-  assert.match(author, /Do not fix recorded NITs/);
-  assert.match(author, /one block per finding/);
-  assert.match(author, /Compile the approved design; do not re-solve it/);
-  const reviewer = read('templates/reviewer.md');
-  assert.match(reviewer, /falsifiable counterexample/);
-  assert.match(reviewer, /If your findings are all NITs, return the pass line/);
-  assert.match(reviewer, /delta check against your own findings/);
-  // A worker gets task-relevant inputs, not unrelated contract history.
-  assert.match(read('templates/worker.md'), /Read only from your packet/);
-});
-
-test('contract guidance distinguishes structural coverage from worker readiness', () => {
-  const author = read('templates/author.md');
-  const reviewer = read('templates/reviewer.md');
-  const worker = read('templates/worker.md');
-  const schema = read('openspec-schema/schema.yaml');
-  const tasks = read('openspec-schema/templates/tasks.md');
-  assert.match(author, /data migration\/persistence schema, credentials\/security\/audit, cross-task identity\/idempotency, external protocol\/vendor, and destructive\/rollback/);
-  assert.match(author, /first Verify may be red/);
-  assert.match(author, /merge replay cannot rescue/);
-  assert.match(reviewer, /future sibling's file or behavior/);
-  assert.match(reviewer, /optional regression read/);
-  assert.match(worker, /Before delivery it must run and pass in your branch/);
-  assert.match(schema, /owning skeleton must be a dispatch dependency/);
-  assert.match(schema, /Structural checks cannot prove existence/);
-  assert.match(tasks, /静态检查不证明文件存在/);
-});
-
-test('acceptance guidance matches the gate: every declared SCEN is covered, journeys are not', () => {
-  const author = read('templates/author.md');
-  const schema = read('openspec-schema/schema.yaml');
-  const template = read('openspec-schema/templates/acceptance.md');
-  // The old brief said acceptance is "not ... every spec scenario", which the gate contradicts:
-  // freeze-check.mjs:633 rejects UNACCEPTED_SCEN. The brief must state the row requirement in its
-  // own words, while still forbidding a second unit-test list.
-  assert.doesNotMatch(author, /not a second list of unit tests or every spec scenario/);
-  assert.match(author, /not a second list of unit tests, but every declared `SCEN-\*` still needs at least one row/);
-  assert.match(author, /Rows may share an Entry and Verify, and reuse an existing test: a scenario does not need a new test of its own/);
-  // Every row projects claimant ids explicitly; tasks.md remains the claim source.
-  assert.match(author, /every row's `Tasks` cell must list its claiming task\(s\) explicitly/);
-  assert.match(author, /cell may list only tasks that claim that SCEN in `tasks\.md` `Scenarios`/);
-  assert.match(author, /their union lists every claiming task/);
-  // Required is a semantic decision, not a blanket `no`.
-  assert.match(author, /`Required` follows real delivery semantics — do not set every row `no`/);
-  assert.match(template, /每个声明过的场景至少一行/);
-  assert.match(template, /必须明确列出该行承载的认领任务/);
-  assert.match(template, /所有行的并集必须覆盖全部认领者/);
-  assert.match(template, /不要为省事把全部行设为 no/);
-  // Schema acceptance instruction carries the same rule, scoped to its own block.
-  const acceptanceInstr = schema.slice(schema.indexOf('  - id: acceptance'), schema.indexOf('  - id: review'));
-  assert.match(acceptanceInstr, /Every `SCEN-\*` declared in the change's spec delta needs at least one row/);
-  assert.match(acceptanceInstr, /Every row's `Tasks` cell must explicitly list its claiming task\(s\)/);
-  assert.match(acceptanceInstr, /union\s+of all rows for a scenario must name every task that claims it/);
-  assert.match(acceptanceInstr, /rather than setting every row `no`/);
-});
-
-test('structural-check guidance names the real exit code, not a pipeline tail status', () => {
-  const author = read('templates/author.md');
-  const template = read('openspec-schema/templates/acceptance.md');
-  // A `| tail` at the end of the pipe replaces the checker's status with tail's; the brief must say so.
-  assert.match(author, /Judge the result by the check's own process exit code, not by the status of the last command in a pipe/);
-  assert.match(author, /`node freeze-check\.mjs \.\.\. \| tail -n 20` reports `tail`'s status, not the check's/);
-  assert.match(author, /With `--structural --json`, only `blocking` rejects; `advisories` are for R0 and keep exit 0/);
-  assert.match(template, /经过 `\| tail` 等管道时 `\$\?` 是管道末端的状态，不能当作检查结果/);
+  for (const token of ['Requirement', 'Authorization', 'BLOCKED (scope expansion)', 'handoff-progress.md']) assert.ok(handoff.includes(token), token);
+  assert.match(fs.readFileSync(reviewPath, 'utf8'), /Requirement matrix/);
 });

@@ -6,7 +6,7 @@ user-invocable: true
 
 # Paseo Pipeline
 
-Enter from a drafted or frozen DAG with `maxWidth >= 2` and `tasks >= 4`; never split a graph to qualify. `maxWidth` is largest dispatch-dependency wave, a routing heuristic, not exact concurrency. `freeze-check` is authoritative after authoring; `handoff` routes to Tier 2 `/paseo-handoff`. Invalid DAGs have no route; fix graph errors first.
+Enter from a drafted or frozen DAG with `maxWidth >= 2` and `tasks >= 4`; never split a graph to qualify. `maxWidth` is largest dispatch-dependency wave, a routing heuristic, not exact concurrency. `freeze-check` is authoritative after authoring; `handoff` routes to Tier 2 `/paseo-handoff`. Invalid DAGs have no route; fix graph errors first. Acceptance `Required=yes` remains CP-2 requirement authority. Reproduce suspected bugs; never invent ownership or dependencies.
 
 ## Principles
 
@@ -42,20 +42,20 @@ Contract work is serial.
 2. Author follows `templates/author.md`: draft DAG first, then artifacts for selected route. Run structural `freeze-check` as soon as package exists. `COMPLETE` requires structural success on committed content; reconcile SHA and Git evidence.
 3. If route is `handoff`, only author `COMPLETE`, structural exit 0/no blocks, and matching checked/reported SHA qualify; use Tier 2 `/paseo-handoff`. Route success is not R0 or CP-1. `pipeline` route alone clears no other block.
 4. Resolve material human choices, then dispatch `hanlin` read-only R0 using `templates/reviewer.md`. R0 checks proposal/spec/design/tasks/acceptance as one package and records reviewed SHA. Maximum two package rounds; second is delta. After unresolved blockers, human accepts recorded risk or directs one fix-diff check; no third package round.
-5. Present contract, findings, DAG/scopes/Verify/acceptance and route. Human confirms CP-1 for exact contract commit. Freeze only after confirmation. CP-1 approves the contract, not arbitrary later commands.
+5. Present contract, findings, DAG/scopes/Verify/acceptance and route. Human confirms CP-1 for exact contract commit. Freeze only after confirmation. CP-1 approves the contract, not arbitrary later commands. R0 sign-off is `R0: pass(<reviewer-uuid>@<sha>)` or recorded `R0: human-accept(@<sha>)`; human-accept is never a reviewer pass. Maximum two whole-package rounds; directed fix gets delta check only.
 
 ## Start and execute after CP-1
 
 1. Commit frozen contract on default branch. Create integration worktree from it and one task worktree/branch per ready task.
 2. Install pipeline hook and lockfile dependencies in every worktree, including integration, before Verify.
 3. Run `pipeline-run.mjs plan <change-dir>` and dispatch exactly listed workers, one per task, with branch, workspace, frozen Write scope, SCENs, Verify and upstream interfaces. Worker follows `templates/worker.md`, commits required trailers and reports branch tip.
-4. On completion, verify tip and run `pipeline-run.mjs merge <change-dir> <T-id>` from integration; then rerun `plan`. Gate checks dependencies, scope, provenance, drift, Verify and regression, then records Done.
+4. On completion, verify tip and run `pipeline-run.mjs merge <change-dir> <T-id>` from integration; then rerun `plan`. Gate checks dependencies, scope, provenance, drift, Verify and regression, then records Done. `--allow-test-infra` releases only that check and needs recorded human approval; it skips no other gate.
 5. On lost notification, reconcile Paseo state, Git tip and Done lines before re-arming; never duplicate dispatch. A failed worker may retry twice after initial attempt; fourth branch needs human approval. No manual Done edits or gate bypass.
-6. After resume, reread integration Done lines, first-parent log and labeled Paseo agents before dispatch. Contract amendments after CP-1 need human confirmation or an applicable recorded pre-authorization before planning; new interface/security boundary needs delta R0.
+6. After resume, reread integration Done lines, first-parent log and labeled Paseo agents before dispatch. At each dispatch, register a reconciliation point (agent id, branch, expected first artifact); compare Paseo state, branch tip and Done lines before re-arming. Contract amendments after CP-1 need human confirmation or an applicable recorded pre-authorization before planning; new interface/security boundary needs delta R0.
 
 ## FINAL and CP-2
 
-1. Require all tasks Done, no blocked tasks and clean integration. Capture full SHA; run full suite and every `Required=yes` acceptance at that SHA. Dispatch `anchasi` for independent FINAL on `main...<full-SHA>` using `templates/reviewer.md`.
+1. Require all tasks Done, no blocked tasks and clean integration. Capture full SHA; run full suite and every `Required=yes` acceptance at that SHA. Dispatch `anchasi` for independent FINAL on `main...<full-SHA>` using `templates/reviewer.md`. For suspected regression, compare main movement with `git rev-list --count $(git merge-base integration/<change> main)..main`; rebase and rerun failing row if needed.
 2. FINAL is requirement conformance: one matrix row per SCEN, acceptance row and named standard. Record evidence and findings in `review.md`. `DEVIATION` alone may enter one batched repair wave; a repair overlapping Done scope declares `Depends on`, or freeze-check reports `SCOPE_CONFLICT`. Contract/requirement gaps require human disposition before CP-2; `ENHANCEMENT` is backlog. See `templates/approvals.md` for bounded recovery.
 3. Maximum two FINAL rounds: full then delta. After unresolved `NOT_MET`/`UNVERIFIABLE`, human chooses accept, reopen at contract level (one delta R0, CP-1, one repair wave and one reopen delta review), or terminate. Record-only SHA changes do not consume a round; substantive changes do. CP-2 remains human.
 4. Before CP-2, ensure evidence matches reviewed SHA, no unaccepted row remains, and human has reviewed final diff/evidence. CP-2 authorizes merge; it does not authorize push or cleanup.
@@ -63,9 +63,11 @@ Contract work is serial.
 
 ## Appendix: operator recovery and acceptance
 
+Before destructive/production action (deploy, archive, cleanup, production DB read), list workspace IDs, branch names, host paths and exact command per object; ask for approval and write verbatim record to `run-log.md`. Re-read after compaction; new object/command needs new approval. Push separately.
+
 `pipeline-run.mjs status <change-dir>` and `plan` report current state. Exit 3 indicates unreadable/ambiguous state or invalid tasks, not idle; repair input or provide verified `--other-change <id>`. After interrupted merge, inspect `MERGE_HEAD`, worktree and refs; never delete pending markers to bypass a gate. Serialize merges.
 
-Merge exit codes: 1 ordinary refusal; 2 usage; 3 post-merge record/cleanup failure (check Done before retry); 10 conflict; 20 Verify; 21 regression; 30 scope; 31 provenance; 34 base/drift; 35 dependency; 36 dependencies not installed; 37 retry cap; 38 test-infrastructure changes without approval.
+Merge exit codes: 1 ordinary refusal; 2 usage; 3 post-merge record/cleanup failure (check Done before retry; never retry blindly); 10 conflict; 20 Verify; 21 regression (environment issue: fix environment, never edit Verify/tests); 30 scope; 31 provenance; 34 base/drift; 35 dependency; 36 dependencies not installed; 37 retry cap; 38 test-infrastructure changes without approval. Labels: `MERGE <T-id>` and `MERGE-WAIT <T-id>`. `--allow-test-infra` skips no other gate.
 
 Acceptance `run` executes repository-controlled commands unsandboxed; inspect commands/dependencies first. It writes external evidence and may expose secrets. `check` validates record consistency without executing commands; neither proves authenticity nor authorizes CP-2. Failed/blocked rows require a fix and fresh evidence. See `templates/approvals.md` for exact approval recording.
 

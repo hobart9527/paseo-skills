@@ -2,7 +2,7 @@
 
 ## FINAL after round 2
 
-For unresolved `NOT_MET` or `UNVERIFIABLE`, human chooses one:
+For unresolved `NOT_MET` or `UNVERIFIABLE` after two FINAL rounds, human chooses one:
 
 - **Accept:** record `FINAL: human-accept(@<sha>)` in `review.md`, residual risk in `rulings.md`, and `Approval: FINAL residual risk accepted for <sha> — <reason>` in `run-log.md`.
 - **New change:** reopen at contract level with delta R0 and CP-1; permit one repair wave and one reopen delta review. No further reopen.
@@ -14,7 +14,7 @@ No unbounded repair loop. A `DEVIATION` may enter one batched repair wave; contr
 
 Use before deploy, `archive_workspace`, branch/worktree deletion, `/tmp` cleanup, or production database read.
 
-List every object and exact command, including transitively affected objects. For cleanup, use `pipeline-run.mjs cleanup <change-dir>` output. Ask separately per object class; record approval verbatim in `run-log.md`:
+List every object: workspace ID, branch, host path and exact command, including transitively affected objects. For cleanup, use `pipeline-run.mjs cleanup <change-dir>` output. Ask separately per object class; record approval verbatim in `run-log.md`:
 
 ```text
 Approval: <ISO timestamp> <user's exact words>
