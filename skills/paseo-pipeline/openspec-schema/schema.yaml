@@ -1,27 +1,3 @@
-# 全局 schema：paseo-pipeline
-#
-# 派生自 OpenSpec 1.8.0 内置的 `spec-driven`（`@fission-ai/openspec/schemas/spec-driven/schema.yaml`）。
-# OpenSpec schema 是**整份替换**，不是叠加。基准就是上游原生产物链：proposal → specs →
-# design（按需）→ tasks；本 schema 只加流水线执行必需的最小件，并在 v2（2026-11-05
-# 最小契约收敛）删除了自造的 digest 产物与强制调查表。
-#
-# 与上游的差异（v2）：
-#   1. tasks 的 instruction 与 templates/tasks.md 改成 pipeline 可解析的任务格式。
-#      上游只要求 `- [ ] X.Y 描述`，parseTasks 需要 `T-xx` 编号 + 元数据子字段；
-#      这个差距实测导致「validate --strict 通过、parseTasks 解析出 0 个任务」。
-#   2. specs 的 instruction 追加 SCEN- 编号要求（freeze-check 按编号对账）。
-#   3. 新增 acceptance 产物（冻结的业务验收矩阵，人类 CP-2 验收消费）。
-#   4. 新增 review 产物（hanlin 的 R0 签署），让 `openspec status` 看到
-#      freeze-check 实际要求的文件。design 保持上游语义：按需创建，
-#      `requires` 仅表达「写则在 specs 之后」，不是「必须写」。
-#   5. v2 删除 digest：代码勘察结论写在它支撑的那条规则旁边（specs/design 内，
-#      带 path:line），不再有单独的全景调查文件，也不再要求 Impact Inventory /
-#      Baseline Alignment 表。CP-2 后主规格用上游 `openspec archive` 归档。
-#
-# 升级 OpenSpec 后重跑一次冒烟探测：临时仓库里 `openspec new change x --schema paseo-pipeline`
-# → `openspec instructions tasks --change x` 应出现 T-xx 元数据 → `openspec schema validate
-# paseo-pipeline`。test/docs.test.mjs 会断言这份文件的产物清单与依赖。
-
 name: paseo-pipeline
 version: 2
 description: Paseo pipeline contract workflow - proposal → specs → design (on demand) → tasks/acceptance → review (R0)
@@ -31,41 +7,8 @@ artifacts:
     description: Initial proposal document outlining the change
     template: proposal.md
     instruction: |
-      Create the proposal document that establishes WHY this change is needed.
-
-      Sections:
-      - **Why**: 1-2 sentences on the problem or opportunity. What problem does this solve? Why now?
-      - **What Changes**: Bullet list of changes. Be specific about new capabilities, modifications, or removals. Mark breaking changes with **BREAKING**.
-      - **Capabilities**: Identify which specs will be created or modified:
-        - **New Capabilities**: List capabilities being introduced. Each becomes a new `specs/<capability-path>/spec.md`. Use kebab-case for path segments you introduce (e.g., `user-auth` or `identity/user-auth`) and follow the project's existing spec organization.
-        - **Modified Capabilities**: List existing capabilities whose REQUIREMENTS are changing. Only include if spec-level behavior changes (not just implementation details). Each needs a delta spec file. Use the exact existing path under `openspec/specs/`. Leave empty if no requirement changes.
-      - **Impact**: Affected code, APIs, dependencies, or systems.
-
-      IMPORTANT: The Capabilities section is critical. It creates the contract between
-      proposal and specs phases. Research existing specs before filling this in.
-      Each capability listed here will need a corresponding spec file.
-
-      Every change must either declare at least one capability (new or
-      modified) or explicitly opt out of specs: `openspec validate` rejects a
-      change with zero deltas unless the change's `.openspec.yaml` sets
-      `skip_specs: true`. Use `skip_specs: true` only when no spec-level
-      behavior changes (pure refactor, tooling, docs) - specs describe
-      behavior, so if behavior does not change, no spec should change either.
-      Do not invent a requirement just to satisfy validation.
-
-      Keep it concise (a few paragraphs at most). Focus on the "why" and "what" -
-      implementation details belong in design.md. Skip repeated motivation and broad
-      repository surveys; cite only the relevant baseline needed to identify the change.
-
-      **Baseline (paseo-pipeline):** add a short `## Baseline` section. Write each
-      code-reading finding there (or beside the rule in specs/design) AS FOUND, as
-      `path:line` plus one line of consequence, and commit; a finding that exists only
-      in thinking does not count. List only facts that support a changed rule - no
-      survey, no alignment tables, no digest. A material product choice the inputs do
-      not settle goes under `## OPEN-DECISION`: options, consequences, a recommended
-      default.
-
-      This is the foundation - specs, design, and tasks all build on this.
+      Capture why, what changes, capabilities and impact. List new and modified capabilities with exact existing paths where applicable. If no spec-level behavior changes, set `skip_specs: true` in `.openspec.yaml`; never invent a requirement to satisfy validation.
+      Keep proposal concise. Put verified baseline facts supporting changed rules in `## Baseline` as `path:line` and one-line consequence. Material unsettled decisions use `## OPEN-DECISION` with options, consequences and recommended default. No repository survey, digest or alignment table.
     requires: []
 
   - id: specs
@@ -73,130 +16,10 @@ artifacts:
     description: Detailed specifications for the change
     template: spec.md
     instruction: |
-      Create specification files that define WHAT the system should do.
-
-      A spec is a behavior contract, not an implementation plan.
-
-      Good spec content:
-      - Observable behavior users or downstream systems rely on
-      - Inputs, outputs, and error conditions
-      - External constraints (security, privacy, reliability, compatibility)
-      - Scenarios that can be tested or explicitly validated
-
-      Avoid in specs:
-      - Internal class/function names
-      - Library or framework choices
-      - Step-by-step implementation details
-      - Detailed execution plans (those belong in design.md or tasks.md)
-
-      Quick test: if the implementation can change without changing externally
-      visible behavior, it likely does not belong in the spec.
-
-      Create one spec file per capability listed in the proposal's Capabilities section.
-      `<capability-path>` is the spec directory relative to `specs/` (for example,
-      `user-auth` or `identity/user-auth`). Preserve the full path:
-      - New capabilities: use the exact path from the proposal at `specs/<capability-path>/spec.md`. Any path segment newly introduced in the proposal must be kebab-case. Follow the project's existing organization; do not add a new domain level when the project uses a flat layout.
-      - Modified capabilities: use the exact existing path from `openspec/specs/<capability-path>/` when creating the delta at `specs/<capability-path>/spec.md`. Do not move or rename the capability.
-
-      There must be at least one spec file unless the change's `.openspec.yaml`
-      sets `skip_specs: true` (no spec-level behavior change) - `openspec validate`
-      rejects a zero-delta change without that marker. If the proposal lists no
-      capabilities and `skip_specs` is not set, revisit the proposal first.
-
-      Delta operations (use ## headers):
-      - **ADDED Requirements**: New capabilities
-      - **MODIFIED Requirements**: Changed behavior - MUST include full updated content
-      - **REMOVED Requirements**: Deprecated features - MUST include **Reason** and **Migration**
-      - **RENAMED Requirements**: Name changes only - use FROM:/TO: format
-
-      Format requirements:
-      - Each requirement: `### Requirement: <name>` followed by description
-      - Use SHALL/MUST for normative requirements (avoid should/may)
-      - Each scenario: `#### Scenario: <name>` with WHEN/THEN format
-      - **CRITICAL**: Scenarios MUST use exactly 4 hashtags (`####`). Using 3 hashtags or bullets will fail silently.
-      - Every requirement MUST have at least one scenario.
-
-      New capabilities only: start the delta spec with a `## Purpose` section -
-      one or two sentences (50+ characters, or `openspec validate --strict`
-      reports it as too brief) describing what the capability is for. Archive
-      copies it into the main spec it creates; without it the new main spec is
-      left with a `TBD ... Update Purpose after archive` placeholder to fill in
-      by hand. Do NOT add `## Purpose` to a delta for an existing capability -
-      that spec already has one and the delta's is ignored. To change an
-      existing capability's Purpose - including a leftover `TBD` placeholder -
-      edit `openspec/specs/<capability-path>/spec.md` directly.
-
-      MODIFIED requirements workflow:
-      1. Read the baseline requirement in openspec/specs/<capability-path>/spec.md.
-      2. Put the complete updated requirement under `## MODIFIED Requirements`;
-         keep unchanged scenarios verbatim and update only behavior this change authorizes.
-      3. Put baseline evidence and `path:line` references in the proposal's `## Baseline`.
-      4. Ensure header text matches exactly (whitespace-insensitive).
-
-      An accidental collision with an old constraint is a contract defect to fix.
-      When the change authorizes changing old behavior, put affected tests in the same task.
-      Common pitfall: Using MODIFIED with partial content loses detail at archive time.
-      If adding new concerns without changing existing behavior, use ADDED instead.
-
-      Example (a new capability, so it opens with `## Purpose`):
-      ```
-      ## Purpose
-
-      Lets users take their data out of the product in a portable format.
-
-      ## ADDED Requirements
-
-      ### Requirement: User can export data
-      The system SHALL allow users to export their data in CSV format.
-
-      #### Scenario: Successful export
-      - **WHEN** user clicks "Export" button
-      - **THEN** system downloads a CSV file with all user data
-
-      ## REMOVED Requirements
-
-      ### Requirement: Legacy export
-      **Reason**: Replaced by new export system
-      **Migration**: Use new export endpoint at /api/v2/export
-      ```
-
-      **Scenario ids (paseo-pipeline):** every scenario heading must carry an id of
-      the form `#### Scenario: SCEN-<CAP>-NN` optionally followed by a description. `freeze-check.mjs`
-      reconciles tasks.md `Scenarios:` against these ids, and a spec whose scenarios
-      have no ids is silently skipped at validation time - the change then looks
-      verified when nothing was checked. Declare each id exactly once.
-
-      Specs describe observable behavior and testable outcomes, not internal DTO fields
-      or signatures. Do not invent behavior scenarios for internal-only changes or split
-      one outcome into implementation-test scenarios. Keep shared interface shape and
-      semantics in one authoritative, worker-reachable contract when concurrent tasks
-      need them; use a skeleton/Interface/Uses edge when consumers must start before
-      producer implementation is done. Keep behavior scenarios for observable semantics
-      that must hold across those tasks. Cite `path:line` only for baseline facts that
-      support a changed rule; do not write a separate survey document.
-
-      **SCEN freeze:** once the last spec file is committed, the declared SCEN id set is
-      frozen for downstream artifacts. Never renumber, rename, move or delete a declared
-      id after tasks.md or acceptance.md reference it; additions are allowed. An
-      unavoidable id change must update every reference (tasks.md Scenarios,
-      acceptance.md) in the same commit and be followed by the structural check.
-      Before assigning ids, list the ids already declared in baseline `openspec/specs/**`
-      and in every other `openspec/changes/*/specs/**` with one `rg` over scenario
-      headings only, choose new ids outside that set, and only then commit the specs as
-      the frozen set.
-
-      **Identity reuse vs content conflict (paseo-pipeline):** three cases look similar and
-      need different responses. A *new* id is declared by neither baseline nor another
-      unarchived change. Re-declaring a *baseline* id is legitimate only under
-      `## MODIFIED Requirements` / `## REMOVED Requirements`: that is identity reuse, so
-      copy and update the baseline requirement instead of adding a parallel scenario. A
-      *content conflict* is another active change declaring the same id with different
-      heading text or body; a byte-identical shared declaration is legal (an unchanged
-      MODIFIED scenario must be repeated) and only makes archive/merge order matter. Expose
-      and coordinate a conflict with the owning change; never rename or reword an id to
-      make it look independent, and never edit the other change to get past the check.
-      Collision semantics are the current conservative content comparison — no archive scan,
-      no ownership registry, and `lib/spec-scan.mjs` is the only scenario scanner.
+      Specify observable behavior, inputs, outputs, errors, external constraints and testable scenarios; avoid implementation details.
+      Create one spec per proposal capability. Use exact paths: new capabilities at `specs/<capability-path>/spec.md`; modified capabilities at the existing path. A zero-delta change requires `skip_specs: true`.
+      Use delta headings `ADDED`, `MODIFIED`, `REMOVED`, or `RENAMED Requirements`. A requirement is `### Requirement: <name>` with SHALL/MUST language and at least one `#### Scenario:` in WHEN/THEN form. Use four hashes for scenarios. New capability specs begin `## Purpose` (50+ characters); do not add Purpose to existing capabilities' deltas. MODIFIED requirements contain the complete updated text and retain unchanged scenarios verbatim; REMOVED includes Reason and Migration; RENAMED uses FROM/TO.
+      Every scenario heading has one stable `SCEN-<CAP>-NN` id. Freeze-check reconciles ids with task claims. Declare each once; freeze id set after specs. Never renumber/reword to evade collisions. Baseline id reuse belongs under MODIFIED/REMOVED; active-change conflicts require coordination. Concurrent tasks share one authoritative reachable interface contract. Cite only supporting baseline facts.
     requires:
       - proposal
 
@@ -205,36 +28,8 @@ artifacts:
     description: Technical design document with implementation details
     template: design.md
     instruction: |
-      Create the design document that explains HOW to implement the change.
-
-      When to include design.md (create only if any apply):
-      - Cross-cutting change (multiple services/modules) or new architectural pattern
-      - New external dependency or significant data model changes
-      - Security, performance, or migration complexity
-      - Ambiguity that benefits from technical decisions before coding
-
-      When none apply, skip design.md: the specs and tasks carry the change,
-      and local design is the worker's job.
-
-      Sections:
-      - **Context**: Only the current state and constraints needed to explain the approach. Reference the proposal for motivation instead of restating it (e.g., "See proposal.md - Why").
-      - **Goals / Non-Goals**: What this design achieves and explicitly excludes. Don't restate the proposal's scope - add only design-level boundaries.
-      - **Decisions**: Only key technical choices with rationale and alternatives. Include cross-task choices only when workers must share them; task-local choices stay with the worker.
-      - **Risks / Trade-offs**: Known limitations, things that could go wrong. Format: [Risk] → Mitigation
-      - **Migration Plan**: Steps to deploy, rollback strategy (if applicable)
-      - **Open Questions**: Unknowns that can safely be answered later without
-        changing the specs, the approach, or the task breakdown. Omit if none.
-
-      Open questions are for genuinely deferrable unknowns, not decisions you
-      skipped. If a question would change the specs, the chosen approach, or the
-      task breakdown, resolve it now - ask the user instead of guessing.
-
-      Focus on architecture and approach, not line-by-line implementation.
-      The proposal covers why and what; design covers how. Reference the
-      proposal for motivation and, once written, the specs for requirements -
-      if a section would only restate them, point to them instead.
-
-      Good design docs explain the "why" behind technical decisions.
+      Create only for cross-module/pattern changes, new dependency or significant data model, security/performance/migration complexity, or material technical ambiguity. Otherwise omit.
+      Explain current constraints, design goals/non-goals, key decisions and rationale, risks/trade-offs, applicable migration and genuinely deferrable open questions. Resolve choices that alter specs, approach or task breakdown with the human. Do not repeat proposal or specs; keep task-local decisions with workers.
     requires:
       - proposal
       - specs
@@ -244,110 +39,10 @@ artifacts:
     description: Implementation checklist with trackable tasks
     template: tasks.md
     instruction: |
-      Create the task list that breaks down the implementation work.
-
-      When design.md exists, write and commit it before tasks.md; tasks reference only
-      committed SCEN ids.
-
-      Before writing tasks, check design.md (when present) for Open Questions.
-      If any of them would change what gets built, resolve them with the user
-      first - do not bake an unstated assumption into the task list.
-
-      **格式由 paseo-pipeline 的解析器 lib/tasks.mjs 定义，不是可选的风格。**
-      不合格式的任务行会被判 MALFORMED_LINE，整份 tasks.md 对编排器不可见
-      （实测：按上游模板写的 tasks.md 解析出 0 个任务）。冻结前必须跑
-      `node freeze-check.mjs openspec/changes/<name>`，它复用同一解析器。
-
-      Each task is a checkbox line followed by indented metadata fields:
-
-      ```
-      ## 1. <group name>
-
-      - [ ] 1.1 T-01 <one-line goal>
-        - Depends on: <T-xx, T-yy | none>
-        - Uses: <T-xx, T-yy | none>
-        - Write scope: <repo-relative path>[, <path>]
-        - Reads: <repo-relative path>[, <path>]
-        - Est: <S | M | L>
-        - Kind: <skeleton | none>
-        - Interface: <repo-relative path>[#<symbol>]
-        - Review: <strict | standard | mechanical | deferred>
-        - Risk-surface: <persistence | security | other risk>[, ...]
-        - Verify with: <executable command>
-        - Scenarios: <SCEN-xxx-yy>[, ...]
-      ```
-
-      Rules the parser enforces:
-      - Task line: `- [ ] <number> <ID> <title>`. The ID must match `<letters>-<digits>`
-        (e.g. `T-01`, `TASK-3`). `- [ ] 1.1 <title>` without an ID is MALFORMED_LINE.
-        `T-01:<title>` with the colon stuck to the ID is also malformed.
-      - `Write scope` is required and non-empty. Paths are repo-relative; no absolute
-        paths, no `..` escaping the repo root.
-      - `Depends on` must name task IDs that exist in this file; no self-dependency,
-        no cycles.
-      - `Uses` is a consumer edge: dispatch waits for the target's skeleton ancestors,
-        while merge still waits for the target's Done. A `Uses` target must declare
-        `Interface:` and an owning skeleton must be a dispatch dependency of the consumer;
-        scope alone does not prove the file or its contents were committed. A pair with overlapping
-        Write scopes also needs a real `Depends on` edge.
-      - `Reads` lists paths a Verify leg may execute against without writing them. It
-        never joins scope-conflict checks and never authorises source edits. Ensure final
-        worker Verify can pass in its own branch: use `Depends on` if it needs another
-        task's future file or behavior. Initial Verify may be red. Existing baseline files,
-        task-created files and optional regression reads do not by themselves require an edge.
-        Structural checks cannot prove existence, correct content, access or a commit.
-      - `Est` is `S`, `M` or `L` (default `M`). `Kind: skeleton` marks the interface-stub
-        task and requires `Review: mechanical`; every `Interface:` path must sit inside
-        some skeleton's Write scope.
-      - `Review` is one of `strict` / `standard` / `mechanical` / `deferred`; omitting it
-        means `standard`. These labels do not select per-task review; all tasks receive
-        the independent FINAL integrated review. For compatibility, freeze-check rejects
-        `deferred` on sinks and on tasks declaring `persistence` or `security` Risk-surface.
-        As author guidance, mark material persistence or security risk `strict` for FINAL
-        attention. Freeze-check does not require `strict` for all such risks or validate
-        label completeness. `mechanical` is not an exemption from semantic review.
-      - `Verify with` must be runnable. Freeze-check checks command structure, not whether
-        it executes or proves the claimed behavior. Each non-sink Verify leg, including
-        for `mechanical`, must name a test/spec path within `Write scope` or `Reads`.
-        A `mechanical` sink may use a non-test check; other command checks still apply.
-        A sink may run one full-suite leg per package/runner it must regress; list each
-        package suite explicitly (e.g. `npm --prefix packages/server test`) rather than
-        hiding them in a wrapper script. Write the full
-        invocation when the command needs env vars:
-        PYTHONPATH=runtime python3 -m pytest tests/x_test.py.
-      - `Scenarios` lists the `SCEN-*` ids from the spec delta that this task carries.
-        Every id must exist in the spec, and every declared id must be claimed by
-        at least one task. A `mechanical` task may omit a scenario and have a test-only
-        Write scope; these structural exemptions do not establish safety.
-      - The merge gate records `- Done: source=<tip7> review=worker` when a task
-        completes. `worker` records execution, not a review verdict. Historical Done
-        tags such as `pass(<reviewer>@<tip>/<base>)` remain readable; do not rewrite
-        frozen history to this format.
-
-      Before committing tasks.md, self-check every SCEN against its owning task and fix
-      the task, not the check: the entry point named for the SCEN in acceptance.md (where
-      the outcome is observed, e.g. the submit handler) is inside the owner's Write scope,
-      or the owner `Depends on` the task that owns it, and a component or unit test beside
-      the entry does not stand in for it; the owner's Verify runs a test that exercises
-      that entry or function and would fail before the change, with the test file in the
-      owner's Write scope or created by it, since an existing test that already passes and
-      never calls the code under change cannot carry the SCEN; and every field, symbol or
-      route a task or design names is confirmed once with `rg` in the tree (or in a file
-      the task creates); design.md names decisions (`D-01`) and affected modules only,
-      never task ids; when design.md exists, tasks declare `Implements:` decision ids and
-      every id must exist in design.md; when it does not exist, omit `Implements:`
-      because there are no decision ids to reference.
-
-      Guidelines:
-      - Vertical slices: behavior + wiring + affected fixtures + tests together. A final
-        integration verification task may write tests only when the entry it verifies is
-        owned upstream; freeze-check reports that sink shape as an advisory, not as proof
-        of a missing owner. Do not fabricate a production path to satisfy the checker.
-      - Concurrent tasks have fully disjoint Write scopes, including test paths.
-      - Do not pad the DAG to qualify for a tier.
-      - Keep task titles and metadata concise; include optional fields only when they
-        affect dispatch, scope, verification, shared interfaces, or risk.
-      - Tasks should be small enough to complete in one session.
+      Follow `lib/tasks.mjs` syntax exactly and use the template. Each checkbox task has ID, one-line goal, dependencies, Write scope, Verify, claimed scenarios and only needed optional metadata. Invalid task lines can disappear from scheduling; run structural freeze-check.
+      IDs match letters-digits; Write paths are repo-relative and non-empty. Dependencies exist, are acyclic and not self-referential. `Uses` is a dispatch edge for committed skeleton interfaces; overlapping Write scopes require real `Depends on`. `Reads` grants no ownership. Each non-sink Verify is executable, narrow and exercises a path in Write/Reads; sink may run full suite. Structural checks do not prove runtime behavior.
+      Claim each declared SCEN at least once. Keep vertical slices and concurrent Write scopes disjoint; do not pad DAG. Tasks should complete in one session. Sink verification-only work is allowed when upstream owns the entry; treat checker advisory as review input, not proof of missing ownership.
+      Before commit, ensure each scenario's acceptance Entry is owned or reachable through dependency, Verify exercises real behavior and fails before implementation, and referenced symbols/paths exist or are created. Design decisions use `D-xx`; tasks reference only existing decisions. See template for metadata parser rules and deeper task constraints.
     requires:
       - specs
 
@@ -356,67 +51,8 @@ artifacts:
     description: Business acceptance matrix frozen with the change
     template: acceptance.md
     instruction: |
-      Create the business acceptance matrix. This is frozen with the change and is
-      the ONLY definition of what counts as delivered.
-
-      One row per business journey, recovery path, or boundary case that must work
-      end to end. The matrix answers "what proves this capability actually runs",
-      which tasks.md and the test suite do not: a task can be merged and its unit
-      tests green while the feature is unreachable from the real entry point.
-
-      Every `SCEN-*` declared in the change's spec delta needs at least one row;
-      rows may share an Entry and Verify and may reuse an existing test, so a
-      scenario does not require a new test of its own. The claim source is
-      `Scenarios:` in `tasks.md`; a row's `Tasks` cell is its projection, not a second
-      claim. Every row's `Tasks` cell must explicitly list its claiming task(s). A `Tasks`
-      cell may list only tasks that claim that scenario in `tasks.md` `Scenarios`, and the union
-      of all rows for a scenario must name every task that claims it. A row naming a
-      non-claimant is wrong even when the union looks complete. `Entry`, `Verify` and
-      `Required` are authored judgements: `Required` follows real delivery semantics
-      rather than setting every row `no`. When `Entry` names
-      a file that a task in this change writes, a row owner must write it or depend on
-      the task that does (`freeze-check` reports `ENTRY_OWNER_UNCLAIMED`); when several
-      components share one assembly file, let the assembler claim the user-facing
-      scenarios, or add a Wave 0 `Kind: skeleton` that pre-wires the entry with stubs and
-      have the components `Uses` it (see the shared-assembly pattern in the author brief). Several rows may
-      split the owners; no single row needs all of them.
-      A read-only derivation is available while authoring:
-      `pipeline-run.mjs scenarios <change-dir>` lists declared scenarios, claimants,
-      existing rows and gaps; it is not validation and not a substitute for this gate or R0.
-
-      Format is fixed because `CP-2 human acceptance review`
-      parses it:
-
-      ```
-      # Acceptance Matrix
-
-      | Scenario | Entry | Tasks | Verify | Required | Result | Evidence |
-      | --- | --- | --- | --- | --- | --- | --- |
-      | SCEN-XXX-01 | GET /api/thing via server: npm run dev | T-01 | node scripts/probe-thing.mjs | yes | PENDING | pending |
-      ```
-
-      Columns:
-      - **Scenario**: a `SCEN-*` id declared in this change's spec delta. Must exist.
-      - **Entry**: the real entry point - HTTP route, UI path, CLI command, or the
-        wiring point that makes the capability reachable. Not an internal function.
-      - **Tasks**: comma-separated task ids from tasks.md that carry this row; a required
-        row must list at least one, and every id must claim this scenario in `Scenarios`.
-      - **Verify**: the command that exercises Entry. Required=yes needs one executable
-        command; a manual procedure, a `!` prefix, or natural language is rejected. Judge
-        it by its own exit code, not by the pipeline tail's.
-      - **Required**: `yes` blocks delivery; `no` is recorded but does not block. Decide
-        from real delivery semantics rather than setting every row `no`.
-      - **Result**: leave `PENDING` in the frozen matrix. Record closeout results externally.
-      - **Evidence**: leave `pending` in the frozen matrix. Record output and the full
-        source SHA in the external execution record.
-
-      The frozen matrix is the sole authority for requirements; the external record
-      does not replace it or authorize CP-2. Do not claim `PASS` before execution.
-      The recorded SHA must match the clean integration HEAD being accepted. Record
-      unavailable external dependencies as blocked, with the reason, in separate
-      operator notes without modifying the execution record. The runner reports failed
-      commands as FAIL; neither FAIL nor BLOCKED satisfies CP-2. A mock passing is
-      not business acceptance.
+      This frozen matrix is sole delivery authority. Include every declared SCEN at least once. Rows may share Entry/Verify and reuse existing tests. `tasks.md` Scenarios is claim source; each Tasks cell lists only claimants, and all rows together cover all claimants.
+      Use exact columns in this order: Scenario, Entry, Tasks, Verify, Required, Result, Evidence. Entry is real user-facing route/UI/CLI/wiring, not internal function. Verify executes Entry; Required=yes needs executable command. Required reflects delivery semantics. Freeze Result as PENDING and Evidence as pending; record outcomes externally with full source SHA. External evidence does not replace matrix or authorize CP-2. Failed or blocked rows do not satisfy CP-2. Mocks alone are not acceptance.
     requires:
       - specs
 
@@ -425,15 +61,7 @@ artifacts:
     description: R0 contract review sign-off
     template: review.md
     instruction: |
-      Written by the main session, never by the reviewer: `hanlin` is read-only and returns
-      the sign-off as text. The first line must be exactly
-      `R0: pass(<hanlin-agent-uuid>@<reviewed-commit-sha>)`, followed by the findings and
-      the author's responses. When R0 stopped with blockers and the human accepted the
-      residual risk, the line is `R0: human-accept(@<reviewed-commit-sha>)`, with the
-      approval verbatim in run-log.md and each open item in rulings.md; it is an exception,
-      never a reviewer pass. `freeze-check` rejects a missing sign-off, an unknown signer,
-      and any contract file changed after the signed commit (STALE_R0_SIGNOFF).
-      Do not write a sign-off line before the review or the approval ran.
+      Main session records read-only `hanlin` review. First line is exactly `R0: pass(<hanlin-agent-uuid>@<reviewed-commit-sha>)`, followed by findings and author responses. For human-accepted residual blockers, use `R0: human-accept(@<reviewed-commit-sha>)`, record verbatim approval in run-log.md and open items in rulings.md. Human-accept is never a reviewer pass. Freeze-check rejects missing/unknown signer or any contract change after signed commit. Never prewrite sign-off.
     requires:
       - tasks
       - acceptance
@@ -442,13 +70,4 @@ apply:
   requires: [tasks]
   tracks: tasks.md
   instruction: |
-    Stop unless R0 is closed by either `R0: pass(<uuid>@<sha>)` in `review.md`,
-    or the human-accepted exception `R0: human-accept(@<sha>)` in `review.md`
-    plus `Approval: R0 residual risk accepted for <sha> — <reason>` in `run-log.md`.
-    Human-accept is never a reviewer pass. CP-1 approval for the exact contract
-    commit is still required. See SKILL.md for open-item rulings.md details.
-    After that freeze, defer execution to
-    `pipeline-run.mjs plan`; workers do the assigned work. Never hand-tick
-    task Done boxes. `requires: [tasks]` is a validation dependency, not
-    authorization to execute tasks.
-    Read context files only as needed to prepare the package.
+    Stop unless R0 is closed by `R0: pass(<uuid>@<sha>)` or `R0: human-accept(@<sha>)` in `review.md`. Then `pipeline-run.mjs plan` reads the DAG and reports dispatch; never hand-edit Done/check boxes or scheduling state. Structural freeze-check is a validation dependency, not authorization to execute tasks.
