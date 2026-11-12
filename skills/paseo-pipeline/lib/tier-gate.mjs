@@ -99,7 +99,7 @@ export const TIER_RULES = [
   '- Tier 1：≤3 个源文件、单一作用域；测试和文档不计数 → 当前会话修改并验证，每条需求自检并提供测试输出。',
   '- Tier 2：>3 个源文件、跨 2 个作用域，或硬风险：持久化/schema 迁移；生产外部写入或部署；认证/授权/安全；跨请求/进程并发或幂等性 → /paseo-handoff 或授权 worktree。',
   '- Tier 3：草拟或冻结 DAG 有 ≥4 个任务且 maxWidth≥2、有真实并发 → /paseo-pipeline；freeze-check 确认；不得拆分凑数。',
-  '声明 Tier 2 后，下一步直接 /paseo-handoff；不要先在主 checkout Write/Edit（含设计文档、spec），那会被闸门拒绝并浪费一轮。',
+  '声明 Tier 2 后，下一步直接 /paseo-handoff；不要先在主 checkout 改源文件，那会被闸门拒绝并浪费一轮。',
   '「没有并发 DAG」只能排除 Tier 3，不能推出 Tier 1；拿不准是否触及硬风险时取 Tier 2。',
   '开工后发现范围变大，立刻停手升级，不在原通道硬撑。',
   '用 Bash（sed -i、重定向、heredoc、patch）改文件同样算改文件，同样要先分级；Stop 时会核对主 checkout 的实际改动。',
@@ -221,7 +221,7 @@ const UNCOUNTED = (rel) => {
   const ext = path.extname(base).toLowerCase();
   const isTest = parts.some((part) => ['test', 'tests', '__tests__', 'spec', 'e2e', 'fixtures'].includes(part))
     || /(?:\.test\.|\.spec\.|_test\.)/i.test(base);
-  const isDoc = (parts[0] === 'docs' && parts.length > 1) || ['.md', '.mdx'].includes(ext) && parts.length > 1;
+  const isDoc = (parts[0] === 'docs' && parts.length > 1) || ['.md', '.mdx'].includes(ext);
   return isTest || isDoc;
 };
 const EXEMPT = (rel) => rel === 'openspec' || rel.startsWith('openspec/')
@@ -673,7 +673,7 @@ export function assessTierGate({ target, sessionId, declared, declarationStatus,
         reason: [
           '[tier-gate] 你声明的是 Tier 2，但当前仍在主 checkout（main）原地写业务文件。',
           'Tier 2 必须在 /paseo-handoff 或授权 worktree 里执行，不能在主 checkout 硬撑。',
-          '设计文档、spec、方案草稿同样算业务文件：声明 Tier 2 后不要先在主 checkout 落盘，把内容写进交接，由 worktree 里的 Agent 落盘。',
+          '测试和文档不计数、不受闸门拦截；源文件交给 worktree 里的 Agent 落盘。',
           `声明：tier=2 files=${planned.join('、')}`,
           '先停手：把已确认的计划文件与验收命令写进交接，再在隔离环境里开工；若判断有误，先输出修正后的 TIER-PLAN 声明。',
           HANDOFF_SAMPLE,

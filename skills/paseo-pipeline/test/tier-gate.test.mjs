@@ -205,7 +205,23 @@ test('同包不同目录不算跨作用域（单目录仍按包根判定）', ()
 test('非工作区布局退化为顶层目录；根目录文件算 "."', () => withState(() => {
   const root = makeRepo();
   assert.equal(write(root, 'a').verdict, 'allow'); // src/a
-  assert.equal(assessTierGate({ target: path.join(root, 'README.md'), sessionId: 's1' }).verdict, 'ask');
+  assert.equal(assessTierGate({ target: path.join(root, 'package.json'), sessionId: 's1' }).verdict, 'ask');
+}));
+
+test('根目录 Markdown 属于文档，不计数也不算第二个作用域', () => withState(() => {
+  const root = makeRepo();
+  assert.equal(write(root, 'a').verdict, 'allow'); // src/a
+  assert.equal(assessTierGate({ target: path.join(root, 'README.md'), sessionId: 's1' }).verdict, 'allow');
+  assert.equal(assessTierGate({ target: path.join(root, 'CLAUDE.md'), sessionId: 's1' }).verdict, 'allow');
+}));
+
+test('Tier 2 拒绝文案与测试/文档不计数一致', () => withState(() => {
+  const root = makeRepo();
+  const v = assessTierGate({ target: path.join(root, 'src', 'a.ts'), sessionId: 's1', declared: { tier: 2, files: ['src/a.ts'] } });
+  assert.equal(v.verdict, 'deny');
+  assert.doesNotMatch(v.reason, /同样算业务文件/);
+  assert.match(v.reason, /测试和文档不计数/);
+  assert.doesNotMatch(TIER_RULES, /含设计文档、spec/);
 }));
 
 test('scopeKey：工作区根取前两段，其余取顶层目录', () => {
@@ -550,7 +566,7 @@ test('开工前声明：Tier 2 在主 checkout 原地写 → deny，指向 hando
   assert.equal(v.verdict, 'deny');
   assert.match(v.reason, /Tier 2/);
   assert.match(v.reason, /worktree/);
-  assert.match(v.reason, /设计文档/);
+  assert.match(v.reason, /源文件交给 worktree/);
 }));
 
 test('TIER_RULES：声明 Tier 2 后直接 handoff，不先写主 checkout', () => {
