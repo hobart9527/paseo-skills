@@ -5,11 +5,8 @@ Contract: `<tasks.md + spec paths>`. Write scope: `<exact frozen scope>`.
 Frozen Verify: `<command>`. Scenarios: `<scenarios>`.
 Role trailer value: `gongbu` (or the profile the main session selected).
 
-You own the whole task: write the tests, write the implementation, and leave the
-frozen Verify green. Tests and implementation may be written in either order — there
-is no separate test author and no per-task reviewer. The final integrated review is
-where quality is judged, so write tests that would catch the behaviour actually going
-wrong, not tests that merely touch the code.
+You own the task: write tests and implementation, then leave frozen Verify green.
+Either order is allowed. Test the behavior that could go wrong, not mere code contact.
 
 ## Hook installation safety (main session)
 
