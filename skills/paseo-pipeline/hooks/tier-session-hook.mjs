@@ -9,8 +9,8 @@ import { TIER_RULES, skipInjection, logHookError } from '../lib/tier-gate.mjs';
 export const SESSION_CONTEXT = [
   '[分级规则·会话级] 本会话改文件前必须先分级并声明，不经用户允许不得越级。',
   TIER_RULES,
-  '声明写成一行 `TIER-PLAN: tier=1 files=src/a.ts,src/b.ts scope=src`；闸门在首次业务写入前按这行判定，计划超限或跨作用域会直接拒绝。',
-  '主 checkout 上同一会话写到第 4 个业务文件，或跨到第 2 个作用域（packages/web、apps/api 等工作区包；顶层 src/test/tests/__tests__/spec/e2e 合并为一个作用域，其余按顶层目录）时，会弹出确认；30 分钟空闲重置账本不代表该作用域已获批准；Stop 时还会核对实际改动。',
+  '声明写成一行 `TIER-PLAN: tier=1 files=packages/web/src/a.ts,packages/web/src/b.ts scope=packages/web`；测试和文档可列出但不计数，闸门首次写入前按计划判定。',
+  '主 checkout 上同一会话写到第 4 个源文件，或跨到第 2 个作用域（packages/web、apps/api 等工作区包；顶层目录其余按顶层目录）时，会弹出确认；30 分钟空闲重置账本不代表该作用域已获批准；Stop 时还会核对实际改动。',
 ].join('\n');
 
 async function main() {

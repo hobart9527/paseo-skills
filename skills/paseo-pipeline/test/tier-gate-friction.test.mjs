@@ -167,15 +167,14 @@ test('src/ + test/ are one scope even in a flat repository', () => withState(() 
   assert.equal(verdict.verdict, 'allow');
 }));
 
-test('src/ + docs/ is still a cross-scope split', () => withState(() => {
+test('src/ + docs/ are one source scope because docs do not count', () => withState(() => {
   const root = makeRepo();
   const verdict = assessTierGate({
     target: path.join(root, 'src/a.ts'),
     sessionId: 'mixed',
     declared: { tier: 1, files: ['src/a.ts', 'docs/guide.md'] },
   });
-  assert.equal(verdict.verdict, 'deny');
-  assert.match(verdict.reason, /2 个作用域/);
+  assert.equal(verdict.verdict, 'allow');
 }));
 
 test('scopeKey keeps genuine package separation', () => {
@@ -227,6 +226,16 @@ test('Stop churn does not fire for repeated edits under docs/prototypes and docs
     const verdict = assessStop({ cwd: root, sessionId: 'docs' });
     assert.equal(verdict.verdict, 'ok', `round ${round}`);
   }
+}));
+
+test('Stop assessment ignores test and doc files', () => withState(() => {
+  const root = makeRepo();
+  takeSnapshot({ cwd: root, sessionId: 'ignored' });
+  fs.mkdirSync(path.join(root, 'other', 'tests'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'other', 'tests', 'a.test.ts'), 'test');
+  fs.writeFileSync(path.join(root, 'docs', 'guide.md'), 'doc');
+  assert.equal(assessStop({ cwd: root, sessionId: 'ignored' }).verdict, 'ok');
 }));
 
 test('Stop churn still fires for repeated business-file edits', () => withState(() => {

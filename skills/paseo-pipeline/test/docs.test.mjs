@@ -7,7 +7,7 @@ test('skill documents converged core and hard limits', () => {
   const text = read('SKILL.md');
   for (const needle of ['Vertical slices', 'Narrow Verify', 'One worker per task', 'Wave 0', 'finish notification', 'merge-task.mjs', 'freeze-check.mjs', 'worker', 'integrated', 'CP-2']) assert.ok(text.includes(needle), needle);
   // The prompt is allowed room to explain the model; it is not padded to a budget.
-  assert.ok(text.length < 22000);
+  assert.ok(text.length < 22200);
 });
 test('pipeline prompts align execution, contract, review, and handoff rules', () => {
   const schema = read('openspec-schema/schema.yaml');
@@ -29,9 +29,10 @@ test('pipeline prompts align execution, contract, review, and handoff rules', ()
   assert.match(approvals, /records who ran it/);
   assert.match(approvals, /Push and history rewrite need their own approval/);
   const tier2 = read('../../docs/tier2-reviewer-brief.md');
-  assert.match(tier2, /`REQUIREMENT_GAP`: realistic wrong outcome from undefined behavior; never code-fix loop/);
-  assert.match(tier2, /Human disposition only at blocking severity/);
-  assert.match(tier2, /Advisory evidence for the human's merge decision, not a merge gate\./);
+  assert.match(tier2, /Requirement matrix \(primary\)/);
+  assert.match(tier2, /Baseline \(fixed 4 rows/);
+  assert.match(tier2, /Spec questions/);
+  assert.match(tier2, /not a merge gate/);
   for (const file of ['templates/reviewer.md', 'templates/final-recovery.md', 'SKILL.md']) {
     const text = read(file);
     assert.match(text, /CONTRACT_GAP|REQUIREMENT_GAP/);
@@ -42,7 +43,7 @@ test('pipeline prompts align execution, contract, review, and handoff rules', ()
   const sessionHook = read('hooks/tier-session-hook.mjs');
   const reminderHook = read('hooks/tier-reminder-hook.mjs');
   for (const text of [sessionHook, reminderHook]) {
-    assert.match(text, /src\/test\/tests\/__tests__\/spec\/e2e/);
+    assert.match(text, /测试和文档可列出但不计数/);
     assert.match(text, /空闲重置账本不代表/);
     assert.match(text, /已获批准/);
   }
@@ -159,7 +160,7 @@ test('briefs carry wait backstop, reviewer containment and minimal-contract rule
   assert.match(tasks, /merge 仍要求目标 Done/);
   assert.match(schema, /Concurrent tasks have fully disjoint Write scopes/);
   assert.match(reviewer, /verify one authoritative contract is frozen and reachable before consumer dispatch/);
-  assert.match(reviewer, /do not require internal DTO fields or signatures to be repeated as behavioral scenarios/);
+  assert.match(reviewer, /do not require internal DTO fields or signatures unless a requirement or decision makes them observable/);
   assert.match(reviewer, /ambiguous behavior or interface that can produce incompatible work is a BLOCKER/);
   assert.match(worker, /If required interface shape, behavior, or a decision is missing or ambiguous, return `blocked:`/);
   for (const brief of ['templates/author.md', 'templates/reviewer.md', 'templates/worker.md']) {
@@ -566,20 +567,14 @@ test('R0 checks the Verify oracle and amendment R0 is delta-only', () => {
 
 test('Tier 2 review is advisory, requirement-anchored and bounded by user authorization', () => {
   const brief = fs.readFileSync(path.join(dir, '..', '..', 'docs', 'tier2-reviewer-brief.md'), 'utf8');
-  assert.match(brief, /at most 5 acceptance points from user's own words or approved spec/);
-  assert.match(brief, /Risk watchlist/);
-  assert.match(brief, /Read-only behavior/);
-  assert.match(brief, /`DEVIATION`/);
-  assert.match(brief, /`REQUIREMENT_GAP`/);
-  assert.match(brief, /`ENHANCEMENT`/);
-  assert.match(brief, /only this can be `BLOCKER`/);
-  assert.match(brief, /`light`: UI, local state/);
-  assert.match(brief, /one pass and at most one recheck/);
-  assert.match(brief, /At most 1 reviewer; light 1 verdict; heavy initial verdict plus at most 1 recheck/);
-  assert.match(brief, /new findings are `FOLLOWUP`/);
-  assert.match(brief, /Advisory evidence for the human's merge decision, not a merge gate\./);
-  assert.match(brief, /`INCOMPLETE` only if target unreadable or budget expires/);
+  for (const needle of ['Requirement matrix (primary)', 'Baseline (fixed 4 rows', 'Spec questions', 'not a merge gate', 'only if target unreadable']) assert.ok(brief.includes(needle), needle);
+  assert.doesNotMatch(brief, /Risk watchlist|light.*heavy|REQUIREMENT_GAP|DEVIATION|ENHANCEMENT/);
+  assert.match(brief, /Read-only/);
+  assert.match(brief, /at most one recheck/);
   const handoff = fs.readFileSync(path.join(dir, '..', '..', 'docs', 'tier2-handoff-brief.md'), 'utf8');
+  assert.match(handoff, /\*\*Requirements:\*\*/);
+  assert.match(handoff, /Review only when change touches a hard risk/);
+  assert.match(handoff, /per-R evidence and test output/);
   assert.match(handoff, /\*\*Authorization:\*\*/);
   assert.match(handoff, /BLOCKED \(scope expansion\)/);
 });
@@ -622,7 +617,8 @@ test('review guidance reflects merge metadata and independent review', () => {
   assert.match(reviewer, /realistic ways each Verify could pass/);
   assert.match(reviewer, /Script checks establish only their stated properties/);
   assert.match(reviewer, /Lint and typecheck do not replace standards review/);
-  assert.match(reviewer, /keyboard and focus, accessibility/);
+  assert.match(reviewer, /keyboard\/focus, accessibility and responsive layout only where a SCEN, acceptance row or named standard covers them/);
+  assert.match(reviewer, /otherwise treat added expectations as ENHANCEMENT/);
 });
 
 test('task template and schema distinguish structural exemptions from review', () => {
@@ -653,7 +649,7 @@ test('FINAL depth follows the diff content and R0 rulings have a record format',
   const reviewer = read('templates/reviewer.md');
   assert.match(reviewer, /Match depth to what the diff actually changes/);
   assert.match(reviewer, /Rendered UI/);
-  assert.match(reviewer, /Do not skip a part because its task was labelled `mechanical`/);
+  assert.match(reviewer, /Do not skip a covered part because its task was labelled `mechanical`/);
   assert.match(read('SKILL.md'), /R0-<round>-<n> <BLOCKER\|NIT> <accepted\|rejected\|fixed>/);
 });
 
