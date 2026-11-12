@@ -371,7 +371,7 @@ Tier 钩子一行同理：删的是 `assessStop` 把 Git 脏文件写回 `seg.fi
 | approval-hub `unified-file-and-parser-infrastructure` | 15 任务 Done，FINAL 3 轮，每次修复引发 1-2 轮完整增量 R0；停在 FINAL BLOCKED，28.5h 后主线 0 行 | FINAL 无上限无出口；增量 R0 做成整包评审 |
 | paseo-skills Tier 2 `pipeline-cleanup` | 5 个 reviewer、9 次裁决全 BLOCKED、0 PASS，11h16m 后放弃；blocker 在同一缺陷族的 6 处移动。`fix-restore`：同类措辞 blocker 4 轮，而独立复检 PASS，无规则可解 | 「最多 2 次复检」按会话计，换 reviewer 即清零 |
 
-文本根因：`final-recovery.md` 旧步骤 5 写「再发现 blocker 则重复步骤 3-5」（无上限）；`reviewer.md` 称 FINAL 为「唯一代码质量门」，等于无界搜索；R0 有 2 轮上限与 `R0: human-accept`，FINAL 两者皆无；`tier2-reviewer-brief.md` 的复检上限按会话计。
+文本根因：the former FINAL recovery template 旧步骤 5 写「再发现 blocker 则重复步骤 3-5」（无上限）；`reviewer.md` 称 FINAL 为「唯一代码质量门」，等于无界搜索；R0 有 2 轮上限与 `R0: human-accept`，FINAL 两者皆无；`tier2-reviewer-brief.md` 的复检上限按会话计。
 
 规则变更（按层归属，评审只验证、不生产质量）：
 - FINAL = 符合性裁决：矩阵（SCEN / 验收行 / 命名标准 × MET|NOT_MET|UNVERIFIABLE）；blocker 必须挂到矩阵行并带反例，挂不上即非 blocker；同类缺陷一轮算一个根因。

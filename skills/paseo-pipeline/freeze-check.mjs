@@ -770,7 +770,7 @@ if (!structural) {
 }
 
 // Cross-change overlap: another change's integration branch that already touches files in this
-// change's Write scope will collide at CP-2. Advisory only (LESSONS §12): never blocks, any git
+// change's Write scope will collide at CP-2. Advisory only (docs/history/LESSONS.md §12): never blocks, any git
 // error or non-repo is silently skipped. Runs in both modes.
 {
   const refs = gitIn(changeDir, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/integration/']);

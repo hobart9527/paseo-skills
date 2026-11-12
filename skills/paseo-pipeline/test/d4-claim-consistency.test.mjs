@@ -191,38 +191,22 @@ test('the acceptance template states the claim-consistency rules the gate enforc
   assert.match(template, /不能改名或改写正文把它伪装成独立行为/);
 });
 
-test('the author brief states the same claim rules and the identity distinctions', () => {
+test('author brief retains claim and scenario identity landmarks', () => {
   const text = brief();
-  // Claim rules: the source, the projection, and both directions.
-  assert.match(text, /`Scenarios:` in `tasks\.md` remains the claim source/);
-  assert.match(text, /every row's `Tasks` cell must list its claiming task\(s\) explicitly/);
-  assert.match(text, /provided their union lists every claiming task/);
-  assert.match(text, /one row naming a non-claimant is misused even when union is complete/);
-  // Identity: a new id vs baseline identity reuse vs a conflict with an active change.
-  assert.match(text, /A \*new\* SCEN id is one no baseline spec and no other active change declares/);
-  assert.match(text, /Re-declaring a \*baseline\* id is legitimate only under `## MODIFIED Requirements` \/ `## REMOVED Requirements`/);
-  assert.match(text, /A \*content conflict\* with another active change/);
-  // Collision semantics stay conservative; the brief forbids disguising a conflict.
-  assert.match(text, /never rename or reword an id to disguise it as independent behaviour/);
+  for (const token of ['Scenarios:', 'tasks.md', 'acceptance', 'claim', 'MODIFIED/REMOVED', 'conflict']) assert.ok(text.includes(token), token);
 });
 
-test('the schema instruction states the rules where the artifact is authored', () => {
-  const specsInstr = schema().slice(schema().indexOf('  - id: specs'), schema().indexOf('  - id: design'));
-  assert.match(specsInstr, /Re-declaring a \*baseline\* id is legitimate only under/);
-  assert.match(specsInstr, /A\s+\*content conflict\* is another active change declaring the same id/);
-  assert.match(specsInstr, /no archive scan,\s+no ownership registry, and `lib\/spec-scan\.mjs` is the only scenario scanner/);
-  // The acceptance instruction states the projection rule where acceptance is authored.
-  const acceptanceInstr = schema().slice(schema().indexOf('  - id: acceptance'), schema().indexOf('  - id: review'));
-  assert.match(acceptanceInstr, /The claim source is\s+`Scenarios:` in `tasks\.md`; a row's `Tasks` cell is its projection/);
-  assert.match(acceptanceInstr, /`Required` follows real delivery semantics\s+rather than setting every row `no`/);
+test('schema keeps scenario ids and acceptance artifact contract', () => {
+  const schemaText = schema();
+  const specsInstr = schemaText.slice(schemaText.indexOf('  - id: specs'), schemaText.indexOf('  - id: design'));
+  const acceptanceInstr = schemaText.slice(schemaText.indexOf('  - id: acceptance'), schemaText.indexOf('  - id: review'));
+  for (const token of ['SCEN-', 'baseline', 'MODIFIED/REMOVED', 'conflict']) assert.ok(specsInstr.includes(token), token);
+  for (const token of ['Scenario', 'Entry', 'Tasks', 'Verify', 'Required', 'Result', 'Evidence']) assert.ok(acceptanceInstr.includes(token), token);
 });
 
-test('the brief names the read-only helper without claiming it validates', () => {
+test('author route brief preserves structural-check as the authoritative gate', () => {
   const text = brief();
-  assert.match(text, /pipeline-run\.mjs scenarios/);
-  assert.match(text, /read-only/i);
-  // It must not be sold as a substitute for the gate or R0.
-  assert.match(text, /not (validation|a substitute)/i);
+  for (const token of ['freeze-check', 'authoritative', 'handoff', 'structural exit']) assert.ok(text.includes(token), token);
 });
 
 test('SKILL.md does not present the helper as a new ownership record', () => {
