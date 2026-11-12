@@ -97,14 +97,15 @@ const PROTECTED_BRANCHES = new Set(['main', 'master']);
 
 export const TIER_RULES = [
   '计划格式：TIER-PLAN: tier=1 files=packages/web/src/a.tsx scope=packages/web（真实路径；测试和文档可列出但不计数）。',
-  'Tier 1：≤3 个源文件、单一作用域、无硬风险 → 当前会话修改、验证，并逐条自检 R1..Rn。',
-  'Tier 2：>3 个源文件、跨作用域，或硬风险（持久化/schema 迁移；生产外部写入或部署；认证/授权/安全；跨请求/进程并发或幂等性）→ /paseo-handoff 或授权 worktree。',
+  'Tier 1：≤3 个源文件、单一作用域 → 当前会话修改、验证，并逐条自检 R1..Rn。',
+  'Tier 2：>3 个源文件或跨作用域 → 先隔离到 worktree，主会话自己进去做；只有整体可独立完成或需要并行时才 /paseo-handoff。',
   'Tier 3：草拟 DAG 有 ≥4 个任务且 maxWidth≥2 → /paseo-pipeline。',
-  '操作：声明 Tier 2 后直接交接；Bash 写入同样计数；范围扩大就停手升级。',
+  '硬风险（持久化/schema 迁移；生产外部写入或部署；认证/授权/安全；并发或幂等性）不是档位：由持有上下文的会话执行，先有用户原话授权和回滚办法，做完给验证证据。',
+  '操作：Bash 写入同样计数；范围扩大就停手升级；不改文件的操作无需声明。',
   '纯评估、纯讨论不需要声明。',
 ].join('\n');
 
-const TIER_2_DEFINITION = 'Tier 2：>3 个源文件、跨作用域，或硬风险（持久化/schema 迁移；生产外部写入或部署；认证/授权/安全；跨请求/进程并发或幂等性）→ /paseo-handoff 或授权 worktree。';
+const TIER_2_DEFINITION = 'Tier 2：>3 个源文件或跨作用域 → 先隔离到 worktree，主会话自己进去做；整体可独立完成或需要并行时才 /paseo-handoff。';
 const TIER_3_DEFINITION = 'Tier 3：草拟 DAG 有 ≥4 个任务且 maxWidth≥2 → /paseo-pipeline。';
 const PLAN_EXAMPLE = 'TIER-PLAN: tier=1 files=packages/web/src/a.tsx scope=packages/web';
 
@@ -340,7 +341,7 @@ function denyReason(count, limit, files, scopes = []) {
     '先停手，按范围改走对应通道（不要继续原地写）：',
     TIER_2_DEFINITION,
     TIER_3_DEFINITION,
-    '已写的改动保留在工作区，不要回滚；把它们列进交接内容的「当前状态」。',
+    '已写的改动保留在工作区，不要回滚；若选择交接，把它们列进交接内容的「当前状态」。',
     '这是需要用户确认的越级写入：用户若在确认框放行才继续；不要改用 Bash 等方式绕过。',
   ].join('\n');
 }
@@ -612,7 +613,7 @@ function planDenyReason(declared, files, scopes, limit) {
 // 交接样例直接写进拒绝文案：只说「用 /paseo-handoff」时，模型要么原地硬撑，要么写出
 // 落不进下游上下文的交接。样例让它在被拒绝的当下就能照抄。
 const HANDOFF_SAMPLE = [
-  '调用样例：/paseo-handoff "把 <change> 交给 worktree 里的 Agent" ',
+  '确需交接时的样例：/paseo-handoff "把 <change> 交给 worktree 里的 Agent" ',
   '（或在 Paseo 里 create_agent 到新的 worktree），交接内容至少包含：',
   '- ## Task / ## Current state',
   '- ## What was tried（已试过什么、为什么不通，避免下游重走死路）',
@@ -676,9 +677,9 @@ export function assessTierGate({ target, sessionId, declared, declarationStatus,
         reason: [
           '[tier-gate] 你声明的是 Tier 2，但当前仍在主 checkout 原地写业务文件。',
           TIER_2_DEFINITION,
-          '测试和文档不计数、不受闸门拦截；源文件交给 worktree 里的 Agent 落盘。',
+          '测试和文档不计数、不受闸门拦截；源文件请在 linked worktree 里改（主会话自己进去即可，闸门在那里放行）。',
           `声明：tier=2 files=${planned.join('、')}`,
-          '先停手：把已确认的计划文件与验收命令写进交接，再在隔离环境里开工；若判断有误，先输出修正后的 TIER-PLAN 声明。',
+          '先停手：进 worktree 开工；只有整体可独立完成或需要并行才交接，交接须写明计划文件与验收命令。若判断有误，先输出修正后的 TIER-PLAN 声明。',
           HANDOFF_SAMPLE,
         ].join('\n'),
       };

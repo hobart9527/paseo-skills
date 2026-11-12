@@ -1,5 +1,7 @@
 # Tier 2 Handoff Brief
 
+Use only when the work can be done whole by an independent session, or needs parallel runs. Isolation alone (a worktree the main session enters itself) does not need a handoff. Hard-risk operations (deploy, external write, migration) stay with the session that holds the context.
+
 ## Assignment
 - **Workspace:** `<absolute path>`
 - **Branch:** `<branch>`

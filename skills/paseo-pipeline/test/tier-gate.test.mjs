@@ -566,8 +566,18 @@ test('开工前声明：Tier 2 在主 checkout 原地写 → deny，指向 hando
   assert.equal(v.verdict, 'deny');
   assert.match(v.reason, /Tier 2/);
   assert.match(v.reason, /worktree/);
-  assert.match(v.reason, /源文件交给 worktree/);
+  assert.match(v.reason, /linked worktree/);
+  assert.match(v.reason, /主会话自己进去/);
 }));
+
+test('TIER_RULES：isolation is not delegation; hard risk is a checkpoint, not a tier', () => {
+  assert.match(TIER_RULES, /主会话自己进去做/);
+  assert.match(TIER_RULES, /只有整体可独立完成或需要并行时才 \/paseo-handoff/);
+  assert.match(TIER_RULES, /硬风险[^\n]*不是档位/);
+  assert.match(TIER_RULES, /用户原话授权和回滚办法/);
+  assert.doesNotMatch(TIER_RULES, /声明 Tier 2 后直接交接/);
+  assert.doesNotMatch(TIER_RULES, /硬风险[^\n]*→ \/paseo-handoff/);
+});
 
 test('TIER_RULES：hooks share compact tier criteria and plan format', () => {
   for (const token of ['TIER-PLAN:', 'packages/web/src/a.tsx', 'Tier 1', 'Tier 2', 'Tier 3', '/paseo-handoff', '/paseo-pipeline', '纯评估、纯讨论不需要声明']) {
