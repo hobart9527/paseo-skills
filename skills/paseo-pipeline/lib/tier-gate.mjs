@@ -96,14 +96,17 @@ export const DEFAULT_TURNS = 3;
 const PROTECTED_BRANCHES = new Set(['main', 'master']);
 
 export const TIER_RULES = [
-  '- Tier 1：≤3 个源文件、单一作用域；测试和文档不计数 → 当前会话修改并验证，每条需求自检并提供测试输出。',
-  '- Tier 2：>3 个源文件、跨 2 个作用域，或硬风险：持久化/schema 迁移；生产外部写入或部署；认证/授权/安全；跨请求/进程并发或幂等性 → /paseo-handoff 或授权 worktree。',
-  '- Tier 3：草拟或冻结 DAG 有 ≥4 个任务且 maxWidth≥2、有真实并发 → /paseo-pipeline；freeze-check 确认；不得拆分凑数。',
-  '声明 Tier 2 后，下一步直接 /paseo-handoff；不要先在主 checkout 改源文件，那会被闸门拒绝并浪费一轮。',
-  '「没有并发 DAG」只能排除 Tier 3，不能推出 Tier 1；拿不准是否触及硬风险时取 Tier 2。',
-  '开工后发现范围变大，立刻停手升级，不在原通道硬撑。',
-  '用 Bash（sed -i、重定向、heredoc、patch）改文件同样算改文件，同样要先分级；Stop 时会核对主 checkout 的实际改动。',
+  '计划格式：TIER-PLAN: tier=1 files=packages/web/src/a.tsx scope=packages/web（真实路径；测试和文档可列出但不计数）。',
+  'Tier 1：≤3 个源文件、单一作用域、无硬风险 → 当前会话修改、验证，并逐条自检 R1..Rn。',
+  'Tier 2：>3 个源文件、跨作用域，或硬风险（持久化/schema 迁移；生产外部写入或部署；认证/授权/安全；跨请求/进程并发或幂等性）→ /paseo-handoff 或授权 worktree。',
+  'Tier 3：草拟 DAG 有 ≥4 个任务且 maxWidth≥2 → /paseo-pipeline。',
+  '操作：声明 Tier 2 后直接交接；Bash 写入同样计数；范围扩大就停手升级。',
+  '纯评估、纯讨论不需要声明。',
 ].join('\n');
+
+const TIER_2_DEFINITION = 'Tier 2：>3 个源文件、跨作用域，或硬风险（持久化/schema 迁移；生产外部写入或部署；认证/授权/安全；跨请求/进程并发或幂等性）→ /paseo-handoff 或授权 worktree。';
+const TIER_3_DEFINITION = 'Tier 3：草拟 DAG 有 ≥4 个任务且 maxWidth≥2 → /paseo-pipeline。';
+const PLAN_EXAMPLE = 'TIER-PLAN: tier=1 files=packages/web/src/a.tsx scope=packages/web';
 
 function stateDir() {
   return process.env.PIPELINE_TIER_GATE_STATE || path.join(os.tmpdir(), 'paseo-tier-gate');
@@ -335,8 +338,8 @@ function denyReason(count, limit, files, scopes = []) {
     scopeLine,
     `已写：${files.join('、')}`,
     '先停手，按范围改走对应通道（不要继续原地写）：',
-    '- Tier 2（>3 个源文件、跨 2 个作用域，或硬风险：持久化/schema 迁移；生产外部写入或部署；认证/授权/安全；跨请求/进程并发或幂等性）：用 /paseo-handoff 或授权 worktree。',
-    '- Tier 3：草拟或冻结 DAG 有 ≥4 个任务且 maxWidth≥2、有真实并发 → /paseo-pipeline；不得拆分凑数。',
+    TIER_2_DEFINITION,
+    TIER_3_DEFINITION,
     '已写的改动保留在工作区，不要回滚；把它们列进交接内容的「当前状态」。',
     '这是需要用户确认的越级写入：用户若在确认框放行才继续；不要改用 Bash 等方式绕过。',
   ].join('\n');
@@ -599,8 +602,8 @@ function planDenyReason(declared, files, scopes, limit) {
     `[tier-gate] 动手前声明的计划已超出 Tier 1：${files.length} 个源文件、${scopes.length} 个作用域（Tier 1 上限 ${limit} 个源文件、单一作用域；测试和文档不计数）。`,
     `声明：tier=${declared.tier} files=${files.join('、')}`,
     '首次写入前先选对通道，不要继续原地写：',
-    '- Tier 2：>3 个源文件、跨 2 个作用域，或硬风险：持久化/schema 迁移；生产外部写入或部署；认证/授权/安全；跨请求/进程并发或幂等性 → /paseo-handoff 或授权 worktree。',
-    '- Tier 3：草拟或冻结 DAG 有 ≥4 个任务且 maxWidth≥2、有真实并发 → /paseo-pipeline；freeze-check 确认；不得拆分凑数。',
+    TIER_2_DEFINITION,
+    TIER_3_DEFINITION,
     HANDOFF_SAMPLE,
     '如果只是声明写错了（实际计划更小），先输出修正后的 TIER-PLAN 声明再动手；不要改用其他方式绕过。',
   ].join('\n');
@@ -671,8 +674,8 @@ export function assessTierGate({ target, sessionId, declared, declarationStatus,
       return {
         verdict: 'deny',
         reason: [
-          '[tier-gate] 你声明的是 Tier 2，但当前仍在主 checkout（main）原地写业务文件。',
-          'Tier 2 必须在 /paseo-handoff 或授权 worktree 里执行，不能在主 checkout 硬撑。',
+          '[tier-gate] 你声明的是 Tier 2，但当前仍在主 checkout 原地写业务文件。',
+          TIER_2_DEFINITION,
           '测试和文档不计数、不受闸门拦截；源文件交给 worktree 里的 Agent 落盘。',
           `声明：tier=2 files=${planned.join('、')}`,
           '先停手：把已确认的计划文件与验收命令写进交接，再在隔离环境里开工；若判断有误，先输出修正后的 TIER-PLAN 声明。',

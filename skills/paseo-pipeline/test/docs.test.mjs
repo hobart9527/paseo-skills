@@ -43,16 +43,22 @@ test('pipeline prompts align execution, contract, review, and handoff rules', ()
   const sessionHook = read('hooks/tier-session-hook.mjs');
   const reminderHook = read('hooks/tier-reminder-hook.mjs');
   for (const text of [sessionHook, reminderHook]) {
-    assert.match(text, /测试和文档可列出但不计数/);
-    assert.match(text, /空闲重置账本不代表/);
-    assert.match(text, /已获批准/);
+    assert.ok(text.includes('TIER_RULES'));
+    assert.ok(text.includes('additionalContext'));
   }
+  assert.ok(fs.existsSync(path.join(dir, '..', '..', 'docs', 'tier2-handoff-brief.md')));
   const skill = read('SKILL.md');
   assert.match(skill, /business delivery complete does not mean workspace cleanup is complete/);
   assert.match(skill, /After archive moves the change directory, logs live under the archive path/);
   assert.match(skill, /cleanup` must receive `--change <name>`/);
-  const handoff = read('../../docs/tier2-handoff-brief.md');
-  assert.match(handoff, /user resumes parent session and asks for recovery/);
+  const handoffPath = path.join(dir, '..', '..', 'docs', 'tier2-handoff-brief.md');
+  assert.ok(fs.existsSync(handoffPath));
+  const handoff = fs.readFileSync(handoffPath, 'utf8');
+  const tierPrompt = read('lib/tier-gate.mjs') + read('hooks/tier-reminder-hook.mjs') + read('hooks/tier-session-hook.mjs');
+  for (const token of ['Requirement', 'Authorization', 'BLOCKED (scope expansion)', 'handoff-progress.md', 'persistence/schema migration', 'production external write', 'auth/authorization/security', 'cross-request/process concurrency', 'elapsed time is never completion']) {
+    assert.ok(handoff.includes(token), token);
+  }
+  for (const token of ['/paseo-handoff', '/paseo-pipeline', 'TIER-PLAN']) assert.ok(tierPrompt.includes(token), token);
 });
 
 test('skill documents the real handoff sequence and profile-notes override', () => {
@@ -571,12 +577,14 @@ test('Tier 2 review is advisory, requirement-anchored and bounded by user author
   assert.doesNotMatch(brief, /Risk watchlist|light.*heavy|REQUIREMENT_GAP|DEVIATION|ENHANCEMENT/);
   assert.match(brief, /Read-only/);
   assert.match(brief, /at most one recheck/);
-  const handoff = fs.readFileSync(path.join(dir, '..', '..', 'docs', 'tier2-handoff-brief.md'), 'utf8');
-  assert.match(handoff, /\*\*Requirements:\*\*/);
-  assert.match(handoff, /Review only when change touches a hard risk/);
-  assert.match(handoff, /per-R evidence and test output/);
-  assert.match(handoff, /\*\*Authorization:\*\*/);
-  assert.match(handoff, /BLOCKED \(scope expansion\)/);
+  const handoffPath = path.join(dir, '..', '..', 'docs', 'tier2-handoff-brief.md');
+  assert.ok(fs.existsSync(handoffPath));
+  const handoff = fs.readFileSync(handoffPath, 'utf8');
+  for (const token of ['Requirement', 'Authorization', 'BLOCKED (scope expansion)', 'handoff-progress.md', 'persistence/schema migration', 'production external write', 'auth/authorization/security', 'cross-request/process concurrency']) {
+    assert.ok(handoff.includes(token), token);
+  }
+  const tierPrompt = read('lib/tier-gate.mjs') + read('hooks/tier-reminder-hook.mjs') + read('hooks/tier-session-hook.mjs');
+  for (const token of ['/paseo-handoff', '/paseo-pipeline', 'TIER-PLAN']) assert.ok(tierPrompt.includes(token), token);
 });
 
 test('LESSONS records the review-convergence redesign with health metrics', () => {

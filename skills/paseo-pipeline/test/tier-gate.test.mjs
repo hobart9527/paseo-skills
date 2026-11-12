@@ -569,9 +569,12 @@ test('开工前声明：Tier 2 在主 checkout 原地写 → deny，指向 hando
   assert.match(v.reason, /源文件交给 worktree/);
 }));
 
-test('TIER_RULES：声明 Tier 2 后直接 handoff，不先写主 checkout', () => {
-  assert.match(TIER_RULES, /声明 Tier 2 后，下一步直接 \/paseo-handoff/);
-  assert.match(REMINDER, /声明 Tier 2 后，下一步直接 \/paseo-handoff/);
+test('TIER_RULES：hooks share compact tier criteria and plan format', () => {
+  for (const token of ['TIER-PLAN:', 'packages/web/src/a.tsx', 'Tier 1', 'Tier 2', 'Tier 3', '/paseo-handoff', '/paseo-pipeline', '纯评估、纯讨论不需要声明']) {
+    assert.ok(TIER_RULES.includes(token), token);
+    assert.ok(REMINDER.includes(token), token);
+  }
+  assert.ok(TIER_RULES.length < 800);
 });
 
 test('3 个源文件加 2 个测试和 1 个文档仍在 Tier 1；第 4 个源文件询问', () => withState(() => {

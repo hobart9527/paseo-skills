@@ -7,10 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { TIER_RULES, skipInjection, logHookError } from '../lib/tier-gate.mjs';
 
 export const SESSION_CONTEXT = [
-  '[分级规则·会话级] 本会话改文件前必须先分级并声明，不经用户允许不得越级。',
+  '[分级规则·会话级] 动手前声明 TIER-PLAN，并按以下规则选通道：',
   TIER_RULES,
-  '声明写成一行 `TIER-PLAN: tier=1 files=packages/web/src/a.ts,packages/web/src/b.ts scope=packages/web`；测试和文档可列出但不计数，闸门首次写入前按计划判定。',
-  '主 checkout 上同一会话写到第 4 个源文件，或跨到第 2 个作用域（packages/web、apps/api 等按工作区包，其余按顶层目录；测试和文档不计）时，会弹出确认；30 分钟空闲重置账本不代表该作用域已获批准；Stop 时还会核对实际改动。',
 ].join('\n');
 
 async function main() {
