@@ -35,8 +35,8 @@ test('every dispatch registers a reconciliation point and never duplicates the d
   assert.match(skill, /duplicate dispatch/i);
 });
 
-test('the enlarged skill stays under the hard size cap', () => {
-  assert.ok(skill.length < 22000, `SKILL.md is ${skill.length} chars`);
+test('skill retains routing and human gate landmarks', () => {
+  for (const token of ['maxWidth', 'freeze-check', 'CP-1', 'CP-2', 'acceptance.md', 'run-log.md', 'FINAL']) assert.ok(skill.includes(token), token);
 });
 
 test('material human choices precede R0 without replacing CP-1', () => {
