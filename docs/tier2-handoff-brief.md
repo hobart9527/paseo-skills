@@ -4,12 +4,12 @@
 - **Workspace:** `<absolute path>`
 - **Branch:** `<branch>`
 - **Base SHA:** `<full commit SHA>`
-- **Scope and acceptance:** `<files / behavior / tests>`
+- **Requirements:** `<R1..Rn in user's words> + files/scope`
 - **Authorization:** `<quote user's words and scope; if absent, no commit/merge/push>`.
 - **Pending decisions:** `<open product/design choices, each with a default>`. An open decision with no default is resolved by dispatcher before dispatch, not by implementer.
 
 ## Ownership and delivery
-- Dispatching session owns review dispatch. Human owns merge approval.
+- Review only when change touches a hard risk: persistence/schema migration; production external write or deploy; auth/authorization/security; cross-request/process concurrency or idempotency. Otherwise dispatcher accepts against per-R evidence and test output. Human owns merge approval.
 - No recursive handoff. Return blockers or incomplete work to dispatching session.
 - Process choices (commit granularity, order of items, test placement) are yours: take smallest option inside assigned scope and proceed. Return `BLOCKED` only when scope exceeds assignment or required information is missing.
 - Report with: `COMPLETE | BLOCKED | INCOMPLETE`; base and tip SHA; changed-file list; full-suite command with pass/fail counts at tip; red-then-green evidence per item; known gaps and simulated behavior. A failing test is reported as failing, never as fixture problem unless proven.

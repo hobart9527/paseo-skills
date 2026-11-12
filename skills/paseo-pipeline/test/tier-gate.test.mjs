@@ -205,7 +205,23 @@ test('同包不同目录不算跨作用域（单目录仍按包根判定）', ()
 test('非工作区布局退化为顶层目录；根目录文件算 "."', () => withState(() => {
   const root = makeRepo();
   assert.equal(write(root, 'a').verdict, 'allow'); // src/a
-  assert.equal(assessTierGate({ target: path.join(root, 'README.md'), sessionId: 's1' }).verdict, 'ask');
+  assert.equal(assessTierGate({ target: path.join(root, 'package.json'), sessionId: 's1' }).verdict, 'ask');
+}));
+
+test('根目录 Markdown 属于文档，不计数也不算第二个作用域', () => withState(() => {
+  const root = makeRepo();
+  assert.equal(write(root, 'a').verdict, 'allow'); // src/a
+  assert.equal(assessTierGate({ target: path.join(root, 'README.md'), sessionId: 's1' }).verdict, 'allow');
+  assert.equal(assessTierGate({ target: path.join(root, 'CLAUDE.md'), sessionId: 's1' }).verdict, 'allow');
+}));
+
+test('Tier 2 拒绝文案与测试/文档不计数一致', () => withState(() => {
+  const root = makeRepo();
+  const v = assessTierGate({ target: path.join(root, 'src', 'a.ts'), sessionId: 's1', declared: { tier: 2, files: ['src/a.ts'] } });
+  assert.equal(v.verdict, 'deny');
+  assert.doesNotMatch(v.reason, /同样算业务文件/);
+  assert.match(v.reason, /测试和文档不计数/);
+  assert.doesNotMatch(TIER_RULES, /含设计文档、spec/);
 }));
 
 test('scopeKey：工作区根取前两段，其余取顶层目录', () => {
@@ -262,7 +278,7 @@ test('tier-write-hook 进程：声明超限时首次写入直接 deny，不落�
   assert.equal(r.status, 0);
   const out = JSON.parse(r.stdout);
   assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
-  assert.match(out.hookSpecificOutput.permissionDecisionReason, /4 个文件/);
+  assert.match(out.hookSpecificOutput.permissionDecisionReason, /4 个源文件/);
   fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { content: 'TIER-PLAN: tier=1 files=src/a' } }));
   assert.equal(runGuardHook(payload, { PIPELINE_TIER_GATE_STATE: dir }).stdout.trim(), '');
 }));
@@ -527,7 +543,7 @@ test('开工前声明：计划超过 Tier 1 上限 → 首次写入就 deny', ()
   const declared = { tier: 1, files: ['src/a', 'src/b', 'src/c', 'src/d'] };
   const v = assessTierGate({ target: path.join(root, 'src', 'a'), sessionId: 's1', declared });
   assert.equal(v.verdict, 'deny');
-  assert.match(v.reason, /4 个文件/);
+  assert.match(v.reason, /4 个源文件/);
   assert.match(v.reason, /\/paseo-handoff/);
   // 拒绝的写入不占额度，也不会被记进账本。
   assert.equal(assessTierGate({ target: path.join(root, 'src', 'a'), sessionId: 's1' }).verdict, 'allow');
@@ -550,13 +566,41 @@ test('开工前声明：Tier 2 在主 checkout 原地写 → deny，指向 hando
   assert.equal(v.verdict, 'deny');
   assert.match(v.reason, /Tier 2/);
   assert.match(v.reason, /worktree/);
-  assert.match(v.reason, /设计文档/);
+  assert.match(v.reason, /源文件交给 worktree/);
 }));
 
 test('TIER_RULES：声明 Tier 2 后直接 handoff，不先写主 checkout', () => {
   assert.match(TIER_RULES, /声明 Tier 2 后，下一步直接 \/paseo-handoff/);
   assert.match(REMINDER, /声明 Tier 2 后，下一步直接 \/paseo-handoff/);
 });
+
+test('3 个源文件加 2 个测试和 1 个文档仍在 Tier 1；第 4 个源文件询问', () => withState(() => {
+  const root = makeRepo();
+  const paths = [
+    'packages/server/src/a.ts', 'packages/server/src/b.ts', 'packages/server/src/c.ts',
+    'packages/server/test/a.test.ts', 'packages/server/tests/extra.ts', 'packages/server/README.md',
+    'packages/server/src/a.test.ts', 'packages/server/src/b.spec.ts', 'packages/server/src/c_test.ts',
+  ];
+  const declared = { tier: 1, files: paths };
+  assert.equal(assessTierGate({ target: path.join(root, paths[0]), sessionId: 'tier-count', declared }).verdict, 'allow');
+  assert.equal(assessTierGate({ target: path.join(root, paths[1]), sessionId: 'tier-count' }).verdict, 'allow');
+  assert.equal(assessTierGate({ target: path.join(root, paths[2]), sessionId: 'tier-count' }).verdict, 'allow');
+  for (const file of paths.slice(3)) assert.equal(assessTierGate({ target: path.join(root, file), sessionId: 'tier-count' }).verdict, 'allow', file);
+  assert.equal(assessTierGate({ target: path.join(root, 'packages/server/src/d.ts'), sessionId: 'tier-count' }).verdict, 'ask');
+}));
+
+test('测试文件在另一顶层目录不触发跨作用域询问', () => withState(() => {
+  const root = makeRepo();
+  assert.equal(assessTierGate({ target: path.join(root, 'src', 'a.ts'), sessionId: 'cross-test' }).verdict, 'allow');
+  assert.equal(assessTierGate({ target: path.join(root, 'elsewhere', 'tests', 'b.test.ts'), sessionId: 'cross-test' }).verdict, 'allow');
+}));
+
+test('开工前声明：3 个源文件加测试文件通过', () => withState(() => {
+  const root = makeRepo();
+  const files = ['src/a.ts', 'src/b.ts', 'src/c.ts', 'elsewhere/tests/a.test.ts', 'docs/guide.md'];
+  const declared = { tier: 1, files };
+  assert.equal(assessTierGate({ target: path.join(root, files[0]), sessionId: 'plan-count', declared }).verdict, 'allow');
+}));
 
 test('开工前声明：合规计划放行，后续仍按已写文件计数', () => withState(() => {
   const root = makeRepo();
@@ -599,7 +643,8 @@ test('tier-reminder-hook 进程：非斜杠消息输出 additionalContext，斜�
   assert.match(REMINDER, /\/paseo-pipeline/);
   assert.match(REMINDER, /Bash/);
   assert.match(REMINDER, /TIER-PLAN: tier=1 files=/);
-  assert.match(REMINDER, /≤3 个业务文件/);
+  assert.match(REMINDER, /≤3 个源文件/);
+  assert.match(REMINDER, /测试和文档可列出但不计数/);
   assert.equal(run(JSON.stringify({ prompt: '/tdd' })).stdout.trim(), '');
   assert.equal(run('garbage').stdout.trim(), '');
   assert.equal(run(JSON.stringify({ prompt: '执行' }), { PIPELINE_TIER_REMINDER: 'off' }).stdout.trim(), '');

@@ -96,11 +96,11 @@ export const DEFAULT_TURNS = 3;
 const PROTECTED_BRANCHES = new Set(['main', 'master']);
 
 export const TIER_RULES = [
-  '- Tier 1：只改 ≤3 个业务文件、且在同一个作用域（packages/x、apps/x、services/x、crates/x、skills/x 按包根算，其余按顶层目录）内 → 当前会话修改并验证。',
-  '- Tier 2：计划超过 3 个文件，或跨 2 个作用域，或要动共享契约/持久化/并发/不可逆变更 → /paseo-handoff 或明确授权的 worktree Agent。',
-  '- Tier 3：仅当冻结 DAG 有 maxWidth>=2 且任务>=4 → /paseo-pipeline。',
-  '声明 Tier 2 后，下一步直接 /paseo-handoff；不要先在主 checkout Write/Edit（含设计文档、spec），那会被闸门拒绝并浪费一轮。',
-  '「没有并发 DAG」只能排除 Tier 3，不能推出 Tier 1；拿不准在 Tier 1/2 之间取 Tier 2。',
+  '- Tier 1：≤3 个源文件、单一作用域；测试和文档不计数 → 当前会话修改并验证，每条需求自检并提供测试输出。',
+  '- Tier 2：>3 个源文件、跨 2 个作用域，或硬风险：持久化/schema 迁移；生产外部写入或部署；认证/授权/安全；跨请求/进程并发或幂等性 → /paseo-handoff 或授权 worktree。',
+  '- Tier 3：草拟或冻结 DAG 有 ≥4 个任务且 maxWidth≥2、有真实并发 → /paseo-pipeline；freeze-check 确认；不得拆分凑数。',
+  '声明 Tier 2 后，下一步直接 /paseo-handoff；不要先在主 checkout 改源文件，那会被闸门拒绝并浪费一轮。',
+  '「没有并发 DAG」只能排除 Tier 3，不能推出 Tier 1；拿不准是否触及硬风险时取 Tier 2。',
   '开工后发现范围变大，立刻停手升级，不在原通道硬撑。',
   '用 Bash（sed -i、重定向、heredoc、patch）改文件同样算改文件，同样要先分级；Stop 时会核对主 checkout 的实际改动。',
 ].join('\n');
@@ -215,11 +215,20 @@ function turnsFromEnv() {
   return Number.isInteger(raw) && raw >= 1 ? raw : DEFAULT_TURNS;
 }
 
+const UNCOUNTED = (rel) => {
+  const parts = rel.split('/');
+  const base = parts.at(-1) ?? '';
+  const ext = path.extname(base).toLowerCase();
+  const isTest = parts.some((part) => ['test', 'tests', '__tests__', 'spec', 'e2e', 'fixtures'].includes(part))
+    || /(?:\.test\.|\.spec\.|_test\.)/i.test(base);
+  const isDoc = (parts[0] === 'docs' && parts.length > 1) || ['.md', '.mdx'].includes(ext);
+  return isTest || isDoc;
+};
 const EXEMPT = (rel) => rel === 'openspec' || rel.startsWith('openspec/')
-  || rel === '.superpowers' || rel.startsWith('.superpowers/');
-// docs/prototypes 与 docs/specs 是原型页与规格草稿：反复调整它们不是「原地改业务文件」，
-// 不应触发 Stop 的 churn 汇报。仍计入作用域/文件数判定（那是另一条规则）。
-const CHURN_EXEMPT = (rel) => EXEMPT(rel)
+  || rel === '.superpowers' || rel.startsWith('.superpowers/') || UNCOUNTED(rel);
+// Churn exclusions preserve prior behavior; new test/doc count exemptions do not alter churn.
+const CHURN_EXEMPT = (rel) => rel === 'openspec' || rel.startsWith('openspec/')
+  || rel === '.superpowers' || rel.startsWith('.superpowers/')
   || rel === 'docs/prototypes' || rel.startsWith('docs/prototypes/')
   || rel === 'docs/specs' || rel.startsWith('docs/specs/');
 
@@ -320,14 +329,14 @@ function writeSegment(file, state, root, next) {
 
 function denyReason(count, limit, files, scopes = []) {
   const scopeLine = scopes.length >= 2
-    ? `本任务段已跨 ${scopes.length} 个作用域（${scopes.join('、')}），超出 Tier 1 的「单目录小范围」。`
-    : `本任务段已在主 checkout（main）写了 ${count} 个不同业务文件，达到 Tier 1 上限 ${limit}；再写会超出 Tier 1。`;
+    ? `本任务段已跨 ${scopes.length} 个作用域（${scopes.join('、')}），超出 Tier 1 的单一作用域限制。`
+    : `本任务段已在主 checkout（main）写了 ${count} 个不同源文件，达到 Tier 1 上限 ${limit}；再写会超出 Tier 1。`;
   return [
     scopeLine,
     `已写：${files.join('、')}`,
     '先停手，按范围改走对应通道（不要继续原地写）：',
-    '- Tier 2（计划超过 3 个文件、跨 2 个作用域，或要动共享契约/持久化/并发/不可逆变更）：用 /paseo-handoff 交给 worktree 里的 Agent，交接内容写明验收命令与「越级即停」。',
-    '- Tier 3（仅当冻结 DAG 有 maxWidth≥2 且任务≥4）：用 /paseo-pipeline。上面的风险属性本身推不出 Tier 3，也不要为了够格而拆分 DAG。',
+    '- Tier 2（>3 个源文件、跨 2 个作用域，或硬风险：持久化/schema 迁移；生产外部写入或部署；认证/授权/安全；跨请求/进程并发或幂等性）：用 /paseo-handoff 或授权 worktree。',
+    '- Tier 3：草拟或冻结 DAG 有 ≥4 个任务且 maxWidth≥2、有真实并发 → /paseo-pipeline；不得拆分凑数。',
     '已写的改动保留在工作区，不要回滚；把它们列进交接内容的「当前状态」。',
     '这是需要用户确认的越级写入：用户若在确认框放行才继续；不要改用 Bash 等方式绕过。',
   ].join('\n');
@@ -587,11 +596,11 @@ export function logMissingDeclaration(transcriptPath, tailLines = 20) {
 
 function planDenyReason(declared, files, scopes, limit) {
   return [
-    `[tier-gate] 动手前声明的计划已超出 Tier 1：${files.length} 个文件、${scopes.length} 个作用域（Tier 1 上限 ${limit} 个文件、单一作用域）。`,
+    `[tier-gate] 动手前声明的计划已超出 Tier 1：${files.length} 个源文件、${scopes.length} 个作用域（Tier 1 上限 ${limit} 个源文件、单一作用域；测试和文档不计数）。`,
     `声明：tier=${declared.tier} files=${files.join('、')}`,
     '首次写入前先选对通道，不要继续原地写：',
-    `- Tier 2：用 /paseo-handoff 或授权 worktree，把计划文件与验收命令写进交接（调用样例见下）。`,
-    '- Tier 3：仅当冻结 DAG 有 maxWidth>=2 且任务>=4 → /paseo-pipeline。',
+    '- Tier 2：>3 个源文件、跨 2 个作用域，或硬风险：持久化/schema 迁移；生产外部写入或部署；认证/授权/安全；跨请求/进程并发或幂等性 → /paseo-handoff 或授权 worktree。',
+    '- Tier 3：草拟或冻结 DAG 有 ≥4 个任务且 maxWidth≥2、有真实并发 → /paseo-pipeline；freeze-check 确认；不得拆分凑数。',
     HANDOFF_SAMPLE,
     '如果只是声明写错了（实际计划更小），先输出修正后的 TIER-PLAN 声明再动手；不要改用其他方式绕过。',
   ].join('\n');
@@ -630,6 +639,7 @@ export function assessTierGate({ target, sessionId, declared, declarationStatus,
   // 可视化原型/草稿目录：gitignore 里的一次性产物（brainstorm 原型页等），
   // 不进仓库、不参与构建，与 openspec/ 同属「写多少都不算越级」的文档类产物。
   if (rel === '.superpowers' || rel.startsWith('.superpowers/')) return { verdict: 'allow', note: 'gitignored scratch artifact' };
+  if (UNCOUNTED(rel)) return { verdict: 'allow', note: 'test/doc file not counted' };
 
   if (typeof loadDeclaration === 'function') {
     const result = loadDeclaration();
@@ -663,7 +673,7 @@ export function assessTierGate({ target, sessionId, declared, declarationStatus,
         reason: [
           '[tier-gate] 你声明的是 Tier 2，但当前仍在主 checkout（main）原地写业务文件。',
           'Tier 2 必须在 /paseo-handoff 或授权 worktree 里执行，不能在主 checkout 硬撑。',
-          '设计文档、spec、方案草稿同样算业务文件：声明 Tier 2 后不要先在主 checkout 落盘，把内容写进交接，由 worktree 里的 Agent 落盘。',
+          '测试和文档不计数、不受闸门拦截；源文件交给 worktree 里的 Agent 落盘。',
           `声明：tier=2 files=${planned.join('、')}`,
           '先停手：把已确认的计划文件与验收命令写进交接，再在隔离环境里开工；若判断有误，先输出修正后的 TIER-PLAN 声明。',
           HANDOFF_SAMPLE,
@@ -679,8 +689,8 @@ export function assessTierGate({ target, sessionId, declared, declarationStatus,
   const state = readState(file);
   const now = Date.now();
   const seg = segment(state[ctx.root], now);
-  const counted = seg.files;
-  const asked = seg.asked;
+  const counted = seg.files.filter((filePath) => !EXEMPT(filePath));
+  const asked = seg.asked.filter((filePath) => !EXEMPT(filePath));
   // 越线写入要用户确认的文件。churn 不在这里判：那是「停下来汇报试过什么」，
   // 归 Stop 事后核对（assessStop），逐次写入只做文件数上限这一件事。
   const keep = { turns: seg.turns, reported: seg.reported, churnReported: seg.churnReported, stopFiles: seg.stopFiles };
@@ -852,7 +862,7 @@ export function assessStop({ cwd, sessionId }) {
   const seg = segment(state[ctx.root]);
   const asked = new Set(seg.asked);
   const claimedByOthers = otherSessionsClaimedFiles(stateDir(), sessionId, ctx.root);
-  const business = (rel) => !EXEMPT(rel) && !asked.has(rel) && !claimedByOthers.has(rel);
+  const business = (rel) => !EXEMPT(rel) && !UNCOUNTED(rel) && !asked.has(rel) && !claimedByOthers.has(rel);
   const round = [...changed].filter(business).sort();
   // PreToolUse 已写文件 + Stop 私有累计 + 本轮 Git 变化（均排除并发产物）参与当轮判定
   const combined = [...new Set([...seg.files, ...seg.stopFiles, ...round])].filter(business).sort();
