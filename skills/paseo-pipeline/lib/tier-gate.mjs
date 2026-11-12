@@ -37,7 +37,7 @@
 //   另外，同一任务段连续 DEFAULT_TURNS 轮都在改业务文件时，Stop 汇报一次「原地反复试错」。
 //   这条汇报放在 Stop 而不是 PreToolUse：它要的是「先停下来汇报试过什么」，不是逐次写入的
 //   许可弹窗。用户看到后，下一条消息到达时轮次清零、重新观察，每 DEFAULT_TURNS 轮最多打断一次。
-//   按轮次而非 Edit 次数计数（LESSONS §9.4）。
+//   按轮次而非 Edit 次数计数（docs/history/LESSONS.md §9.4）。
 //
 // 2026-11-03：修复 Git 工作树改动回写账本污染本会话计数问题。
 //   此前 assessStop 把工作树 Git 脏文件（round）并回 seg.files，由于 Git 工作树全进程共享，
@@ -49,7 +49,7 @@
 //      assessTierGate 不读它，只透传保存；PreToolUse 额度因此不受 Git 脏文件影响，Bash 小步累计仍会在 Stop 触顶；
 //   3) assessStop 排除 stateDir 中其他活跃会话 files/asked 已认领的业务文件，并发产物不计入当前会话。
 //   局限：两个会话碰同一文件时，该文件被排除，Stop 可能漏报（宁可少拦）；认领窗口同 DEFAULT_IDLE_MS。
-//   这是减速带，不是沙箱（LESSONS §14.4）；并发写入的正解仍是 worktree 隔离。
+//   这是减速带，不是沙箱（docs/history/LESSONS.md §14.4）；并发写入的正解仍是 worktree 隔离。
 //
 // 2026-11-02（三）：补上「单目录」这一维。此前闸门只数文件数，跨包的第一个文件（如已在
 // packages/server 写了 1 个，再写 packages/web 的第 2 个）完全不拦——规则里的「超出单目录
@@ -91,7 +91,7 @@ export const DEFAULT_IDLE_MS = 30 * 60 * 1000;
 // 同一任务段里连续这么多轮用户消息都在主 checkout 改业务文件，就不再只是「多写了几笔」：
 // 模型在原地反复试错。达到阈值时由 Stop 汇报一次（不是逐次写入的许可弹窗），用户看到后
 // 由 takeSnapshot 清零轮次、重新观察。按「轮次」而不是「Edit 次数」计数，因为一次正常的
-// 小改动分 4-5 次 Edit 很常见，按次数拦会制造弹窗疲劳（LESSONS §9.4）。
+// 小改动分 4-5 次 Edit 很常见，按次数拦会制造弹窗疲劳（docs/history/LESSONS.md §9.4）。
 export const DEFAULT_TURNS = 3;
 const PROTECTED_BRANCHES = new Set(['main', 'master']);
 

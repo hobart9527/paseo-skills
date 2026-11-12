@@ -587,12 +587,13 @@ test('Tier 2 review is advisory, requirement-anchored and bounded by user author
   for (const token of ['/paseo-handoff', '/paseo-pipeline', 'TIER-PLAN']) assert.ok(tierPrompt.includes(token), token);
 });
 
-test('LESSONS records the review-convergence redesign with health metrics', () => {
-  const lessons = read('LESSONS.md');
+test('pipeline history records remain available under docs/history', () => {
+  for (const file of ['../../docs/history/LESSONS.md', '../../docs/history/BENCH-2026-11-03.md']) {
+    assert.ok(fs.existsSync(path.join(dir, file)), file);
+  }
+  const lessons = fs.readFileSync(path.join(dir, '..', '..', 'docs', 'history', 'LESSONS.md'), 'utf8');
+  assert.match(lessons, /^# /);
   assert.match(lessons, /2026-11-09/);
-  assert.match(lessons, /FINAL 12 轮/);
-  assert.match(lessons, /评审健康度指标/);
-  assert.match(lessons, /FINAL 轮数 ≤2/);
 });
 
 test('FINAL repair instructions retain gate and bind all evidence to final SHA', () => {

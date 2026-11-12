@@ -86,7 +86,7 @@
     - OpenSpec：L11 禁止 Lead 跑 `openspec`，L62 恢复流程要用 `openspec status`。
     - 交回：要求 Lead 用 `send_agent_prompt` 向主会话交回，但主会话（Claude Code）不是 Paseo agent，收不到；`SKILL.md:178-180` 的孙→Lead→父接力在冒烟中实测 FAIL。
     - 审查轮数：task-routing“中型 1 轮、大型 ≤2 轮、微型免审”，SKILL 写 Pod 需审一次，另有“打回 2 次 + 升级 1 次”。
-    - LESSONS 与 SKILL：LESSONS:74“Read ≥5 次就停”对比 SKILL:114“不自动中断”；LESSONS:29/30 合流与派发顺序自相矛盾。
+    - LESSONS 与 SKILL：docs/history/LESSONS.md:74“Read ≥5 次就停”对比 SKILL:114“不自动中断”；docs/history/LESSONS.md:29/30 合流与派发顺序自相矛盾。
 12. **无派发 brief 模板与 Auditor 输出契约。** 没有 Writer/Tester/Auditor/Lead 模板；Auditor 的 verdict 集合、`reviewed_sha`、review-tag 由谁拼接均未定义。下游无法机械消费上游产出，是“协同断裂”的直接来源。
 13. **message-id 去重只有文字没有实现**（spec.md:153 要求，代码无对应逻辑）。
 
@@ -118,7 +118,7 @@
 | 5 外部写手不计 cap | `foreignLiveWriters` 计入 `room`；解析级 INVALID（`MISSING_SCOPE`）上正跑的写手也占 cap 与 scope；`nextAction` 与门禁同口径 | `SCEN-REC-17` ×2 红 |
 | 7 场景只要出现、占位值放行 | 要求 `scenario_results` 段 `<ID>: PASS` + 不得同时在 unverified；占位/退化值判为未采集 | `SCEN-EVD-02` ×3 分别红 |
 | 6 嵌套 Pod 分支静默忽略 | `for-each-ref refs/heads/pod/<change>` 是路径段前置匹配，`pod/<change>/<x>` 也会被列出；判据改成「映射不到任何任务即 UNMAPPED」，不再只认第三段为 `undefined` | `SCEN-REC-17 nested pod branch` 红 |
-| 8 LESSONS:29/30 派发与合流顺序自相矛盾 | 改为「先派发」只适用于**不依赖本任务 Done** 的下游；依赖本任务合流的下游必须先合流再派，合流被推到「等待空档」不是规则 | 文档条款，`SCEN-DOC-*` 无对应断言；以人工核对为准（未做负向对照，如实记录） |
+| 8 docs/history/LESSONS.md:29/30 派发与合流顺序自相矛盾 | 改为「先派发」只适用于**不依赖本任务 Done** 的下游；依赖本任务合流的下游必须先合流再派，合流被推到「等待空档」不是规则 | 文档条款，`SCEN-DOC-*` 无对应断言；以人工核对为准（未做负向对照，如实记录） |
 
 **2026-10-26 P0 收口（本轮）**
 
