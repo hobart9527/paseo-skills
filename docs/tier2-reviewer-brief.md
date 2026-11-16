@@ -9,7 +9,8 @@ Tier 2 only. Dispatcher fills fields and pastes this brief. See [`tier2-handoff-
 - **Entry points:** `<files / functions>`
 
 ## Review
-Read-only: do not edit files, commit, or change workspace state. Report any write; it never voids verdict. One reviewer; one verdict and at most one recheck, limited to earlier blockers and regressions in fix diff. Do not redo supplied machine checks without concrete suspicion.
+Read-only: do not edit files, commit, or change workspace state. Report any write; it never voids verdict. One reviewer; one verdict and at most one recheck, limited to earlier blockers and regressions in fix diff. Do not redo supplied machine checks without concrete suspicion. Rechecks count per reviewer across all increments; a new increment does not reset the one allowed recheck.
+Target uncommitted changes by absolute worktree path (`git -C <path> diff`); never use `isolation: worktree`, which sees a different tree. If the actual patch cannot be read, answer `INCOMPLETE`; that is a followup for the dispatcher, never a blocker.
 
 ## Output
 First line: `PASS` | `BLOCKED` | `INCOMPLETE`.
