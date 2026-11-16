@@ -98,7 +98,7 @@ const PROTECTED_BRANCHES = new Set(['main', 'master']);
 export const TIER_RULES = [
   '计划格式：TIER-PLAN: tier=1 files=packages/web/src/a.tsx scope=packages/web（真实路径；测试和文档可列出但不计数）。',
   'Tier 1：≤3 个源文件、单一作用域 → 当前会话修改、验证，并逐条自检 R1..Rn。',
-  'Tier 2：>3 个源文件或跨作用域 → 先隔离到 worktree，主会话自己进去做；只有整体可独立完成或需要并行时才 /paseo-handoff。',
+  'Tier 2：>3 个源文件或跨作用域 → 先隔离到 worktree，主会话自己进去做；只有整体可独立完成或需要并行时才 /paseo-handoff。在 worktree 内改到声明外的源文件或新作用域，先补发 TIER-PLAN。',
   'Tier 3：草拟 DAG 有 ≥4 个任务且 maxWidth≥2 → /paseo-pipeline。',
   '硬风险（持久化/schema 迁移；生产外部写入或部署；认证/授权/安全；并发或幂等性）不是档位：由持有上下文的会话执行，先有用户原话授权和回滚办法，做完给验证证据。',
   '操作：Bash 写入同样计数；范围扩大就停手升级；不改文件的操作无需声明。',
