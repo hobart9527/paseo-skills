@@ -7,9 +7,9 @@ Filled by `/tier2-handoff` before `/paseo-handoff` dispatches. Use only when the
 - **Branch:** `<branch>`
 - **Base SHA:** `<full commit SHA>`
 - **Requirements:** `<R1..Rn in user's words> + files/scope`
-- **Authorization:** `<quote user's words and scope; if absent, no commit/merge/push>`.
+- **Authorization:** `<quote user's words and scope for any stop point this work covers (merge, push, deploy, migration); "none" if it covers none>`. Commits on this non-default branch are pre-authorized and need no quote.
 - **Pending decisions:** `<open choices, each with a default>`; dispatcher resolves any without a default before dispatch. A choice touching a risky operation, or changing auth or money semantics, needs the user's words, not a dispatcher default.
-- **Slices:** serial list, no DAG. One line each: `S<n>: <R ids> | <files> | <old tests to change → new assertion> | <done evidence>`. One commit per slice when commit is authorized; otherwise one progress entry per slice.
+- **Slices:** serial list, no DAG. One line each: `S<n>: <R ids> | <files> | <old tests to change → new assertion> | <done evidence>`. One commit per slice.
 - **Size estimate:** `<files, lines, minutes>`; tell the user this estimate at dispatch.
 
 ## Pre-dispatch check
@@ -21,7 +21,7 @@ Filled by `/tier2-handoff` before `/paseo-handoff` dispatches. Use only when the
 - Review only for risky code: auth/authorization/security; cross-request/process concurrency or idempotency; persistence/schema code. Otherwise dispatcher accepts per-R evidence and test output; human owns merge approval.
 - No recursive handoff. Return blockers or incomplete work to dispatcher. Choose smallest option within scope. Report `COMPLETE | BLOCKED | INCOMPLETE`, base/tip SHA, changed files, full-suite command and pass/fail counts, evidence per R, known gaps and simulation limits.
 - If fix needs cross-module change, persistence/schema change, new mechanism (lock, queue, worker, service), or >30% diff growth, stop: `BLOCKED (scope expansion)` for human decision.
-- Commit only when locally authorized; otherwise do not stage or commit. Authorized delivery commits before report, with review bound to tip SHA. Commit trailers: `Pipeline-Role: implementer`, `Pipeline-Author: <agent id>`, and `Co-Authored-By: Claude Code <noreply@anthropic.com>`.
+- Commit each slice on the assigned branch before reporting (pre-authorized); review binds to tip SHA. Never merge, push, amend or rewrite history without the stop-point quote in `Authorization:`. Commit trailers: `Pipeline-Role: implementer`, `Pipeline-Author: <agent id>`, and `Co-Authored-By: Claude Code <noreply@anthropic.com>`.
 
 ## Progress and recovery
 - Track progress in `$(git rev-parse --git-dir)/handoff-progress.md`; record done/next, files touched and conclusions. After compaction, read it first.

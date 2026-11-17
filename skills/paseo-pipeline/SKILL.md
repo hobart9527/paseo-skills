@@ -15,7 +15,7 @@ Enter from the main session's rough DAG (task IDs, dependencies, one-line goal) 
 - One worker owns each vertical task slice: tests, implementation, frozen narrow Verify and commit.
 - Every non-sink task has scope-local Verify; full suite runs at sink/final acceptance.
 - R0 reviews contract before CP-1; independent FINAL checks integrated conformance. Middle gates are mechanical.
-- Git refs hold state; Paseo transports agents. Human owns CP-1, CP-2, push and destructive approval.
+- Git refs hold state; Paseo transports agents. Human owns CP-1, CP-2, push and destructive approval. Author, test and worker commits on non-default branches in worktrees are pre-authorized (`~/.claude/CLAUDE.md` Stop points); never ask for them.
 
 ## Roles
 
@@ -42,7 +42,7 @@ Contract work is serial.
 2. Author follows `templates/author.md`: draft DAG first, then artifacts for selected route. Run structural `freeze-check` as soon as package exists. `COMPLETE` requires structural success on committed content; reconcile SHA and Git evidence.
 3. If route is `handoff`, only author `COMPLETE`, structural exit 0/no blocks, and matching checked/reported SHA qualify; use Tier 2 `/tier2-handoff` (tasks become `Slices`) then `/paseo-handoff`. Route success is not R0 or CP-1. `pipeline` route alone clears no other block.
 4. Resolve material human choices, then dispatch `hanlin` read-only R0 using `templates/reviewer.md`. R0 checks proposal/spec/design/tasks/acceptance as one package and records reviewed SHA. Maximum two package rounds; second is delta. After unresolved blockers, human accepts recorded risk or directs one fix-diff check; no third package round.
-5. Present contract, findings, DAG/scopes/Verify/acceptance and route. Human confirms CP-1 for exact contract commit. Freeze only after confirmation. CP-1 approves the contract, not arbitrary later commands. R0 sign-off is `R0: pass(<reviewer-uuid>@<sha>)` or recorded `R0: human-accept(@<sha>)`; human-accept is never a reviewer pass. Maximum two whole-package rounds; directed fix gets delta check only.
+5. Present contract, findings, DAG/scopes/Verify/acceptance and route. Human confirms CP-1 for exact contract commit. Freeze only after confirmation. CP-1 approves the contract and committing it to the default branch (Start step 1), not arbitrary later commands. R0 sign-off is `R0: pass(<reviewer-uuid>@<sha>)` or recorded `R0: human-accept(@<sha>)`; human-accept is never a reviewer pass. Maximum two whole-package rounds; directed fix gets delta check only.
 
 ## Start and execute after CP-1
 
