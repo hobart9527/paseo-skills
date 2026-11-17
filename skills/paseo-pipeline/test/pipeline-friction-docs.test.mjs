@@ -29,7 +29,7 @@ test('every dispatch registers a reconciliation point and never duplicates the d
 });
 
 test('skill retains routing and human gate landmarks', () => {
-  for (const token of ['maxWidth', 'freeze-check', 'CP-1', 'CP-2', 'run-log.md', 'FINAL']) assert.ok(skill.includes(token), token);
+  for (const token of ['maxWidth', 'freeze-check', 'CP-1', 'CP-2', 'templates/approvals.md', 'FINAL']) assert.ok(skill.includes(token), token);
 });
 
 test('CP-1 remains after R0 and human choices', () => {
@@ -52,7 +52,7 @@ test('briefs carry verified decision context and handle checker friction without
   const author = fs.readFileSync(path.join(dir, 'templates/author.md'), 'utf8');
   const reviewer = fs.readFileSync(path.join(dir, 'templates/reviewer.md'), 'utf8');
   assert.match(skill, /confirmed decisions/);
-  assert.match(skill, /Reproduce suspected bugs; never invent ownership or dependencies/);
+  assert.match(author, /Avoid invented behavior, ownership or dependencies/);
   assert.match(author, /unresolved conflicts/);
   assert.match(author, /baseline SHA/);
   assert.match(author, /Read baseline only to resolve a rule/);

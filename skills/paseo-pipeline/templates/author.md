@@ -4,41 +4,41 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output: `openspec/changes/<change>/`.
 
 ## Route first
 
-1. Read `SKILL.md` and this change's applicable schema templates. `openspec-schema/schema.yaml` and `openspec-schema/templates/` define artifacts, required content and validation; follow them instead of duplicating their rules here.
-2. Draft a compact DAG first: task IDs, dependencies, `maxWidth`, and one-line goal per task. If the dispatcher supplied a rough DAG, refine it; do not redraw from scratch. Never split or pad a graph to qualify. Tier 3 requires real `tasks >= 4` and `maxWidth >= 2`.
-3. Run the supplied structural `freeze-check` on committed DAG/package. `freeze-check` is authoritative. If route is `handoff`, stop and return checked SHA/evidence for Tier 2 `/paseo-handoff`; do not expand full artifacts. `COMPLETE` for handoff requires author COMPLETE, structural exit 0/no blocks, and matching checked/reported SHA. Route success alone is not R0, CP-1 or execution authorization.
-4. If route is `pipeline`, finish the required package: proposal, SCEN-numbered spec deltas, tasks, acceptance, and R0 review artifact. Create `design.md` only when schema criteria apply. Use exact template files named by schema.
+1. Read `SKILL.md` and the schema templates this change needs. `openspec-schema/schema.yaml` and `openspec-schema/templates/` define artifacts, required content and validation; they are the rule source for every artifact below.
+2. Draft a compact DAG first: task IDs, dependencies, `maxWidth`, and one-line goal per task. Refine the dispatcher's rough DAG rather than redrawing it. The graph reflects real work: Tier 3 means real `tasks >= 4` and `maxWidth >= 2`, never a split or padded graph.
+3. Run the supplied structural `freeze-check` on the committed DAG/package; `freeze-check` is authoritative for route. If route is `handoff`, stop and return checked SHA and evidence for Tier 2, without expanding full artifacts. Handoff `COMPLETE` needs structural exit 0 with no blocks and matching checked/reported SHA.
+4. If route is `pipeline`, finish the package: proposal, SCEN-numbered spec deltas, tasks, acceptance, and the R0 review artifact. Create `design.md` only when schema criteria apply. Use the exact template files the schema names.
 
 ## Assignment and boundaries
 
-- Work only in assigned author workspace and `openspec/changes/<change>/`. Do not create workspaces, reroute, or recursively hand off. Conflicting/unusable instructions or denied required commands mean `BLOCKED`; report exact command, cwd, denial, next responsible action. Do not retry elsewhere.
-- Main-session brief supplies absolute workspace, baseline SHA, `PIPELINE_HOME`, exact preflight and structural commands, known project constants, confirmed decisions and references. Do not invent provider/model requirements or treat preflight as authorization for later commands.
-- Run required read-only preflight before writing. Resolve/read each actual template required by schema. Do not read parser/scheduler implementation to infer contract rules; use schema templates and structural output.
-- Do not edit business code or tracked files outside the change directory. Cite source claims as `path:line`; mark unverified claims `UNVERIFIED`. Preserve baseline and distinguish draft checks from committed-package checks.
-- One author writes whole package. Do not delegate authorship or split the package. Main session reconciles commit, workspace and evidence before R0. Structural success does not authorize R0, CP-1, or execution.
+- Write only in the assigned author workspace, under `openspec/changes/<change>/`. One author writes the whole package. Workspace creation, rerouting and further handoff belong to the main session.
+- The main-session brief supplies absolute workspace, baseline SHA, `PIPELINE_HOME`, exact preflight and structural commands, project constants, confirmed decisions and references. Each command authorizes only itself.
+- Conflicting or unusable instructions, or a denied required command, mean `BLOCKED`: report exact command, cwd, verbatim denial and next responsible action, and stop there.
+- Run required read-only preflight before writing. Learn contract rules from schema templates and structural output, not from parser or scheduler source.
+- Cite source claims as `path:line`; mark unverified claims `UNVERIFIED`.
 
 ## Deliverables and decisions
 
-- Return assumptions with a concrete verification method. Separate material product choices requiring human decision from ordinary assumptions; state options and consequences, do not decide for the human. Record unresolved material choices as `OPEN-DECISION` per schema and continue only when a safe default is authorized.
-- Use approved design as settled input; do not reopen its selected route. Put cross-task decisions in design only when workers need to share them. Cite only verified authoritative inputs and versions.
-- Read baseline only to resolve a rule being written: affected spec requirement, storage constraint (enum/`CHECK`/migration), and existing tests in each task's Write scope. Use `rg` and narrow line windows. Put baseline facts beside supported rules as `path:line`; no repository survey, digest or alignment table.
-- Verify each claimed field, symbol, route and command exists or is created by task. For each Verify leg, establish it runs in a fresh worktree or state known dependency gap. Runtime behavior requires Verify that executes behavior; source-text assertions prove text only.
-- Keep behavior requirements observable. Give each SCEN an owner, real user entry and acceptance coverage. Cross-task interfaces/decisions must be frozen in a worker-reachable contract. Avoid invented behavior, ownership or dependencies.
+- Return assumptions with a concrete verification method. Separate material product choices requiring human decision from ordinary assumptions: state options and consequences and leave the choice to the human. Record unresolved material choices as `OPEN-DECISION` per schema; continue only on an authorized safe default.
+- Treat approved design as settled input. Put cross-task decisions in design only when workers need to share them.
+- Read baseline only to resolve a rule being written: affected spec requirement, storage constraint (enum/`CHECK`/migration), and existing tests in each task's Write scope. Use `rg` and narrow line windows. Put baseline facts beside the rule they support as `path:line`.
+- Verify each claimed field, symbol, route and command exists or is created by a task. For each Verify leg, establish it runs in a fresh worktree or state the known dependency gap. Runtime behavior needs a Verify that executes it.
+- Keep behavior requirements observable. Give each SCEN an owner, a real user entry and acceptance coverage. Freeze cross-task interfaces and decisions in a worker-reachable contract. Avoid invented behavior, ownership or dependencies.
 
 ## DAG draft and route checks
 
-Claim source is `Scenarios:` in `tasks.md`; acceptance `Tasks` is its projection. Use `pipeline-run.mjs scenarios` when claims and rows may disagree; it is read-only and not validation. Baseline scenario IDs may be reused only in MODIFIED/REMOVED; active changes with different content conflict.
+Claim source is `Scenarios:` in `tasks.md`; acceptance `Tasks` is its projection. Use `pipeline-run.mjs scenarios` when claims and rows may disagree (read-only, not validation). Baseline scenario IDs are reused only under MODIFIED/REMOVED; an active change declaring the same ID with different content is a conflict to surface.
 
-The DAG draft is a routing artifact, not a shortcut around contract. List every task's ID, one-line behavior goal, dependencies, Write scope and Verify sufficiently for `freeze-check` to judge real parallelism. Preserve vertical slices: behavior, wiring, affected fixtures and tests belong together; no fixture-only or wiring-only tasks. Wave 0 only for a genuinely shared contract with actual consumers. Independent parallel tasks need disjoint Write scopes; dependencies reflect actual consumer readiness, not artificial serialization. A sink owns full-suite verification.
+List every task's ID, one-line behavior goal, dependencies, Write scope and Verify, enough for `freeze-check` to judge real parallelism. Keep vertical slices: behavior, wiring, affected fixtures and tests travel together. Use Wave 0 only for a genuinely shared contract with actual consumers; when several components share one assembly file, let the assembly task claim the user-visible SCEN, or add a Wave 0 `Kind: skeleton` the components `Uses`. Parallel tasks get disjoint Write scopes; dependencies follow real consumer readiness. A sink owns full-suite verification.
 
-After DAG route is known, apply schema's full task format and constraints. In particular, verify every task has real Write scope, dependencies are valid and acyclic, `Scenarios:` claim declared SCENs, and Verify is executable/narrow except sink. Shared files may require split scopes or a real dependency. `Reads` does not grant write ownership or prove content exists. Risk labels do not establish safety. Do not manipulate graph to meet Tier 3 threshold.
+Once the route is known, apply the schema's full task format: real Write scope, valid acyclic dependencies, `Scenarios:` claiming declared SCENs, executable narrow Verify except at the sink. Shared files need split scopes or a real dependency. `Reads` grants no write ownership and proves no content exists.
 
 ## Commit and check sequence
 
-1. Commit a minimal proposal/DAG draft promptly; record done and remaining work in commit message.
-2. Add specs and freeze SCEN set; run namespace/collision checks where supplied. Add design only when warranted, then tasks and acceptance.
-3. Run supplied structural check immediately when initial package exists; report command, route, stdout/stderr, real exit code, checked SHA and Git status. Fix blocking issues in place and rerun. Do not mistake a pipeline's last command status for `freeze-check` status.
-4. Before R0, package must be committed. Return exact checked commit and separate structural result from route. A changed SHA requires a fresh check.
+1. Commit a minimal proposal/DAG draft promptly; record done and remaining work in the commit message.
+2. Run `namespace.mjs` (when supplied), add specs and freeze the SCEN set. Add design only when warranted, then tasks and acceptance.
+3. Run the structural check as soon as the package exists (evidence below); fix blockers in place and rerun.
+4. Before R0, the package is committed and the reported structural result is pinned to that commit.
 
 ## Time budget
 
@@ -46,11 +46,11 @@ Record start time. Targets: first files by minute 10, committed package and stru
 
 ## Mode REVISE
 
-Same author and workspace. Fix only confirmed blocker locations from the supplied review round and human rulings. Update only affected interfaces/constraints, SCENs, acceptance rows, owning task scope and Verify; leave other artifacts unchanged. Do not regenerate DAG/package or fix NITs unless they prove behavior, persistence/security semantics, or Verify trust is affected. Re-run structural check and cited narrow checks, commit, and report new reviewed SHA. No review sign-off carries over to changed SHA.
+Same author and workspace. Fix only confirmed blocker locations from the supplied review round and human rulings. Update only affected interfaces/constraints, SCENs, acceptance rows, owning task scope and Verify; leave every other artifact as it is. Fix a NIT only when it affects behavior, persistence/security semantics, or Verify trust. Re-run the structural check and cited narrow checks, commit, and report the new reviewed SHA; earlier sign-offs stay pinned to the old SHA.
 
 ## Structural-check evidence
 
-After the complete package exists, run the exact supplied structural-check command before polishing. A draft run is evidence only about the draft, never `COMPLETE`; checked SHA must match committed package. Report stdout, stderr, true process exit code, `git rev-parse HEAD`, and `git status --porcelain` separately. A shell pipeline's final status is not the checker's status. Record blockers and advisories separately; only blockers reject. Route and structural result are distinct.
+Run the exact supplied structural-check command. A draft run is evidence only about the draft, never `COMPLETE`; checked SHA must match committed package. Report command, route, stdout, stderr, the checker's own exit code (not a shell pipeline's final status), `git rev-parse HEAD`, and `git status --porcelain` separately. Record blockers and advisories separately; only blockers reject. Route and structural result are distinct.
 
 ## Return envelope
 

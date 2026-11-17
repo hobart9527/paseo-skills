@@ -11,19 +11,19 @@ const exists = (p) => assert.ok(fs.existsSync(path.join(dir, p)), p);
 test('pipeline prompt files and required headings exist', () => {
   for (const p of ['SKILL.md', 'templates/author.md', 'templates/worker.md', 'templates/reviewer.md', 'templates/approvals.md', 'openspec-schema/schema.yaml']) exists(p);
   for (const [file, headings] of Object.entries({
-    'SKILL.md': ['# Paseo Pipeline', '## Roles', '## Entry and CP-1', '## Start and execute after CP-1', '## FINAL and CP-2', '## Appendix'],
+    'SKILL.md': ['# Paseo Pipeline', '## Roles', '## Entry and CP-1', '## Start and execute after CP-1', '## Tools', '## FINAL and CP-2', '## Hard lines'],
     'templates/author.md': ['# Change Author Brief', '## Route first', '## DAG draft and route checks', '## Return envelope'],
     'templates/worker.md': ['# Worker Brief', '## Rules', '## Return envelope'],
     'templates/reviewer.md': ['# Independent Reviewer Brief', '## Requirement conformance first', '## R0', '## FINAL'],
-    'templates/approvals.md': ['# Recovery and Approval', '## FINAL after round 2', '## Destructive or production action'],
+    'templates/approvals.md': ['# Recovery and Approval', '## FINAL after round 2', '## Destructive or production action', '## Operator reference'],
   })) for (const heading of headings) assert.ok(read(file).includes(heading), `${file}: ${heading}`);
 });
 
 test('skill preserves route, human gates and all dispatch profiles', () => {
   const skill = read('SKILL.md');
-  for (const token of ['maxWidth >= 2', 'tasks >= 4', 'never split', 'freeze-check', 'handoff', 'CP-1', 'CP-2', 'merge-task.mjs', 'pipeline-run.mjs']) assert.ok(skill.includes(token), token);
+  for (const token of ['maxWidth >= 2', 'tasks >= 4', 'never split', 'freeze-check', 'handoff', 'CP-1', 'CP-2', 'pipeline-run.mjs', 'preflight.mjs', 'namespace.mjs', 'pinned']) assert.ok(skill.includes(token), token);
   for (const role of ['chanpin', 'hanlin', 'ceshi', 'gongbu', 'gaogong', 'jiangzuo', 'anchasi', 'shangshu']) assert.ok(skill.includes(role), role);
-  for (const token of ['WRITER_ROLES', 'list_profiles', 'Red tests', 'read-only', 'install-hook', 'Dispatch one `hanlin` author']) assert.ok(skill.includes(token), token);
+  for (const token of ['list_profiles', 'Red tests', 'read-only', 'install-hook', 'Dispatch one `hanlin` author']) assert.ok(skill.includes(token), token);
   assert.ok(skill.length < 22200);
 });
 
@@ -48,8 +48,8 @@ test('worker prompt keeps task-local scope and runtime verification', () => {
 
 test('recovery and destructive approval template has bounded choices and exact record format', () => {
   const approval = read('templates/approvals.md');
-  for (const token of ['Accept', 'New change', 'Terminate', 'two FINAL rounds', 'NOT_MET', 'UNVERIFIABLE', 'reviewed SHA', 'CP-2', 'Object:', 'Command:', 'Executor:', 'verbatim', 'Push and history rewrite']) assert.ok(approval.includes(token), token);
-  assert.ok(approval.length < 2200, `approvals.md is ${approval.length} chars`);
+  for (const token of ['Accept', 'New change', 'Terminate', 'two FINAL rounds', 'NOT_MET', 'UNVERIFIABLE', 'reviewed SHA', 'CP-2', 'Object:', 'Command:', 'Executor:', 'verbatim', 'Push and history rewrite', 'allow-test-infra', 'allow-attempt-over', 'MERGE_HEAD']) assert.ok(approval.includes(token), token);
+  assert.ok(approval.length < 3200, `approvals.md is ${approval.length} chars`);
 });
 
 test('schema retains artifact ids, requirements and template paths', () => {

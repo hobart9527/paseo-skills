@@ -14,9 +14,9 @@ Review Proposal, Specs, Design (when present), Tasks and Acceptance as one packa
 
 Review the pinned commit and approved external snapshots only. Verify snapshot hashes before and after; stop on missing, inconsistent or changed inputs. The SHA sign-off does not attest snapshot hashes. Do not run full suite; inspect checks and run at most one narrow command per package. Source-text assertions prove text, not runtime behavior.
 
-At most two whole-package R0 rounds: round 1 reports all supported blockers; round 2 checks fixes, not fresh survey. After round 2 blockers, human accepts recorded residual risk or directs a fix. A directed repair gets one same-reviewer delta check, not a third package round. Findings classify `BLOCKER` or `NIT`; blocker needs falsifiable wrong outcome and why current tasks/Verify cannot prevent it. Anchor drift with same symbol is NIT.
+At most two whole-package R0 rounds: round 1 reports all supported blockers; round 2 checks fixes only. After round 2 blockers, human accepts recorded residual risk or directs a fix, which gets one same-reviewer delta check. Findings classify `BLOCKER` or `NIT`; a blocker needs a falsifiable wrong outcome and why current tasks/Verify cannot prevent it. Pure anchor-drift with the same symbol is a non-blocking NIT; proofread every `path:line`.
 
-R0 sign-off: `R0: pass(<reviewer-uuid>@<sha>)` in `review.md`; human-accept is never reviewer pass. Report reviewed commit SHA. Do not write `review.md`. Only one narrow R0 round-command per package; no full suite. Pure anchor-drift with the same symbol is a non-blocking NIT; proofread every `path:line` before FINAL.
+Return the sign-off line `R0: pass(<reviewer-uuid>@<sha>)` and the reviewed commit SHA as text; the main session records it in `review.md`.
 
 ## FINAL — integrated conformance
 
@@ -48,6 +48,6 @@ Depth checks are subordinate to matrix coverage, not independent scope expansion
 
 ## Bounded rounds and disposition
 
-Round 1 is full verdict; round 2 checks fix diff, affected behavior and open ledger items only. Maximum two FINAL rounds, plus one reopen delta review if human reopens at contract level. After unresolved `NOT_MET`/`UNVERIFIABLE`, human chooses accept, new contract-level change, or terminate. Recovery, approval records and SHA binding: `templates/approvals.md`. Do not decide CP-2; human owns it.
+Round 1 is full verdict; round 2 checks fix diff, affected behavior and open ledger items only. Maximum two FINAL rounds, plus one reopen delta review if human reopens at contract level. After unresolved `NOT_MET`/`UNVERIFIABLE`, the human chooses per `templates/approvals.md`. CP-2 belongs to the human.
 
 Optional `r0-hotspots.mjs` output is metadata only, not validation or verdict. Verify its source SHA; inspect contract and integrated diff directly. Record evidence and limitations. Never run repository-controlled acceptance commands without operator review; acceptance check validates record consistency, not authenticity or CP-2 authorization.
