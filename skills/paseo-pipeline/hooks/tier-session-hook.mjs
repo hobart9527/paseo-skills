@@ -11,13 +11,20 @@ export const SESSION_CONTEXT = [
   TIER_RULES,
 ].join('\n');
 
+export function shouldSkipSource(source) {
+  return source === 'startup' || source === 'clear';
+}
+
 async function main() {
   if (process.env.PIPELINE_TIER_REMINDER === 'off') return;
   const chunks = [];
   for await (const chunk of process.stdin) chunks.push(chunk);
-  let cwd;
-  try { cwd = JSON.parse(Buffer.concat(chunks).toString('utf8'))?.cwd; } catch { cwd = undefined; }
-  if (skipInjection(cwd)) return;
+  let payload;
+  try { payload = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { payload = undefined; }
+  // startup/clear 之后一定先有一条用户消息，UserPromptSubmit 会注入同一份规则；
+  // 这里再注入就是开场两份重复。只在 resume/compact（可能没有新用户消息就继续）时注入。
+  if (shouldSkipSource(payload?.source)) return;
+  if (skipInjection(payload?.cwd)) return;
   fs.writeSync(1, `${JSON.stringify({
     hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: SESSION_CONTEXT },
   })}\n`);

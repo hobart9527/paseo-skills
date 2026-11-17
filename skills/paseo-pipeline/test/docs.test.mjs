@@ -86,7 +86,8 @@ test('Tier 2 handoff and review remain documented', () => {
   exists('../../docs/tier2-handoff-brief.md'); exists('../../docs/tier2-reviewer-brief.md');
   const handoff = fs.readFileSync(handoffPath, 'utf8');
   for (const token of ['Requirement', 'Authorization', 'BLOCKED (scope expansion)', 'handoff-progress.md', 'Slices', 'Pre-dispatch check', 'Size estimate']) assert.ok(handoff.includes(token), token);
-  assert.match(handoff, /hard-risk questions go to the user verbatim/);
+  assert.match(handoff, /hard-risk questions[^\n]*go to the user verbatim/);
+  assert.match(handoff, /Review only for risky code/);
   assert.match(fs.readFileSync(reviewPath, 'utf8'), /Requirement matrix/);
 });
 

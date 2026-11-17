@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { assessTierGate, assessStop, takeSnapshot, logHookError, scopeKey, readDeclaredPlan, readDeclaredPlanStatus, TIER_RULES } from '../lib/tier-gate.mjs';
+import { assessTierGate, assessStop, takeSnapshot, logHookError, scopeKey, readDeclaredPlan, readDeclaredPlanStatus, TIER_RULES, DEFAULT_LIMIT } from '../lib/tier-gate.mjs';
 import { shouldRemind, isSystemNotification, REMINDER } from '../hooks/tier-reminder-hook.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -570,13 +570,14 @@ test('开工前声明：Tier 2 在主 checkout 原地写 → deny，指向 hando
   assert.match(v.reason, /主会话自己进去/);
 }));
 
-test('TIER_RULES：isolation is not delegation; hard risk is a checkpoint, not a tier', () => {
-  assert.match(TIER_RULES, /主会话自己进去做/);
-  assert.match(TIER_RULES, /只有整体可独立完成或需要并行时才 \/paseo-handoff/);
-  assert.match(TIER_RULES, /硬风险[^\n]*不是档位/);
-  assert.match(TIER_RULES, /用户原话授权和回滚办法/);
-  assert.doesNotMatch(TIER_RULES, /声明 Tier 2 后直接交接/);
-  assert.doesNotMatch(TIER_RULES, /硬风险[^\n]*→ \/paseo-handoff/);
+test('TIER_RULES：isolation is not delegation; risky operations and risky code are separate checkpoints', () => {
+  assert.match(TIER_RULES, /主会话自己进 worktree 做/);
+  assert.match(TIER_RULES, /\/tier2-handoff/);
+  assert.match(TIER_RULES, /风险操作[^\n]*用户原话授权和回滚办法/);
+  assert.match(TIER_RULES, /风险代码[^\n]*测试证据和 1 个 reviewer[^\n]*不升档、不需授权/);
+  assert.match(TIER_RULES, /每条用户消息后重新声明/);
+  assert.match(TIER_RULES, /~\/\.claude\/CLAUDE\.md/);
+  assert.doesNotMatch(TIER_RULES, /风险[^\n]*→ \/paseo-handoff/);
 });
 
 test('TIER_RULES：hooks share compact tier criteria and plan format', () => {
@@ -584,7 +585,33 @@ test('TIER_RULES：hooks share compact tier criteria and plan format', () => {
     assert.ok(TIER_RULES.includes(token), token);
     assert.ok(REMINDER.includes(token), token);
   }
-  assert.ok(TIER_RULES.length < 800);
+  assert.equal(TIER_RULES.split('\n').length, 3);
+  assert.ok(TIER_RULES.length < 600, `TIER_RULES is ${TIER_RULES.length} chars`);
+});
+
+// 规则副本只许指向正本，不许出现与正本不同的阈值。正本在仓库外（~/.claude/CLAUDE.md），
+// 不存在时（CI、他人机器）只核对仓库内副本之间一致。
+test('阈值不发散：TIER_RULES、SKILL、author 模板与正本的 Tier 1 上限和 Tier 3 门槛一致', () => {
+  const repo = path.join(here, '..', '..', '..');
+  const copies = {
+    TIER_RULES,
+    'SKILL.md': fs.readFileSync(path.join(here, '..', 'SKILL.md'), 'utf8'),
+    'templates/author.md': fs.readFileSync(path.join(here, '..', 'templates', 'author.md'), 'utf8'),
+  };
+  const canon = path.join(os.homedir(), '.claude', 'CLAUDE.md');
+  if (fs.existsSync(canon)) copies['~/.claude/CLAUDE.md'] = fs.readFileSync(canon, 'utf8');
+  const routing = path.join(os.homedir(), '.paseo', 'task-routing.md');
+  if (fs.existsSync(routing)) copies['~/.paseo/task-routing.md'] = fs.readFileSync(routing, 'utf8');
+  const tier3 = /(?:≥\s*|>=\s*|at least |tasks >= )(\d+)[^\n]{0,24}?(?:任务|tasks)?[^\n]{0,24}?maxWidth\s*(?:≥|>=)\s*(\d+)|maxWidth >= (\d+)` and `tasks >= (\d+)/g;
+  for (const [name, text] of Object.entries(copies)) {
+    for (const m of text.matchAll(/Tier 1[^\n]{0,8}?(?:≤|<=)\s*(\d+)/g)) assert.equal(Number(m[1]), DEFAULT_LIMIT, `${name}: Tier 1 上限 ${m[0]}`);
+    for (const m of text.matchAll(tier3)) {
+      const tasks = Number(m[1] ?? m[4]);
+      const width = Number(m[2] ?? m[3]);
+      assert.deepEqual([tasks, width], [4, 2], `${name}: Tier 3 门槛 ${m[0]}`);
+    }
+  }
+  assert.ok(fs.existsSync(path.join(repo, 'docs', 'tier2-handoff-brief.md')));
 });
 
 test('3 个源文件加 2 个测试和 1 个文档仍在 Tier 1；第 4 个源文件询问', () => withState(() => {
@@ -657,7 +684,7 @@ test('tier-reminder-hook 进程：非斜杠消息输出 additionalContext，斜�
   assert.match(REMINDER, /Bash/);
   assert.match(REMINDER, /TIER-PLAN: tier=1 files=/);
   assert.match(REMINDER, /≤3 个源文件/);
-  assert.match(REMINDER, /测试和文档可列出但不计数/);
+  assert.match(REMINDER, /测试、文档、仓库外文件不计数也免声明/);
   assert.equal(run(JSON.stringify({ prompt: '/tdd' })).stdout.trim(), '');
   assert.equal(run('garbage').stdout.trim(), '');
   assert.equal(run(JSON.stringify({ prompt: '执行' }), { PIPELINE_TIER_REMINDER: 'off' }).stdout.trim(), '');
@@ -721,6 +748,14 @@ test('tier-session-hook 进程：输出 SessionStart additionalContext，含分�
   assert.match(out.hookSpecificOutput.additionalContext, /Tier 3/);
   const off = spawnSync('node', [SESSION_HOOK], { input: '{}', encoding: 'utf8', env: cleanEnv({ PIPELINE_TIER_REMINDER: 'off' }) });
   assert.equal(off.stdout.trim(), '');
+});
+
+test('tier-session-hook 进程：startup/clear 不重复注入（首条用户消息会注入），resume/compact 仍注入', () => {
+  const run = (source) => spawnSync('node', [SESSION_HOOK], { input: JSON.stringify({ source }), encoding: 'utf8', env: cleanEnv() }).stdout.trim();
+  assert.equal(run('startup'), '');
+  assert.equal(run('clear'), '');
+  assert.match(run('resume'), /分级规则/);
+  assert.match(run('compact'), /分级规则/);
 });
 
 // ---- Stop 核对（补 Bash 写入） ----

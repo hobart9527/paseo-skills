@@ -5,7 +5,7 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output: `openspec/changes/<change>/`.
 ## Route first
 
 1. Read `SKILL.md` and this change's applicable schema templates. `openspec-schema/schema.yaml` and `openspec-schema/templates/` define artifacts, required content and validation; follow them instead of duplicating their rules here.
-2. Draft a compact DAG first: task IDs, dependencies, `maxWidth`, and one-line goal per task. Never split or pad a graph to qualify. Tier 3 requires real `tasks >= 4` and `maxWidth >= 2`.
+2. Draft a compact DAG first: task IDs, dependencies, `maxWidth`, and one-line goal per task. If the dispatcher supplied a rough DAG, refine it; do not redraw from scratch. Never split or pad a graph to qualify. Tier 3 requires real `tasks >= 4` and `maxWidth >= 2`.
 3. Run the supplied structural `freeze-check` on committed DAG/package. `freeze-check` is authoritative. If route is `handoff`, stop and return checked SHA/evidence for Tier 2 `/paseo-handoff`; do not expand full artifacts. `COMPLETE` for handoff requires author COMPLETE, structural exit 0/no blocks, and matching checked/reported SHA. Route success alone is not R0, CP-1 or execution authorization.
 4. If route is `pipeline`, finish the required package: proposal, SCEN-numbered spec deltas, tasks, acceptance, and R0 review artifact. Create `design.md` only when schema criteria apply. Use exact template files named by schema.
 

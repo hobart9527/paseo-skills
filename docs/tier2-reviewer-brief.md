@@ -22,6 +22,6 @@ Followups: ≤5, never affect verdict.
 Spec questions: undefined behavior for human; never affect verdict or trigger code-fix loop.
 Limitations.
 
-Tier 3 remains governed by `skills/paseo-pipeline/SKILL.md` and reviewer template. Review only when change touches hard risk: persistence/schema migration; production external write or deploy; auth/authorization/security; cross-request/process concurrency or idempotency. Otherwise dispatcher accepts per-R evidence and test output.
+Tier 3 remains governed by `skills/paseo-pipeline/SKILL.md` and reviewer template. Review only risky code (rule source `~/.claude/CLAUDE.md`): auth/authorization/security; cross-request/process concurrency or idempotency; persistence/schema code. Otherwise dispatcher accepts per-R evidence and test output.
 
 Recheck checks earlier blockers and fix-diff regressions only. Requirements and fixed baseline define review scope; no edge-case hunting or added criteria.

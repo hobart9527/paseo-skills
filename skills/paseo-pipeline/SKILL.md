@@ -6,7 +6,7 @@ user-invocable: true
 
 # Paseo Pipeline
 
-Enter from a drafted or frozen DAG with `maxWidth >= 2` and `tasks >= 4`; never split a graph to qualify. `maxWidth` is largest dispatch-dependency wave, a routing heuristic, not exact concurrency. `freeze-check` is authoritative after authoring; `handoff` routes to Tier 2 `/paseo-handoff`. Invalid DAGs have no route; fix graph errors first. Acceptance `Required=yes` remains CP-2 requirement authority. Reproduce suspected bugs; never invent ownership or dependencies.
+Enter from the main session's rough DAG (task IDs, dependencies, one-line goal) or a frozen DAG with `maxWidth >= 2` and `tasks >= 4`; never split a graph to qualify. Pass the rough DAG to the author to refine, not redraw. Thresholds are defined in `~/.claude/CLAUDE.md`. `maxWidth` is largest dispatch-dependency wave, a routing heuristic, not exact concurrency. `freeze-check` is authoritative after authoring; `handoff` routes to Tier 2 via `/tier2-handoff`, with the tasks carried over unchanged as `Slices`, then `/paseo-handoff`. Invalid DAGs have no route; fix graph errors first. Acceptance `Required=yes` remains CP-2 requirement authority. Reproduce suspected bugs; never invent ownership or dependencies.
 
 ## Principles
 
@@ -40,7 +40,7 @@ Contract work is serial.
 
 1. Run read-only preflight and create an OpenSpec change with schema `paseo-pipeline`. Provide one author workspace, baseline SHA, preflight/structural commands, project constants and confirmed decisions.
 2. Author follows `templates/author.md`: draft DAG first, then artifacts for selected route. Run structural `freeze-check` as soon as package exists. `COMPLETE` requires structural success on committed content; reconcile SHA and Git evidence.
-3. If route is `handoff`, only author `COMPLETE`, structural exit 0/no blocks, and matching checked/reported SHA qualify; use Tier 2 `/paseo-handoff`. Route success is not R0 or CP-1. `pipeline` route alone clears no other block.
+3. If route is `handoff`, only author `COMPLETE`, structural exit 0/no blocks, and matching checked/reported SHA qualify; use Tier 2 `/tier2-handoff` (tasks become `Slices`) then `/paseo-handoff`. Route success is not R0 or CP-1. `pipeline` route alone clears no other block.
 4. Resolve material human choices, then dispatch `hanlin` read-only R0 using `templates/reviewer.md`. R0 checks proposal/spec/design/tasks/acceptance as one package and records reviewed SHA. Maximum two package rounds; second is delta. After unresolved blockers, human accepts recorded risk or directs one fix-diff check; no third package round.
 5. Present contract, findings, DAG/scopes/Verify/acceptance and route. Human confirms CP-1 for exact contract commit. Freeze only after confirmation. CP-1 approves the contract, not arbitrary later commands. R0 sign-off is `R0: pass(<reviewer-uuid>@<sha>)` or recorded `R0: human-accept(@<sha>)`; human-accept is never a reviewer pass. Maximum two whole-package rounds; directed fix gets delta check only.
 

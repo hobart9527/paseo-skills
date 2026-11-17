@@ -95,18 +95,16 @@ export const DEFAULT_IDLE_MS = 30 * 60 * 1000;
 export const DEFAULT_TURNS = 3;
 const PROTECTED_BRANCHES = new Set(['main', 'master']);
 
+// 规则正本是 ~/.claude/CLAUDE.md；这里只放每轮必须看到的三行摘要，阈值与正本一致
+// （test/tier-gate.test.mjs 的「阈值不发散」用例核对）。改规则先改正本，再同步这里。
 export const TIER_RULES = [
-  '计划格式：TIER-PLAN: tier=1 files=packages/web/src/a.tsx scope=packages/web（真实路径；测试和文档可列出但不计数）。',
-  'Tier 1：≤3 个源文件、单一作用域 → 当前会话修改、验证，并逐条自检 R1..Rn。',
-  'Tier 2：>3 个源文件或跨作用域 → 先隔离到 worktree，主会话自己进去做；只有整体可独立完成或需要并行时才 /paseo-handoff。在 worktree 内改到声明外的源文件或新作用域，先补发 TIER-PLAN。',
-  'Tier 3：草拟 DAG 有 ≥4 个任务且 maxWidth≥2 → /paseo-pipeline。',
-  '硬风险（持久化/schema 迁移；生产外部写入或部署；认证/授权/安全；并发或幂等性）不是档位：由持有上下文的会话执行，先有用户原话授权和回滚办法，做完给验证证据。',
-  '操作：Bash 写入同样计数；范围扩大就停手升级；不改文件的操作无需声明。',
-  '纯评估、纯讨论不需要声明。',
+  `计划格式：TIER-PLAN: tier=1 files=packages/web/src/a.tsx scope=packages/web（真实路径）。写主 checkout 的源文件前声明，每条用户消息后重新声明；Bash 写入同样计数；测试、文档、仓库外文件不计数也免声明；纯评估、纯讨论不需要声明。`,
+  `档位：Tier 1 ≤${DEFAULT_LIMIT} 个源文件、单一作用域 → 当前会话做；Tier 2 >${DEFAULT_LIMIT} 个源文件或跨作用域 → 主会话自己进 worktree 做，委派用 /tier2-handoff（填 Slices 后调 /paseo-handoff）；Tier 3 主会话粗画 DAG 有 ≥4 个任务且 maxWidth≥2 → /paseo-pipeline。`,
+  '风险：风险操作（部署、生产写入、执行迁移、push）要用户原话授权和回滚办法；风险代码（分支里改鉴权、并发幂等、schema）要测试证据和 1 个 reviewer，不升档、不需授权。其余见 ~/.claude/CLAUDE.md。',
 ].join('\n');
 
-const TIER_2_DEFINITION = 'Tier 2：>3 个源文件或跨作用域 → 先隔离到 worktree，主会话自己进去做；整体可独立完成或需要并行时才 /paseo-handoff。';
-const TIER_3_DEFINITION = 'Tier 3：草拟 DAG 有 ≥4 个任务且 maxWidth≥2 → /paseo-pipeline。';
+const TIER_2_DEFINITION = `Tier 2：>${DEFAULT_LIMIT} 个源文件或跨作用域 → 先隔离到 worktree，主会话自己进去做；整体可独立完成或需要并行时才委派（/tier2-handoff 填 Slices 后调 /paseo-handoff）。`;
+const TIER_3_DEFINITION = 'Tier 3：主会话粗画 DAG 有 ≥4 个任务且 maxWidth≥2 → /paseo-pipeline。';
 const PLAN_EXAMPLE = 'TIER-PLAN: tier=1 files=packages/web/src/a.tsx scope=packages/web';
 
 function stateDir() {
@@ -351,7 +349,7 @@ function churnReason(turns, threshold) {
     `[tier-gate] 本任务段已连续 ${turns} 轮只重复修改此前改过的业务文件，没有推进到新文件：这不是「一次小范围改动」，是原地反复试错。`,
     '先不要再改文件。向用户汇报：反复了几轮、每轮改了什么、卡在哪里。然后二选一：',
     '- 疑难 Bug：用 /diagnosing-bugs 建最小复现，不要继续盲改。',
-    '- 复杂度超预期：用 /paseo-handoff 交给 worktree 里的 Agent，交接内容必写「## What was tried」，避免下游重走同一条死路。',
+    '- 复杂度超预期：用 /tier2-handoff（填 Slices 后调 /paseo-handoff）交给 worktree 里的 Agent，交接内容必写「## What was tried」，避免下游重走同一条死路。',
     '用户明确要求继续时，才在本任务段里继续改；不要改用 Bash 等方式绕过这次汇报。',
   ].join('\n');
 }
@@ -613,8 +611,8 @@ function planDenyReason(declared, files, scopes, limit) {
 // 交接样例直接写进拒绝文案：只说「用 /paseo-handoff」时，模型要么原地硬撑，要么写出
 // 落不进下游上下文的交接。样例让它在被拒绝的当下就能照抄。
 const HANDOFF_SAMPLE = [
-  '确需交接时的样例：/paseo-handoff "把 <change> 交给 worktree 里的 Agent" ',
-  '（或在 Paseo 里 create_agent 到新的 worktree），交接内容至少包含：',
+  '确需交接时的样例：/tier2-handoff 先按 docs/tier2-handoff-brief.md 填 Authorization、Pending decisions、Slices，',
+  '再 /paseo-handoff "把 <change> 交给 worktree 里的 Agent"（或 create_agent 到新的 worktree），交接内容至少包含：',
   '- ## Task / ## Current state',
   '- ## What was tried（已试过什么、为什么不通，避免下游重走死路）',
   '- ## Decisions',
