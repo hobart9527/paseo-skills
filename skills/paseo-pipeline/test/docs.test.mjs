@@ -24,26 +24,26 @@ test('skill preserves route, human gates and all dispatch profiles', () => {
   for (const token of ['maxWidth >= 2', 'tasks >= 4', 'never split', 'freeze-check', 'handoff', 'CP-1', 'CP-2', 'pipeline-run.mjs', 'preflight.mjs', 'namespace.mjs', 'pinned']) assert.ok(skill.includes(token), token);
   for (const role of ['chanpin', 'hanlin', 'ceshi', 'gongbu', 'gaogong', 'jiangzuo', 'anchasi', 'shangshu']) assert.ok(skill.includes(role), role);
   for (const token of ['list_profiles', 'Red tests', 'read-only', 'install-hook', 'Dispatch one `hanlin` author']) assert.ok(skill.includes(token), token);
-  assert.ok(skill.length < 22200);
+  assert.ok(skill.length < 10000, `SKILL.md is ${skill.length} chars`);
 });
 
 test('author prompt puts route DAG before full artifact requirements', () => {
   const author = read('templates/author.md');
   for (const token of ['task IDs', 'dependencies', 'maxWidth', 'one-line goal', 'freeze-check', 'handoff', 'proposal', 'SCEN-numbered', 'tasks', 'acceptance', 'review', 'design.md', 'path:line', 'COMPLETE', 'BLOCKED', 'INCOMPLETE']) assert.ok(author.includes(token), token);
   assert.ok(author.indexOf('## Route first') < author.indexOf('## DAG draft and route checks'));
-  assert.ok(author.length < 9000, `author.md is ${author.length} chars`);
+  assert.ok(author.length < 7500, `author.md is ${author.length} chars`);
 });
 
 test('reviewer leads with conformance and preserves bounded advisory framing', () => {
   const reviewer = read('templates/reviewer.md');
   for (const token of ['Requirement conformance first', 'bidirectional traceability', 'shared boundaries', 'real entry', 'matrix row', 'MET | NOT_MET | UNVERIFIABLE', 'DEVIATION', 'CONTRACT_GAP', 'ENHANCEMENT', 'NOT_MET', 'UNVERIFIABLE', 'CP-2', 'templates/approvals.md']) assert.ok(reviewer.includes(token), token);
-  assert.ok(reviewer.length < 7000, `reviewer.md is ${reviewer.length} chars`);
+  assert.ok(reviewer.length < 6000, `reviewer.md is ${reviewer.length} chars`);
 });
 
 test('worker prompt keeps task-local scope and runtime verification', () => {
   const worker = read('templates/worker.md');
   for (const token of ['Write scope', 'frozen Verify', 'write tests and implementation', 'environment fault, not a test result', 'Cannot find package', 'Do not silently widen scope', 'Pipeline-Author', 'Co-Authored-By']) assert.ok(worker.includes(token), token);
-  assert.ok(worker.length < 4500, `worker.md is ${worker.length} chars`);
+  assert.ok(worker.length < 4000, `worker.md is ${worker.length} chars`);
 });
 
 test('recovery and destructive approval template has bounded choices and exact record format', () => {

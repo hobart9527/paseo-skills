@@ -4,57 +4,39 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// Guards for prompt rules that real runs needed. Each checks a short landmark token or an
+// ordering, not a sentence, so prompts can be reworded and deduplicated without breaking it.
 const dir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const skill = fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8');
+const read = (file) => fs.readFileSync(path.join(dir, file), 'utf8');
+const skill = read('SKILL.md');
+const author = read('templates/author.md');
+const reviewer = read('templates/reviewer.md');
+const approval = read('templates/approvals.md');
+const has = (text, tokens, name) => { for (const token of tokens) assert.ok(text.includes(token), `${name}: ${token}`); };
 
 test('destructive and production steps need an object list and a recorded approval', () => {
-  // Every destructive/production step class the operator can hit must be named, so the
-  // rule is not silently read as "only applies to deploys".
-  for (const step of ['archive', 'cleanup', 'branch', 'worktree', 'push']) {
-    assert.ok(new RegExp(step, 'i').test(skill), step);
-  }
-  // Detailed object-list, verbatim-approval format lives in shared template.
-  const approval = fs.readFileSync(path.join(dir, 'templates/approvals.md'), 'utf8');
-  for (const token of ['workspace', 'branch', 'path', 'run-log', 'verbatim']) assert.ok(approval.includes(token), token);
+  for (const step of ['archive', 'cleanup', 'branch', 'worktree', 'push']) assert.ok(new RegExp(step, 'i').test(skill), step);
+  has(approval, ['workspace', 'branch', 'path', 'run-log', 'verbatim'], 'approvals.md');
 });
 
 test('a FINAL failure compares the integration base with main before it is called a regression', () => {
-  assert.match(skill, /regression/i);
-  assert.match(skill, /main\.\.\.<full-SHA>/);
+  has(skill, ['regression', 'main...<full-SHA>', 'git merge-base integration/<change> main'], 'SKILL.md');
 });
 
 test('every dispatch registers a reconciliation point and never duplicates the dispatch', () => {
-  assert.match(skill, /reconcile Paseo state, Git tip and Done lines/);
-  assert.match(skill, /never duplicate dispatch/);
+  has(skill, ['reconciliation point', 'never duplicate dispatch'], 'SKILL.md');
 });
 
-test('skill retains routing and human gate landmarks', () => {
-  for (const token of ['maxWidth', 'freeze-check', 'CP-1', 'CP-2', 'templates/approvals.md', 'FINAL']) assert.ok(skill.includes(token), token);
-});
-
-test('CP-1 remains after R0 and human choices', () => {
+test('CP-1 follows R0, which follows the human choices', () => {
   const entry = skill.slice(skill.indexOf('## Entry and CP-1'), skill.indexOf('## Start and execute after CP-1'));
-  for (const token of ['Resolve material human choices', 'dispatch `hanlin`', 'Human confirms CP-1', 'Maximum two package rounds']) assert.ok(entry.includes(token), token);
-  assert.ok(entry.indexOf('Resolve material human choices') < entry.indexOf('dispatch `hanlin`'));
-  assert.ok(entry.indexOf('Human confirms CP-1') > entry.indexOf('dispatch `hanlin`'));
+  const at = (token) => { const index = entry.indexOf(token); assert.ok(index > -1, token); return index; };
+  assert.ok(at('material human choices') < at('read-only R0'));
+  assert.ok(at('read-only R0') < at('confirms CP-1'));
+  has(entry, ['exact contract commit', 'two package rounds'], 'Entry');
 });
 
-test('R0 declares commit and external input baseline without overstating enforcement', () => {
-  const reviewer = fs.readFileSync(path.join(dir, 'templates/reviewer.md'), 'utf8');
-  const author = fs.readFileSync(path.join(dir, 'templates/author.md'), 'utf8');
-  assert.match(skill, /exact contract commit/);
-  assert.match(reviewer, /pinned commit and approved external snapshots/);
-  assert.match(author, /material product choices requiring human decision/);
-});
-
-test('briefs carry verified decision context and handle checker friction without scope fabrication', () => {
-  const skill = fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8');
-  const author = fs.readFileSync(path.join(dir, 'templates/author.md'), 'utf8');
-  const reviewer = fs.readFileSync(path.join(dir, 'templates/reviewer.md'), 'utf8');
-  assert.match(skill, /confirmed decisions/);
-  assert.match(author, /Avoid invented behavior, ownership or dependencies/);
-  assert.match(author, /unresolved conflicts/);
-  assert.match(author, /baseline SHA/);
-  assert.match(author, /Read baseline only to resolve a rule/);
-  assert.match(reviewer, /confirmed decisions supplied to the author/);
+test('briefs carry pinned evidence, decision context and no fabricated scope', () => {
+  has(skill, ['pinned', 'confirmed decisions'], 'SKILL.md');
+  has(author, ['material product choices', 'OPEN-DECISION', 'invented behavior, ownership or dependencies', 'unresolved conflicts', 'baseline SHA', 'Read baseline only'], 'author.md');
+  has(reviewer, ['pinned commit and approved external snapshots', 'confirmed decisions supplied to the author'], 'reviewer.md');
 });
