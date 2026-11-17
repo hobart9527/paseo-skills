@@ -205,6 +205,30 @@ test('running worker holds both uncommitted and committed task branches', () => 
   }
 });
 
+test('a running ceshi Red author holds its task; a finished one hands it to a worker', () => {
+  const running = frontier([task()], { agents: [{ id: 'c', role: 'ceshi', task: 'T-01', status: 'running' }], branches: { 'T-01': { attempts: 1, latestAttempt: 1, ownCommits: 0 } } });
+  assert.deepEqual(running.dispatch, []);
+  assert.equal(running.capacity.workers.used, 1);
+  const done = frontier([task()], { agents: [{ id: 'c', role: 'ceshi', task: 'T-01', status: 'idle', attempt: 1 }], branches: { 'T-01': { attempts: 1, latestAttempt: 1, ownCommits: 0 } } });
+  assert.deepEqual(done.dispatch, [{ task: 'T-01', action: 'dispatch-worker', reason: 'branch present; no commit yet' }]);
+});
+
+test('CLI accepts a running ceshi agent title instead of exiting 3', () => {
+  const { dir, git } = repo(cliTasks);
+  git('branch', 'task/chg/T-01');
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'frontier-bin-'));
+  const name = '[Pipeline] ceshi T-01 chg';
+  const listed = JSON.stringify([{ id: 'c1', name, status: 'running', cwd: dir }]);
+  const inspected = JSON.stringify({ Id: 'c1', Name: name, Status: 'running', PendingPermissions: [] });
+  fs.writeFileSync(path.join(bin, 'paseo'), `#!/bin/sh\nif [ "$1" = inspect ]; then printf '%s' '${inspected}'; else printf '%s' '${listed}'; fi\n`);
+  fs.chmodSync(path.join(bin, 'paseo'), 0o755);
+  const result = spawnSync('node', [path.join(root, 'next-actions.mjs'), path.join(dir, 'openspec/changes/chg'), '--json'], {
+    encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).dispatch, []);
+});
+
 test('third attempt remains executable', () => {
   const report = frontier([task()], { branches: { 'T-01': { attempts: 3, ownCommits: 1 } } });
   assert.equal(report.dispatch[0].action, 'merge');

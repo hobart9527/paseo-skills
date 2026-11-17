@@ -16,7 +16,7 @@
   - Entry：真实入口 —— HTTP 路由、UI 路径、CLI 命令，或让能力可达的装配点。不是内部函数。
     写的是本 change 某个任务会写的文件时，行所有者必须写它或依赖写它的任务（freeze-check 报
     ENTRY_OWNER_UNCLAIMED）；多个组件共用一个装配文件时，让装配任务认领用户可见场景，或加
-    Wave 0 `Kind: skeleton` 预接线并让组件 `Uses` 它（见 author brief 的 shared-assembly 模式）。
+    Wave 0 `Kind: skeleton` 预接线并让组件 `Uses` 它（字段规则见 tasks 模板的 `Uses` / `Kind`）。
   - Tasks：承载这一行的任务 ID，逗号分隔。**认领来源是 tasks.md 的 `Scenarios:`，这一格是它的投影，不是第二份认领。**
     必须明确列出该行承载的认领任务，且只能列在 tasks.md 的 Scenarios 里认领了该场景的任务。
     同一场景所有行的并集必须覆盖全部认领者，单行不必列全；可把所有者分摊到多行。

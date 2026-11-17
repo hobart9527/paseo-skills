@@ -23,7 +23,7 @@ test('skill preserves route, human gates and all dispatch profiles', () => {
   const skill = read('SKILL.md');
   for (const token of ['maxWidth >= 2', 'tasks >= 4', 'never split', 'freeze-check', 'handoff', 'CP-1', 'CP-2', 'merge-task.mjs', 'pipeline-run.mjs']) assert.ok(skill.includes(token), token);
   for (const role of ['chanpin', 'hanlin', 'ceshi', 'gongbu', 'gaogong', 'jiangzuo', 'anchasi', 'shangshu']) assert.ok(skill.includes(role), role);
-  for (const token of ['WRITER_ROLES', 'list_profiles', 'Red tests', 'test/', 'read-only']) assert.ok(skill.includes(token), token);
+  for (const token of ['WRITER_ROLES', 'list_profiles', 'Red tests', 'read-only', 'install-hook', 'Dispatch one `hanlin` author']) assert.ok(skill.includes(token), token);
   assert.ok(skill.length < 22200);
 });
 

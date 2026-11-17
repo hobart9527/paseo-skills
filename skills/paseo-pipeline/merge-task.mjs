@@ -15,8 +15,8 @@ import { writeMergeState, clearMergeState } from './lib/merge-state.mjs';
 import { patchIdOf as patchIdFor, samePatchCommits as samePatchCommitsFor } from './lib/provenance.mjs';
 import { missingDependency, dependencyMessage } from './lib/toolchain.mjs';
 
-// `ceshi` stays accepted so branches authored before this change still carry valid
-// provenance; new work uses one of the worker roles.
+// `ceshi` writes Red tests first on hard-risk or `Review: strict` tasks; its commits are
+// valid provenance alongside the worker's.
 const WRITER_ROLES = new Set(['gongbu', 'gaogong', 'jiangzuo', 'ceshi']);
 const usage = 'Usage: merge-task.mjs <branch> <task-id> [<legacy-review-tag>] [--timeout ms] [--allow-test-infra]';
 let mergeState = null;

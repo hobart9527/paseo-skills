@@ -24,8 +24,8 @@ Resolve current provider/model/modeId/thinking settings with `list_profiles` at 
 | Profile | Scope |
 |---|---|
 | 中书 `chanpin` | Read-only research and Proposal. |
-| 翰林 `hanlin` | Spec, SCEN contracts, R0 and arbiter. |
-| 测试 `ceshi` | Red tests first; hard-risk tasks or `Review: strict` only; writes under `test/` only. |
+| 翰林 `hanlin` | Contract author (whole package, writes only `openspec/changes/<change>/`); R0 reviewer and arbiter in a separate read-only session. |
+| 测试 `ceshi` | Red tests first on hard-risk or `Review: strict` tasks; writes test files inside the task's Write scope only. |
 | 工部 `gongbu` | Core implementation within assigned Write scope. |
 | 高工 `gaogong` | Complex, cross-module, concurrency, or rework after reviewer pushback. |
 | 将作 `jiangzuo` | UI/UX. |
@@ -38,8 +38,8 @@ Resolve current provider/model/modeId/thinking settings with `list_profiles` at 
 
 Contract work is serial.
 
-1. Run read-only preflight and create an OpenSpec change with schema `paseo-pipeline`. Provide one author workspace, baseline SHA, preflight/structural commands, project constants and confirmed decisions.
-2. Author follows `templates/author.md`: draft DAG first, then artifacts for selected route. Run structural `freeze-check` as soon as package exists. `COMPLETE` requires structural success on committed content; reconcile SHA and Git evidence.
+1. Run read-only preflight and create an OpenSpec change with schema `paseo-pipeline`. Dispatch one `hanlin` author with one author workspace, baseline SHA, preflight/structural commands, project constants and confirmed decisions.
+2. Author follows `templates/author.md`: draft DAG first, then artifacts for selected route. Run structural `freeze-check` as soon as package exists. `COMPLETE` requires structural success on committed content; reconcile SHA and Git evidence. The author stops at minute 25; if no report arrives by minute 30, reconcile Paseo status with the author branch `git log` once instead of polling.
 3. If route is `handoff`, only author `COMPLETE`, structural exit 0/no blocks, and matching checked/reported SHA qualify; use Tier 2 `/tier2-handoff` (tasks become `Slices`) then `/paseo-handoff`. Route success is not R0 or CP-1. `pipeline` route alone clears no other block.
 4. Resolve material human choices, then dispatch `hanlin` read-only R0 using `templates/reviewer.md`. R0 checks proposal/spec/design/tasks/acceptance as one package and records reviewed SHA. Maximum two package rounds; second is delta. After unresolved blockers, human accepts recorded risk or directs one fix-diff check; no third package round.
 5. Present contract, findings, DAG/scopes/Verify/acceptance and route. Human confirms CP-1 for exact contract commit. Freeze only after confirmation. CP-1 approves the contract and committing it to the default branch (Start step 1), not arbitrary later commands. R0 sign-off is `R0: pass(<reviewer-uuid>@<sha>)` or recorded `R0: human-accept(@<sha>)`; human-accept is never a reviewer pass. Maximum two whole-package rounds; directed fix gets delta check only.
@@ -47,8 +47,8 @@ Contract work is serial.
 ## Start and execute after CP-1
 
 1. Commit frozen contract on default branch. Create integration worktree from it and one task worktree/branch per ready task.
-2. Install pipeline hook and lockfile dependencies in every worktree, including integration, before Verify.
-3. Run `pipeline-run.mjs plan <change-dir>` and dispatch exactly listed workers, one per task, with branch, workspace, frozen Write scope, SCENs, Verify and upstream interfaces. Worker follows `templates/worker.md`, commits required trailers and reports branch tip.
+2. In every worktree, including integration, install lockfile dependencies and the author hook (`pipeline-run.mjs install-hook <worktree>...`) before Verify. The hook stamps `Pipeline-Author` from `PASEO_AGENT_ID`. Installation enables `extensions.worktreeConfig` in shared repository config and points the worktree's `core.hooksPath` at the skill hooks, replacing the whole hooks directory: first inspect the effective `core.hooksPath` and existing hooks (default directory included); if any would be displaced, ask the human.
+3. Run `pipeline-run.mjs plan <change-dir>` and dispatch exactly listed workers, one per task, with branch, workspace, frozen Write scope, SCENs, Verify and upstream interfaces. For a hard-risk or `Review: strict` task, dispatch `ceshi` first on the same branch as `[Pipeline] ceshi <T-id> <change>`: it commits Red tests inside the task's Write scope, holds the task while it runs, and the next `plan` lists the worker. Worker follows `templates/worker.md`, commits required trailers and reports branch tip.
 4. On completion, verify tip and run `pipeline-run.mjs merge <change-dir> <T-id>` from integration; then rerun `plan`. Gate checks dependencies, scope, provenance, drift, Verify and regression, then records Done. `--allow-test-infra` releases only that check and needs recorded human approval; it skips no other gate.
 5. On lost notification, reconcile Paseo state, Git tip and Done lines before re-arming; never duplicate dispatch. A failed worker may retry twice after initial attempt; fourth branch needs human approval. No manual Done edits or gate bypass.
 6. After resume, reread integration Done lines, first-parent log and labeled Paseo agents before dispatch. At each dispatch, register a reconciliation point (agent id, branch, expected first artifact); compare Paseo state, branch tip and Done lines before re-arming. Contract amendments after CP-1 need human confirmation or an applicable recorded pre-authorization before planning; new interface/security boundary needs delta R0.
@@ -73,6 +73,6 @@ Acceptance `run` executes repository-controlled commands unsandboxed; inspect co
 
 ## Hard lines
 
-- Main session does not edit business code; workers stay within Write scope; `hanlin` and `anchasi` write nothing.
+- Main session does not edit business code; workers stay within Write scope; the `hanlin` author writes only the change directory; R0 `hanlin` and `anchasi` write nothing.
 - Never treat missing dependencies as test failures or edit Verify to bypass environment setup.
 - Never force destructive cleanup, push, or merge around gates.

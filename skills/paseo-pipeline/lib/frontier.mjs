@@ -1,13 +1,16 @@
 // Pure frontier computation: graph + observed state -> deterministic next actions.
 // No I/O, no dispatch, no ledger. The main session executes the list; git and Paseo
-// stay the only state (SKILL.md principle 5).
+// stay the only state (SKILL.md "Start and execute").
 //
 // One track: a ready task gets a worker; a branch with commits merges as soon as its
-// merge dependencies are Done. There is no test-author dispatch and no per-task reviewer.
+// merge dependencies are Done. No per-task reviewer. A `ceshi` Red-test author is
+// dispatched by the main session, not planned here; while it runs it holds the task
+// like a worker, and its commit alone never counts as worker output.
 import { dispatchDeps, mergeDeps, readyIds, pathWithin, LIVE_MODEL } from './schedule.mjs';
 import { normalizeScope } from './tasks.mjs';
 
 const WORKER_ROLES = new Set(['gongbu', 'gaogong', 'jiangzuo']);
+const TASK_HOLDER_ROLES = new Set([...WORKER_ROLES, 'ceshi']);
 const active = (agent) => agent.status === 'running' || agent.status === 'initializing' || agent.pendingPermissions;
 
 export const DEFAULTS = {
@@ -63,7 +66,7 @@ export function frontier(tasks, state = {}, options = {}) {
   const ancestors = ancestorSet(byId);
   const open = tasks.filter((task) => !done.has(task.id));
 
-  const runningWorkers = agents.filter((agent) => WORKER_ROLES.has(agent.role) && active(agent));
+  const runningWorkers = agents.filter((agent) => TASK_HOLDER_ROLES.has(agent.role) && active(agent));
   const heldBy = new Map();
   const capacity = {
     workers: { used: new Set(runningWorkers.map((agent) => agent.task).filter(Boolean)).size, cap: opts.workerCap },
@@ -139,7 +142,7 @@ export function frontier(tasks, state = {}, options = {}) {
   const dispatchedWorkerScopes = [];
   for (const task of ordered) {
     if (runningWorkers.some((agent) => agent.task === task.id)) continue;
-    if (agents.some((agent) => WORKER_ROLES.has(agent.role) && agent.task === task.id && agent.pendingPermissions)) continue;
+    if (agents.some((agent) => TASK_HOLDER_ROLES.has(agent.role) && agent.task === task.id && agent.pendingPermissions)) continue;
     const branch = branches[task.id] || {};
     const ownCommits = branch.ownCommits ?? (branch.attempts ? 1 : 0);
     if (branch.mergeFailure && (ownCommits || branch.mergeFailure.status === 'pending')) {

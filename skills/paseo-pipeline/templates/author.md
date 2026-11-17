@@ -42,7 +42,7 @@ After DAG route is known, apply schema's full task format and constraints. In pa
 
 ## Time budget
 
-Time bounds are experiment targets, not gates: record start time; first files by minute 10, committed package and structural result by minute 20, stop at minute 25. At stop, commit current state and report `INCOMPLETE`; do not extend the budget independently. Minute 30 is recovery only: reconcile Paseo and Git for unreported state, not polling or a second stop. Report planned stop, stop instruction delivery (if any), actual stop and snapshot commit separately. Budget exhaustion never means COMPLETE.
+Record start time. Targets: first files by minute 10, committed package and structural result by minute 20. At minute 25, stop yourself: commit current state and report `INCOMPLETE` with the snapshot commit; budget exhaustion never means COMPLETE. Report planned stop, stop instruction delivery (if any), actual stop and snapshot commit separately.
 
 ## Mode REVISE
 
@@ -51,8 +51,6 @@ Same author and workspace. Fix only confirmed blocker locations from the supplie
 ## Structural-check evidence
 
 After the complete package exists, run the exact supplied structural-check command before polishing. A draft run is evidence only about the draft, never `COMPLETE`; checked SHA must match committed package. Report stdout, stderr, true process exit code, `git rev-parse HEAD`, and `git status --porcelain` separately. A shell pipeline's final status is not the checker's status. Record blockers and advisories separately; only blockers reject. Route and structural result are distinct.
-
-At 25 minutes, stop and deliver `INCOMPLETE` snapshot; commit what exists. The stop event is an instruction, not forced termination. Minute 30 is recovery only: reconcile Paseo status with `git log`, do not poll or steer on inactivity. Report planned stop, stop-event delivery, actual stop, and snapshot commit separately. Late notification is not completion.
 
 ## Return envelope
 

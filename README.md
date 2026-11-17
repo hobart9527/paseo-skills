@@ -58,7 +58,7 @@ npm install -g @accesslint/cli @accesslint/chrome playwright @playwright/cli
 - **Contract Freeze (`freeze-check.mjs`)**: Parses task DAG and waves, enforces scenario mapping, scope isolation, and narrow per-task verification before dispatch.
 - **Paseo-native orchestration**: Paseo owns agents, workspaces, labels, and finish notifications; git owns durable state. No lease ledger or polling loop.
 - **Frontier concurrency**: Tasks dispatch as soon as dependencies are Done and scopes are disjoint; vertical slices keep behavior, wiring, fixtures, and tests together.
-- **Deterministic Merge (`merge-task.mjs`)**: Enforces provenance trailers, independent review, dependency completion, Write scope, drift checks, and frozen Verify before `--no-ff` integration.
+- **Deterministic Merge (`merge-task.mjs`)**: Enforces provenance trailers, dependency completion, Write scope, drift checks, frozen Verify and regression replay before `--no-ff` integration; quality is judged once by the independent FINAL review.
 
 ### 2. `paseo-ui` (Paseo UI 2.0)
 - **Dual-Mode Execution**:

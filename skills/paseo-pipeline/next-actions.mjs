@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Deterministic next-action list for the main session: one read-only query over git
 // and Paseo, no dispatch, no merge, no ledger. The caller executes the list; if the
-// list is lost it recomputes (SKILL.md principle 5).
+// list is lost it recomputes (SKILL.md "Start and execute").
 //
 // Usage: next-actions.mjs <change-dir> [--json] [--worker-cap 8] [--idle-minutes 15]
 // Exit: 0 list printed (including "nothing to do"); 2 usage; 3 invalid or unreadable state.
@@ -126,8 +126,8 @@ for (const ref of refs) {
   let workerCommits = 0;
   for (const line of commits) {
     const [, role = ''] = line.split('\0');
-    // A legacy `ceshi` Red commit is not worker output; a branch holding only that
-    // still needs a worker dispatch.
+    // A `ceshi` Red commit is not worker output; a branch holding only that still
+    // needs a worker dispatch.
     if (role.trim() && role.trim() !== 'ceshi') workerCommits += 1;
   }
   const tip = git(['rev-parse', '--verify', `refs/heads/${ref}^{commit}`]).trim();
@@ -222,7 +222,7 @@ for (const agent of allAgents) {
     process.exit(3);
   }
   if (agent.status === 'closed' || labelledIds.has(agent.id)) continue;
-  if (!agent.name.startsWith('[Pipeline]') && !/^(gongbu|gaogong|jiangzuo|hanlin|anchasi)-/.test(agent.name)) continue;
+  if (!agent.name.startsWith('[Pipeline]') && !/^(gongbu|gaogong|jiangzuo|ceshi|hanlin|anchasi)-/.test(agent.name)) continue;
   const agentRepo = commonDir(agent.cwd);
   if (agentRepo && agentRepo !== repository) continue;
   const identity = agent.name.match(/^\[Pipeline\]\s+\S+\s+\S+\s+(\S+)$/);
@@ -238,7 +238,7 @@ for (const agent of listedAgents) {
     process.exit(3);
   }
   const parts = agent.name.match(/^\[Pipeline\]\s+(\S+)\s+(\S+)(?:\s+.*)?$/);
-  const match = parts && /^(gongbu|gaogong|jiangzuo)$/.test(parts[1]) && /^[A-Za-z][A-Za-z0-9]*-\d+(?:-a[1-9]\d*)?$/.test(parts[2]) ? parts : null;
+  const match = parts && /^(gongbu|gaogong|jiangzuo|ceshi)$/.test(parts[1]) && /^[A-Za-z][A-Za-z0-9]*-\d+(?:-a[1-9]\d*)?$/.test(parts[2]) ? parts : null;
   // A round suffix (`R0-r2`, `FINAL-r2`) is display only; it never changes the role.
   const nonWorker = parts && /^(hanlin|anchasi|gongbu|gaogong)$/.test(parts[1]) && /^(R0|FINAL|FULL)(?:-r[1-9]\d*)?$/.test(parts[2]);
   if (agent.status === 'closed' && !match) continue;

@@ -7,10 +7,7 @@ Role trailer value: `gongbu` (or the profile the main session selected).
 
 You own the task: write tests and implementation, then leave frozen Verify green.
 Either order is allowed. Test the behavior that could go wrong, not mere code contact.
-
-## Hook installation safety (main session)
-
-Before installation, inspect the effective `core.hooksPath` and existing hooks, including the default hooks directory. Installation enables `extensions.worktreeConfig` in shared repository config and sets `core.hooksPath` per target worktree, switching the entire hooks directory. If existing hooks would be displaced, stop and ask the human; never silently replace them. Obtain approval where required; existing approval covers only its stated scope. The hook stamps `Pipeline-Author` from `PASEO_AGENT_ID`; without it, valid trailers may still pass the merge gate, but automatic stamping is absent.
+If a `ceshi` Red commit is already on the branch, those tests are the oracle: make them pass and keep their assertions intact.
 
 ## Rules
 - Follow `SKILL.md` dispatch/merge flow and this task's frozen contract; this brief adds task-local constraints only.
