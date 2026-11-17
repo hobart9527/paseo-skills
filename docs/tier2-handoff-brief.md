@@ -8,7 +8,14 @@ Use only when the work can be done whole by an independent session, or needs par
 - **Base SHA:** `<full commit SHA>`
 - **Requirements:** `<R1..Rn in user's words> + files/scope`
 - **Authorization:** `<quote user's words and scope; if absent, no commit/merge/push>`.
-- **Pending decisions:** `<open choices, each with a default>`; dispatcher resolves any without a default.
+- **Pending decisions:** `<open choices, each with a default>`; dispatcher resolves any without a default before dispatch. A choice touching a hard risk needs the user's words, not a dispatcher default.
+- **Slices:** serial list, no DAG. One line each: `S<n>: <R ids> | <files> | <old tests to change → new assertion> | <done evidence>`. One commit per slice when commit is authorized; otherwise one progress entry per slice.
+- **Size estimate:** `<files, lines, minutes>`; tell the user this estimate at dispatch.
+
+## Pre-dispatch check
+- The brief has `Authorization:`, `Pending decisions` and `Slices`; missing any one, do not dispatch.
+- Read every test the brief requires to pass. An assertion that locks in a defect being fixed is listed in its slice as "change to …", never left under "must pass".
+- Questions while running: hard-risk questions go to the user verbatim; the dispatcher never answers them. Other questions: the delegate applies the default, records it in the report, and keeps going.
 
 ## Delivery
 - Review only for hard risks: persistence/schema migration; production external write or deploy; auth/authorization/security; cross-request/process concurrency or idempotency. Otherwise dispatcher accepts per-R evidence and test output; human owns merge approval.
@@ -19,4 +26,5 @@ Use only when the work can be done whole by an independent session, or needs par
 ## Progress and recovery
 - Track progress in `$(git rev-parse --git-dir)/handoff-progress.md`; record done/next, files touched and conclusions. After compaction, read it first.
 - One full context window with no write: stop and return `BLOCKED` with unresolved item.
-- Reconcile Paseo agent status with Git; elapsed time is never completion.
+- Reconcile Paseo agent status with Git; elapsed time is never completion. Progress is counted in finished slices, not minutes.
+- Diff past the size estimate by >30%: stop and return `BLOCKED (scope expansion)`.
