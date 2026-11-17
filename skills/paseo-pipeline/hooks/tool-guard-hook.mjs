@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { logHookError } from '../lib/tier-gate.mjs';
 
 const LIMIT = 2 * 1024 * 1024;
@@ -17,6 +19,57 @@ const isPlaceholderServerId = (value) => {
   const text = value.trim();
   return text === '' || !/^srv_[A-Za-z0-9]+$/.test(text) || PLACEHOLDER_SERVER_ID.test(text);
 };
+// A near-miss of this host's own id (one dropped or swapped character, seen 4 times in one session)
+// is a typo for "this host"; omitting serverId means exactly that. Distant srv_* ids may be real
+// remote hosts and are left to the server.
+function localServerId() {
+  const home = process.env.PASEO_HOME || path.join(os.homedir(), '.paseo');
+  try { return fs.readFileSync(path.join(home, 'server-id'), 'utf8').trim(); } catch { return ''; }
+}
+function editDistance(a, b) {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j++) row[j] = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = row;
+  }
+  return prev[b.length];
+}
+const isTypoOfLocal = (value, local) => typeof value === 'string' && !!local
+  && value.trim() !== local && editDistance(value.trim(), local) <= 2;
+// Words models use for "the caller's workspace"; omitting workspaceId means exactly that.
+const PLACEHOLDER_WORKSPACE_ID = /^(?:|default|local|current|self|this|none|null|x+)$/i;
+const TITLE_MAX = 60;
+const clip = (text) => Array.from(text).slice(0, TITLE_MAX).join('').slice(0, TITLE_MAX);
+/** create_agent: title is required and ≤60 chars; a missing one is derived from the prompt's first line. */
+function sanitizedCreateAgent(input) {
+  const next = { ...input };
+  let changed = false;
+  if (typeof next.workspaceId === 'string' && PLACEHOLDER_WORKSPACE_ID.test(next.workspaceId.trim())) {
+    delete next.workspaceId; changed = true;
+  }
+  const title = typeof next.title === 'string' ? next.title.trim() : '';
+  if (!title && typeof next.initialPrompt === 'string') {
+    const line = next.initialPrompt.split('\n').map((l) => l.replace(/^[#>*\-\s]+/, '').replace(/\s+/g, ' ').trim()).find(Boolean);
+    if (line) { next.title = clip(line); changed = true; }
+  } else if (title && (title.length > TITLE_MAX || title !== next.title)) {
+    next.title = clip(title); changed = true;
+  }
+  return changed ? next : null;
+}
+/** A bare provider ("claude") is ambiguous across profiles, so it cannot be rewritten; name the valid pairs. */
+function bareProviderReason(input) {
+  const provider = typeof input?.provider === 'string' ? input.provider.trim() : '';
+  if (!provider || provider.includes('/')) return null;
+  let pairs = [];
+  try {
+    const home = process.env.PASEO_HOME || path.join(os.homedir(), '.paseo');
+    const profiles = JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8'))?.daemon?.agentProfiles ?? [];
+    pairs = profiles.filter((p) => p?.provider && p?.model).map((p) => `${String(p.name ?? p.id).split(/\s/)[0]}=${p.provider}/${p.model}`);
+  } catch { /* profiles unreadable: still explain the format */ }
+  return `create_agent provider must be "<profile.provider>/<profile.model>", not "${provider}". Join the two list_profiles fields with "/".`
+    + (pairs.length ? ` Current profiles: ${pairs.join(', ')}.` : '');
+}
 const canonical = (value) => JSON.stringify(value, (_, v) => v && typeof v === 'object' && !Array.isArray(v)
   ? Object.fromEntries(Object.keys(v).sort().map((key) => [key, v[key]])) : v);
 const output = (fields) => console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', ...fields } }));
@@ -93,7 +146,8 @@ async function main() {
   let updated = input;
   let changed = false;
   if (name.startsWith('mcp__paseo__')) {
-    if (updated && typeof updated === 'object' && !Array.isArray(updated) && isPlaceholderServerId(updated.serverId)) {
+    const isObject = updated && typeof updated === 'object' && !Array.isArray(updated);
+    if (isObject && (isPlaceholderServerId(updated.serverId) || isTypoOfLocal(updated.serverId, localServerId()))) {
       updated = { ...updated };
       delete updated.serverId;
       changed = true;
@@ -101,6 +155,13 @@ async function main() {
     const sanitized = sanitizedPaseoInput(name, updated);
     if (sanitized) {
       updated = sanitized;
+      changed = true;
+    }
+    const bare = isObject && name === 'mcp__paseo__create_agent' ? bareProviderReason(updated) : null;
+    if (bare) { deny(bare); return; }
+    const agent = isObject && name === 'mcp__paseo__create_agent' ? sanitizedCreateAgent(updated) : null;
+    if (agent) {
+      updated = agent;
       changed = true;
     }
   }

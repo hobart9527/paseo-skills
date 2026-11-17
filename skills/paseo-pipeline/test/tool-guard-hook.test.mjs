@@ -70,6 +70,49 @@ test('serverId stripping and branch-off stripping combine into one updatedInput'
   assert.deepEqual(out.updatedInput, { isolation: 'worktree', branchName: 'b', baseBranch: 'main' });
 });
 
+function paseoHome(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paseo-home-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, 'server-id'), 'srv_AdzDXaf59gwG\n');
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ daemon: { agentProfiles: [
+    { id: 'p1', name: '工部 (核心实现)', provider: 'claude', model: 'flash' },
+    { id: 'p2', name: '按察司 (审计)', provider: 'codex', model: 'gpt' },
+  ] } }));
+  return dir;
+}
+
+test('serverId one or two edits from this host is a typo and is stripped; distant ids pass', (t) => {
+  const PASEO_HOME = paseoHome(t);
+  for (const serverId of ['srv_AdzDXaf59gw', 'srv_AdzDXaf59gwC', 'srv_AdzDXaf59gwGG']) {
+    const out = guard({ tool_name: 'mcp__paseo__create_workspace', tool_input: { isolation: 'worktree', serverId } }, { PASEO_HOME });
+    assert.equal(out.permissionDecision, 'allow', serverId);
+    assert.deepEqual(out.updatedInput, { isolation: 'worktree' }, serverId);
+  }
+  assert.deepEqual(guard({ tool_name: 'mcp__paseo__list_agents', tool_input: { serverId: 'srv_AdzDXaf59gwG' } }, { PASEO_HOME }), {});
+  assert.deepEqual(guard({ tool_name: 'mcp__paseo__list_agents', tool_input: { serverId: 'srv_Remote123456' } }, { PASEO_HOME }), {});
+});
+
+test('create_agent: bare provider is denied with the valid provider/model pairs', (t) => {
+  const PASEO_HOME = paseoHome(t);
+  const out = guard({ tool_name: 'mcp__paseo__create_agent', tool_input: { provider: 'claude', title: 't', initialPrompt: 'p' } }, { PASEO_HOME });
+  assert.equal(out.permissionDecision, 'deny');
+  assert.match(out.permissionDecisionReason, /claude\/flash/);
+  assert.match(out.permissionDecisionReason, /codex\/gpt/);
+});
+
+test('create_agent: placeholder workspaceId dropped, missing title derived, long title clipped', (t) => {
+  const PASEO_HOME = paseoHome(t);
+  for (const workspaceId of ['', '\t', 'default', 'local', 'current']) {
+    const out = guard({ tool_name: 'mcp__paseo__create_agent', tool_input: { provider: 'codex/gpt', title: 'Audit', initialPrompt: 'p', workspaceId } }, { PASEO_HOME });
+    assert.deepEqual(out.updatedInput, { provider: 'codex/gpt', title: 'Audit', initialPrompt: 'p' }, JSON.stringify(workspaceId));
+  }
+  const derived = guard({ tool_name: 'mcp__paseo__create_agent', tool_input: { provider: 'codex/glm', initialPrompt: '## Task\nReview the diff' } }, { PASEO_HOME });
+  assert.equal(derived.updatedInput.title, 'Task');
+  const long = guard({ tool_name: 'mcp__paseo__create_agent', tool_input: { provider: 'claude/cc', title: '发'.repeat(62), initialPrompt: 'p' } }, { PASEO_HOME });
+  assert.equal(long.updatedInput.title.length, 60);
+  assert.deepEqual(guard({ tool_name: 'mcp__paseo__create_agent', tool_input: { provider: 'claude/cc', title: 'ok', initialPrompt: 'p', workspaceId: 'wks_4c2768faccbb4adb' } }, { PASEO_HOME }), {});
+});
+
 test('identical-call deny tells create_workspace exactly which fields to drop', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tool-guard-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
