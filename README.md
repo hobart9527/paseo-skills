@@ -31,6 +31,9 @@ ln -sf ~/Codex/paseo-skills/skills/paseo-pipeline ~/.claude/skills/paseo-pipelin
 
 # Symlink Paseo UI
 ln -sf ~/Codex/paseo-skills/skills/paseo-ui ~/.claude/skills/paseo-ui
+
+# Symlink Tier 2 handoff wrapper (fills the brief, then calls the Paseo-bundled /paseo-handoff)
+ln -sf ~/Codex/paseo-skills/skills/tier2-handoff ~/.claude/skills/tier2-handoff
 ```
 
 ### 3. Sync Vendored UI Skills (Paseo UI)

@@ -89,3 +89,9 @@ test('Tier 2 handoff and review remain documented', () => {
   assert.match(handoff, /hard-risk questions go to the user verbatim/);
   assert.match(fs.readFileSync(reviewPath, 'utf8'), /Requirement matrix/);
 });
+
+test('tier2-handoff wraps paseo-handoff with the brief and pre-dispatch check', () => {
+  const wrapper = fs.readFileSync(path.join(dir, '..', 'tier2-handoff', 'SKILL.md'), 'utf8');
+  for (const token of ['name: tier2-handoff', 'docs/tier2-handoff-brief.md', 'Pre-dispatch check', 'Slices', '/paseo-handoff', 'size estimate']) assert.ok(wrapper.includes(token), token);
+  assert.ok(wrapper.length < 3000, `tier2-handoff is ${wrapper.length} chars`);
+});
