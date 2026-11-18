@@ -2141,3 +2141,36 @@ test('short and malformed acceptance tables match D4 base JSON output without th
     assert.deepEqual(runJson(path.join(root, 'freeze-check.mjs')), runJson(base), `case ${index + 1}`);
   }
 });
+
+// ---- design decisions declare the modules they touch: every declared path needs a writer ----
+// D9 shape: D-03 named the payee route as affected, no task claimed it, and R0 found a live
+// 越权 read path with no owner. The advisory points at the decision; it never blocks.
+const affectsRun = (designMarkdown, scope = 'src/shared,test/t-01.test.mjs') => run(change({
+  'tasks.md': entryTask('T-01', { scope, scen: 'SCEN-1' }),
+  'proposal.md': 'x',
+  'design.md': designMarkdown,
+  'review.md': REVIEW,
+  'specs/a/spec.md': '### Scenario: SCEN-1\n',
+  'acceptance.md': table('| SCEN-1 | CLI | T-01 | node -e "0" | yes | PENDING | pending |'),
+}));
+
+test('ADVISORY_DECISION_UNOWNED: a module named in design.md but written by no task is advised', () => {
+  const result = affectsRun('## Decisions\n- **D-01 lease state** 影响模块/路径: src/shared/lease.ts, src/routes/payees.ts\n');
+  assert.equal(result.status, 0, result.stdout);
+  const advisories = JSON.parse(result.stdout).advisories;
+  const hits = advisories.filter((item) => item.startsWith('ADVISORY_DECISION_UNOWNED'));
+  assert.equal(hits.length, 1, advisories.join('\n'));
+  assert.match(hits[0], /^ADVISORY_DECISION_UNOWNED D-01 design\.md: "src\/routes\/payees\.ts" is named as affected/);
+});
+
+test('ADVISORY_DECISION_UNOWNED: a directory decision is covered by any task writing inside it', () => {
+  const result = affectsRun('## Decisions\n- **D-01 components** 影响模块/路径: packages/web/src/form/ticket/\n', 'packages/web/src/form/ticket/Panel.tsx,test/t-01.test.mjs');
+  assert.equal(result.status, 0, result.stdout);
+  assert.doesNotMatch(JSON.parse(result.stdout).advisories.join('\n'), /ADVISORY_DECISION_UNOWNED/);
+});
+
+test('ADVISORY_DECISION_UNOWNED: a decision declaring no affected path stays silent', () => {
+  const result = affectsRun('## Decisions\n- **D-01 pure behavior** no file is touched by this rule\n');
+  assert.equal(result.status, 0, result.stdout);
+  assert.doesNotMatch(JSON.parse(result.stdout).advisories.join('\n'), /ADVISORY_DECISION_UNOWNED/);
+});

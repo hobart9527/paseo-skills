@@ -50,3 +50,12 @@ test('the author writes the rule list before the baseline research, and the revi
   assert.ok(at('Write the rule list now') < at('the baseline is fair game'));
   has(reviewer, ['minute 20', 'minute 25', 'baseline pass'], 'reviewer.md');
 });
+
+// D9: R0 found a live 越权 read path (F7) that design.md D-03 had already named as affected, with
+// no task owning the route. The design template promises freeze-check cross-checks decisions both
+// ways; only the tasks->design direction existed, so the promise now has a checker behind it.
+test('design.md declares affected modules and freeze-check holds a writer for each', () => {
+  const schema = read('openspec-schema/templates/design.md');
+  has(schema, ['影响模块/路径'], 'design template');
+  has(read('freeze-check.mjs'), ['影响模块/路径', 'ADVISORY_DECISION_UNOWNED'], 'freeze-check.mjs');
+});

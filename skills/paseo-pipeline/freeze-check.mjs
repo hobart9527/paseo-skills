@@ -679,6 +679,40 @@ else {
 // cite task ids without becoming circular: a decision is `- **D-01 <title>**` under `## Decisions`,
 // and tasks.md points back at it with `Implements:`. Only ids declared in tasks.md are matched, so
 // unrelated prose numbers are not mistaken for tasks.
+// The design template asks every decision to write `影响模块/路径: a/b.ts, c/d/`. This reads that
+// shape only: a heading without the marker declares nothing, which keeps packages written before
+// this rule silent, and lets a decision that constrains behavior without touching a module opt out
+// by not writing the marker. The marker may sit on the heading line or on a continuation line under
+// it, which is how the D9 and schema-template forms both read.
+const AFFECTS_MARKER = '影响模块/路径';
+const AFFECTS_PATH = /(?:^|[\s(（,，、:：])((?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\/?)/g;
+const designAffects = (visible) => {
+  const out = [];
+  let current = null;
+  for (const line of visible.split('\n')) {
+    const heading = line.match(/^\s*[-*]\s*\*\*(D-\d+)\b/);
+    if (heading) {
+      current = { id: heading[1], lines: [line] };
+      out.push(current);
+    } else if (current) {
+      current.lines.push(line);
+    }
+  }
+  return out.map((entry) => {
+    const carrier = entry.lines.find((line) => line.includes(AFFECTS_MARKER));
+    if (!carrier) return null;
+    const list = carrier.slice(carrier.indexOf(AFFECTS_MARKER) + AFFECTS_MARKER.length);
+    const paths = [...list.matchAll(AFFECTS_PATH)].map((match) => match[1].replace(/\/+$/, '')).filter(Boolean);
+    return paths.length ? [entry.id, paths] : null;
+  }).filter(Boolean);
+};
+// A decision may name a directory or a file, and a task may write either, in either nesting order.
+const covers = (scope, target) => {
+  const normalized = normalizeScope(target);
+  const base = normalizeScope(scope);
+  if (!normalized || !base) return false;
+  return normalized === base || normalized.startsWith(`${base}/`) || base.startsWith(`${normalized}/`);
+};
 {
   const designMarkdown = read(path.join(changeDir, 'design.md'));
   // With no design.md there are no decision headings, so every Implements id is unresolved. This
@@ -699,6 +733,18 @@ else {
       }
       for (const decision of task.implements) {
         if (!decisions.has(decision)) blocking.push(`UNKNOWN_DECISION ${task.id}: Implements ${decision} is not a decision heading in design.md`);
+      }
+    }
+    // The other direction of the same cross-check the design template promises. `Implements:` proves
+    // a decision has a consumer; it does not prove the modules that decision says it touches are
+    // written by anyone. D9 named `packages/server/src/routes/master-data-routes.ts` under D-03 and
+    // no task claimed it, so R0 found a live 越权 read path with no owner (F7). Which module serves a
+    // decision is a judgment, so this points at the decision instead of rejecting the package.
+    const scopes = tasks.flatMap((task) => task.scope);
+    for (const [heading, declared] of designAffects(designVisible)) {
+      for (const token of declared) {
+        if (scopes.some((scope) => covers(scope, token))) continue;
+        advisories.push(`ADVISORY_DECISION_UNOWNED ${heading} design.md: "${token}" is named as affected, but no task writes it; give a task that path in Write scope, or drop it from the decision`);
       }
     }
   }
