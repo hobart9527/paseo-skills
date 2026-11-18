@@ -1229,6 +1229,17 @@ test('ADVISORY_ENTRY_NOT_EXERCISED: an HTTP entry owned by a helper-only task is
   assert.match(JSON.parse(result.stdout).advisories.join('\n'), /^ADVISORY_ENTRY_NOT_EXERCISED SCEN-1 acceptance\.md:3:/m);
 });
 
+test('ADVISORY_ENTRY_NOT_EXERCISED: a server package root does not hide helpers or domain modules', () => {
+  for (const scope of ['packages/server/src/utils/payload.ts', 'packages/server/src/domain/invoice.ts']) {
+    const tasks = [entryTask('T-01', { scope: `${scope},test/t-01.test.mjs`, scen: 'SCEN-1' })];
+    const result = entryRun(tasks, '| SCEN-1 | POST /api/v1/bills/submit | T-01 | node -e "0" | yes | PENDING | pending |', '### Scenario: SCEN-1\n');
+    assert.equal(result.status, 0, result.stdout);
+    const hits = JSON.parse(result.stdout).advisories.filter((item) => item.startsWith('ADVISORY_ENTRY_NOT_EXERCISED'));
+    assert.equal(hits.length, 1, `${scope}: ${result.stdout}`);
+    assert.ok(hits[0].includes(scope), hits[0]);
+  }
+});
+
 test('ADVISORY_ENTRY_NOT_EXERCISED: entries that name no user path are left to the other rules', () => {
   const tasks = [
     entryTask('T-01', { scope: 'src/utils/totals.ts,test/t-01.test.mjs', scen: 'SCEN-1' }),
@@ -2161,6 +2172,16 @@ test('ADVISORY_DECISION_UNOWNED: a module named in design.md but written by no t
   const hits = advisories.filter((item) => item.startsWith('ADVISORY_DECISION_UNOWNED'));
   assert.equal(hits.length, 1, advisories.join('\n'));
   assert.match(hits[0], /^ADVISORY_DECISION_UNOWNED D-01 design\.md: "src\/routes\/payees\.ts" is named as affected/);
+});
+
+test('ADVISORY_DECISION_UNOWNED: inline-code paths have the same ownership result as bare paths', () => {
+  for (const wrap of [(value) => value, (value) => `\`${value}\``]) {
+    const result = affectsRun(`## Decisions\n- **D-01 lease state** 影响模块/路径: ${wrap('src/shared/lease.ts')}, ${wrap('src/routes/payees.ts')}\n`);
+    assert.equal(result.status, 0, result.stdout);
+    const hits = JSON.parse(result.stdout).advisories.filter((item) => item.startsWith('ADVISORY_DECISION_UNOWNED'));
+    assert.equal(hits.length, 1, result.stdout);
+    assert.match(hits[0], /"src\/routes\/payees\.ts" is named as affected/);
+  }
 });
 
 test('ADVISORY_DECISION_UNOWNED: a directory decision is covered by any task writing inside it', () => {

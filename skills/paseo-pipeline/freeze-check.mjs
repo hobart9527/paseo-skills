@@ -550,7 +550,7 @@ const isUserEntry = (cell) => !entryFileTokens(cell).length && USER_ENTRY.test(S
 // Helper-only scope: a util/lib/domain module that can hold logic but cannot render or serve a
 // user entry. Anything else (a component, a route, a service, a page) can carry the entry.
 const HELPER_DIR = /(?:^|\/)(?:utils?|helpers?|libs?|lib|domain|types?|constants?|models?)(?:\/|$)/i;
-const ENTRY_DIR = /(?:^|\/)(?:routes?|routers?|controllers?|handlers?|endpoints?|services?|server|api|pages?|views?|components?|screens?|app)(?:\/|$)/i;
+const ENTRY_DIR = /(?:^|\/)(?:routes?|routers?|controllers?|handlers?|endpoints?|services?|api|pages?|views?|components?|screens?|app)(?:\/|$)/i;
 const RENDER_FILE = /\.(?:tsx|jsx|vue|svelte|html)$/i;
 const isHelperOnly = (scope) => HELPER_DIR.test(scope) && !ENTRY_DIR.test(scope) && !RENDER_FILE.test(scope);
 const shortEntry = (cell) => {
@@ -685,7 +685,7 @@ else {
 // by not writing the marker. The marker may sit on the heading line or on a continuation line under
 // it, which is how the D9 and schema-template forms both read.
 const AFFECTS_MARKER = '影响模块/路径';
-const AFFECTS_PATH = /(?:^|[\s(（,，、:：])((?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\/?)/g;
+const AFFECTS_PATH = /(?:^|[\s`(（,，、:：])((?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\/?)/g;
 const designAffects = (visible) => {
   const out = [];
   let current = null;
