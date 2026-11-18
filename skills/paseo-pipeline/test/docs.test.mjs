@@ -91,6 +91,17 @@ test('Tier 2 handoff and review remain documented', () => {
   assert.match(fs.readFileSync(reviewPath, 'utf8'), /Requirement matrix/);
 });
 
+test('every Tier 2 delivery gets an evidence recheck; a reviewer needs a named risk class', () => {
+  const handoff = fs.readFileSync(path.join(dir, '..', '..', 'docs', 'tier2-handoff-brief.md'), 'utf8');
+  const review = fs.readFileSync(path.join(dir, '..', '..', 'docs', 'tier2-reviewer-brief.md'), 'utf8');
+  const wrapper = fs.readFileSync(path.join(dir, '..', 'tier2-handoff', 'SKILL.md'), 'utf8');
+  assert.match(handoff, /Evidence recheck[^\n]*every Tier 2 delivery/);
+  assert.match(handoff, /exit code/);
+  assert.match(handoff, /Risk: none/);
+  assert.match(review, /Risk class/);
+  assert.match(wrapper, /Evidence recheck/);
+});
+
 test('tier2-handoff wraps paseo-handoff with the brief and pre-dispatch check', () => {
   const wrapper = fs.readFileSync(path.join(dir, '..', 'tier2-handoff', 'SKILL.md'), 'utf8');
   for (const token of ['name: tier2-handoff', 'docs/tier2-handoff-brief.md', 'Pre-dispatch check', 'Slices', '/paseo-handoff', 'size estimate']) assert.ok(wrapper.includes(token), token);
