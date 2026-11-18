@@ -10,11 +10,13 @@ Build bidirectional traceability: every confirmed requirement has a SCEN, and ev
 
 ## R0 — frozen contract
 
-Review Proposal, Specs, Design (when present), Tasks and Acceptance as one package before CP-1. Check confirmed decisions supplied to the author, cited source facts, observable SCENs, task ownership, interfaces, scope conflicts, real concurrency and Verify feasibility. A shared concurrent surface needs one authoritative frozen contract reachable by workers. Do not demand internal DTOs/signatures unless contract makes them observable. If worker Verify needs a sibling's future file/behavior, require dependency. A green oracle must exercise a real entry, not only a fixture or isolated module; state how wrong/unwired behavior would fail.
+Review Proposal, Specs, Design (when present), Tasks and Acceptance as one package before CP-1. Check confirmed decisions supplied to the author, cited source facts, observable SCENs, task ownership, interfaces, scope conflicts, real concurrency and Verify feasibility. A shared concurrent surface needs one authoritative frozen contract reachable by workers. Do not demand internal DTOs/signatures unless contract makes them observable. If worker Verify needs a sibling's future file/behavior, require dependency. A green oracle must exercise a real entry, not only a fixture or isolated module; state how wrong/unwired behavior would fail. A removal that drops a gate (submit blocking, validation, lease, ledger) names where that gate goes.
 
-Review the pinned commit and approved external snapshots only. Verify snapshot hashes before and after; stop on missing, inconsistent or changed inputs. The SHA sign-off does not attest snapshot hashes. Do not run full suite; inspect checks and run at most one narrow command per package. Source-text assertions prove text, not runtime behavior.
+Review the pinned commit and approved external snapshots only. Verify snapshot hashes before and after; stop on missing, inconsistent or changed inputs. The SHA sign-off does not attest snapshot hashes. Do not run the full suite: inspect the checks and run at most one narrow command per package, plus one baseline pass that runs the sink's Verify commands on the pinned commit and records each exit code, so a script already red on the baseline reads as pre-existing, not a regression. Source-text assertions prove text, not runtime behavior.
 
 At most two whole-package R0 rounds: round 1 reports all supported blockers; round 2 checks fixes only. After round 2 blockers, human accepts recorded residual risk or directs a fix, which gets one same-reviewer delta check. Findings classify `BLOCKER` or `NIT`; a blocker needs a falsifiable wrong outcome and why current tasks/Verify cannot prevent it. Pure anchor-drift with the same symbol is a non-blocking NIT; proofread every `path:line`.
+
+Time budget: record the start time, deliver the R0 conclusion by minute 20, stop reading at minute 25. The hard stop returns the findings so far plus the items you did not check; budget exhaustion is a partial verdict, never a pass.
 
 Return the sign-off line `R0: pass(<reviewer-uuid>@<sha>)` and the reviewed commit SHA as text; the main session records it in `review.md`.
 
@@ -44,7 +46,7 @@ Depth checks are subordinate to matrix coverage, not independent scope expansion
 - Standards: check named standards; lint/typecheck do not replace standards review.
 - UI: keyboard/focus, accessibility and responsive layout only where a SCEN, acceptance row or named standard covers them; otherwise `ENHANCEMENT`.
 - Backend, persistence, concurrency, security, public interfaces: trace failure paths/boundaries only where a SCEN, acceptance row or named standard covers them; otherwise `ENHANCEMENT`.
-- Report inspected/exercised evidence, limitations, and covered integration risks. Do not infer safety from `mechanical` or missing risk labels.
+- Report inspected/exercised evidence, limitations, and covered risks. Do not infer safety from `mechanical` or missing risk labels.
 
 ## Bounded rounds and disposition
 

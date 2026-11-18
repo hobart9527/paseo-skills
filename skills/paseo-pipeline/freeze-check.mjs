@@ -543,6 +543,20 @@ const entryWriters = (token) => {
   return tasks.filter((task) => isFileWithinScopes(normalized, task.scope)
     || task.scope.some((scope) => scope === normalized || scope.endsWith(`/${normalized}`))).map((task) => task.id);
 };
+// A user-reachable Entry names a UI path or an HTTP route. A file-shaped Entry is judged by
+// ENTRY_OWNER_UNCLAIMED instead, which already knows who writes the file.
+const USER_ENTRY = /(?:^|\s)UI(?:\s|$)|\b(?:GET|POST|PUT|PATCH|DELETE|HEAD)\s+\/\S/i;
+const isUserEntry = (cell) => !entryFileTokens(cell).length && USER_ENTRY.test(String(cell || ''));
+// Helper-only scope: a util/lib/domain module that can hold logic but cannot render or serve a
+// user entry. Anything else (a component, a route, a service, a page) can carry the entry.
+const HELPER_DIR = /(?:^|\/)(?:utils?|helpers?|libs?|lib|domain|types?|constants?|models?)(?:\/|$)/i;
+const ENTRY_DIR = /(?:^|\/)(?:routes?|routers?|controllers?|handlers?|endpoints?|services?|server|api|pages?|views?|components?|screens?|app)(?:\/|$)/i;
+const RENDER_FILE = /\.(?:tsx|jsx|vue|svelte|html)$/i;
+const isHelperOnly = (scope) => HELPER_DIR.test(scope) && !ENTRY_DIR.test(scope) && !RENDER_FILE.test(scope);
+const shortEntry = (cell) => {
+  const text = String(cell || '').trim();
+  return text.length > 60 ? `${text.slice(0, 57)}...` : text;
+};
 const acceptanceMarkdown = read(path.join(changeDir, 'acceptance.md'));
 if (!acceptanceMarkdown) blocking.push('MISSING_ACCEPTANCE: acceptance.md not found');
 else {
@@ -639,6 +653,19 @@ else {
         const covered = row.owners.some((owner) => writers.includes(owner) || writers.some((writer) => reaches(owner, writer)));
         if (!covered) blocking.push(`ENTRY_OWNER_UNCLAIMED ${scen} acceptance.md:${row.line}: Entry ${token} is written by ${writers.join(', ')} but no row owner writes it or depends on its writer`);
       }
+    }
+    // ... and a row can name the right owner and still have no way to reach a user entry: the
+    // owner writes only helper modules, so its Verify exercises isolated logic while the user
+    // path stays untested (D8: the totals control was owned by a pure util). Which code serves an
+    // Entry is a judgment, so this points at the row instead of rejecting the package.
+    for (const row of rows) {
+      if (!isUserEntry(row.entry)) continue;
+      const owners = row.owners.map((id) => byId.get(id)).filter(Boolean);
+      if (!owners.length) continue;
+      const production = owners.flatMap((owner) => owner.scope.filter((scope) => !isTestPath(scope)));
+      if (production.some((scope) => !isHelperOnly(scope))) continue;
+      const ownerIds = owners.map((owner) => owner.id).join(', ');
+      advisories.push(`ADVISORY_ENTRY_NOT_EXERCISED ${scen} acceptance.md:${row.line}: Entry ${shortEntry(row.entry)} is a user entry, but ${ownerIds} ${owners.length > 1 ? 'write' : 'writes'} only ${production.join(', ') || '(test paths only)'}; the Verify cannot reach the entry, so name an owner that writes the component or route serving it`);
     }
   }
   if (!requiredRows.length) blocking.push('MISSING_REQUIRED_ACCEPTANCE: acceptance.md has no Required=yes row');

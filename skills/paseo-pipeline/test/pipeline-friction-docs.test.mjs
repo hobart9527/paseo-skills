@@ -40,3 +40,13 @@ test('briefs carry pinned evidence, decision context and no fabricated scope', (
   has(author, ['material product choices', 'OPEN-DECISION', 'invented behavior, ownership or dependencies', 'unresolved conflicts', 'baseline SHA', 'Read baseline only'], 'author.md');
   has(reviewer, ['pinned commit and approved external snapshots', 'confirmed decisions supplied to the author'], 'reviewer.md');
 });
+
+// D8: the author researched for 11 minutes before the first file and the R0 reviewer ran 34
+// minutes without a verdict. The rule list comes first, the three risk checks are named, and
+// the reviewer stops on a clock.
+test('the author writes the rule list before the baseline research, and the reviewer stops on a clock', () => {
+  has(author, ['within 2 minutes', '**Reach**', '**Shape**', '**Removal**', 'exit code', '$PASEO_AGENT_ID'], 'author.md');
+  const at = (token) => { const index = author.indexOf(token); assert.ok(index > -1, token); return index; };
+  assert.ok(at('Write the rule list now') < at('the baseline is fair game'));
+  has(reviewer, ['minute 20', 'minute 25', 'baseline pass'], 'reviewer.md');
+});

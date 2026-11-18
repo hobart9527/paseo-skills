@@ -1194,6 +1194,56 @@ test('ENTRY_OWNER_UNCLAIMED: a leading ./ and a #fragment do not hide the entry 
   assert.equal(entryRun(splitEntry, splitRow('T-01', 'src/**/*.ts')).status, 0);
 });
 
+// A user entry (UI path or HTTP route) whose owner writes only helper modules: the Verify can
+// only exercise isolated logic, so the user path stays untested (D8 F-4 class). Advisory, not a
+// block: which code serves an Entry is a judgment the author and R0 share.
+const userEntryTasks = [
+  entryTask('T-01', { scope: 'src/utils/totals.ts,test/t-01.test.mjs', scen: 'SCEN-1' }),
+  entryTask('T-02', { scope: 'src/form/ExpenseBillForm.tsx,test/t-02.test.mjs', scen: 'SCEN-2' }),
+  entryTask('T-03', { scope: 'packages/server/src/services/bill-submit-service.ts,test/t-03.test.mjs', scen: 'SCEN-3' }),
+];
+const userEntryRows = [
+  '| SCEN-1 | UI `?view=SUBMIT_HUB&entry=EXPENSE` total | T-01 | node -e "0" | yes | PENDING | pending |',
+  '| SCEN-2 | UI `?view=SUBMIT_HUB&entry=EXPENSE` form | T-02 | node -e "0" | yes | PENDING | pending |',
+  '| SCEN-3 | POST /api/v1/bills/submit | T-03 | node -e "0" | yes | PENDING | pending |',
+].join('\n');
+
+test('ADVISORY_ENTRY_NOT_EXERCISED: a UI entry owned by a helper-only task is advised, not blocked', () => {
+  const result = entryRun(userEntryTasks, userEntryRows, '### Scenario: SCEN-1\n### Scenario: SCEN-2\n### Scenario: SCEN-3\n');
+  assert.equal(result.status, 0, result.stdout);
+  const advisories = JSON.parse(result.stdout).advisories;
+  const hits = advisories.filter((item) => item.startsWith('ADVISORY_ENTRY_NOT_EXERCISED'));
+  assert.equal(hits.length, 1, advisories.join('\n'));
+  assert.match(hits[0], /^ADVISORY_ENTRY_NOT_EXERCISED SCEN-1 acceptance\.md:3: Entry UI .* is a user entry, but T-01 writes only src\/utils\/totals\.ts/);
+  // The component owner and the service owner reach their entries.
+  assert.doesNotMatch(advisories.join('\n'), /ADVISORY_ENTRY_NOT_EXERCISED SCEN-2/);
+  assert.doesNotMatch(advisories.join('\n'), /ADVISORY_ENTRY_NOT_EXERCISED SCEN-3/);
+});
+
+test('ADVISORY_ENTRY_NOT_EXERCISED: an HTTP entry owned by a helper-only task is advised too', () => {
+  const tasks = [
+    entryTask('T-01', { scope: 'src/utils/payload.ts,test/t-01.test.mjs', scen: 'SCEN-1' }),
+  ];
+  const result = entryRun(tasks, '| SCEN-1 | POST /api/v1/bills/submit | T-01 | node -e "0" | yes | PENDING | pending |', '### Scenario: SCEN-1\n');
+  assert.equal(result.status, 0, result.stdout);
+  assert.match(JSON.parse(result.stdout).advisories.join('\n'), /^ADVISORY_ENTRY_NOT_EXERCISED SCEN-1 acceptance\.md:3:/m);
+});
+
+test('ADVISORY_ENTRY_NOT_EXERCISED: entries that name no user path are left to the other rules', () => {
+  const tasks = [
+    entryTask('T-01', { scope: 'src/utils/totals.ts,test/t-01.test.mjs', scen: 'SCEN-1' }),
+    entryTask('T-02', { scope: 'src/form/ExpenseBillForm.tsx,test/t-02.test.mjs', scen: 'SCEN-2' }),
+  ];
+  const cli = entryRun(tasks, '| SCEN-1 | CLI | T-01 | node -e "0" | yes | PENDING | pending |\n| SCEN-2 | CLI | T-02 | node -e "0" | yes | PENDING | pending |', '### Scenario: SCEN-1\n### Scenario: SCEN-2\n');
+  assert.equal(cli.status, 0, cli.stdout);
+  assert.doesNotMatch(JSON.parse(cli.stdout).advisories.join('\n'), /ADVISORY_ENTRY_NOT_EXERCISED/);
+  // A file Entry is judged by ENTRY_OWNER_UNCLAIMED, so it is never reported twice.
+  const file = entryRun(tasks, '| SCEN-1 | src/form/ExpenseBillForm.tsx | T-01 | node -e "0" | yes | PENDING | pending |\n| SCEN-2 | CLI | T-02 | node -e "0" | yes | PENDING | pending |', '### Scenario: SCEN-1\n### Scenario: SCEN-2\n');
+  assert.equal(file.status, 1);
+  assert.match(codes(file).join('\n'), /^ENTRY_OWNER_UNCLAIMED SCEN-1 acceptance\.md:3:/m);
+  assert.doesNotMatch(JSON.parse(file.stdout).advisories.join('\n'), /ADVISORY_ENTRY_NOT_EXERCISED/);
+});
+
 test('BAD_ACCEPTANCE_TASKS: a comma-only or empty Tasks cell fails', () => {
   const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW };
   for (const cell of [',', ' , ', ',,', 'TBD,', ', ,']) {
