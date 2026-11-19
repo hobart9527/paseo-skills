@@ -2237,7 +2237,8 @@ test('decided, unreferenced and product decisions do not lose the graph route', 
     const report = JSON.parse(result.stdout);
     assert.equal(report.route, 'pipeline', name);
     assert.doesNotMatch(report.blocking.join('\n'), /UNDECIDED_HARD_DECISION/, name);
-    assert.match(report.advisories.join('\n'), /ADVISORY_OPEN_DECISION OD-1/, name);
+    if (name === 'decided hard') assert.doesNotMatch(report.advisories.join('\n'), /ADVISORY_OPEN_DECISION OD-1/, name);
+    else assert.match(report.advisories.join('\n'), /ADVISORY_OPEN_DECISION OD-1/, name);
   }
 });
 
