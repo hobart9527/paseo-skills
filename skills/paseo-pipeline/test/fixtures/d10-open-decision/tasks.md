@@ -1,0 +1,19 @@
+- [ ] 1.1 T-01 shared
+  - Write scope: src/shared,test/shared.test.mjs
+  - Verify with: node --test test/shared.test.mjs
+  - Scen: SCEN-1
+- [ ] 1.2 T-02 alpha
+  - Depends on: T-01
+  - Write scope: src/alpha,test/alpha.test.mjs
+  - Verify with: node --test test/alpha.test.mjs
+  - Scen: SCEN-1
+- [ ] 1.3 T-03 beta
+  - Depends on: T-01
+  - Write scope: src/beta,test/beta.test.mjs
+  - Verify with: node --test test/beta.test.mjs
+  - Scen: SCEN-1
+- [ ] 1.4 T-04 sink
+  - Depends on: T-02,T-03
+  - Write scope: src/sink.mjs,test/sink.test.mjs
+  - Verify with: npm test
+  - Scen: SCEN-1

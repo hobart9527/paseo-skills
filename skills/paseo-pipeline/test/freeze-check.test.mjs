@@ -2260,3 +2260,17 @@ test('a referenced open decision missing Class counts as hard', () => {
   assert.equal(report.route, null);
   assert.ok(report.blocking.some((item) => item.startsWith('UNDECIDED_HARD_DECISION OD-1:')));
 });
+
+
+test('unmarked D10 decision referenced in requirement text blocks routing', () => {
+  const fixture = path.join(root, 'test', 'fixtures', 'd10-open-decision');
+  const files = Object.fromEntries(fs.readdirSync(fixture, { recursive: true })
+    .filter((file) => fs.statSync(path.join(fixture, file)).isFile())
+    .map((file) => [file, fs.readFileSync(path.join(fixture, file), 'utf8')]));
+  const dir = change(files);
+  const result = run(dir, ['--structural', '--skip-signer-check']);
+  assert.equal(result.status, 1);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.route, null);
+  assert.ok(report.blocking.some((item) => item.startsWith('UNDECIDED_HARD_DECISION OD-2:')), result.stdout);
+});
