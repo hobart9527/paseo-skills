@@ -439,3 +439,35 @@ test('next-actions: R0-r2 and FINAL-r2 roles are recognised, UNKNOWN stages stil
   fake('[Pipeline] hanlin R0-r2 extra context');
   assert.equal(run(cwd, localEnv).status, 0, 'a trailing description is still allowed');
 });
+
+// SKILL.md:34 lists 尚书 `shangshu` as a Tier 3 role, but the title parser did not know it, so a
+// `[Pipeline] shangshu FULL` agent failed the title check and exited 3. Worker roles stay as they are.
+test('next-actions: a shangshu agent is recognised as a non-worker pipeline role', () => {
+  const { cwd, localEnv } = fixture();
+  const paseo = path.join(cwd, '.fake-bin', 'paseo');
+  const name = '[Pipeline] shangshu FULL';
+  fs.writeFileSync(paseo, `#!/bin/sh\nif [ "$1" = inspect ]; then printf '%s' '${JSON.stringify({ Id: 'a', Name: name, Status: 'running', PendingPermissions: [] })}'; else printf '%s' '${JSON.stringify([{ id: 'a', name, status: 'running', cwd }])}'; fi\n`);
+  const result = run(cwd, localEnv);
+  assert.notEqual(result.status, 3, result.out);
+  assert.equal(result.status, 0, result.out);
+});
+
+// One source of truth for the role names: the SKILL.md table and the two patterns in
+// next-actions.mjs must name the same set.
+test('next-actions: the SKILL.md role table and the code role patterns name the same roles', () => {
+  const repoRoot = path.resolve(path.dirname(script), '..');
+  const skill = fs.readFileSync(path.join(repoRoot, 'SKILL.md'), 'utf8');
+  const source = fs.readFileSync(script, 'utf8');
+  const roles = skill.slice(skill.indexOf('## Roles'), skill.indexOf('## Tools'));
+  const listed = new Set([...roles.matchAll(/^\|\s*[^`|\n]*`([a-z][a-z0-9-]*)`\s*\|/gm)].map((match) => match[1]));
+  assert.ok(listed.size >= 8, `parsed ${listed.size} roles from SKILL.md: ${[...listed].join(', ')}`);
+  // Both role checks in the title parser: worker names, and the non-worker titles R0/FINAL/FULL.
+  const groups = [...source.matchAll(/\^\(([a-z|]+)\)\$\/\.test\(parts\[1\]\)/g)].map((match) => match[1]);
+  assert.equal(groups.length, 2, `expected two role patterns on parts[1], found ${groups.length}`);
+  const [worker, nonWorker] = groups;
+  // Worker roles are a closed list; only the non-worker list may track SKILL.md.
+  assert.equal(worker, 'gongbu|gaogong|jiangzuo|ceshi', 'worker roles changed');
+  const coded = new Set([...worker.split('|'), ...nonWorker.split('|')]);
+  assert.deepEqual([...coded].sort(), [...listed].sort(), `SKILL.md roles: ${[...listed].sort().join(', ')}; code roles: ${[...coded].sort().join(', ')}`);
+});
+
