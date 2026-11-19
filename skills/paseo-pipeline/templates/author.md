@@ -8,7 +8,7 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output: `openspec/changes/<change>/`.
 2. Write the rule list now: `proposal.md` with `## What Changes` (one line per rule this change makes), `## OPEN-DECISION` for the choices the brief supplies, and an empty `## Baseline`. Commit it within 2 minutes and read no baseline code before that commit.
 3. Draft a compact DAG next: task IDs, dependencies, `maxWidth`, and one-line goal per task. Refine the dispatcher's rough DAG rather than redrawing it: the graph reflects real work, so Tier 3 means `tasks >= 4` and `maxWidth >= 2`, never a split or padded graph.
 4. After the rule-list commit, the baseline is fair game: research only what a listed rule needs, and commit each finding small.
-5. Run the supplied structural `freeze-check` on the committed package; it is authoritative for route. If route is `handoff`, stop and return checked SHA and evidence for Tier 2, without expanding full artifacts. Handoff `COMPLETE` needs structural exit 0 with no blocks and matching checked/reported SHA.
+5. Run the supplied structural `freeze-check` on the committed package; it is authoritative for route. If route is `handoff` and `acceptance.md` exists, mark existing `acceptance.md` historical at the top, superseded by the Tier 2 Evidence recheck; then stop and return checked SHA and evidence for Tier 2, without expanding full artifacts. Handoff `COMPLETE` needs structural exit 0 with no blocks and matching checked/reported SHA.
 6. If route is `pipeline`, finish the package: proposal, SCEN-numbered spec deltas, tasks, acceptance, and the R0 review artifact. Create `design.md` only when schema criteria apply, using the exact template files the schema names.
 
 ## Assignment and boundaries

@@ -12,3 +12,4 @@
      不带编号的场景在静态对账时被静默跳过：change 看起来验过了，实际什么都没检。 -->
 - **WHEN** <!-- condition -->
 - **THEN** <!-- expected outcome -->
+- **Verify:** <!-- command proving this scenario -->

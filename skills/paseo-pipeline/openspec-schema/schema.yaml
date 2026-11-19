@@ -19,7 +19,7 @@ artifacts:
       Specify observable behavior, inputs, outputs, errors, external constraints and testable scenarios; avoid implementation details.
       Create one spec per proposal capability. Use exact paths: new capabilities at `specs/<capability-path>/spec.md`; modified capabilities at the existing path. A zero-delta change requires `skip_specs: true`.
       Use delta headings `ADDED`, `MODIFIED`, `REMOVED`, or `RENAMED Requirements`. A requirement is `### Requirement: <name>` with SHALL/MUST language and at least one `#### Scenario:` in WHEN/THEN form. Use four hashes for scenarios. New capability specs begin `## Purpose` (50+ characters); do not add Purpose to existing capabilities' deltas. MODIFIED requirements contain the complete updated text and retain unchanged scenarios verbatim; REMOVED includes Reason and Migration; RENAMED uses FROM/TO.
-      Every scenario heading has one stable `SCEN-<CAP>-NN` id. Freeze-check reconciles ids with task claims. Declare each once; freeze id set after specs. Never renumber/reword to evade collisions. Baseline id reuse belongs under MODIFIED/REMOVED; active-change conflicts require coordination. Concurrent tasks share one authoritative reachable interface contract. Cite only supporting baseline facts.
+      Every scenario has one `**Verify:**` line per scenario. Every scenario heading has one stable `SCEN-<CAP>-NN` id. Freeze-check reconciles ids with task claims. Declare each once; freeze id set after specs. Never renumber/reword to evade collisions. Baseline id reuse belongs under MODIFIED/REMOVED; active-change conflicts require coordination. Concurrent tasks share one authoritative reachable interface contract. Cite only supporting baseline facts.
     requires:
       - proposal
 
