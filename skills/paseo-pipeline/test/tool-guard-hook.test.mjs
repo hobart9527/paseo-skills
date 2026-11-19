@@ -126,6 +126,52 @@ test('create_agent: a [Pipeline] agent without pipeline.change is denied; labell
   assert.deepEqual(call({ title: '[Handoff] fix login' }), {});
 });
 
+// ---- create_agent runtime settings must match the profile ----
+// A stale modeId/thinkingOptionId/features used to pass silently: the hook checked only the
+// provider string shape. `featureValues` is null in every current profile, so null means "no
+// feature requirement" and is not a mismatch.
+function profileHome(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paseo-home-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ daemon: { agentProfiles: [
+    { id: 'p1', name: '工部 (核心实现)', provider: 'claude', model: 'flash', modeId: 'auto', thinkingOptionId: 'high', features: undefined, featureValues: null },
+    { id: 'p2', name: '按察司 (审计)', provider: 'codex', model: 'gpt', modeId: 'auto-review', thinkingOptionId: 'high', features: undefined, featureValues: null },
+    { id: 'p3', name: '中书 (产品调研)', provider: 'antigravity', model: 'gemini', modeId: 'full-access', features: undefined, featureValues: null },
+  ] } }));
+  return dir;
+}
+const createAgent = (tool_input, PASEO_HOME) => guard({ tool_name: 'mcp__paseo__create_agent', tool_input: { initialPrompt: 'p', ...tool_input } }, { PASEO_HOME });
+
+test('create_agent: settings matching the profile exactly are allowed unchanged', (t) => {
+  const PASEO_HOME = profileHome(t);
+  assert.deepEqual(createAgent({ provider: 'claude/flash', title: 't', modeId: 'auto', thinkingOptionId: 'high' }, PASEO_HOME), {});
+  // Omitted fields inherit the profile, so they are not checked.
+  assert.deepEqual(createAgent({ provider: 'codex/gpt', title: 't' }, PASEO_HOME), {});
+  // No profile matches this pair: profiles are launch configuration, not a whitelist.
+  assert.deepEqual(createAgent({ provider: 'claude/unknown', title: 't', modeId: 'bogus' }, PASEO_HOME), {});
+  // An unreadable config cannot be compared, so the call is left alone.
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'paseo-home-'));
+  t.after(() => fs.rmSync(empty, { recursive: true, force: true }));
+  assert.deepEqual(createAgent({ provider: 'claude/flash', title: 't', modeId: 'bogus' }, empty), {});
+});
+
+test('create_agent: a stale mode or thinking option is denied with both values named', (t) => {
+  const PASEO_HOME = profileHome(t);
+  const mode = createAgent({ provider: 'claude/flash', title: 't', modeId: 'auto-review', thinkingOptionId: 'high' }, PASEO_HOME);
+  assert.equal(mode.permissionDecision, 'deny');
+  assert.match(mode.permissionDecisionReason, /modeId/);
+  assert.match(mode.permissionDecisionReason, /auto-review/);
+  assert.match(mode.permissionDecisionReason, /auto\b/);
+  assert.match(mode.permissionDecisionReason, /工部/);
+  const thinking = createAgent({ provider: 'claude/flash', title: 't', modeId: 'auto', thinkingOptionId: 'low' }, PASEO_HOME);
+  assert.equal(thinking.permissionDecision, 'deny');
+  assert.match(thinking.permissionDecisionReason, /thinkingOptionId/);
+  assert.match(thinking.permissionDecisionReason, /low/);
+  assert.match(thinking.permissionDecisionReason, /high/);
+  // A profile with no thinking option has none to check.
+  assert.deepEqual(createAgent({ provider: 'antigravity/gemini', title: 't', modeId: 'full-access', thinkingOptionId: 'high' }, PASEO_HOME), {});
+});
+
 test('identical-call deny tells create_workspace exactly which fields to drop', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tool-guard-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
