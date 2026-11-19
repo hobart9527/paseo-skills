@@ -157,7 +157,10 @@ test('Tier 3 package is four required files; the rest is on demand', () => {
 test('R0 checks Reach, Shape and Removal only, with a hard stop', () => {
   const reviewer = read('templates/reviewer.md');
   const r0 = reviewer.slice(reviewer.indexOf('## R0'), reviewer.indexOf('## FINAL'));
-  for (const token of ['**Reach**', '**Shape**', '**Removal**', 'nothing else', 'minute 20', 'minute 25', 'baseline pass', 'pinned commit and approved external snapshots', 'confirmed decisions supplied to the author']) assert.ok(r0.includes(token), token);
+  for (const token of ['**Reach**', '**Shape**', '**Removal**', 'nothing else', 'minute 20', 'minute 25', 'pinned commit and approved external snapshots', 'confirmed decisions supplied to the author']) assert.ok(r0.includes(token), token);
+  assert.match(r0, /author's `## Baseline`/);
+  assert.match(r0, /does not rerun/);
+  assert.ok(!/baseline pass/i.test(r0), 'R0 still asks for its own baseline pass');
   assert.ok(r0.length < 2300, `R0 section is ${r0.length} chars`);
 });
 

@@ -48,7 +48,11 @@ test('the author writes the rule list before the baseline research, and the revi
   has(author, ['within 2 minutes', '**Reach**', '**Shape**', '**Removal**', 'exit code', '$PASEO_AGENT_ID'], 'author.md');
   const at = (token) => { const index = author.indexOf(token); assert.ok(index > -1, token); return index; };
   assert.ok(at('Write the rule list now') < at('the baseline is fair game'));
-  has(reviewer, ['minute 20', 'minute 25', 'baseline pass'], 'reviewer.md');
+  has(reviewer, ['minute 20', 'minute 25'], 'reviewer.md');
+  // The baseline belongs to the author (one run, recorded in `## Baseline`); the reviewer reads it.
+  has(author, ['## Baseline', 'once'], 'author.md');
+  has(reviewer, ["author's `## Baseline`", 'does not rerun'], 'reviewer.md');
+  assert.ok(!/baseline pass/i.test(reviewer), 'reviewer.md still asks for its own baseline pass');
 });
 
 // D9: R0 found a live 越权 read path (F7) that design.md D-03 had already named as affected, with
