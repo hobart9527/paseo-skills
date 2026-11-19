@@ -1800,14 +1800,14 @@ function stageRepo({
 } = {}) {
   const dir = change({
     'proposal.md': 'x',
-    'specs/cap/spec.md': `## ${ownSection}\n### Requirement: ${ownRequirement}\n#### Scenario: ${ownId} ${ownTitle}\n${ownText}`,
+    'specs/cap/spec.md': `## ${ownSection}\n### Requirement: ${ownRequirement}\n#### Scenario: ${ownId} ${ownTitle}\n${ownText}- **Verify:** node --test test/cap.test.mjs\n`,
   });
   const sh = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
   sh('init', '-q', '-b', 'main');
   fs.mkdirSync(path.join(dir, 'openspec/specs/cap'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'openspec/specs/cap/spec.md'), `## Requirements\n#### Scenario: ${baselineId} baseline\n`);
   fs.mkdirSync(path.join(dir, 'openspec/changes/other/specs/cap'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'openspec/changes/other/specs/cap/spec.md'), `## ${otherSection}\n### Requirement: ${otherRequirement}\n#### Scenario: ${otherId} ${otherTitle}\n${otherText}`);
+  fs.writeFileSync(path.join(dir, 'openspec/changes/other/specs/cap/spec.md'), `## ${otherSection}\n### Requirement: ${otherRequirement}\n#### Scenario: ${otherId} ${otherTitle}\n${otherText}- **Verify:** node --test test/cap.test.mjs\n`);
   return dir;
 }
 
@@ -2273,4 +2273,59 @@ test('unmarked D10 decision referenced in requirement text blocks routing', () =
   const report = JSON.parse(result.stdout);
   assert.equal(report.route, null);
   assert.ok(report.blocking.some((item) => item.startsWith('UNDECIDED_HARD_DECISION OD-2:')), result.stdout);
+});
+
+// ---- staged specs check: undecided hard decisions gate the first package ----
+// The D10 first package is proposal + specs with no tasks.md, so the staged branch is the only
+// check that can run. It must apply the same OPEN-DECISION rule the full run applies.
+test('stage specs blocks the D10 first package while its referenced hard decisions are open', () => {
+  const fixture = path.join(root, 'test', 'fixtures', 'd10-first-package');
+  const result = runStage(fixture);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  const blocking = stageReport(result).blocking;
+  const hard = blocking.filter((item) => item.startsWith('UNDECIDED_HARD_DECISION OD-'));
+  assert.ok(hard.length > 0, blocking.join(' | '));
+  assert.doesNotMatch(result.stdout, /RESULT specs ok/);
+});
+
+test('stage specs: a decided, unreferenced or product-class decision does not block', () => {
+  const spec = '## ADDED Requirements\n### Requirement: r\n#### Scenario: SCEN-CAP-01 own\nWHEN a\nTHEN b\n- **Verify:** node --test test/cap.test.mjs\n';
+  const cases = [
+    ['decided hard', '## OPEN-DECISION\n- **OD-1 billing provider**: options A | B; Class: money; Decided: user chose B, 2026-11-19\n', false],
+    ['unreferenced hard', '## OPEN-DECISION\n- **OD-1 billing provider**: options A | B; Class: money; Status: open\n', true],
+    ['referenced product', '## OPEN-DECISION\n- **OD-1 label wording**: options A | B; Class: product; Status: open\n', true],
+  ];
+  for (const [name, proposal, advisory] of cases) {
+    // "Referenced" means the id appears in this change's spec text; each case names or omits OD-1.
+    const ownSpec = name === 'unreferenced hard' ? spec : spec.replace('WHEN a', 'WHEN a (OD-1)');
+    const dir = change({ 'proposal.md': proposal, 'specs/cap/spec.md': ownSpec });
+    const result = runStage(dir);
+    assert.equal(result.status, 0, `${name}: ${result.stdout}${result.stderr}`);
+    const report = stageReport(result);
+    assert.doesNotMatch(report.blocking.join('\n'), /UNDECIDED_HARD_DECISION/, name);
+    if (advisory) assert.match(report.advisories.join('\n'), /ADVISORY_OPEN_DECISION OD-1/, name);
+  }
+});
+
+// ---- staged specs check: every scenario needs a Verify command ----
+test('stage specs blocks a scenario with no Verify line, in both run modes', () => {
+  const without = '## ADDED Requirements\n### Requirement: r\n#### Scenario: SCEN-CAP-01 own\nWHEN a\nTHEN b\n';
+  const dir = change({ 'proposal.md': 'x', 'specs/cap/spec.md': without });
+  const result = runStage(dir);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(stageReport(result).blocking.join('\n'), /^MISSING_SCEN_VERIFY SCEN-CAP-01 specs\/cap\/spec\.md$/m);
+  // A scenario whose Verify sits after the next heading does not carry one.
+  const after = '## ADDED Requirements\n### Requirement: r\n#### Scenario: SCEN-CAP-01 own\nWHEN a\nTHEN b\n### Requirement: r2\n#### Scenario: SCEN-CAP-02 two\nWHEN c\nTHEN d\n- **Verify:** node --test test/cap.test.mjs\n';
+  const misplaced = runStage(change({ 'proposal.md': 'x', 'specs/cap/spec.md': after }));
+  assert.equal(misplaced.status, 1, misplaced.stdout);
+  const blocking = stageReport(misplaced).blocking.join('\n');
+  assert.match(blocking, /^MISSING_SCEN_VERIFY SCEN-CAP-01 specs\/cap\/spec\.md$/m);
+  assert.doesNotMatch(blocking, /MISSING_SCEN_VERIFY SCEN-CAP-02/);
+});
+
+test('stage specs passes when every scenario carries one Verify line', () => {
+  const spec = '## ADDED Requirements\n### Requirement: r\n#### Scenario: SCEN-CAP-01 own\nWHEN a\nTHEN b\n- **Verify:** node --test test/cap.test.mjs\n';
+  const result = runStage(change({ 'proposal.md': 'x', 'specs/cap/spec.md': spec }));
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(stageReport(result).blocking.join('\n'), /MISSING_SCEN_VERIFY/);
 });

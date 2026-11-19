@@ -65,10 +65,10 @@ function fixture() {
 `);
   write('openspec/changes/current/proposal.md', 'x\n');
   write('openspec/changes/current/acceptance.md', table('| SCEN-1 | CLI | T-01,T-02 | node -e "0" | yes | PENDING | pending |\n| SCEN-2 | CLI | T-02 | node -e "0" | no | PENDING | pending |'));
-  write('openspec/changes/current/specs/cap/spec.md', '## ADDED Requirements\n### Requirement: Added one\n#### Scenario: SCEN-1 one\nWHEN a\nTHEN b\n');
-  write('openspec/changes/current/specs/other/spec.md', '## MODIFIED Requirements\n### Requirement: Changed\n#### Scenario: SCEN-2 two\nWHEN c\nTHEN d\n');
-  write('openspec/specs/cap/spec.md', '## Requirements\n### Scenario: SCEN-9 base\n');
-  write('openspec/changes/other/specs/cap/spec.md', '## MODIFIED Requirements\n### Requirement: Added one\n#### Scenario: SCEN-3 foreign\n');
+  write('openspec/changes/current/specs/cap/spec.md', '## ADDED Requirements\n### Requirement: Added one\n#### Scenario: SCEN-1 one\nWHEN a\nTHEN b\n- **Verify:** node --test test/scen-1.test.mjs\n');
+  write('openspec/changes/current/specs/other/spec.md', '## MODIFIED Requirements\n### Requirement: Changed\n#### Scenario: SCEN-2 two\nWHEN c\nTHEN d\n- **Verify:** node --test test/scen-2.test.mjs\n');
+  write('openspec/specs/cap/spec.md', '## Requirements\n### Scenario: SCEN-9 base\n- **Verify:** node --test test/scen-9.test.mjs\n');
+  write('openspec/changes/other/specs/cap/spec.md', '## MODIFIED Requirements\n### Requirement: Added one\n#### Scenario: SCEN-3 foreign\n- **Verify:** node --test test/scen-3.test.mjs\n');
   execFileSync('git', ['-C', dir, 'init', '-q', '-b', 'main']);
   return {
     dir,
@@ -89,14 +89,14 @@ function chmodAll(dir) {
 const STATES = ['absent', 'empty', 'normal', 'dangling', 'unreadable-file', 'unlistable-dir'];
 const contentFor = (state, unique) => {
   if (state === 'empty') return '';
-  return `## ADDED Requirements\n### Requirement: ${unique}\n#### Scenario: ${unique} scenario\nWHEN x\nTHEN y\n`;
+  return `## ADDED Requirements\n### Requirement: ${unique}\n#### Scenario: ${unique} scenario\nWHEN x\nTHEN y\n- **Verify:** node --test test/scenario.test.mjs\n`;
 };
 function applyState(locDir, state, unique, { fileName = 'extra.md', scenarioId = 'SCEN-Z-01' } = {}) {
   if (state === 'absent') return;
   if (state === 'unlistable-dir') {
     const locked = path.join(locDir, 'locked');
     fs.mkdirSync(locked, { recursive: true });
-    fs.writeFileSync(path.join(locked, 'spec.md'), `## Requirements\n#### Scenario: ${scenarioId} locked\n`);
+    fs.writeFileSync(path.join(locked, 'spec.md'), `## Requirements\n#### Scenario: ${scenarioId} locked\n- **Verify:** node --test test/locked.test.mjs\n`);
     fs.chmodSync(locked, 0o000);
     return;
   }
