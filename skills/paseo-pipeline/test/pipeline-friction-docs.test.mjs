@@ -80,3 +80,11 @@ test('scenario templates require Verify and handoff marks acceptance historical'
   has(schema, ['one `**Verify:**` line per scenario'], 'schema specs instruction');
   has(author, ['existing `acceptance.md` historical', 'superseded by the Tier 2 Evidence recheck'], 'author.md handoff step');
 });
+
+test('handoff Red commits are replayable and heartbeat timing is one-shot', () => {
+  const repoRoot = path.resolve(dir, '../..');
+  const brief = fs.readFileSync(path.join(repoRoot, 'docs/tier2-handoff-brief.md'), 'utf8');
+  has(brief, ['test files only, red on the base', 'implementation second', 'Red command at the test commit'], 'Tier 2 brief');
+  assert.ok(!brief.includes('One commit per slice.'), 'Tier 2 brief stale one-commit rule');
+  has(skill, ['absolute one-shot cron', 'dispatch time plus the backstop window', 'timezone', 'maxRuns: 1', 'never `*/30`'], 'SKILL.md');
+});
