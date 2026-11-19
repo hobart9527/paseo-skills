@@ -78,7 +78,7 @@ test('scenario templates require Verify and handoff marks acceptance historical'
   has(specTemplate, ['**Verify:**'], 'spec template');
   assert.equal((specTemplate.match(/- \*\*WHEN\*\*/g) || []).length, (specTemplate.match(/- \*\*Verify:\*\*/g) || []).length, 'spec template scenario Verify count');
   has(schema, ['one `**Verify:**` line per scenario'], 'schema specs instruction');
-  has(author, ['existing `acceptance.md` historical', 'superseded by the Tier 2 Evidence recheck'], 'author.md handoff step');
+  has(author, ['existing `acceptance.md` is historical', 'superseded by Tier 2 Evidence recheck'], 'author.md handoff step');
 });
 
 test('handoff Red commits are replayable and heartbeat timing is one-shot', () => {

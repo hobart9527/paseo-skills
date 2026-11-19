@@ -8,7 +8,7 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output: `openspec/changes/<change>/`.
 2. Write the rule list now: `proposal.md` with `## What Changes` (one line per rule this change makes), `## OPEN-DECISION` for the choices the brief supplies, and an empty `## Baseline`. Commit it within 2 minutes and read no baseline code before that commit.
 3. Draft a compact DAG next: task IDs, dependencies, `maxWidth`, and one-line goal per task. Refine the dispatcher's rough DAG rather than redrawing it: the graph reflects real work, so Tier 3 means `tasks >= 4` and `maxWidth >= 2`, never a split or padded graph.
 4. After the rule-list commit, the baseline is fair game: research only what a listed rule needs, and commit each finding small.
-5. Run the supplied structural `freeze-check` on the committed package; it is authoritative for route. If route is `handoff` and `acceptance.md` exists, mark existing `acceptance.md` historical at the top, superseded by the Tier 2 Evidence recheck; then stop and return checked SHA and evidence for Tier 2, without expanding full artifacts. Handoff `COMPLETE` needs structural exit 0 with no blocks and matching checked/reported SHA.
+5. Run the supplied structural `freeze-check` on the committed package; it is authoritative for route. On handoff, existing `acceptance.md` is historical, superseded by Tier 2 Evidence recheck; return SHA/evidence. Handoff `COMPLETE` needs structural exit 0 with no blocks and matching checked/reported SHA.
 6. If route is `pipeline`, finish the package: proposal, SCEN-numbered spec deltas, tasks, acceptance, and the R0 review artifact. Create `design.md` only when schema criteria apply, using the exact template files the schema names.
 
 ## Assignment and boundaries
@@ -22,7 +22,7 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output: `openspec/changes/<change>/`.
 
 ## Deliverables and decisions
 
-- Return assumptions with a concrete verification method. Separate material product choices from ordinary assumptions: state options and consequences and leave the choice to the human. Record unresolved material choices as `OPEN-DECISION`. On an open hard decision (Class: money | auth | external-write, or missing Class), commit current state and return `BLOCKED (decision)` with the options, before writing that decision into specs/tasks. Open product choices and unreferenced open hard choices are advisory only.
+- Return assumptions with verification methods. Separate material product choices from ordinary ones: state options/consequences and leave choice to the human. Record unresolved choices as `OPEN-DECISION`; open hard decision: commit and return `BLOCKED (decision)` with options before specs/tasks.
 - Keep behavior requirements observable. Freeze cross-task interfaces and decisions in a worker-reachable contract. Avoid invented behavior, ownership or dependencies.
 
 ## Three checks before the structural check
