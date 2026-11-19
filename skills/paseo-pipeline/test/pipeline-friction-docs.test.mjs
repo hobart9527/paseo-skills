@@ -66,7 +66,7 @@ test('open hard decisions stop authoring rather than defaulting', () => {
   const schema = read('openspec-schema/schema.yaml');
   has(author, ['open hard decision', 'BLOCKED (decision)'], 'author.md');
   has(proposal, ['OD-<n>', 'Class: money | auth | external-write | product', 'Status: open', 'Decided: <user words, date>'], 'proposal template');
-  has(schema, ['Class: money | auth | external-write | product', 'BLOCKED (decision)'], 'schema proposal instruction');
+  has(schema, ['proposal.md `OPEN-DECISION` entry', 'BLOCKED (decision)'], 'schema proposal instruction');
   for (const [name, text] of [['author', author], ['proposal template', proposal], ['schema proposal instruction', schema]]) {
     assert.doesNotMatch(text, /Continue on the recommended default/i, name);
   }

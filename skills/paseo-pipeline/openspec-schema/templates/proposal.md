@@ -39,5 +39,6 @@
 ## OPEN-DECISION
 
 <!-- Only for a material product choice the inputs do not settle. Omit if none.
-     Continue on the recommended default; never decide for the human. -->
-- **<decision>**: options <A | B>; consequences <of each>; recommended default <A>.
+     An open hard decision stops authoring per author.md: return `BLOCKED (decision)` with options. -->
+- **OD-<n> <title>**: options <A | B>; consequences <of each>; Class: money | auth | external-write | product; Status: open
+<!-- A user decision replaces `Status: open` with `Decided: <user words, date>`. -->

@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo-agents.mjs';
-import { parseTasks, graphErrors, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, isTaskId, legPaths, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
+import { parseTaskLine, parseTasks, graphErrors, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, isTaskId, legPaths, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
 import { dispatchDeps, weightedSpeedup, weightedCriticalPath, verifyScope, readsOnlyEdges, pathWithin, resolveModel, LIVE_MODEL } from './lib/schedule.mjs';
 import { runGit } from './lib/git.mjs';
 import { loadSpecTree, visibleLines, scanScenarios, scanRequirements, classifyScenCollisions } from './lib/spec-scan.mjs';
@@ -88,6 +88,7 @@ const RULE_FIXES = {
   TEST_FILE_UNOWNED: 'add the referenced file to the Write scope of the task that changes it, or narrow the test',
   FROZEN_BEHIND_MAIN: 'rebase the contract onto the default branch (or re-verify it at its tip) and re-run R0',
   R0_HUMAN_ACCEPT_UNRECORDED: 'record the human approval verbatim in run-log.md for the exact reviewed SHA, or get a hanlin pass',
+  UNDECIDED_HARD_DECISION: 'get the user decision, record it with `Decided:` in proposal.md, and re-run freeze-check',
 };
 
 const tasksMarkdown = read(path.join(changeDir, 'tasks.md'));
@@ -750,7 +751,64 @@ const covers = (scope, target) => {
   }
 }
 
-if (!read(path.join(changeDir, 'proposal.md'))) blocking.push('MISSING_PROPOSAL: proposal.md not found');
+const proposalMarkdown = read(path.join(changeDir, 'proposal.md'));
+if (!proposalMarkdown) blocking.push('MISSING_PROPOSAL: proposal.md not found');
+
+// OPEN-DECISION ids are hard gates only where delivery consumes them. A task block or spec
+// scenario block is the reference; proposal/design/history prose is not.
+const taskBlocks = new Map();
+{
+  let currentId = null;
+  let block = [];
+  for (const line of String(tasksMarkdown ?? '').split(/\r?\n/)) {
+    const task = parseTaskLine(line);
+    if (task) {
+      if (currentId) taskBlocks.set(currentId, block.join('\n'));
+      currentId = task.id;
+      block = [line];
+    } else if (currentId) block.push(line);
+  }
+  if (currentId) taskBlocks.set(currentId, block.join('\n'));
+}
+const openDecisions = [];
+{
+  let inOpen = false;
+  let current = null;
+  const close = () => { if (current) openDecisions.push(current); current = null; };
+  for (const { text: line } of visibleLines(proposalMarkdown ?? '')) {
+    if (/^##\s+/.test(line)) {
+      close();
+      inOpen = /^##\s+OPEN-DECISION\s*$/.test(line);
+      continue;
+    }
+    if (!inOpen) continue;
+    const decision = line.match(/^\s*[-*]\s*\*\*(OD-\d+)\b:?\s*(.*)$/);
+    if (decision) {
+      close();
+      current = { id: decision[1], body: [decision[2]] };
+    } else if (current) current.body.push(line);
+  }
+  close();
+}
+const referencedOpenDecisions = (id) => {
+  const token = new RegExp(`(?:^|[^A-Za-z0-9_-])${id}(?![A-Za-z0-9_-])`);
+  return [...declaredBody.values()].some((body) => token.test(body))
+    || [...taskBlocks.values()].some((block) => token.test(block));
+};
+const HARD_CLASSES = new Set(['money', 'auth', 'external-write']);
+for (const { id, body } of openDecisions) {
+  const text = body.join('\n');
+  if (/(?:^|[;\s])Decided:/im.test(text)) continue;
+  if (!/(?:^|[;\s])Status:\s*open\b/im.test(text)) continue;
+  const decisionClass = text.match(/(?:^|[;\s])Class:\s*(money|auth|external-write|product)\b/im)?.[1]?.toLowerCase() ?? 'missing';
+  const referenced = referencedOpenDecisions(id);
+  if (HARD_CLASSES.has(decisionClass) || decisionClass === 'missing') {
+    if (referenced) blocking.push(`UNDECIDED_HARD_DECISION ${id}: referenced open hard decision (Class: ${decisionClass}; Status: open)`);
+    else advisories.push(`ADVISORY_OPEN_DECISION ${id}: unreferenced open hard decision (Class: ${decisionClass}; Status: open)`);
+  } else {
+    advisories.push(`ADVISORY_OPEN_DECISION ${id}: open product decision (Class: ${decisionClass}; Status: open)`);
+  }
+}
 
 // R0 sign-off: the contract package must be reviewed before CP-1. Two recorded forms exist, and
 // they are not interchangeable. `R0: pass(<reviewer-uuid>@<sha>)` is an independent hanlin
@@ -913,7 +971,8 @@ if (graphValid) {
     advisories.push(`ADVISORY_READS_ONLY_EDGE ${rendered.join('; ')}: the pair shares only a read-only fixture and Write scopes do not overlap; merge-task replays it after either side merges. Record in design.md whether the edge is still needed before CP-1.`);
   }
 }
-const route = graphValid ? (maxWidth >= 2 && tasks.length >= 4 ? 'pipeline' : 'handoff') : null;
+const openHardDecisionBlock = blocking.some((item) => item.startsWith('UNDECIDED_HARD_DECISION '));
+const route = graphValid ? (openHardDecisionBlock ? null : (maxWidth >= 2 && tasks.length >= 4 ? 'pipeline' : 'handoff')) : null;
 const summaryBlocking = (items) => [...new Set(items)].map((item) => {
   const match = item.match(/^([A-Z][A-Z0-9_]*)\b(?:\s+[^:]*)?:\s*(.*)$/);
   const code = match?.[1] ?? item;
@@ -946,7 +1005,7 @@ else {
   if (graphValid) {
     console.log(`tasks=${tasks.length} waves=${waveList.length} maxWidth=${maxWidth} criticalPath=${waveList.length}`);
     console.log('maxWidth is a wave-width heuristic, not exact maximum concurrency; weighted estimates are unmeasured.');
-    console.log(`[ROUTE] ${route}${route === 'pipeline' ? ': wave-width gate met' : ': wave-width/task-count gate not met; use Tier 2 handoff'}`);
+    console.log(`[ROUTE] ${route}${openHardDecisionBlock ? ': undecided hard decision; resolve OPEN-DECISION' : route === 'pipeline' ? ': wave-width gate met' : ': wave-width/task-count gate not met; use Tier 2 handoff'}`);
     for (const wave of waveList) console.log(`WAVE ${wave.wave}: ${wave.ids.join(', ')}`);
     console.log(`CRITICAL ${criticalChain.map((step) => (step.via ? `-${step.via}-> ` : '') + step.id).join(' ')}`);
   } else console.log(`[ROUTE] invalid: task graph invalid; fix graph errors before routing`);

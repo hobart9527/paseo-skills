@@ -22,7 +22,7 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output: `openspec/changes/<change>/`.
 
 ## Deliverables and decisions
 
-- Return assumptions with a concrete verification method. Separate material product choices from ordinary assumptions: state options and consequences and leave the choice to the human. Record unresolved material choices as `OPEN-DECISION`; continue only on an authorized safe default.
+- Return assumptions with a concrete verification method. Separate material product choices from ordinary assumptions: state options and consequences and leave the choice to the human. Record unresolved material choices as `OPEN-DECISION`. On an open hard decision (Class: money | auth | external-write, or missing Class), commit current state and return `BLOCKED (decision)` with the options, before writing that decision into specs/tasks. Open product choices and unreferenced open hard choices are advisory only.
 - Keep behavior requirements observable. Freeze cross-task interfaces and decisions in a worker-reachable contract. Avoid invented behavior, ownership or dependencies.
 
 ## Three checks before the structural check
