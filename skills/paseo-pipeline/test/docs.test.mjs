@@ -114,6 +114,17 @@ test('Tier 2 contract is two native OpenSpec files and the handoff points at it'
   assert.match(handoff, /Evidence recheck[^\n]*\*\*Verify:\*\*/);
 });
 
+test('Tier 2 contract is only for observable behaviour; mechanical work declares none', () => {
+  const docs = path.join(dir, '..', '..', 'docs');
+  const contract = fs.readFileSync(path.join(docs, 'tier2-contract.md'), 'utf8');
+  const handoff = fs.readFileSync(path.join(docs, 'tier2-handoff-brief.md'), 'utf8');
+  const wrapper = fs.readFileSync(path.join(dir, '..', 'tier2-handoff', 'SKILL.md'), 'utf8');
+  assert.match(contract, /Write it only when[^\n]*observe/);
+  assert.match(contract, /Contract: none — <reason>/);
+  assert.match(handoff, /Contract: none — <reason>/);
+  assert.match(wrapper, /none — <reason>/);
+});
+
 test('Tier 3 package is four required files; the rest is on demand', () => {
   const author = read('templates/author.md');
   assert.match(author, /Package files:[^\n]*proposal[^\n]*specs[^\n]*tasks[^\n]*acceptance/);

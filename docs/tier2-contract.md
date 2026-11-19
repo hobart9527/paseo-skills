@@ -2,6 +2,8 @@
 
 Native OpenSpec, two files, written before the first source edit. Read by `/tier2-handoff` and by the main session working alone in its worktree.
 
+Write it only when the change adds or alters behaviour a user or caller can observe. Mechanical work (rename, move, refactor under existing tests, config, docs) writes `Contract: none — <reason>` in the brief instead; the slices' done evidence is then the oracle.
+
 ```
 openspec/changes/<name>/
   specs/<capability>/spec.md
