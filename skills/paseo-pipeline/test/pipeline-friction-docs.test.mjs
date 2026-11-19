@@ -59,3 +59,15 @@ test('design.md declares affected modules and freeze-check holds a writer for ea
   has(schema, ['影响模块/路径'], 'design template');
   has(read('freeze-check.mjs'), ['影响模块/路径', 'ADVISORY_DECISION_UNOWNED'], 'freeze-check.mjs');
 });
+
+
+test('open hard decisions stop authoring rather than defaulting', () => {
+  const proposal = read('openspec-schema/templates/proposal.md');
+  const schema = read('openspec-schema/schema.yaml');
+  has(author, ['open hard decision', 'BLOCKED (decision)'], 'author.md');
+  has(proposal, ['OD-<n>', 'Class: money | auth | external-write | product', 'Status: open', 'Decided: <user words, date>'], 'proposal template');
+  has(schema, ['Class: money | auth | external-write | product', 'BLOCKED (decision)'], 'schema proposal instruction');
+  for (const [name, text] of [['author', author], ['proposal template', proposal], ['schema proposal instruction', schema]]) {
+    assert.doesNotMatch(text, /Continue on the recommended default/i, name);
+  }
+});

@@ -2195,3 +2195,67 @@ test('ADVISORY_DECISION_UNOWNED: a decision declaring no affected path stays sil
   assert.equal(result.status, 0, result.stdout);
   assert.doesNotMatch(JSON.parse(result.stdout).advisories.join('\n'), /ADVISORY_DECISION_UNOWNED/);
 });
+
+
+test('a referenced open hard decision blocks routing', () => {
+  const proposal = '## OPEN-DECISION\n- **OD-1 billing provider**: options A | B; consequences A costs more, B delays launch; Class: money; Status: open\n';
+  const tasks = contract.replace('  - Scen: SCEN-1\n', '  - Scen: SCEN-1\n  - Decision: OD-1\n');
+  const dir = change({
+    'tasks.md': tasks,
+    'proposal.md': proposal,
+    'design.md': design,
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node -e "0" | yes | PENDING | pending |'),
+    'specs/a/spec.md': '### Scenario: SCEN-1\n',
+    'review.md': REVIEW,
+  });
+  const result = run(dir, ['--structural', '--skip-signer-check']);
+  assert.equal(result.status, 1);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.route, null);
+  assert.ok(report.blocking.some((item) => item.startsWith('UNDECIDED_HARD_DECISION OD-1:')));
+  assert.doesNotMatch(report.advisories.join('\n'), /ADVISORY_OPEN_DECISION/);
+});
+
+test('decided, unreferenced and product decisions do not lose the graph route', () => {
+  const cases = [
+    ['decided hard', '## OPEN-DECISION\n- **OD-1 billing provider**: options A | B; consequences A costs more, B delays launch; Class: money; Decided: user chose B, 2026-11-19\n', '  - Decision: OD-1\n'],
+    ['unreferenced hard', '## OPEN-DECISION\n- **OD-1 billing provider**: options A | B; consequences A costs more, B delays launch; Class: money; Status: open\n', ''],
+    ['referenced product', '## OPEN-DECISION\n- **OD-1 label wording**: options A | B; consequences different clarity; Class: product; Status: open\n', '  - Decision: OD-1\n'],
+  ];
+  for (const [name, proposal, decisionLine] of cases) {
+    const tasks = contract.replace('  - Scen: SCEN-1\n', `  - Scen: SCEN-1\n${decisionLine}`);
+    const dir = change({
+      'tasks.md': tasks,
+      'proposal.md': proposal,
+      'design.md': design,
+      'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node -e "0" | yes | PENDING | pending |'),
+      'specs/a/spec.md': '### Scenario: SCEN-1\n',
+      'review.md': REVIEW,
+    });
+    const result = run(dir, ['--structural', '--skip-signer-check']);
+    assert.equal(result.status, 0, `${name}: ${result.stdout}`);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.route, 'pipeline', name);
+    assert.doesNotMatch(report.blocking.join('\n'), /UNDECIDED_HARD_DECISION/, name);
+    assert.match(report.advisories.join('\n'), /ADVISORY_OPEN_DECISION OD-1/, name);
+  }
+});
+
+
+test('a referenced open decision missing Class counts as hard', () => {
+  const proposal = '## OPEN-DECISION\n- **OD-1 billing provider**: options A | B; consequences A costs more, B delays launch; Status: open\n';
+  const tasks = contract.replace('  - Scen: SCEN-1\n', '  - Scen: SCEN-1\n  - Decision: OD-1\n');
+  const dir = change({
+    'tasks.md': tasks,
+    'proposal.md': proposal,
+    'design.md': design,
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node -e "0" | yes | PENDING | pending |'),
+    'specs/a/spec.md': '### Scenario: SCEN-1\n',
+    'review.md': REVIEW,
+  });
+  const result = run(dir, ['--structural', '--skip-signer-check']);
+  assert.equal(result.status, 1);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.route, null);
+  assert.ok(report.blocking.some((item) => item.startsWith('UNDECIDED_HARD_DECISION OD-1:')));
+});
