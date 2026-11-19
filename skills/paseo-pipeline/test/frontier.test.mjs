@@ -183,7 +183,10 @@ test('CLI treats a legacy Red-only branch as needing a worker, not a merge', () 
   });
   assert.equal(result.status, 0, result.stderr);
   const report = JSON.parse(result.stdout);
-  assert.deepEqual(report.dispatch, [{ task: 'T-01', action: 'dispatch-worker', reason: 'branch present; no commit yet' }]);
+  assert.deepEqual(report.dispatch, [{
+    task: 'T-01', action: 'dispatch-worker', reason: 'branch present; no commit yet',
+    branch: 'task/chg/T-01', base: 'integration/chg', title: '[Pipeline] gongbu T-01 chg', labels: { 'pipeline.change': 'chg' },
+  }]);
 });
 
 test('CLI exits 3 when Paseo is unreadable', () => {

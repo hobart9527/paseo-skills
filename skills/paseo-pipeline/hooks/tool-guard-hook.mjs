@@ -70,6 +70,14 @@ function bareProviderReason(input) {
   return `create_agent provider must be "<profile.provider>/<profile.model>", not "${provider}". Join the two list_profiles fields with "/".`
     + (pairs.length ? ` Current profiles: ${pairs.join(', ')}.` : '');
 }
+/** The planner and merge gate find pipeline agents by this label; an unlabelled one is invisible and gets re-dispatched. */
+function pipelineLabelReason(input) {
+  const title = typeof input?.title === 'string' ? input.title.trim() : '';
+  if (!title.startsWith('[Pipeline]')) return null;
+  const change = input?.labels?.['pipeline.change'];
+  if (typeof change === 'string' && change.trim()) return null;
+  return 'A "[Pipeline]" agent needs labels: { "pipeline.change": "<change>" } (the openspec change name); without it `pipeline-run.mjs plan` cannot see the agent and dispatches the task again. Copy title and labels from the plan\'s DISPATCH line.';
+}
 const canonical = (value) => JSON.stringify(value, (_, v) => v && typeof v === 'object' && !Array.isArray(v)
   ? Object.fromEntries(Object.keys(v).sort().map((key) => [key, v[key]])) : v);
 const output = (fields) => console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', ...fields } }));
@@ -159,6 +167,8 @@ async function main() {
     }
     const bare = isObject && name === 'mcp__paseo__create_agent' ? bareProviderReason(updated) : null;
     if (bare) { deny(bare); return; }
+    const unlabelled = isObject && name === 'mcp__paseo__create_agent' ? pipelineLabelReason(updated) : null;
+    if (unlabelled) { deny(unlabelled); return; }
     const agent = isObject && name === 'mcp__paseo__create_agent' ? sanitizedCreateAgent(updated) : null;
     if (agent) {
       updated = agent;

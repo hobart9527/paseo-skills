@@ -23,8 +23,8 @@ test('a FINAL failure compares the integration base with main before it is calle
   has(skill, ['regression', 'main...<full-SHA>', 'git merge-base integration/<change> main'], 'SKILL.md');
 });
 
-test('every dispatch registers a reconciliation point and never duplicates the dispatch', () => {
-  has(skill, ['reconciliation point', 'never duplicate dispatch'], 'SKILL.md');
+test('every dispatch arms a heartbeat backstop and never duplicates the dispatch', () => {
+  has(skill, ['create_heartbeat', 'lost-notification backstop', 'never duplicate dispatch'], 'SKILL.md');
 });
 
 test('CP-1 follows R0, which follows the human choices', () => {
