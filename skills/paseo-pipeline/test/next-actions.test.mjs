@@ -107,6 +107,40 @@ test('next-actions: integration merge commits do not count as this task\'s imple
   assert.deepEqual(dispatch, ['T-01:dispatch-worker'], JSON.stringify(result.json));
 });
 
+test('next-actions: each dispatch carries the branch, title and label the gates recognise', () => {
+  const { cwd, localEnv } = fixture();
+  const git = (...args) => spawnSync('git', args, { cwd, env: localEnv, encoding: 'utf8' });
+  git('branch', 'task/c1/T-01-a2', 'integration/c1');
+  const result = run(cwd, localEnv);
+  assert.equal(result.status, 0, result.out);
+  const [item] = result.json.dispatch;
+  assert.equal(item.task, 'T-01');
+  // The latest attempt is the one to dispatch onto; merge-task accepts exactly this shape.
+  assert.equal(item.branch, 'task/c1/T-01-a2');
+  assert.match(item.branch, /^task\/([^/]+)\/([A-Za-z][A-Za-z0-9]*-\d+)(?:-a(\d+))?$/);
+  assert.equal(item.base, 'integration/c1');
+  assert.deepEqual(item.labels, { 'pipeline.change': 'c1' });
+  // The planner's own title parser must read the printed title back as this task's worker.
+  assert.match(item.title, /^\[Pipeline\]\s+(gongbu)\s+(T-01-a2)(?:\s+.*)?$/);
+  assert.ok(item.title.length <= 60);
+  const human = spawnSync('node', [script, 'openspec/changes/c1'], { cwd, env: localEnv, encoding: 'utf8' });
+  assert.match(human.stdout, /branch task\/c1\/T-01-a2 \(from integration\/c1\); title "\[Pipeline\] gongbu T-01-a2 c1"/);
+  assert.match(human.stdout, /labels pipeline\.change=c1/);
+});
+
+test('next-actions: a merge item carries no dispatch names', () => {
+  const { cwd, localEnv } = fixture();
+  const git = (...args) => spawnSync('git', args, { cwd, env: localEnv, encoding: 'utf8' });
+  git('switch', '-q', 'task/c1/T-01');
+  fs.writeFileSync(path.join(cwd, 'src/one.mjs'), 'export const one = true;\n');
+  git('add', '-A');
+  git('commit', '-qm', 'work(T-01)\n\nPipeline-Role: gongbu\nPipeline-Author: 11111111-0000-4000-8000-000000000001');
+  git('switch', '-q', 'integration/c1');
+  const [item] = run(cwd, localEnv).json.dispatch;
+  assert.equal(item.action, 'merge');
+  assert.equal(item.branch, undefined);
+});
+
 test('next-actions: human-approved attempt override releases only named tasks', () => {
   const { cwd, localEnv } = fixture();
   const git = (...args) => spawnSync('git', args, { cwd, env: localEnv, encoding: 'utf8' });

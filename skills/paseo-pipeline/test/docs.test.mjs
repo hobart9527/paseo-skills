@@ -141,6 +141,12 @@ test('R0 checks Reach, Shape and Removal only, with a hard stop', () => {
   assert.ok(r0.length < 2300, `R0 section is ${r0.length} chars`);
 });
 
+test('dispatch names come from the plan line and the backstop is a Paseo heartbeat', () => {
+  const skill = read('SKILL.md');
+  assert.match(skill, /title and `pipeline\.change` label its DISPATCH line prints/);
+  assert.match(skill, /create_heartbeat/);
+});
+
 test('tier2-handoff wraps paseo-handoff with the brief and pre-dispatch check', () => {
   const wrapper = fs.readFileSync(path.join(dir, '..', 'tier2-handoff', 'SKILL.md'), 'utf8');
   for (const token of ['name: tier2-handoff', 'docs/tier2-handoff-brief.md', 'Pre-dispatch check', 'Slices', '/paseo-handoff', 'size estimate']) assert.ok(wrapper.includes(token), token);

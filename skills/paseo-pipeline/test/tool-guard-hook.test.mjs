@@ -113,6 +113,19 @@ test('create_agent: placeholder workspaceId dropped, missing title derived, long
   assert.deepEqual(guard({ tool_name: 'mcp__paseo__create_agent', tool_input: { provider: 'claude/cc', title: 'ok', initialPrompt: 'p', workspaceId: 'wks_4c2768faccbb4adb' } }, { PASEO_HOME }), {});
 });
 
+test('create_agent: a [Pipeline] agent without pipeline.change is denied; labelled or non-pipeline passes', (t) => {
+  const PASEO_HOME = paseoHome(t);
+  const call = (extra) => guard({ tool_name: 'mcp__paseo__create_agent', tool_input: { provider: 'claude/cc', initialPrompt: 'p', ...extra } }, { PASEO_HOME });
+  for (const labels of [undefined, {}, { 'pipeline.change': ' ' }, { 'pipeline.task': 'T-01' }]) {
+    const out = call({ title: '[Pipeline] gongbu T-01 c1', ...(labels ? { labels } : {}) });
+    assert.equal(out.permissionDecision, 'deny', JSON.stringify(labels));
+    assert.match(out.permissionDecisionReason, /pipeline\.change/);
+    assert.match(out.permissionDecisionReason, /DISPATCH/);
+  }
+  assert.deepEqual(call({ title: '[Pipeline] gongbu T-01 c1', labels: { 'pipeline.change': 'c1' } }), {});
+  assert.deepEqual(call({ title: '[Handoff] fix login' }), {});
+});
+
 test('identical-call deny tells create_workspace exactly which fields to drop', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tool-guard-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

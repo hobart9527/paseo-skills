@@ -137,6 +137,7 @@ for (const ref of refs) {
     attempts: entry.attempts,
     implementationCommits: attemptNumber > (entry.latestAttempt || 0) ? workerCommits : entry.implementationCommits,
     ownCommits: attemptNumber > (entry.latestAttempt || 0) ? workerCommits : entry.ownCommits,
+    ref: attemptNumber > (entry.latestAttempt || 0) ? ref : entry.ref,
   };
 }
 
@@ -289,6 +290,21 @@ result.attention.sort((a, b) => `${a.task}${a.kind}`.localeCompare(`${b.task}${b
 // contract is not frozen yet. The DAG preview is still useful before then, but a DISPATCH shown
 // here is not execution authorization: the freeze check and the recorded human CP-1 are.
 const frozen = integrationSha !== null;
+// The merge gate and this planner recognise a worker only by these names, so the plan prints
+// them instead of leaving the main session to reconstruct the convention.
+const TITLE_MAX = 60;
+for (const item of result.dispatch) {
+  if (item.action === 'merge') continue;
+  const branch = branches[item.task]?.ref ?? `task/${change}/${item.task}`;
+  const attempt = branch.slice(`task/${change}/`.length);
+  const full = `[Pipeline] gongbu ${attempt} ${change}`;
+  Object.assign(item, {
+    branch,
+    base: `integration/${change}`,
+    title: full.length <= TITLE_MAX ? full : `[Pipeline] gongbu ${attempt}`,
+    labels: { 'pipeline.change': change },
+  });
+}
 const report = { change, integrationHead: integrationSha, tasksSource, frozen, ...result };
 
 if (json) console.log(JSON.stringify(report, null, 2));
@@ -299,7 +315,10 @@ else {
   for (const agent of agents.filter((item) => ['running', 'initializing'].includes(item.status)).sort((a, b) => a.id.localeCompare(b.id))) {
     console.log(`RUNNING ${agent.task}: ${agent.role} ${agent.id} (${agent.status})`);
   }
-  for (const item of report.dispatch) console.log(`DISPATCH ${item.task}: ${item.action} — ${item.reason}`);
+  for (const item of report.dispatch) {
+    console.log(`DISPATCH ${item.task}: ${item.action} — ${item.reason}`);
+    if (item.branch) console.log(`  branch ${item.branch} (from ${item.base}); title "${item.title}" (role gongbu|gaogong|jiangzuo); labels pipeline.change=${change}`);
+  }
   for (const item of report.waiting) {
     const paths = [];
     const pathsTo = (id, trail = []) => {
