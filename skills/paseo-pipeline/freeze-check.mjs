@@ -92,7 +92,8 @@ const RULE_FIXES = {
   MISSING_SCEN_VERIFY: 'add one `- **Verify:** <command>` line under the scenario, before the next heading',
 };
 
-const tasksMarkdown = read(path.join(changeDir, 'tasks.md'));// The staged specs check runs exactly when tasks.md does not exist yet; any other mode still
+const tasksMarkdown = read(path.join(changeDir, 'tasks.md'));
+// The staged specs check runs exactly when tasks.md does not exist yet; any other mode still
 // requires it.
 if (tasksMarkdown === null && stage !== 'specs') {
   if (json) console.log(JSON.stringify({ error: 'tasks.md not found' }));
