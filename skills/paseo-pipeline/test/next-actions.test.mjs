@@ -455,8 +455,8 @@ test('next-actions: a shangshu agent is recognised as a non-worker pipeline role
 // One source of truth for the role names: the SKILL.md table and the two patterns in
 // next-actions.mjs must name the same set.
 test('next-actions: the SKILL.md role table and the code role patterns name the same roles', () => {
-  const repoRoot = path.resolve(path.dirname(script), '..');
-  const skill = fs.readFileSync(path.join(repoRoot, 'SKILL.md'), 'utf8');
+  const skillDir = path.dirname(script);
+  const skill = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8');
   const source = fs.readFileSync(script, 'utf8');
   const roles = skill.slice(skill.indexOf('## Roles'), skill.indexOf('## Tools'));
   const listed = new Set([...roles.matchAll(/^\|\s*[^`|\n]*`([a-z][a-z0-9-]*)`\s*\|/gm)].map((match) => match[1]));
