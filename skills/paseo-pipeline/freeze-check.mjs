@@ -754,8 +754,8 @@ const covers = (scope, target) => {
 const proposalMarkdown = read(path.join(changeDir, 'proposal.md'));
 if (!proposalMarkdown) blocking.push('MISSING_PROPOSAL: proposal.md not found');
 
-// OPEN-DECISION ids are hard gates only where delivery consumes them. A task block or spec
-// scenario block is the reference; proposal/design/history prose is not.
+// OPEN-DECISION ids are hard gates only where delivery consumes them. A task block or any
+// current-change spec file is the reference; proposal/design/history prose is not.
 const taskBlocks = new Map();
 {
   let currentId = null;
@@ -790,23 +790,25 @@ const openDecisions = [];
   }
   close();
 }
+const changeSpecText = specTree.current.map((spec) => spec.text).join('\n');
 const referencedOpenDecisions = (id) => {
   const token = new RegExp(`(?:^|[^A-Za-z0-9_-])${id}(?![A-Za-z0-9_-])`);
-  return [...declaredBody.values()].some((body) => token.test(body))
+  return token.test(changeSpecText)
     || [...taskBlocks.values()].some((block) => token.test(block));
 };
 const HARD_CLASSES = new Set(['money', 'auth', 'external-write']);
 for (const { id, body } of openDecisions) {
   const text = body.join('\n');
+  // Fail closed: every entry without an explicit `Decided:` is still open, even when the
+  // D10 author omitted `Status:` entirely.
   if (/(?:^|[;\s])Decided:/im.test(text)) continue;
-  if (!/(?:^|[;\s])Status:\s*open\b/im.test(text)) continue;
   const decisionClass = text.match(/(?:^|[;\s])Class:\s*(money|auth|external-write|product)\b/im)?.[1]?.toLowerCase() ?? 'missing';
   const referenced = referencedOpenDecisions(id);
   if (HARD_CLASSES.has(decisionClass) || decisionClass === 'missing') {
-    if (referenced) blocking.push(`UNDECIDED_HARD_DECISION ${id}: referenced open hard decision (Class: ${decisionClass}; Status: open)`);
-    else advisories.push(`ADVISORY_OPEN_DECISION ${id}: unreferenced open hard decision (Class: ${decisionClass}; Status: open)`);
+    if (referenced) blocking.push(`UNDECIDED_HARD_DECISION ${id}: referenced open hard decision (Class: ${decisionClass}; open)`);
+    else advisories.push(`ADVISORY_OPEN_DECISION ${id}: unreferenced open hard decision (Class: ${decisionClass}; open)`);
   } else {
-    advisories.push(`ADVISORY_OPEN_DECISION ${id}: open product decision (Class: ${decisionClass}; Status: open)`);
+    advisories.push(`ADVISORY_OPEN_DECISION ${id}: open product decision (Class: ${decisionClass}; open)`);
   }
 }
 
