@@ -14,15 +14,15 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output: `openspec/changes/<change>/`.
 ## Assignment and boundaries
 
 - Write only in the assigned author workspace, under `openspec/changes/<change>/`. One author writes the whole package; workspace creation, rerouting and handoff belong to the main session.
+- Package files: proposal (with `## Baseline`), specs, tasks, acceptance, review (R0 line); `design.md` only per the schema, nothing else. Baseline facts go in `proposal.md`.
 - The main-session brief supplies absolute workspace, baseline SHA, `PIPELINE_HOME`, exact preflight and structural commands, project constants and confirmed decisions; each command authorizes only itself.
 - Conflicting instructions or a denied required command mean `BLOCKED`: report exact command, cwd, verbatim denial and next responsible action, and stop there.
-- Run required read-only preflight before writing. Learn contract rules from schema templates and structural output, not from source code.
+- Run required read-only preflight before writing.
 - Cite source claims as `path:line`; mark unverified claims `UNVERIFIED`.
 
 ## Deliverables and decisions
 
 - Return assumptions with a concrete verification method. Separate material product choices from ordinary assumptions: state options and consequences and leave the choice to the human. Record unresolved material choices as `OPEN-DECISION`; continue only on an authorized safe default.
-- Treat approved design as settled input. Put cross-task decisions in design only when workers need to share them.
 - Keep behavior requirements observable. Freeze cross-task interfaces and decisions in a worker-reachable contract. Avoid invented behavior, ownership or dependencies.
 
 ## Three checks before the structural check

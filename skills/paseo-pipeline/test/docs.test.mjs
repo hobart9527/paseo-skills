@@ -102,6 +102,27 @@ test('every Tier 2 delivery gets an evidence recheck; a reviewer needs a named r
   assert.match(wrapper, /Evidence recheck/);
 });
 
+test('Tier 2 contract is two native OpenSpec files and the handoff points at it', () => {
+  const docs = path.join(dir, '..', '..', 'docs');
+  exists('../../docs/tier2-contract.md');
+  const contract = fs.readFileSync(path.join(docs, 'tier2-contract.md'), 'utf8');
+  for (const token of ['specs/<capability>/spec.md', 'tasks.md', '#### Scenario:', '**Verify:**', 'openspec validate', '--strict', 'proposal.md']) assert.ok(contract.includes(token), token);
+  assert.doesNotMatch(contract, /SCEN-|acceptance\.md|freeze-check/, 'Tier 3 fields stay out of the Tier 2 template');
+  assert.ok(contract.length < 2500, `tier2-contract.md is ${contract.length} chars`);
+  const handoff = fs.readFileSync(path.join(docs, 'tier2-handoff-brief.md'), 'utf8');
+  assert.match(handoff, /\*\*Contract:\*\*[^\n]*tier2-contract\.md/);
+  assert.match(handoff, /Evidence recheck[^\n]*\*\*Verify:\*\*/);
+});
+
+test('Tier 3 package is four required files; the rest is on demand', () => {
+  const author = read('templates/author.md');
+  assert.match(author, /Package files:[^\n]*proposal[^\n]*specs[^\n]*tasks[^\n]*acceptance/);
+  assert.match(author, /Package files:[^\n]*nothing else/);
+  const tasks = read('openspec-schema/templates/tasks.md');
+  for (const token of ['Depends on', 'Write scope', 'Verify with', 'Scenarios']) assert.ok(tasks.includes(token), token);
+  assert.ok(tasks.length < 2600, `tasks template is ${tasks.length} chars`);
+});
+
 test('tier2-handoff wraps paseo-handoff with the brief and pre-dispatch check', () => {
   const wrapper = fs.readFileSync(path.join(dir, '..', 'tier2-handoff', 'SKILL.md'), 'utf8');
   for (const token of ['name: tier2-handoff', 'docs/tier2-handoff-brief.md', 'Pre-dispatch check', 'Slices', '/paseo-handoff', 'size estimate']) assert.ok(wrapper.includes(token), token);
