@@ -10,15 +10,19 @@ Build bidirectional traceability: every confirmed requirement has a SCEN, and ev
 
 ## R0 — frozen contract
 
-Review Proposal, Specs, Design (when present), Tasks and Acceptance as one package before CP-1. Check confirmed decisions supplied to the author, cited source facts, observable SCENs, task ownership, interfaces, scope conflicts, real concurrency and Verify feasibility. A shared concurrent surface needs one authoritative frozen contract reachable by workers. Do not demand internal DTOs/signatures unless contract makes them observable. If worker Verify needs a sibling's future file/behavior, require dependency. A green oracle must exercise a real entry, not only a fixture or isolated module; state how wrong/unwired behavior would fail. A removal that drops a gate (submit blocking, validation, lease, ledger) names where that gate goes.
+Review Proposal, Specs, Design (when present), Tasks and Acceptance as one package before CP-1 on three checks, nothing else; a blocker names its check. Scope conflicts and task ownership are the structural check's output.
 
-Review the pinned commit and approved external snapshots only. Verify snapshot hashes before and after; stop on missing, inconsistent or changed inputs. The SHA sign-off does not attest snapshot hashes. Do not run the full suite: inspect the checks and run at most one narrow command per package, plus one baseline pass that runs the sink's Verify commands on the pinned commit and records each exit code, so a script already red on the baseline reads as pre-existing, not a regression. Source-text assertions prove text, not runtime behavior.
+1. **Reach**: each SCEN's Entry is owned by a task and its Verify runs that real entry, not a fixture or isolated module; state how wrong or unwired behavior would fail. A Verify that needs a sibling's future file requires a dependency.
+2. **Shape**: each field, route, enum and payload the spec claims is cited from the baseline with its real shape, and agrees with the confirmed decisions supplied to the author. A shared concurrent surface has one frozen contract workers can reach.
+3. **Removal**: a removal that drops a gate (submit blocking, validation, lease, ledger) names where that gate goes.
 
-At most two whole-package R0 rounds: round 1 reports all supported blockers; round 2 checks fixes only. After round 2 blockers, human accepts recorded residual risk or directs a fix, which gets one same-reviewer delta check. Findings classify `BLOCKER` or `NIT`; a blocker needs a falsifiable wrong outcome and why current tasks/Verify cannot prevent it. Pure anchor-drift with the same symbol is a non-blocking NIT; proofread every `path:line`.
+Review the pinned commit and approved external snapshots only. Verify snapshot hashes before and after; stop on missing, inconsistent or changed inputs. Do not run the full suite: run at most one narrow command per package, plus one baseline pass that runs the sink's Verify commands on the pinned commit and records each exit code, so a script already red on the baseline reads as pre-existing. Source-text assertions prove text, not runtime behavior.
 
-Time budget: record the start time, deliver the R0 conclusion by minute 20, stop reading at minute 25. The hard stop returns the findings so far plus the items you did not check; budget exhaustion is a partial verdict, never a pass.
+At most two whole-package rounds: round 1 reports all supported blockers; round 2 checks fixes only. After round 2 blockers, the human accepts recorded residual risk or directs a fix, which gets one same-reviewer delta check. Findings are `BLOCKER` (a falsifiable wrong outcome the current tasks/Verify cannot prevent) or `NIT`; pure anchor-drift with the same symbol is a non-blocking NIT; proofread every `path:line`.
 
-Return the sign-off line `R0: pass(<reviewer-uuid>@<sha>)` and the reviewed commit SHA as text; the main session records it in `review.md`.
+Time budget: record the start time, deliver the conclusion by minute 20, stop reading at minute 25. The hard stop returns the findings so far plus the items not checked; an exhausted budget is a partial verdict, never a pass.
+
+Return `R0: pass(<reviewer-uuid>@<sha>)` and the reviewed commit SHA as text; the main session records it in `review.md`.
 
 ## FINAL — integrated conformance
 

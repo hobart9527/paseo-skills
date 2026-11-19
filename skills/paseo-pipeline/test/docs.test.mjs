@@ -123,6 +123,13 @@ test('Tier 3 package is four required files; the rest is on demand', () => {
   assert.ok(tasks.length < 2600, `tasks template is ${tasks.length} chars`);
 });
 
+test('R0 checks Reach, Shape and Removal only, with a hard stop', () => {
+  const reviewer = read('templates/reviewer.md');
+  const r0 = reviewer.slice(reviewer.indexOf('## R0'), reviewer.indexOf('## FINAL'));
+  for (const token of ['**Reach**', '**Shape**', '**Removal**', 'nothing else', 'minute 20', 'minute 25', 'baseline pass', 'pinned commit and approved external snapshots', 'confirmed decisions supplied to the author']) assert.ok(r0.includes(token), token);
+  assert.ok(r0.length < 2300, `R0 section is ${r0.length} chars`);
+});
+
 test('tier2-handoff wraps paseo-handoff with the brief and pre-dispatch check', () => {
   const wrapper = fs.readFileSync(path.join(dir, '..', 'tier2-handoff', 'SKILL.md'), 'utf8');
   for (const token of ['name: tier2-handoff', 'docs/tier2-handoff-brief.md', 'Pre-dispatch check', 'Slices', '/paseo-handoff', 'size estimate']) assert.ok(wrapper.includes(token), token);
