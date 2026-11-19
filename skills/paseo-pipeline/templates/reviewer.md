@@ -16,7 +16,7 @@ Review Proposal, Specs, Design (when present), Tasks and Acceptance as one packa
 2. **Shape**: each field, route, enum and payload the spec claims is cited from the baseline with its real shape, and agrees with the confirmed decisions supplied to the author. A shared concurrent surface has one frozen contract workers can reach.
 3. **Removal**: a removal that drops a gate (submit blocking, validation, lease, ledger) names where that gate goes.
 
-Review the pinned commit and approved external snapshots only. Verify snapshot hashes before and after; stop on missing, inconsistent or changed inputs. Do not run the full suite: run at most one narrow command per package, plus one baseline pass that runs the sink's Verify commands on the pinned commit and records each exit code, so a script already red on the baseline reads as pre-existing. Source-text assertions prove text, not runtime behavior.
+Review the pinned commit and approved external snapshots only. Verify snapshot hashes before and after; stop on missing, inconsistent or changed inputs. Do not run the full suite: run at most one narrow command per package. The baseline — the sink's Verify commands on the pinned commit, one exit code each — comes from the author's `## Baseline`; the reviewer reads that record and does not rerun it, so a script already red on the baseline reads as pre-existing. Source-text assertions prove text, not runtime behavior.
 
 Round 1 reports all supported blockers; delta checks fixes only. Round limits and unresolved-blocker disposition: `SKILL.md` § Entry and CP-1. Findings are `BLOCKER` (a falsifiable wrong outcome the current tasks/Verify cannot prevent) or `NIT`; pure anchor-drift with the same symbol is a non-blocking NIT; proofread every `path:line`.
 
