@@ -168,8 +168,12 @@ test('create_agent: a stale mode or thinking option is denied with both values n
   assert.match(thinking.permissionDecisionReason, /thinkingOptionId/);
   assert.match(thinking.permissionDecisionReason, /low/);
   assert.match(thinking.permissionDecisionReason, /high/);
-  // A profile with no thinking option has none to check.
-  assert.deepEqual(createAgent({ provider: 'antigravity/gemini', title: 't', modeId: 'full-access', thinkingOptionId: 'high' }, PASEO_HOME), {});
+  // A profile with no thinking option cannot supply one, so any stated value is a mismatch.
+  const noOption = createAgent({ provider: 'antigravity/gemini', title: 't', modeId: 'full-access', thinkingOptionId: 'high' }, PASEO_HOME);
+  assert.equal(noOption.permissionDecision, 'deny');
+  assert.match(noOption.permissionDecisionReason, /thinkingOptionId/);
+  // Omitting it inherits, which is what the profile does.
+  assert.deepEqual(createAgent({ provider: 'antigravity/gemini', title: 't', modeId: 'full-access' }, PASEO_HOME), {});
 });
 
 test('identical-call deny tells create_workspace exactly which fields to drop', (t) => {
