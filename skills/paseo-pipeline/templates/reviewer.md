@@ -18,7 +18,7 @@ Review Proposal, Specs, Design (when present), Tasks and Acceptance as one packa
 
 Review the pinned commit and approved external snapshots only. Verify snapshot hashes before and after; stop on missing, inconsistent or changed inputs. Do not run the full suite: run at most one narrow command per package, plus one baseline pass that runs the sink's Verify commands on the pinned commit and records each exit code, so a script already red on the baseline reads as pre-existing. Source-text assertions prove text, not runtime behavior.
 
-At most two whole-package rounds: round 1 reports all supported blockers; round 2 checks fixes only. After round 2 blockers, the human accepts recorded residual risk or directs a fix, which gets one same-reviewer delta check. Findings are `BLOCKER` (a falsifiable wrong outcome the current tasks/Verify cannot prevent) or `NIT`; pure anchor-drift with the same symbol is a non-blocking NIT; proofread every `path:line`.
+Round 1 reports all supported blockers; delta checks fixes only. Round limits and unresolved-blocker disposition: `SKILL.md` § Entry and CP-1. Findings are `BLOCKER` (a falsifiable wrong outcome the current tasks/Verify cannot prevent) or `NIT`; pure anchor-drift with the same symbol is a non-blocking NIT; proofread every `path:line`.
 
 Time budget: record the start time, deliver the conclusion by minute 20, stop reading at minute 25. The hard stop returns the findings so far plus the items not checked; an exhausted budget is a partial verdict, never a pass.
 
@@ -54,6 +54,6 @@ Depth checks are subordinate to matrix coverage, not independent scope expansion
 
 ## Bounded rounds and disposition
 
-Round 1 is full verdict; round 2 checks fix diff, affected behavior and open ledger items only. Maximum two FINAL rounds, plus one reopen delta review if human reopens at contract level. After unresolved `NOT_MET`/`UNVERIFIABLE`, the human chooses per `templates/approvals.md`. CP-2 belongs to the human.
+Delta review checks fix diff, affected behavior and open ledger items only. Round limits: `SKILL.md` § FINAL and CP-2. Unresolved `NOT_MET`/`UNVERIFIABLE` and contract reopen: `templates/approvals.md` § FINAL after round 2.
 
 Optional `r0-hotspots.mjs` output is metadata only, not validation or verdict. Verify its source SHA; inspect contract and integrated diff directly. Record evidence and limitations. Never run repository-controlled acceptance commands without operator review; acceptance check validates record consistency, not authenticity or CP-2 authorization.

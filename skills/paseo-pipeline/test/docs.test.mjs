@@ -48,7 +48,7 @@ test('worker prompt keeps task-local scope and runtime verification', () => {
 
 test('recovery and destructive approval template has bounded choices and exact record format', () => {
   const approval = read('templates/approvals.md');
-  for (const token of ['Accept', 'New change', 'Terminate', 'two FINAL rounds', 'NOT_MET', 'UNVERIFIABLE', 'reviewed SHA', 'CP-2', 'Object:', 'Command:', 'Executor:', 'verbatim', 'Push and history rewrite', 'allow-test-infra', 'allow-attempt-over', 'MERGE_HEAD']) assert.ok(approval.includes(token), token);
+  for (const token of ['Accept', 'New change', 'Terminate', 'review budget', 'NOT_MET', 'UNVERIFIABLE', 'reviewed SHA', 'CP-2', 'Object:', 'Command:', 'Executor:', 'verbatim', 'Push and history rewrite', 'allow-test-infra', 'allow-attempt-over', 'MERGE_HEAD']) assert.ok(approval.includes(token), token);
   assert.ok(approval.length < 3200, `approvals.md is ${approval.length} chars`);
 });
 
@@ -72,6 +72,26 @@ test('schema retains artifact ids, requirements and template paths', () => {
 test('history documents are relocated and active references use new paths', () => {
   for (const p of ['../../docs/history/LESSONS.md', '../../docs/history/BENCH-2026-11-03.md']) exists(p);
   assert.match(fs.readFileSync(path.join(dir, '..', '..', 'docs', 'history', 'LESSONS.md'), 'utf8'), /^# /);
+});
+
+test('review round limits live in SKILL; templates point to limits and disposition', () => {
+  const skill = read('SKILL.md');
+  const reviewer = read('templates/reviewer.md');
+  const approval = read('templates/approvals.md');
+  assert.match(skill, /Maximum two package rounds/);
+  assert.match(skill, /Maximum two FINAL rounds/);
+  assert.match(reviewer, /Round limits and unresolved-blocker disposition: `SKILL\.md` § Entry and CP-1/);
+  assert.match(reviewer, /Round limits: `SKILL\.md` § FINAL and CP-2/);
+  assert.match(approval, /`SKILL\.md` § FINAL and CP-2 exhausts the review budget/);
+  for (const text of [reviewer, approval]) assert.doesNotMatch(text, /(?:At most|Maximum|after) two (?:whole-package|FINAL) rounds/);
+  assert.match(approval, /one reopen delta review/);
+});
+
+test('retired design documents live only under history', () => {
+  for (const name of ['minimal-contract-design.md', 'next-actions-design.md', 'paseo-pipeline-architecture.md', 'paseo-pipeline-review-2026-10-26.md', 'sdd-multi-agent-architecture.md']) {
+    exists(`../../docs/history/${name}`);
+    assert.equal(fs.existsSync(path.join(dir, '../../docs', name)), false, name);
+  }
 });
 
 test('no active prompt or test references deleted recovery file', () => {

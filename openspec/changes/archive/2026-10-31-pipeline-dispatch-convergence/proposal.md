@@ -2,7 +2,7 @@
 
 ## Why
 
-2026-10-31 D 试点 L1（`run-ledger-dispatch-attribution`）人工救援 3 次。复盘更正归因后（见 `docs/paseo-pipeline-review-2026-10-26.md` §5），缺口 1、2 的根因相同：**任务派发有三个入口，分支与基点靠各自推导，契约只写在 prose 里**。
+2026-10-31 D 试点 L1（`run-ledger-dispatch-attribution`）人工救援 3 次。复盘更正归因后（见 `docs/history/paseo-pipeline-review-2026-10-26.md` §5），缺口 1、2 的根因相同：**任务派发有三个入口，分支与基点靠各自推导，契约只写在 prose 里**。
 
 | 入口 | 任务分支 | 产物落盘 | 审计 | 采集值 |
 | --- | --- | --- | --- | --- |

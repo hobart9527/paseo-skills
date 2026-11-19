@@ -2,13 +2,13 @@
 
 ## FINAL after round 2
 
-For unresolved `NOT_MET` or `UNVERIFIABLE` after two FINAL rounds, human chooses one:
+When `SKILL.md` § FINAL and CP-2 exhausts the review budget with unresolved `NOT_MET` or `UNVERIFIABLE`, human chooses one:
 
 - **Accept:** record `FINAL: human-accept(@<sha>)` in `review.md`, residual risk in `rulings.md`, and `Approval: FINAL residual risk accepted for <sha> — <reason>` in `run-log.md`.
 - **New change:** reopen at contract level with delta R0 and CP-1; permit one repair wave and one reopen delta review. No further reopen.
 - **Terminate:** stop change.
 
-No unbounded repair loop. A `DEVIATION` may enter one batched repair wave; contract/requirement gaps need human disposition before CP-2. Keep evidence bound to reviewed SHA. Run acceptance check at that SHA before record-only commits; only `review.md`, `rulings.md`, and `run-log.md` may change afterward. CP-2 remains human.
+Repair scope and contract-gap disposition follow `SKILL.md` § FINAL and CP-2. Keep evidence bound to reviewed SHA. Run acceptance check at that SHA before record-only commits; only `review.md`, `rulings.md`, and `run-log.md` may change afterward. CP-2 remains human.
 
 ## Destructive or production action
 
