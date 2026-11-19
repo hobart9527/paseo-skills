@@ -74,32 +74,39 @@ function bareProviderReason(input) {
     + (pairs.length ? ` Current profiles: ${pairs.join(', ')}.` : '');
 }
 // Runtime settings are launch configuration copied from `list_profiles`, so a stale mode or
-// thinking option silently runs the agent under the wrong configuration. Check only what the call
-// states: an omitted field inherits the profile. With no profile for the pair there is nothing to
-// compare against — profiles are not a whitelist — so the call is left alone. `features` is
-// `undefined`/`null` in every current profile, which means "no feature requirement".
+// thinking option silently runs the agent under the wrong configuration. They travel nested under
+// `settings` (the shape every dispatch uses); the flat fields are only a compatibility fallback.
+// Check only what the call states: an omitted field inherits the profile. Several profiles may
+// share one provider/model pair (claude/flash is both 尚书 and 工部), so the pair selects a set:
+// the call passes when it agrees with at least one of them, and the role is never guessed from the
+// title. With no profile for the pair there is nothing to compare against — profiles are not a
+// whitelist — so the call is left alone. `features` is `undefined`/`null` in every current
+// profile, which means "no feature requirement".
 const SETTINGS = ['modeId', 'thinkingOptionId', 'features'];
 const sameValue = (left, right) => canonical(left) === canonical(right);
 function settingsMismatchReason(input) {
   const provider = typeof input?.provider === 'string' ? input.provider.trim() : '';
   if (!provider.includes('/')) return null;
   const matches = loadProfiles().filter((profile) => profilePair(profile) === provider);
-  if (matches.length !== 1) return null;
-  const profile = matches[0];
-  const role = String(profile.name ?? profile.id ?? provider).split(/\s/)[0];
-  for (const field of SETTINGS) {
-    // Omitted = inherit. An explicit `null` on an optional profile field is also inherit.
-    if (!(field in (input ?? {})) || input[field] === undefined) continue;
+  if (!matches.length) return null;
+  const nested = input?.settings && typeof input.settings === 'object' && !Array.isArray(input.settings) ? input.settings : {};
+  const valueOf = (field) => (field in nested ? nested[field] : input?.[field]);
+  // Omitted = inherit. An explicit `null` on an optional profile field is also inherit.
+  const stated = SETTINGS.filter((field) => valueOf(field) !== undefined);
+  if (!stated.length) return null;
+  const agrees = (profile, field) => profile[field] === undefined || profile[field] === null
+    ? valueOf(field) === profile[field]
+    : sameValue(profile[field], valueOf(field));
+  if (matches.some((profile) => stated.every((field) => agrees(profile, field)))) return null;
+  const role = (profile) => String(profile.name ?? profile.id ?? provider).split(/\s/)[0];
+  if (matches.length === 1) {
+    const [profile] = matches;
+    const field = stated.find((name) => !agrees(profile, name));
     const expected = profile[field];
-    if (expected === undefined || expected === null) {
-      if (input[field] === expected) continue;
-      return `create_agent ${field} is ${JSON.stringify(input[field])}, but profile ${role} (${provider}) sets ${expected === null ? 'none' : `no ${field}`}. Omit ${field} to inherit, or edit the profile in config.json if the setting really changed.`;
-    }
-    if (!sameValue(expected, input[field])) {
-      return `create_agent ${field} is ${JSON.stringify(input[field])}, but profile ${role} (${provider}) sets ${JSON.stringify(expected)}. Copy the profile value, or edit the profile in config.json if the setting really changed.`;
-    }
+    return `create_agent ${field} is ${JSON.stringify(valueOf(field))}, but profile ${role(profile)} (${provider}) sets ${expected === undefined || expected === null ? 'none' : JSON.stringify(expected)}. Omit ${field} to inherit, or edit the profile in config.json if the setting really changed.`;
   }
-  return null;
+  const candidates = matches.map((profile) => `${role(profile)} (${provider}) sets ${stated.map((field) => `${field} ${profile[field] === undefined || profile[field] === null ? 'none' : JSON.stringify(profile[field])}`).join(', ')}`).join('; ');
+  return `create_agent ${stated.map((field) => `${field} ${JSON.stringify(valueOf(field))}`).join(', ')} matches no profile for ${provider}. Candidates: ${candidates}. Copy one candidate's values, or edit the profile in config.json if the setting really changed.`;
 }
 /** The planner and merge gate find pipeline agents by this label; an unlabelled one is invisible and gets re-dispatched. */
 function pipelineLabelReason(input) {
