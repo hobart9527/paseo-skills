@@ -1,11 +1,16 @@
 ## ADDED Requirements
 
 ### Requirement: Undecided hard decisions stop the contract early
-A `## OPEN-DECISION` entry in `proposal.md` SHALL carry `Class: money | auth | external-write | product` and either `Status: open` or `Decided: <user words and date>`; an entry without `Class:` counts as hard. `freeze-check` SHALL report blocking code `UNDECIDED_HARD_DECISION` and route `null` when an open hard-class entry (money, auth, external-write) is referenced by its id from a spec scenario or a `tasks.md` task. An open hard entry nobody references, and any open `product` entry, SHALL produce an advisory only. The author brief and the proposal template SHALL give one rule: on an open hard decision the author commits current state and returns `BLOCKED (decision)` instead of writing a default into specs or tasks. Fact: `skills/paseo-pipeline/freeze-check.mjs:916` computes route from task count and width only; `openspec-schema/templates/proposal.md:42` says "Continue on the recommended default" while `templates/author.md:25` says "continue only on an authorized safe default".
+A `## OPEN-DECISION` entry in `proposal.md` SHALL carry `Class: money | auth | external-write | product` and either `Status: open` or `Decided: <user words and date>`; an entry without `Class:` counts as hard, and an entry without `Decided:` counts as open whether or not it says `Status: open` (fail closed). `freeze-check` SHALL report blocking code `UNDECIDED_HARD_DECISION` and route `null` when an open hard-class entry (money, auth, external-write) is referenced by its id anywhere in a change spec file (`specs/**/*.md`, requirement text or scenario) or inside a `tasks.md` task block. Amended after replaying D10 package `3f295215`: its entries had no `Status:` and its references sat in requirement text, so the first gate passed it. An open hard entry nobody references, and any open `product` entry, SHALL produce an advisory only. The author brief and the proposal template SHALL give one rule: on an open hard decision the author commits current state and returns `BLOCKED (decision)` instead of writing a default into specs or tasks. Fact: `skills/paseo-pipeline/freeze-check.mjs:916` computes route from task count and width only; `openspec-schema/templates/proposal.md:42` says "Continue on the recommended default" while `templates/author.md:25` says "continue only on an authorized safe default".
 
 #### Scenario: Referenced open money decision blocks route
 - **WHEN** `proposal.md` has `OD-1` with `Class: money` and `Status: open`, and a task or scenario names `OD-1`
 - **THEN** `freeze-check --structural --json` exits 1 with a blocking item starting `UNDECIDED_HARD_DECISION` and `route` is `null`
+- **Verify:** `node --test skills/paseo-pipeline/test/freeze-check.test.mjs`
+
+#### Scenario: Unmarked entry referenced in requirement text blocks route
+- **WHEN** `proposal.md` has `OD-2` with options and consequences but neither `Status:` nor `Decided:` nor `Class:`, and a requirement paragraph (outside any scenario) names `OD-2`
+- **THEN** `freeze-check --structural --json` exits 1 with a blocking item starting `UNDECIDED_HARD_DECISION OD-2` and `route` is `null`
 - **Verify:** `node --test skills/paseo-pipeline/test/freeze-check.test.mjs`
 
 #### Scenario: Decided or unreferenced decisions do not block
