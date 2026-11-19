@@ -71,3 +71,12 @@ test('open hard decisions stop authoring rather than defaulting', () => {
     assert.doesNotMatch(text, /Continue on the recommended default/i, name);
   }
 });
+
+test('scenario templates require Verify and handoff marks acceptance historical', () => {
+  const specTemplate = read('openspec-schema/templates/spec.md');
+  const schema = read('openspec-schema/schema.yaml');
+  has(specTemplate, ['**Verify:**'], 'spec template');
+  assert.equal((specTemplate.match(/- \*\*WHEN\*\*/g) || []).length, (specTemplate.match(/- \*\*Verify:\*\*/g) || []).length, 'spec template scenario Verify count');
+  has(schema, ['one `**Verify:**` line per scenario'], 'schema specs instruction');
+  has(author, ['existing `acceptance.md` historical', 'superseded by the Tier 2 Evidence recheck'], 'author.md handoff step');
+});
