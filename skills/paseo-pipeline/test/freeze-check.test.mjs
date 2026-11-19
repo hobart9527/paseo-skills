@@ -1194,6 +1194,67 @@ test('ENTRY_OWNER_UNCLAIMED: a leading ./ and a #fragment do not hide the entry 
   assert.equal(entryRun(splitEntry, splitRow('T-01', 'src/**/*.ts')).status, 0);
 });
 
+// A user entry (UI path or HTTP route) whose owner writes only helper modules: the Verify can
+// only exercise isolated logic, so the user path stays untested (D8 F-4 class). Advisory, not a
+// block: which code serves an Entry is a judgment the author and R0 share.
+const userEntryTasks = [
+  entryTask('T-01', { scope: 'src/utils/totals.ts,test/t-01.test.mjs', scen: 'SCEN-1' }),
+  entryTask('T-02', { scope: 'src/form/ExpenseBillForm.tsx,test/t-02.test.mjs', scen: 'SCEN-2' }),
+  entryTask('T-03', { scope: 'packages/server/src/services/bill-submit-service.ts,test/t-03.test.mjs', scen: 'SCEN-3' }),
+];
+const userEntryRows = [
+  '| SCEN-1 | UI `?view=SUBMIT_HUB&entry=EXPENSE` total | T-01 | node -e "0" | yes | PENDING | pending |',
+  '| SCEN-2 | UI `?view=SUBMIT_HUB&entry=EXPENSE` form | T-02 | node -e "0" | yes | PENDING | pending |',
+  '| SCEN-3 | POST /api/v1/bills/submit | T-03 | node -e "0" | yes | PENDING | pending |',
+].join('\n');
+
+test('ADVISORY_ENTRY_NOT_EXERCISED: a UI entry owned by a helper-only task is advised, not blocked', () => {
+  const result = entryRun(userEntryTasks, userEntryRows, '### Scenario: SCEN-1\n### Scenario: SCEN-2\n### Scenario: SCEN-3\n');
+  assert.equal(result.status, 0, result.stdout);
+  const advisories = JSON.parse(result.stdout).advisories;
+  const hits = advisories.filter((item) => item.startsWith('ADVISORY_ENTRY_NOT_EXERCISED'));
+  assert.equal(hits.length, 1, advisories.join('\n'));
+  assert.match(hits[0], /^ADVISORY_ENTRY_NOT_EXERCISED SCEN-1 acceptance\.md:3: Entry UI .* is a user entry, but T-01 writes only src\/utils\/totals\.ts/);
+  // The component owner and the service owner reach their entries.
+  assert.doesNotMatch(advisories.join('\n'), /ADVISORY_ENTRY_NOT_EXERCISED SCEN-2/);
+  assert.doesNotMatch(advisories.join('\n'), /ADVISORY_ENTRY_NOT_EXERCISED SCEN-3/);
+});
+
+test('ADVISORY_ENTRY_NOT_EXERCISED: an HTTP entry owned by a helper-only task is advised too', () => {
+  const tasks = [
+    entryTask('T-01', { scope: 'src/utils/payload.ts,test/t-01.test.mjs', scen: 'SCEN-1' }),
+  ];
+  const result = entryRun(tasks, '| SCEN-1 | POST /api/v1/bills/submit | T-01 | node -e "0" | yes | PENDING | pending |', '### Scenario: SCEN-1\n');
+  assert.equal(result.status, 0, result.stdout);
+  assert.match(JSON.parse(result.stdout).advisories.join('\n'), /^ADVISORY_ENTRY_NOT_EXERCISED SCEN-1 acceptance\.md:3:/m);
+});
+
+test('ADVISORY_ENTRY_NOT_EXERCISED: a server package root does not hide helpers or domain modules', () => {
+  for (const scope of ['packages/server/src/utils/payload.ts', 'packages/server/src/domain/invoice.ts']) {
+    const tasks = [entryTask('T-01', { scope: `${scope},test/t-01.test.mjs`, scen: 'SCEN-1' })];
+    const result = entryRun(tasks, '| SCEN-1 | POST /api/v1/bills/submit | T-01 | node -e "0" | yes | PENDING | pending |', '### Scenario: SCEN-1\n');
+    assert.equal(result.status, 0, result.stdout);
+    const hits = JSON.parse(result.stdout).advisories.filter((item) => item.startsWith('ADVISORY_ENTRY_NOT_EXERCISED'));
+    assert.equal(hits.length, 1, `${scope}: ${result.stdout}`);
+    assert.ok(hits[0].includes(scope), hits[0]);
+  }
+});
+
+test('ADVISORY_ENTRY_NOT_EXERCISED: entries that name no user path are left to the other rules', () => {
+  const tasks = [
+    entryTask('T-01', { scope: 'src/utils/totals.ts,test/t-01.test.mjs', scen: 'SCEN-1' }),
+    entryTask('T-02', { scope: 'src/form/ExpenseBillForm.tsx,test/t-02.test.mjs', scen: 'SCEN-2' }),
+  ];
+  const cli = entryRun(tasks, '| SCEN-1 | CLI | T-01 | node -e "0" | yes | PENDING | pending |\n| SCEN-2 | CLI | T-02 | node -e "0" | yes | PENDING | pending |', '### Scenario: SCEN-1\n### Scenario: SCEN-2\n');
+  assert.equal(cli.status, 0, cli.stdout);
+  assert.doesNotMatch(JSON.parse(cli.stdout).advisories.join('\n'), /ADVISORY_ENTRY_NOT_EXERCISED/);
+  // A file Entry is judged by ENTRY_OWNER_UNCLAIMED, so it is never reported twice.
+  const file = entryRun(tasks, '| SCEN-1 | src/form/ExpenseBillForm.tsx | T-01 | node -e "0" | yes | PENDING | pending |\n| SCEN-2 | CLI | T-02 | node -e "0" | yes | PENDING | pending |', '### Scenario: SCEN-1\n### Scenario: SCEN-2\n');
+  assert.equal(file.status, 1);
+  assert.match(codes(file).join('\n'), /^ENTRY_OWNER_UNCLAIMED SCEN-1 acceptance\.md:3:/m);
+  assert.doesNotMatch(JSON.parse(file.stdout).advisories.join('\n'), /ADVISORY_ENTRY_NOT_EXERCISED/);
+});
+
 test('BAD_ACCEPTANCE_TASKS: a comma-only or empty Tasks cell fails', () => {
   const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n', 'review.md': REVIEW };
   for (const cell of [',', ' , ', ',,', 'TBD,', ', ,']) {
@@ -2090,4 +2151,47 @@ test('short and malformed acceptance tables match D4 base JSON output without th
     };
     assert.deepEqual(runJson(path.join(root, 'freeze-check.mjs')), runJson(base), `case ${index + 1}`);
   }
+});
+
+// ---- design decisions declare the modules they touch: every declared path needs a writer ----
+// D9 shape: D-03 named the payee route as affected, no task claimed it, and R0 found a live
+// 越权 read path with no owner. The advisory points at the decision; it never blocks.
+const affectsRun = (designMarkdown, scope = 'src/shared,test/t-01.test.mjs') => run(change({
+  'tasks.md': entryTask('T-01', { scope, scen: 'SCEN-1' }),
+  'proposal.md': 'x',
+  'design.md': designMarkdown,
+  'review.md': REVIEW,
+  'specs/a/spec.md': '### Scenario: SCEN-1\n',
+  'acceptance.md': table('| SCEN-1 | CLI | T-01 | node -e "0" | yes | PENDING | pending |'),
+}));
+
+test('ADVISORY_DECISION_UNOWNED: a module named in design.md but written by no task is advised', () => {
+  const result = affectsRun('## Decisions\n- **D-01 lease state** 影响模块/路径: src/shared/lease.ts, src/routes/payees.ts\n');
+  assert.equal(result.status, 0, result.stdout);
+  const advisories = JSON.parse(result.stdout).advisories;
+  const hits = advisories.filter((item) => item.startsWith('ADVISORY_DECISION_UNOWNED'));
+  assert.equal(hits.length, 1, advisories.join('\n'));
+  assert.match(hits[0], /^ADVISORY_DECISION_UNOWNED D-01 design\.md: "src\/routes\/payees\.ts" is named as affected/);
+});
+
+test('ADVISORY_DECISION_UNOWNED: inline-code paths have the same ownership result as bare paths', () => {
+  for (const wrap of [(value) => value, (value) => `\`${value}\``]) {
+    const result = affectsRun(`## Decisions\n- **D-01 lease state** 影响模块/路径: ${wrap('src/shared/lease.ts')}, ${wrap('src/routes/payees.ts')}\n`);
+    assert.equal(result.status, 0, result.stdout);
+    const hits = JSON.parse(result.stdout).advisories.filter((item) => item.startsWith('ADVISORY_DECISION_UNOWNED'));
+    assert.equal(hits.length, 1, result.stdout);
+    assert.match(hits[0], /"src\/routes\/payees\.ts" is named as affected/);
+  }
+});
+
+test('ADVISORY_DECISION_UNOWNED: a directory decision is covered by any task writing inside it', () => {
+  const result = affectsRun('## Decisions\n- **D-01 components** 影响模块/路径: packages/web/src/form/ticket/\n', 'packages/web/src/form/ticket/Panel.tsx,test/t-01.test.mjs');
+  assert.equal(result.status, 0, result.stdout);
+  assert.doesNotMatch(JSON.parse(result.stdout).advisories.join('\n'), /ADVISORY_DECISION_UNOWNED/);
+});
+
+test('ADVISORY_DECISION_UNOWNED: a decision declaring no affected path stays silent', () => {
+  const result = affectsRun('## Decisions\n- **D-01 pure behavior** no file is touched by this rule\n');
+  assert.equal(result.status, 0, result.stdout);
+  assert.doesNotMatch(JSON.parse(result.stdout).advisories.join('\n'), /ADVISORY_DECISION_UNOWNED/);
 });

@@ -7,6 +7,7 @@ Tier 2 only. Dispatcher fills fields and pastes this brief. See [`tier2-handoff-
 - **Target:** `<base + tip SHA, or plain diff + untracked list>`
 - **Delivery evidence:** `<evidence per R; test command/output; known gaps>`
 - **Entry points:** `<files / functions>`
+- **Risk class:** `<the handoff brief's Risk: class + path:line>`; no class, no reviewer.
 
 ## Review
 Read-only: do not edit files, commit, or change workspace state. Report any write; it never voids verdict. One reviewer; one verdict and at most one recheck, limited to earlier blockers and regressions in fix diff. Do not redo supplied machine checks without concrete suspicion. Rechecks count per reviewer across all increments; a new increment does not reset the one allowed recheck.
@@ -22,6 +23,6 @@ Followups: ≤5, never affect verdict.
 Spec questions: undefined behavior for human; never affect verdict or trigger code-fix loop.
 Limitations.
 
-Tier 3 remains governed by `skills/paseo-pipeline/SKILL.md` and reviewer template. Review only risky code (rule source `~/.claude/CLAUDE.md`): auth/authorization/security; cross-request/process concurrency or idempotency; persistence/schema code. Otherwise dispatcher accepts per-R evidence and test output.
+Tier 3 remains governed by `skills/paseo-pipeline/SKILL.md` and reviewer template. Review only risky code (rule source `~/.claude/CLAUDE.md`): dispatched only when `Risk class` is filled. Otherwise the dispatcher's evidence recheck (`tier2-handoff-brief.md` → Delivery) is the acceptance evidence.
 
 Recheck checks earlier blockers and fix-diff regressions only. Requirements and fixed baseline define review scope; no edge-case hunting or added criteria.

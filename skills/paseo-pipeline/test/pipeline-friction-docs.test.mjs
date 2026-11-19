@@ -40,3 +40,22 @@ test('briefs carry pinned evidence, decision context and no fabricated scope', (
   has(author, ['material product choices', 'OPEN-DECISION', 'invented behavior, ownership or dependencies', 'unresolved conflicts', 'baseline SHA', 'Read baseline only'], 'author.md');
   has(reviewer, ['pinned commit and approved external snapshots', 'confirmed decisions supplied to the author'], 'reviewer.md');
 });
+
+// D8: the author researched for 11 minutes before the first file and the R0 reviewer ran 34
+// minutes without a verdict. The rule list comes first, the three risk checks are named, and
+// the reviewer stops on a clock.
+test('the author writes the rule list before the baseline research, and the reviewer stops on a clock', () => {
+  has(author, ['within 2 minutes', '**Reach**', '**Shape**', '**Removal**', 'exit code', '$PASEO_AGENT_ID'], 'author.md');
+  const at = (token) => { const index = author.indexOf(token); assert.ok(index > -1, token); return index; };
+  assert.ok(at('Write the rule list now') < at('the baseline is fair game'));
+  has(reviewer, ['minute 20', 'minute 25', 'baseline pass'], 'reviewer.md');
+});
+
+// D9: R0 found a live 越权 read path (F7) that design.md D-03 had already named as affected, with
+// no task owning the route. The design template promises freeze-check cross-checks decisions both
+// ways; only the tasks->design direction existed, so the promise now has a checker behind it.
+test('design.md declares affected modules and freeze-check holds a writer for each', () => {
+  const schema = read('openspec-schema/templates/design.md');
+  has(schema, ['影响模块/路径'], 'design template');
+  has(read('freeze-check.mjs'), ['影响模块/路径', 'ADVISORY_DECISION_UNOWNED'], 'freeze-check.mjs');
+});
