@@ -96,14 +96,20 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   const skillFile = arg('--skill', path.join(here, 'SKILL.md'));
   const configFile = arg('--config', path.join(os.homedir(), '.paseo', 'config.json'));
   let roles; let profiles;
+  // `--json` is a boolean flag and may sit anywhere among the value flags; it takes no value, so
+  // it is skipped by the pair walk. A `--json` in value position (`--skill --json`) still fails
+  // the `startsWith('--')` check below, exactly like the other value flags.
+  const json = process.argv.slice(2).includes('--json');
   try {
     const args = process.argv.slice(2);
     const seen = new Set();
-    for (let i = 0; i < args.length; i += 2) {
+    for (let i = 0; i < args.length;) {
+      if (args[i] === '--json') { i += 1; continue; }
       if (!['--skill', '--config', '--root'].includes(args[i]) || seen.has(args[i]) || !args[i + 1] || args[i + 1].startsWith('--')) {
         throw new Error('expected unique --skill/--config flags with file paths');
       }
       seen.add(args[i]);
+      i += 2;
     }
     roles = rolesOf(fs.readFileSync(skillFile, 'utf8'));
     profiles = JSON.parse(fs.readFileSync(configFile, 'utf8'))?.daemon?.agentProfiles ?? [];
@@ -113,6 +119,12 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
     process.exit(2);
   }
   const { findings, advisories } = check(roles, profiles, arg('--root', path.resolve(here, '..', '..')));
+  if (json) {
+    // One object and nothing else: a caller parses stdout, so the text-mode `ADVISE ` prefix and
+    // the human summary line must not leak here.
+    console.log(JSON.stringify({ roles, findings, advisories, ok: findings.length === 0 }));
+    process.exit(findings.length ? 1 : 0);
+  }
   for (const item of advisories) console.log(`ADVISE ${item}`);
   console.log(findings.length ? findings.join('\n') : `profiles ok (${roles.length} roles)`);
   process.exit(findings.length ? 1 : 0);

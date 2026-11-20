@@ -2,7 +2,8 @@
 
 ## 1. Behaviour slices (wave 0)
 
-- [ ] 1.1 T-01 profiles-check `--json` prints one JSON object (`roles`, `findings`, `advisories`, `ok`); text mode and exit codes stay byte-identical
+- [x] 1.1 T-01 profiles-check `--json` prints one JSON object (`roles`, `findings`, `advisories`, `ok`); text mode and exit codes stay byte-identical
+  - Done: source=2f803dd review=worker
   - Depends on: none
   - Write scope: skills/paseo-pipeline/profiles-check.mjs, skills/paseo-pipeline/test/profiles-check.test.mjs
   - Est: S

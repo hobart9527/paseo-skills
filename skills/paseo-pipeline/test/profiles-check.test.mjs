@@ -36,6 +36,125 @@ function run(profiles, { skill = skillText } = {}) {
 }
 const all = (over = {}) => ROLES.map((r) => profile(r, over[r] ?? {}));
 
+// ---- --json (SCEN-PJ-01..04) -------------------------------------------------------------
+
+const AUTHOR_BRIEF = 'skills/paseo-pipeline/templates/author.md';
+const ADVISORY_CHANPIN = 'ADVISORY_BRIEF_OUT_OF_SCOPE chanpin: brief templates/author.md belongs to hanlin, '
+  + 'and chanpin does not write the contract; point it at a brief matching its use: boundary';
+
+function fixture(profiles, skill = skillText) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'profiles-json-'));
+  const skillFile = path.join(dir, 'SKILL.md');
+  const configFile = path.join(dir, 'config.json');
+  fs.writeFileSync(skillFile, skill);
+  fs.writeFileSync(configFile, JSON.stringify({ daemon: { agentProfiles: profiles } }));
+  fs.mkdirSync(path.join(dir, 'skills/paseo-pipeline/templates'), { recursive: true });
+  fs.writeFileSync(path.join(dir, AUTHOR_BRIEF), 'x');
+  return { dir, skillFile, configFile };
+}
+
+const cli = (...args) => {
+  const r = spawnSync('node', [script, ...args], { encoding: 'utf8' });
+  return { status: r.status, stdout: r.stdout, stderr: r.stderr };
+};
+
+// A single profile whose brief points at the contract-author brief, which only `hanlin` owns.
+const withAuthorBrief = (role) => ({
+  [role]: { notes: `family: ${FAMILY[role]}\nharness: claude\nwrite: w\nuse: u\nnot: n\nbrief: ${AUTHOR_BRIEF}` },
+});
+
+test('SCEN-PJ-01 clean profiles under --json is one object with exactly the four keys', () => {
+  const f = fixture(all());
+  const r = cli('--json', '--skill', f.skillFile, '--config', f.configFile);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stderr, '');
+  // Exactly one JSON object and nothing else, at most one trailing newline.
+  const parsed = JSON.parse(r.stdout);
+  assert.equal(r.stdout, `${JSON.stringify(parsed)}\n`);
+  assert.deepEqual(Object.keys(parsed).sort(), ['advisories', 'findings', 'ok', 'roles']);
+  // Table order, not sorted and not `rolesOf` called with a different source.
+  assert.deepEqual(parsed.roles, ROLES);
+  assert.deepEqual(parsed.findings, []);
+  assert.deepEqual(parsed.advisories, []);
+  assert.equal(parsed.ok, true);
+});
+
+test('SCEN-PJ-02 findings and advisories under --json carry the raw strings', () => {
+  const profiles = all(withAuthorBrief('chanpin')).filter((p) => p.id !== 'agent_profile_gongbu');
+  const f = fixture(profiles);
+  const r = cli('--json', '--skill', f.skillFile, '--config', f.configFile, '--root', f.dir);
+  assert.equal(r.status, 1, r.stderr);
+  const parsed = JSON.parse(r.stdout);
+  assert.deepEqual(parsed.findings, ['MISSING_PROFILE gongbu (agent_profile_gongbu)']);
+  assert.deepEqual(parsed.advisories, [ADVISORY_CHANPIN]);
+  assert.equal(parsed.ok, false);
+  // The finding text is exactly what text mode prints, and the advisory carries no `ADVISE ` prefix.
+  const text = cli('--skill', f.skillFile, '--config', f.configFile, '--root', f.dir);
+  assert.match(text.stdout, /^MISSING_PROFILE gongbu \(agent_profile_gongbu\)$/m);
+  for (const line of parsed.advisories) assert.doesNotMatch(line, /^ADVISE /);
+});
+
+test('SCEN-PJ-03 usage error under --json stays a usage error with empty stdout', () => {
+  for (const args of [
+    ['--json', '--skill', '/nonexistent', '--config', '/nonexistent'],
+    ['--json', '--bogus', 'x'],
+  ]) {
+    const r = cli(...args);
+    assert.equal(r.status, 2, `${args}: ${r.stdout}${r.stderr}`);
+    assert.match(r.stderr, /Usage: profiles-check\.mjs/);
+    assert.equal(r.stdout, '', args.join(' '));
+  }
+});
+
+test('SCEN-PJ-04 text mode stdout, stderr and exit code are byte-identical', () => {
+  const clean = fixture(all());
+  const c = cli('--skill', clean.skillFile, '--config', clean.configFile);
+  assert.deepEqual([c.status, c.stdout, c.stderr], [0, 'profiles ok (9 roles)\n', '']);
+
+  const missing = fixture(all().filter((p) => p.id !== 'agent_profile_gongbu'));
+  const m = cli('--skill', missing.skillFile, '--config', missing.configFile);
+  assert.deepEqual([m.status, m.stdout, m.stderr], [1, 'MISSING_PROFILE gongbu (agent_profile_gongbu)\n', '']);
+
+  const advisory = fixture(all(withAuthorBrief('chanpin')));
+  const a = cli('--skill', advisory.skillFile, '--config', advisory.configFile, '--root', advisory.dir);
+  assert.deepEqual([a.status, a.stdout, a.stderr], [0, `ADVISE ${ADVISORY_CHANPIN}\nprofiles ok (9 roles)\n`, '']);
+});
+
+// An advisory is not a finding: `ok` must key off `findings` alone, not `findings && advisories`.
+test('--json advisories-only keeps findings empty, ok true and exit 0', () => {
+  const f = fixture(all(withAuthorBrief('chanpin')));
+  const r = cli('--json', '--skill', f.skillFile, '--config', f.configFile, '--root', f.dir);
+  assert.equal(r.status, 0, r.stderr);
+  const parsed = JSON.parse(r.stdout);
+  // Exact bytes, and on an advisory-bearing run specifically: the clean fixture has no advisories,
+  // so a leaked `ADVISE ...` line is only observable here.
+  assert.equal(r.stdout, `${JSON.stringify(parsed)}\n`);
+  assert.deepEqual(parsed.findings, []);
+  assert.deepEqual(parsed.advisories, [ADVISORY_CHANPIN]);
+  assert.equal(parsed.ok, true);
+});
+
+test('--json is position-independent, and --json where a value belongs is a usage error', () => {
+  const f = fixture(all());
+  const lead = cli('--json', '--skill', f.skillFile, '--config', f.configFile);
+  for (const args of [
+    ['--skill', f.skillFile, '--json', '--config', f.configFile],
+    ['--skill', f.skillFile, '--config', f.configFile, '--json'],
+  ]) {
+    const r = cli(...args);
+    assert.equal(r.status, lead.status, args.join(' '));
+    assert.equal(r.stdout, lead.stdout, args.join(' '));
+    assert.equal(r.stderr, lead.stderr, args.join(' '));
+  }
+  for (const args of [['--skill', '--json'], ['--config', '--json']]) {
+    const r = cli(...args);
+    assert.equal(r.status, 2, args.join(' '));
+    assert.match(r.stderr, /Usage: profiles-check\.mjs/);
+    assert.equal(r.stdout, '', args.join(' '));
+  }
+});
+
+
 test('complete heterogeneous profiles exit 0', () => {
   const r = run(all());
   assert.equal(r.status, 0, r.out);

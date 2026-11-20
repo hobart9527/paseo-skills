@@ -1,1 +1,2 @@
 - 2026-11-20T15:31:26.752Z merge task=T-02 source=529003ce22e486400fd743401d71eeda36a93f7d verify="node --test skills/paseo-pipeline/test/pipeline-run.test.mjs" timing_ms={"verify":16103,"regression":7,"replayed":0,"total":16299}
+- 2026-11-20T15:34:54.525Z merge task=T-01 source=2f803dd8c90d7a2ca5bce42b88ec854aba1ad679 verify="node --test skills/paseo-pipeline/test/profiles-check.test.mjs" timing_ms={"verify":748,"regression":8,"replayed":0,"total":948}
