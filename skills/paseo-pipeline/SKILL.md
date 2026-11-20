@@ -44,7 +44,7 @@ All under `$PIPELINE_HOME` (set by `install.sh`); bad args print usage.
 
 | Script | When |
 |---|---|
-| `profiles-check.mjs [--skill F] [--config F] [--json]` | Read-only lint: role mapping, notes, families, `diff-check`; not independence proof. `--json` prints one JSON object with `roles`, `findings`, `advisories`, `ok`. |
+| `profiles-check.mjs [--skill F] [--config F] [--json]` | Read-only lint: role mapping, notes, families, antigravity `diff-check`; not independence/sandbox proof. `--json`: one object (`roles`, `findings`, `advisories`, `ok`). |
 | `preflight.mjs <repo>` | Before authoring: read-only probe (test env, lockfiles). |
 | `namespace.mjs <change-dir>` | Author, before specs: SCEN prefixes and requirement headings already in use. |
 | `freeze-check.mjs <change-dir> --structural` | Author and main session: structural gate and route; without the flag also checks R0 sign-off. |
