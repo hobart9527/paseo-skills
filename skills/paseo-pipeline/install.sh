@@ -37,20 +37,18 @@ selftest() {
   printf '%s' "$out" | grep -q '"updatedInput":{}' || return 1
   write_gate_probe
 }
-# Probe the write gate in a throwaway primary checkout: no transcript_path must deny with a
-# diagnosis, and a transcript holding a valid TIER-PLAN must allow. This proves the hook's
-# wiring only; whether the live harness sends transcript_path is a runtime fact it cannot check.
+# Probe the write gate in a throwaway primary checkout: first 3 distinct source files allow,
+# and the 4th returns `ask`.
 write_gate_probe() {
   local dir state out rc=0
   dir="$(mktemp -d)"; state="$(mktemp -d)"
   git -C "$dir" init -q 2>/dev/null || { rm -rf "$dir" "$state"; return 1; }
-  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"TIER-PLAN: tier=1 files=src/a.ts scope=src"}]}}' > "$dir/transcript.jsonl"
-  local payload='{"tool_name":"Write","tool_input":{"file_path":"'"$dir"'/src/a.ts"},"session_id":"selftest-gate"'
-  out="$(printf '%s' "$payload}" | PIPELINE_TIER_GATE_STATE="$state" node "$PIPELINE_HOME/hooks/tier-write-hook.mjs" 2>/dev/null)" || rc=1
-  printf '%s' "$out" | grep -q '"permissionDecision":"deny"' || rc=1
-  printf '%s' "$out" | grep -q 'transcript' || rc=1
-  out="$(printf '%s' "$payload,\"transcript_path\":\"$dir/transcript.jsonl\"}" | PIPELINE_TIER_GATE_STATE="$state" node "$PIPELINE_HOME/hooks/tier-write-hook.mjs" 2>/dev/null)" || rc=1
-  [ -z "$out" ] || rc=1
+  for name in a b c; do
+    out="$(printf '%s' '{"tool_name":"Write","tool_input":{"file_path":"'"$dir"'/src/'"$name"'.ts"},"session_id":"selftest-gate"}' | PIPELINE_TIER_GATE_STATE="$state" node "$PIPELINE_HOME/hooks/tier-write-hook.mjs" 2>/dev/null)" || rc=1
+    [ -z "$out" ] || rc=1
+  done
+  out="$(printf '%s' '{"tool_name":"Write","tool_input":{"file_path":"'"$dir"'/src/d.ts"},"session_id":"selftest-gate"}' | PIPELINE_TIER_GATE_STATE="$state" node "$PIPELINE_HOME/hooks/tier-write-hook.mjs" 2>/dev/null)" || rc=1
+  printf '%s' "$out" | grep -q '"permissionDecision":"ask"' || rc=1
   rm -rf "$dir" "$state"
   return "$rc"
 }
@@ -86,7 +84,7 @@ echo "Tier reminder hook command:"
 node "$PIPELINE_HOME/hooks/tier-reminder-hook.mjs" --install-help
 echo "Tier write hook command (PreToolUse, matcher Write|Edit|MultiEdit|NotebookEdit):"
 printf '%s\n' "node $PIPELINE_HOME/hooks/tier-write-hook.mjs"
-echo "Structured writes in primary checkouts require a readable transcript and TIER-PLAN; Bash writes are not intercepted. Hook failures and unsupported inputs fail open; ask is not guaranteed to prompt in bypassPermissions."
+echo "Structured writes in primary checkouts enforce Tier 1 file/scope limits; Bash writes are checked at Stop. Hook failures and unsupported inputs fail open."
 echo "Tool guard hook command (PreToolUse, matcher Bash|mcp__.*):"
 printf '%s\n' "node $PIPELINE_HOME/hooks/tool-guard-hook.mjs"
 echo "Tier session hook command (SessionStart, matcher startup|resume|compact|clear):"

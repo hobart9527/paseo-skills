@@ -16,6 +16,6 @@ user-invocable: true
    - A must-pass test asserts a defect being fixed. Move it into its slice as "change to …".
    - A pending decision touches a risky operation, or auth or money semantics, and has no user answer. Ask the user once, giving the exact reply sentence, and end the turn.
 4. Tell the user the size estimate (files, lines, minutes) and the slice count.
-5. Invoke `/paseo-handoff`. Put the filled brief in its `## Constraints` and `## Acceptance criteria` sections, and the `Slices` in `## Task`.
+5. Invoke `/paseo-handoff`. If `tasks.md` exists, render the briefing directly with `node "$PIPELINE_HOME"/brief.mjs tier2 --change <name> --repo <path>`; otherwise paste the filled brief in `## Constraints` / `## Acceptance criteria` and `Slices` in `## Task`.
 6. Track progress by finished slices and Git tips, not elapsed time. Hard-risk questions the delegate raises go to the user verbatim; never answer them.
-7. On delivery, run the brief's Evidence recheck yourself: rerun every reported evidence command at the tip SHA and match exit codes and counts. Dispatch a reviewer only when `Risk:` names a class.
+7. On delivery, run the brief's Evidence recheck yourself via `node "$PIPELINE_HOME"/pipeline-run.mjs tier2-verify <base> [--change-dir openspec/changes/<name>]` (which executes `risk-scan.mjs`) at the tip SHA. Dispatch a reviewer (`brief.mjs tier2-review` / `docs/tier2-reviewer-brief.md`) whenever `Risk:` names a class OR `tier2-verify` reports `REVIEW_REQUIRED` (even if `Risk: none` was declared); present any unresolved `BLOCKED` verdict verbatim to the human before merge.

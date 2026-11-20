@@ -4,7 +4,6 @@
 // Task-level review is gone: quality is owned by the FINAL integrated review.
 // The optional third argument is a legacy review tag, used only as a base hint.
 
-import { spawn } from 'node:child_process';
 import { parseOptions } from './lib/cli.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,10 +13,8 @@ import { runGit } from './lib/git.mjs';
 import { writeMergeState, clearMergeState } from './lib/merge-state.mjs';
 import { patchIdOf as patchIdFor, samePatchCommits as samePatchCommitsFor } from './lib/provenance.mjs';
 import { missingDependency, dependencyMessage } from './lib/toolchain.mjs';
-
-// `ceshi` writes Red tests first only on `Review: strict` tasks (risk alone adds no tester); its commits are
-// valid provenance alongside the worker's.
-const WRITER_ROLES = new Set(['gongbu', 'gaogong', 'jiangzuo', 'ceshi']);
+import { WRITER_ROLES } from './lib/roles.mjs';
+import { runShell } from './lib/verify-runner.mjs';
 const usage = 'Usage: merge-task.mjs <branch> <task-id> [<legacy-review-tag>] [--timeout ms] [--allow-test-infra]';
 let mergeState = null;
 function fail(message, code = 1) {
@@ -80,30 +77,6 @@ const authorKey = (commit) => trailers(commit, 'Pipeline-Author').map((id) => id
 const gitAdapter = (cwd, args, options) => runGit(cwd, args, options);
 const patchIdOf = (commit) => patchIdFor(commit, { git: gitAdapter });
 const samePatchCommits = (commit) => samePatchCommitsFor(commit, { git: gitAdapter });
-
-function run(command, timeoutMs, { capture = false } = {}) {
-  return new Promise((resolve) => {
-    const child = spawn(command, { shell: true, stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit', detached: true });
-    let output = '';
-    if (capture) {
-      for (const stream of [child.stdout, child.stderr]) {
-        stream.on('data', (chunk) => {
-          output += chunk;
-          if (output.length <= 200_000) process.stdout.write(chunk);
-        });
-      }
-    }
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      const kill = (signal) => { try { process.kill(-child.pid, signal); } catch { child.kill(signal); } };
-      kill('SIGTERM');
-      setTimeout(() => kill('SIGKILL'), 2000).unref();
-    }, timeoutMs);
-    child.on('error', (error) => { clearTimeout(timer); resolve({ error, output }); });
-    child.on('exit', (status, signal) => { clearTimeout(timer); resolve({ status, signal, timedOut, output }); });
-  });
-}
 
 // Wall-clock per merge phase, recorded in run-log.md. The merge is a serial critical
 // section, so these numbers decide whether it is worth optimising before anyone guesses.
@@ -197,11 +170,21 @@ for (const file of files) {
 const commits = git(['rev-list', '--reverse', `${base}..${tip}`]).split(/\r?\n/).filter(Boolean);
 if (!commits.length) fail('task branch has no commits', 31);
 const authors = new Set();
+const ceshiFiles = new Set();
 for (const commit of commits) {
   const roles = trailers(commit, 'Pipeline-Role').map((x) => x.toLowerCase());
   const ids = trailers(commit, 'Pipeline-Author');
   if (!roles.length || roles.some((role) => !WRITER_ROLES.has(role)) || !ids.length) {
     fail(`${commit.slice(0, 7)} lacks valid writer Pipeline-Role/Pipeline-Author trailers`, 31);
+  }
+  const commitFiles = filesInCommit(commit);
+  if (roles.includes('ceshi')) {
+    commitFiles.forEach((f) => ceshiFiles.add(f));
+  } else if (!parsedArgs.options['allow-test-infra']) {
+    const tampered = commitFiles.filter((f) => ceshiFiles.has(f));
+    if (tampered.length) {
+      fail(`${commit.slice(0, 7)} modifies ceshi Red-test path(s) (${tampered.join(', ')}); pass --allow-test-infra after human ruling`, 38);
+    }
   }
   // Cherry-pick provenance. A clean pick keeps the original trailers; a conflict-continue pick
   // relies on the commit-msg hook preserving them. A hand-recreated commit has the same patch but a
@@ -257,7 +240,7 @@ if (merge.status !== 0) {
 }
 const before = git(['status', '--porcelain=v1', '--untracked-files=all']);
 const verifyStart = Date.now();
-const result = await run(task.verify, timeout, { capture: true });
+const result = await runShell(task.verify, { timeout, capture: true, streamToStdout: true });
 timing.verify = Date.now() - verifyStart;
 const after = git(['status', '--porcelain=v1', '--untracked-files=all']);
 const verifyChanged = after !== before;
@@ -270,7 +253,7 @@ if (!verifyChanged && result.status !== 0) {
     fail(`frozen Verify: ${dependencyMessage(verifyMissing)}`, 36);
   }
 }
-if (result.error || result.status !== 0 || result.signal || result.timedOut || verifyChanged) {
+if (result.error || result.status !== 0 || result.signal || result.timedOut || result.overflow || verifyChanged) {
   abortOwnedMerge();
   fail(`frozen Verify failed or changed worktree: ${task.verify}`, 20);
 }
@@ -288,8 +271,8 @@ for (const prior of parsed.tasks.filter((item) => item.done && item.id !== taskI
   const legs = verifyLegs(prior.verify).filter((leg) => !leg.broad);
   if (!legs.length) continue;
   replayed += 1;
-  const regression = await run(legs.map((leg) => leg.command).join(' && '), timeout);
-  if (regression.error || regression.status !== 0 || regression.signal || regression.timedOut) {
+  const regression = await runShell(legs.map((leg) => leg.command).join(' && '), { timeout, capture: false });
+  if (regression.error || regression.status !== 0 || regression.signal || regression.timedOut || regression.overflow) {
     abortOwnedMerge();
     // A replay failure has two causes and the gate cannot tell them apart: a real regression from
     // this merge, or an environment the Verify needed (a service, a port, a package) that is not

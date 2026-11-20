@@ -30,11 +30,11 @@ test('a structural draft cannot count as COMPLETE', () => {
   assert.match(text, /`COMPLETE` requires structural success on committed content/);
 });
 
-test('time budget keeps stop bounded; minute-30 recovery belongs to the main session', () => {
+test('scope budget keeps stop bounded; recovery belongs to the main session', () => {
   const text = brief();
-  for (const token of ['minute 25', 'INCOMPLETE', 'snapshot commit']) assert.ok(text.includes(token), token);
+  for (const token of ['Scope budget', 'INCOMPLETE', 'snapshot commit']) assert.ok(text.includes(token), token);
   const skill = read('SKILL.md');
-  assert.match(skill, /minute 30, reconcile Paseo status with the author branch `git log` once instead of polling/);
+  assert.match(skill, /reconcile author branch `git log` once instead of polling/);
 });
 
 test('the brief does not claim a scheduler change or a forced termination', () => {

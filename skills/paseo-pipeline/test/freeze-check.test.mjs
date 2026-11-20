@@ -227,11 +227,11 @@ test('R0 signer: archived agent missing from `ls` is resolved through inspect', 
   assert.equal(run(signed(), [], fakePaseo([], { inspect: true })).status, 0);
 });
 
-test('R0 signer: non-hanlin name is an advisory, not a block', () => {
+test('R0 signer: non-R0 name is an advisory, not a block', () => {
   const dir = signed();
   const env = fakePaseo([{ id: SIGNER, shortId: '9b2f4c1', name: 'random chat', provider: 'claude/cc' }]);
   const out = execFileSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--json'], { encoding: 'utf8', env });
-  assert.match(JSON.parse(out).advisories.join('\n'), /R0_SIGNER_NOT_HANLIN/);
+  assert.match(JSON.parse(out).advisories.join('\n'), /R0_SIGNER_NOT_R0/);
 });
 
 test('R0 signer: an unreachable Paseo is an advisory, a reachable one still blocks an unknown signer', () => {
@@ -256,7 +256,7 @@ test('low speedup advisory fires on a near-serial DAG and stays silent on a wide
   assert.deepEqual(wide.advisories, []);
   const chain = adv(`- [ ] 1.1 T-01 a\n  - Write scope: src/a.mjs,test/a.test.mjs\n  - Verify with: node --test test/a.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.2 T-02 b\n  - Depends on: T-01\n  - Write scope: src/b.mjs,test/b.test.mjs\n  - Verify with: node --test test/b.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.3 T-03 c\n  - Depends on: T-01\n  - Write scope: src/c.mjs,test/c.test.mjs\n  - Verify with: node --test test/c.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.4 T-04 d\n  - Depends on: T-02,T-03\n  - Write scope: src/d.mjs,test/d.test.mjs\n  - Verify with: node --test test/d.test.mjs\n  - Scen: SCEN-1`);
   assert.equal(chain.speedup, 1.33);
-  assert.match(chain.advisories.join('\n'), /ADVISORY_LOW_SPEEDUP/);
+  assert.ok(!chain.advisories.some((item) => item.startsWith('ADVISORY_LOW_SPEEDUP')));
   // Disjoint scopes: every critical edge is an author choice, so all are removable candidates.
   assert.deepEqual(chain.criticalChain.map((step) => [step.id, step.via]), [['T-01', null], ['T-02', 'logical'], ['T-04', 'logical']]);
   // Shared file forces the edge: tag it `scope`, not `logical`.

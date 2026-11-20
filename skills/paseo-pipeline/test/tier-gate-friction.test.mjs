@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { assessTierGate, assessStop, takeSnapshot, readDeclaredPlanStatus, readDeclaredPlanStatusWithRetry, scopeKey } from '../lib/tier-gate.mjs';
+import { assessTierGate, assessStop, takeSnapshot, scopeKey } from '../lib/tier-gate.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const GUARD_HOOK = path.join(here, '..', 'hooks', 'tier-write-hook.mjs');
@@ -43,98 +43,7 @@ function withState(fn) {
   }
 }
 
-const entry = (type, content, extra = {}) => JSON.stringify({ type, ...extra, message: { role: type, content: [{ type: 'text', text: content }] } });
-const plan = (files = 'packages/a/src/x.ts') => entry('assistant', `TIER-PLAN: tier=1 files=${files} scope=packages/a`);
-
-// ---- (2a) compaction summaries and skill injections are not human prompts ----
-
-test('a compaction summary does not clear the declaration', () => withState((dir) => {
-  const file = path.join(dir, 'compact.jsonl');
-  fs.writeFileSync(file, [
-    entry('user', 'implement the change'),
-    plan(),
-    // Shape observed in ~/.claude/projects/*/*.jsonl: user role, isCompactSummary, no isMeta.
-    entry('user', 'This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion…', { isCompactSummary: true, isVisibleInTranscriptOnly: true }),
-    entry('assistant', 'continuing'),
-  ].join('\n'));
-  const result = readDeclaredPlanStatus(file);
-  assert.equal(result.status, 'found');
-  assert.deepEqual(result.plan.files, ['packages/a/src/x.ts']);
-}));
-
-test('a skill injection body does not clear the declaration', () => withState((dir) => {
-  const file = path.join(dir, 'skill.jsonl');
-  fs.writeFileSync(file, [
-    entry('user', 'implement the change'),
-    plan(),
-    entry('user', 'Base directory for this skill: /Users/h/.claude/skills/paseo-handoff\n\n# Handoff Skill\n\nTransfer the current task — context, decisions, failed attempts…', { isMeta: true }),
-    entry('assistant', 'continuing'),
-  ].join('\n'));
-  assert.equal(readDeclaredPlanStatus(file).status, 'found');
-  // Even without isMeta (a provider that does not mark it), the body prefix is still not a human turn.
-  fs.writeFileSync(file, [
-    entry('user', 'implement the change'),
-    plan(),
-    entry('user', 'Base directory for this skill: /Users/h/.claude/skills/paseo\n\n# Paseo\n'),
-  ].join('\n'));
-  assert.equal(readDeclaredPlanStatus(file).status, 'found');
-}));
-
-test('a real new human message still clears the declaration', () => withState((dir) => {
-  const file = path.join(dir, 'human.jsonl');
-  fs.writeFileSync(file, [entry('user', 'task'), plan(), entry('user', '继续，把验证也跑了')].join('\n'));
-  assert.equal(readDeclaredPlanStatus(file).status, 'missing');
-}));
-
-// ---- (2b) short read retry ----
-
-test('a short read retry finds a declaration written between the two reads', () => withState(() => {
-  const root = makeRepo();
-  // First read launches the retry path; the retry finds the declaration the flush delivered.
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'late-')), 'late.jsonl');
-  fs.writeFileSync(file, entry('user', 'task'));
-  let reads = 0;
-  const result = readDeclaredPlanStatusWithRetry(file, {
-    attempts: 2,
-    intervalMs: 0,
-    onRead: () => {
-      reads += 1;
-      if (reads === 1) fs.appendFileSync(file, `\n${plan()}`);
-    },
-  });
-  assert.equal(result.status, 'found');
-  assert.equal(reads, 2);
-  const verdict = assessTierGate({ target: path.join(root, 'src/a.ts'), sessionId: 'retry', declared: { tier: 1, files: ['src/a.ts'] } });
-  assert.equal(verdict.verdict, 'allow');
-}));
-
-// ---- (2c) missing declarations are logged with a redacted transcript tail ----
-
-test('a final missing denial logs the transcript tail, redacted', () => withState((dir) => {
-  const root = makeRepo();
-  const file = path.join(dir, 'tail.jsonl');
-  const secret = 'sk-abcdefghijklmnopqrstuvwxyz012345';
-  const lines = Array.from({ length: 30 }, (_, i) => entry('user', `tail line ${i} ${'x'.repeat(200)}`));
-  lines.push(entry('assistant', `using ${secret} for the request`));
-  fs.writeFileSync(file, lines.join('\n'));
-  const verdict = assessTierGate({
-    target: path.join(root, 'packages/a/src/x.ts'),
-    sessionId: 'tail',
-    transcriptPath: file,
-    loadDeclaration: () => readDeclaredPlanStatus(file),
-  });
-  assert.equal(verdict.verdict, 'deny');
-  const log = fs.readFileSync(path.join(dir, 'errors.log'), 'utf8');
-  assert.match(log, /declaration missing/);
-  // The tail is bounded and clipped: no full line body, no unbounded write.
-  assert.match(log, /tail line \d+/);
-  assert.doesNotMatch(log, new RegExp(`x{200}`));
-  // A credential in the tail is redacted, never persisted.
-  assert.doesNotMatch(log, new RegExp(secret));
-  assert.match(log, /\[redacted\]/);
-}));
-
-// ---- (2d) scope normalization for src/ + test/ splits ----
+// ---- (2a)-(2d) scope normalization for src/ + test/ splits ----
 
 test('declared src/ + test/ files are one scope when a workspace layout exists', () => withState((dir) => {
   const root = makeRepo();
@@ -183,34 +92,6 @@ test('scopeKey keeps genuine package separation', () => {
   assert.notEqual(scopeKey('packages/x/src/a.ts'), scopeKey('packages/y/src/b.ts'));
 });
 
-// ---- (2e) one judgement per tool_use batch ----
-
-test('a sibling read of a shorter partial flush reuses the declaration a parallel read found', () => withState((dir) => {
-  const root = makeRepo();
-  const file = path.join(dir, 'batch.jsonl');
-  fs.writeFileSync(file, [entry('user', 'task'), plan('src/a.ts')].join('\n'));
-  const payload = (n) => ({
-    session_id: 'batch',
-    transcript_path: file,
-    tool_name: 'Edit',
-    tool_input: { file_path: path.join(root, 'src', n) },
-  });
-  const run = (p) => spawnSync('node', [GUARD_HOOK], { input: JSON.stringify(p), encoding: 'utf8', env: { ...process.env, PIPELINE_TIER_GATE_STATE: dir } }).stdout.trim();
-  // First hook of the batch reads the complete file and records the plan.
-  assert.equal(run(payload('a')), '');
-  // A parallel hook of the same batch reads a shorter prefix (the flush had not completed for
-  // it). Re-parsing that prefix alone says "missing"; the batch record says what it found.
-  const full = fs.readFileSync(file, 'utf8');
-  const lines = full.split('\n');
-  fs.writeFileSync(file, lines.slice(0, 1).join('\n'));
-  const rescued = run(payload('b'));
-  assert.equal(JSON.parse(rescued || '{}')?.hookSpecificOutput?.permissionDecision ?? 'allow', 'allow');
-  // A genuinely new human message still invalidates the batch record.
-  fs.appendFileSync(file, `\n${entry('user', '新任务')}`);
-  const denied = run(payload('c'));
-  assert.equal(JSON.parse(denied).hookSpecificOutput.permissionDecision, 'deny');
-}));
-
 // ---- (2f) Stop churn exempts docs/ diff artifacts ----
 
 test('Stop churn does not fire for repeated edits under docs/prototypes and docs/specs', () => withState(() => {
@@ -244,14 +125,17 @@ test('Stop churn still fires for repeated business-file edits', () => withState(
     takeSnapshot({ cwd: root, sessionId: 'code' });
     fs.writeFileSync(path.join(root, 'src', 'a'), `x ${Math.random()}`);
     const verdict = assessStop({ cwd: root, sessionId: 'code' });
-    if (round === 3) assert.equal(verdict.verdict, 'block');
-    else assert.equal(verdict.verdict, 'ok');
+    if (round === 3) {
+      assert.equal(verdict.verdict, 'block');
+      assert.match(verdict.reason, /\/paseo-advisor/);
+      assert.match(verdict.reason, /\/paseo-committee/);
+    } else assert.equal(verdict.verdict, 'ok');
   }
 }));
 
 // ---- (2g) Tier 2 deny carries a handoff invocation sample ----
 
-test('the Tier 2 denial shows the handoff call and the tried section reminder', () => withState(() => {
+test('the Tier 2 denial shows linked worktree, tier2-verify, and /paseo-handoff', () => withState(() => {
   const root = makeRepo();
   const verdict = assessTierGate({
     target: path.join(root, 'src/a.ts'),
@@ -260,73 +144,17 @@ test('the Tier 2 denial shows the handoff call and the tried section reminder', 
   });
   assert.equal(verdict.verdict, 'deny');
   assert.match(verdict.reason, /\/paseo-handoff/);
-  assert.match(verdict.reason, /What was tried/i);
-  assert.match(verdict.reason, /## What was tried/);
+  assert.match(verdict.reason, /tier2-verify/);
+  assert.match(verdict.reason, /linked worktree/);
 }));
 
-test('a correction flushed after an old declaration supersedes it before judgement', () => withState((dir) => {
-  const file = path.join(dir, 'corrected.jsonl');
-  fs.writeFileSync(file, [entry('user', 'task'), plan('src/a.ts,packages/other/b.ts')].join('\n'));
-  let reads = 0;
-  const result = readDeclaredPlanStatusWithRetry(file, { attempts: 2, intervalMs: 0, onRead: () => {
-    if (++reads === 1) fs.appendFileSync(file, `\n${plan('src/a.ts')}`);
-  } });
-  assert.deepEqual(result.plan.files, ['src/a.ts']);
-}));
-
-test('latest fully flushed correction overrides an earlier cached declaration', () => withState((dir) => {
-  const file = path.join(dir, 'correction.jsonl');
-  fs.writeFileSync(file, [entry('user', 'task'), plan('src/a.ts,packages/other/b.ts')].join('\n'));
-  assert.equal(readDeclaredPlanStatusWithRetry(file, { attempts: 1 }).plan.files.length, 2);
-  fs.appendFileSync(file, `\n${plan('src/a.ts')}`);
-  assert.deepEqual(readDeclaredPlanStatusWithRetry(file, { attempts: 1 }).plan.files, ['src/a.ts']);
-}));
-
-test('an unflushed correction and no correction have identical visible transcript input', () => withState((dir) => {
-  const old = [entry('user', 'task'), plan('src/a.ts,packages/other/b.ts')].join('\n');
-  const beforeCorrection = path.join(dir, 'pending.jsonl');
-  const noCorrection = path.join(dir, 'unchanged.jsonl');
-  fs.writeFileSync(beforeCorrection, old);
-  fs.writeFileSync(noCorrection, old);
-  assert.deepEqual(readDeclaredPlanStatusWithRetry(beforeCorrection, { attempts: 1 }), readDeclaredPlanStatusWithRetry(noCorrection, { attempts: 1 }));
-  fs.appendFileSync(beforeCorrection, `\n${plan('src/a.ts')}`);
-  assert.notDeepEqual(readDeclaredPlanStatusWithRetry(beforeCorrection, { attempts: 1 }), readDeclaredPlanStatusWithRetry(noCorrection, { attempts: 1 }));
-}));
-
-// ---- retry window (review blockers on 8e9c65f) ----
-
-test('a missing declaration keeps the full t=0/100/200 ms window and finds a late flush', () => withState((dir) => {
-  const file = path.join(dir, 'late150.jsonl');
-  fs.writeFileSync(file, entry('user', 'task'));
-  const t0 = Date.now();
-  const stamps = [];
-  const none = readDeclaredPlanStatusWithRetry(file, { onRead: () => stamps.push(Date.now() - t0) });
-  assert.equal(none.status, 'missing');
-  assert.equal(stamps.length, 3, `reads at ${stamps}`);
-  assert.ok(stamps[2] >= 190, `third read at ${stamps[2]} ms`);
-  // Flush lands after read 2 (~100 ms) and before read 3 (~200 ms).
-  let reads = 0;
-  const late = readDeclaredPlanStatusWithRetry(file, { onRead: () => { if (++reads === 2) fs.appendFileSync(file, `\n${plan()}`); } });
-  assert.equal(late.status, 'found');
-  assert.equal(reads, 3);
-}));
-
-test('a found declaration gets exactly one extra re-read and keeps the result if nothing grew', () => withState((dir) => {
-  const file = path.join(dir, 'found-once.jsonl');
-  fs.writeFileSync(file, [entry('user', 'task'), plan('src/a.ts')].join('\n'));
-  let reads = 0;
-  const result = readDeclaredPlanStatusWithRetry(file, { attempts: 3, intervalMs: 0, onRead: () => { reads += 1; } });
-  assert.equal(reads, 2);
-  assert.deepEqual(result.plan.files, ['src/a.ts']);
-}));
-
-test('a shrunk transcript on re-read never replaces the current declaration', () => withState((dir) => {
-  const file = path.join(dir, 'shrink.jsonl');
-  const full = [entry('user', 'task'), plan('src/a.ts,packages/other/b.ts'), plan('src/a.ts')].join('\n');
-  fs.writeFileSync(file, full);
-  let reads = 0;
-  const result = readDeclaredPlanStatusWithRetry(file, { attempts: 3, intervalMs: 0, onRead: () => {
-    if (++reads === 1) fs.writeFileSync(file, [entry('user', 'task'), plan('src/a.ts,packages/other/b.ts')].join('\n'));
-  } });
-  assert.deepEqual(result.plan.files, ['src/a.ts']);
+test('tier-write-hook counts primary-checkout edits without transcript dependency and keeps churn guidance', () => withState((dir) => {
+  const root = makeRepo();
+  const call = (rel) => spawnSync('node', [GUARD_HOOK], {
+    input: JSON.stringify({ session_id: 'no-transcript', tool_name: 'Edit', tool_input: { file_path: path.join(root, rel) } }),
+    encoding: 'utf8',
+    env: { ...process.env, PIPELINE_TIER_GATE_STATE: dir },
+  }).stdout.trim();
+  assert.equal(call('packages/x/a.ts'), '');
+  assert.equal(JSON.parse(call('packages/y/b.ts')).hookSpecificOutput.permissionDecision, 'ask');
 }));

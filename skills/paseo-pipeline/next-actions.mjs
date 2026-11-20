@@ -9,13 +9,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawnSync } from 'node:child_process';
 import { parseTasks } from './lib/tasks.mjs';
 import { frontier } from './lib/frontier.mjs';
 import { runGit } from './lib/git.mjs';
 import { readMergeState } from './lib/merge-state.mjs';
 import { readTasksMarkdown } from './lib/tasks-source.mjs';
 import { parseOptions, planOptions } from './lib/cli.mjs';
+import { ROLE_NAMES, NON_WORKER_STAGE_ROLES, WRITER_ROLES, recommendedWorkerRole } from './lib/roles.mjs';
+import { listPaseoAgents, inspectPaseoAgent } from './lib/paseo-state.mjs';
 
 let parsedArgs;
 try { parsedArgs = parseOptions(process.argv.slice(2), planOptions); }
@@ -156,27 +157,18 @@ for (const [id, branch] of Object.entries(branches)) {
 
 // Query all workspaces for this change. A malformed identity or unavailable detail is
 // not evidence that a task is idle; stop rather than risk a duplicate worker.
-const listed = spawnSync('paseo', ['ls', '--global', '--background', '--label', `pipeline.change=${change}`, '--json'], { encoding: 'utf8', timeout: 10_000 });
-if (listed.error || listed.status !== 0) {
-  console.error('[next-actions] cannot read Paseo state (`paseo ls --json`)');
+const listed = listPaseoAgents({ label: `pipeline.change=${change}` });
+if (listed.error) {
+  console.error(`[next-actions] ${listed.error}`);
   process.exit(3);
 }
-let listedAgents;
-try { listedAgents = JSON.parse(listed.stdout); } catch {
-  console.error('[next-actions] invalid JSON from `paseo ls --json`');
-  process.exit(3);
-}
-if (!Array.isArray(listedAgents)) {
-  console.error('[next-actions] invalid Paseo agent list');
-  process.exit(3);
-}
-const all = spawnSync('paseo', ['ls', '--global', '--background', '--json'], { encoding: 'utf8', timeout: 10_000 });
-let allAgents;
-try { allAgents = all.status === 0 && !all.error ? JSON.parse(all.stdout) : null; } catch { allAgents = null; }
-if (!Array.isArray(allAgents)) {
+const listedAgents = listed.agents;
+const all = listPaseoAgents();
+if (all.error) {
   console.error('[next-actions] cannot read global Paseo agent list');
   process.exit(3);
 }
+const allAgents = all.agents;
 const labelledIds = new Set(listedAgents.map((agent) => agent?.id));
 function commonDir(cwd) {
   if (typeof cwd !== 'string' || !cwd) return null;
@@ -209,9 +201,8 @@ function changesIn(cwd) {
 }
 function labelledFor(other, id) {
   if (!otherChanges.has(other)) {
-    const query = spawnSync('paseo', ['ls', '--global', '--background', '--label', `pipeline.change=${other}`, '--json'], { encoding: 'utf8', timeout: 10_000 });
-    let found;
-    try { found = query.status === 0 && !query.error ? JSON.parse(query.stdout) : null; } catch { found = null; }
+    const query = listPaseoAgents({ label: `pipeline.change=${other}` });
+    const found = query.agents;
     if (!Array.isArray(found) || found.some((item) => !item || typeof item.id !== 'string')) {
       console.error(`[next-actions] cannot verify other change label: ${other}`);
       process.exit(3);
@@ -220,6 +211,9 @@ function labelledFor(other, id) {
   }
   return otherChanges.get(other).has(id);
 }
+const LEGACY_PREFIX_RE = new RegExp(`^(${ROLE_NAMES.join('|')})-`);
+const WORKER_ROLE_RE = new RegExp(`^(${[...WRITER_ROLES].join('|')})$`);
+const NON_WORKER_ROLE_RE = new RegExp(`^(${NON_WORKER_STAGE_ROLES.join('|')})$`);
 // A `[Pipeline]` agent whose worktree was deleted (or that belongs to another repository) cannot
 // be attributed to any change of this one. A non-running one is a diagnostic, not a deadlock:
 // nothing can dispatch a duplicate worker through it, and a deleted worktree can never be
@@ -230,12 +224,9 @@ for (const agent of allAgents) {
     console.error('[next-actions] invalid global Paseo agent identity or status');
     process.exit(3);
   }
-  if (!agent.name.startsWith('[Pipeline]') && !/^(gongbu|gaogong|jiangzuo|ceshi|hanlin|anchasi)-/.test(agent.name)) continue;
+  if (!agent.name.startsWith('[Pipeline]') && !LEGACY_PREFIX_RE.test(agent.name)) continue;
   if (labelledIds.has(agent.id)) continue;
   if (agent.status === 'closed') {
-    // A closed agent is completion evidence only inside this repository. One whose cwd was
-    // deleted or belongs to another repository is reported, then ignored: it can neither
-    // hold a task nor be dispatched through.
     const closedRepo = commonDir(agent.cwd);
     if (closedRepo !== repository) {
       staleAgents.push({ agent: agent.id, kind: closedRepo ? 'FOREIGN_REPO_AGENT' : 'STALE_AGENT_CWD', reason: closedRepo ? `cwd ${agent.cwd} belongs to another git repository, so it cannot belong to any change of this one` : `cwd ${agent.cwd ?? '(none)'} no longer resolves to a git repository and the agent is closed; it cannot belong to any change of this repository` });
@@ -244,8 +235,6 @@ for (const agent of allAgents) {
   }
   const agentRepo = commonDir(agent.cwd);
   if (agentRepo && agentRepo !== repository) {
-    // Another repository's pipeline is not this plan's business. A live one there is expected;
-    // a dormant one is worth naming so the operator can tell why it is being ignored.
     if (!['running', 'initializing'].includes(agent.status)) {
       staleAgents.push({ agent: agent.id, kind: 'FOREIGN_REPO_AGENT', reason: `cwd ${agent.cwd} belongs to another git repository, so it cannot belong to any change of this one` });
     }
@@ -255,13 +244,10 @@ for (const agent of allAgents) {
   const candidates = new Set([...knownChanges, ...changesIn(agent.cwd).filter((item) => item !== change), ...(identity && identity[1] !== change ? [identity[1]] : [])]);
   if ([...candidates].some((other) => labelledFor(other, agent.id))) continue;
   if (!agentRepo) {
-    // Only an inspect call can say whether an idle agent is parked on a permission prompt.
-    const detail = spawnSync('paseo', ['inspect', agent.id, '--json'], { encoding: 'utf8', timeout: 10_000 });
-    let inspected;
-    try { inspected = detail.status === 0 && !detail.error ? JSON.parse(detail.stdout) : null; } catch { inspected = null; }
+    const inspected = inspectPaseoAgent(agent.id);
     const activeStates = ['running', 'initializing'];
     const busy = activeStates.includes(agent.status) || activeStates.includes(inspected?.Status) || (inspected?.PendingPermissions ?? []).length > 0;
-    if (inspected && typeof inspected === 'object' && !Array.isArray(inspected) && !busy) {
+    if (inspected && !busy) {
       staleAgents.push({ agent: agent.id, kind: 'STALE_AGENT_CWD', reason: `cwd ${agent.cwd ?? '(none)'} no longer resolves to a git repository and the agent is ${agent.status}; it cannot belong to any change of this repository` });
       continue;
     }
@@ -276,9 +262,9 @@ for (const agent of listedAgents) {
     process.exit(3);
   }
   const parts = agent.name.match(/^\[Pipeline\]\s+(\S+)\s+(\S+)(?:\s+.*)?$/);
-  const match = parts && /^(gongbu|gaogong|jiangzuo|ceshi)$/.test(parts[1]) && /^[A-Za-z][A-Za-z0-9]*-\d+(?:-a[1-9]\d*)?$/.test(parts[2]) ? parts : null;
-  // A round suffix (`R0-r2`, `FINAL-r2`) is display only; it never changes the role.
-  const nonWorker = parts && /^(hanlin|anchasi|gongbu|gaogong|shangshu|chanpin)$/.test(parts[1]) && /^(R0|FINAL|FULL)(?:-r[1-9]\d*)?$/.test(parts[2]);
+  const match = parts && WORKER_ROLE_RE.test(parts[1]) && /^[A-Za-z][A-Za-z0-9]*-\d+(?:-a[1-9]\d*)?$/.test(parts[2]) ? parts : null;
+  // A round suffix (`R0-r2`, `FINAL-r2`, `RECON`) is display only; it never changes the role.
+  const nonWorker = parts && NON_WORKER_ROLE_RE.test(parts[1]) && /^(R0|FINAL|FULL|RECON)(?:-r[1-9]\d*)?$/.test(parts[2]);
   if (agent.status === 'closed' && !match) continue;
   const agentRepo = commonDir(agent.cwd);
   if (agentRepo && agentRepo !== repository) continue;
@@ -287,7 +273,6 @@ for (const agent of listedAgents) {
     process.exit(3);
   }
   if (!match) {
-    // Non-worker pipeline roles must also have unambiguous titles.
     if (agentRepo && nonWorker) continue;
     if (!nonWorker) {
       console.error(`[next-actions] unrecognized pipeline agent title: ${agent.name}. Inspect ${agent.id}; only after confirming its role is non-worker, rename with paseo agent update ${agent.id} --name "[Pipeline] anchasi FINAL" (use its actual role and stage), or stop/close it`);
@@ -298,10 +283,8 @@ for (const agent of listedAgents) {
     agents.push({ id: agent.id, role: match[1], task: match[2].replace(/-a\d+$/, ''), attempt: Number(match[2].match(/-a(\d+)$/)?.[1] ?? 1), status: 'closed' });
     continue;
   }
-  const detail = spawnSync('paseo', ['inspect', agent.id, '--json'], { encoding: 'utf8', timeout: 10_000 });
-  let inspected;
-  try { inspected = detail.status === 0 && !detail.error ? JSON.parse(detail.stdout) : null; } catch { inspected = null; }
-  if (!inspected || typeof inspected !== 'object' || Array.isArray(inspected)
+  const inspected = inspectPaseoAgent(agent.id);
+  if (!inspected
     || inspected.Id !== agent.id || inspected.Name !== agent.name || !['running', 'initializing', 'idle', 'closed', 'error'].includes(inspected.Status)
     || !Array.isArray(inspected.PendingPermissions)) {
     console.error(`[next-actions] cannot inspect Paseo agent ${agent.id}`);
@@ -332,17 +315,19 @@ result.attention.sort((a, b) => `${a.task}${a.kind}`.localeCompare(`${b.task}${b
 const frozen = integrationSha !== null;
 // The merge gate and this planner recognise a worker only by these names, so the plan prints
 // them instead of leaving the main session to reconstruct the convention.
+const byTask = new Map(tasks.map((task) => [task.id, task]));
 const TITLE_MAX = 60;
 for (const item of result.dispatch) {
   if (item.action === 'merge') continue;
   const branch = branches[item.task]?.ref ?? `task/${change}/${item.task}`;
   const attempt = branch.slice(`task/${change}/`.length);
-  const role = item.action.endsWith('dispatch-tester') ? 'ceshi' : 'gongbu';
+  const taskObj = byTask.get(item.task);
+  const role = item.action.endsWith('dispatch-tester') ? 'ceshi' : recommendedWorkerRole(taskObj);
   const full = `[Pipeline] ${role} ${attempt} ${change}`;
   Object.assign(item, {
     branch,
     base: `integration/${change}`,
-    ...(role === 'ceshi' ? { role, brief: 'templates/tester.md' } : {}),
+    ...(role === 'ceshi' ? { role: 'ceshi', brief: 'templates/tester.md' } : {}),
     title: full.length <= TITLE_MAX ? full : `[Pipeline] ${role} ${attempt}`,
     labels: { 'pipeline.change': change },
   });

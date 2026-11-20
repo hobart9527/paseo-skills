@@ -10,6 +10,7 @@ import { dispatchDeps, weightedSpeedup, weightedCriticalPath, verifyScope, reads
 import { runGit } from './lib/git.mjs';
 import { loadSpecTree, visibleLines, scanScenarios, scanScenVerify, scanRequirements, classifyScenCollisions } from './lib/spec-scan.mjs';
 import { parseAcceptanceTable } from './lib/acceptance.mjs';
+import { R0_ROLES } from './lib/roles.mjs';
 
 const args = process.argv.slice(2);
 // One pass over argv. Any token that is `--stage` or starts with it is stage syntax: its value is
@@ -1205,9 +1206,10 @@ if (!structural) {
       else {
         const hits = findAgents(signer, agents);
         const resolved = hits.length === 1 ? hits[0] : hits.length === 0 ? inspectAgent(signer) : null;
+        const r0Pattern = new RegExp(`(?:${R0_ROLES.join('|')})`, 'i');
         if (hits.length > 1) blocking.push(`R0_SIGNER_UNKNOWN: signer ${signer} matches ${hits.length} agents; use the full agent uuid`);
         else if (!resolved) blocking.push(`R0_SIGNER_UNKNOWN: signer ${signer} is not a Paseo agent`);
-        else if (!/hanlin/i.test(nameOf(resolved))) advisories.push(`R0_SIGNER_NOT_HANLIN: signer name "${nameOf(resolved)}" does not mention hanlin; confirm the R0 reviewer was dispatched as hanlin`);
+        else if (!r0Pattern.test(nameOf(resolved))) advisories.push(`R0_SIGNER_NOT_R0: signer name "${nameOf(resolved)}" does not match an R0 reviewer role (${R0_ROLES.join('/')}); confirm the R0 reviewer identity`);
       }
     }
   }
@@ -1301,9 +1303,8 @@ if (graphValid) {
   }
 }
 const policy = resolveModel();
-if (graphValid && tasks.length >= 4 && maxWidth >= 2 && weighted < policy.minSpeedup) {
-  advisories.push(`ADVISORY_LOW_SPEEDUP: modeled ${weighted}x below advisory reference ${policy.minSpeedup}x (wave ratio ${speedup}x); compare with Tier 2 handoff before CP-1`);
-}
+// weightedSpeedup remains in --json for historical comparisons; noisy ADVISORY_LOW_SPEEDUP is retired.
+void policy;
 // A dependency whose only shared surface is a read-only fixture is a candidate for removal:
 // `merge-task` replays every Done task whose Verify scope overlaps the changed files, so the
 // fixture is re-run against the merged tree whether or not the author serialised the pair.

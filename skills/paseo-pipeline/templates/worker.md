@@ -7,24 +7,13 @@ Role trailer value: `gongbu` (or the profile the main session selected).
 
 You own the task: write tests and implementation, then leave frozen Verify green.
 Either order is allowed. Test the behavior that could go wrong, not mere code contact.
-If a `ceshi` Red commit is already on the branch, receive its Red commit SHA, actual command, assertion failure and allowed test paths from `templates/tester.md`. Those tests are the oracle: make them pass and keep their assertions intact. A missing module or unfinished interface is not Red evidence. If assertions contradict the contract, report the precise conflict to the dispatcher; do not silently weaken assertions or rewrite the interface. The dispatcher checks the Red packet before starting you; Git trailers alone do not prove independent test quality.
+If a `ceshi` Red commit is already on the branch (recorded as `Red commit SHA` in the dispatch context), those test files are an immutable oracle: make them pass without modifying `ceshi`-authored test paths. If assertions contradict the contract, report the precise conflict (`blocked:`) rather than weakening assertions.
 
 ## Rules
-- Follow `SKILL.md` dispatch/merge flow and this task's frozen contract; this brief adds task-local constraints only.
-- Read only from your packet: this brief, your task entry, claimed SCENs, cited spec sections, files in Write scope, and declared Reads. Read additional approved design or task-contract sections only when needed for your work; do not survey the repository or re-read unrelated history. The author must make required shared contracts reachable before dispatch. If required interface shape, behavior, or a decision is missing or ambiguous, return `blocked:` with the exact question and evidence rather than guessing.
-- First run the frozen Verify once before changing anything. If it reports a missing package or command (`Cannot find package 'tsx'`, `command not found`), install the workspace dependencies per lockfile and rerun; that is an environment fault, not a test result. Never edit tests or the Verify command to get past it.
-- The first Verify may be red, including for a file your task will create. Before delivery it must run and pass in your branch. If a required contract, permission, file, or other task's behavior is unavailable, return `blocked:` with evidence; a declared scope or `Reads` does not prove a file exists or was committed, and merge replay cannot replace worker Verify.
-- Implement only the frozen behavior and only within Write scope. Do not touch files outside it; a merge with any out-of-scope file fails.
-- Cover every SCEN this task claims. Exercise the code under test — load and run it (or render it); an assertion on production source text (`fs.readFileSync` + regex) does not prove behavior.
-- If a required file falls outside scope, or the contract is ambiguous or contradicts existing code/tests, stop with `blocked: <reason>` and the exact evidence. Do not silently widen scope or guess the contract.
-- Before committing, check that `$PASEO_AGENT_ID` is nonempty. If missing, return `blocked:` with the evidence; never `uuidgen` or type an ID. Commit with a `Pipeline-Role: <provided role>` trailer; the installed hook injects `Pipeline-Author` from `$PASEO_AGENT_ID`.
-- After committing, verify the trailer survived:
-  `git log -1 --format='%(trailers:key=Pipeline-Author,valueonly)'` must print your `$PASEO_AGENT_ID`.
-  Trailers must be the last block of the message, separated from the body by exactly one blank
-  line. Keep `Co-Authored-By:` in that same block, with no blank lines between trailers; otherwise
-  Git may not parse the earlier trailers. If the check fails, return `blocked:` with the evidence
-  and request human authorization before any `git commit --amend` or other history rewrite; do not
-  return a tip that fails this check as complete.
+- Follow `SKILL.md` and this task's frozen contract; read only your packet (this brief, task entry, claimed SCENs, cited spec sections, Write scope, and declared Reads). Do not survey unrelated repo history. If a required contract/interface/decision is missing or ambiguous, stop with `blocked: <reason>`.
+- First run the frozen Verify once before changing anything. If it reports a missing package or command (`Cannot find package 'tsx'`, `command not found`), install workspace dependencies per lockfile and rerun; that is an environment fault, not a test result. Never edit tests or Verify to get past it.
+- Implement only the frozen behavior and only within Write scope. Do not touch files outside it; cover every claimed SCEN with real execution/rendering (an assertion on production source text via `fs.readFileSync` + regex does not prove behavior).
+- Before committing, ensure `$PASEO_AGENT_ID` is nonempty (else `blocked:`), commit with `Pipeline-Role: <provided role>` (the git hook injects `Pipeline-Author`), keep trailers in one contiguous last block, and run `node "$PIPELINE_HOME"/pipeline-run.mjs worker-check <change-dir> <T-id>` (checks Write scope, trailers, `ceshi` Red-path immutability, and frozen Verify). Do not rewrite history without human authorization.
 
 ## Return envelope
 `task`, `branch`, `base`, `tip`, `verify`, `verify_result`, `SCENs`, `blocked`, `commits`.

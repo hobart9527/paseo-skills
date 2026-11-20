@@ -379,7 +379,7 @@ Tier 钩子一行同理：删的是 `assessStop` 把 Git 脏文件写回 `seg.fi
 - 发现分流并记入 `review.md` 台账：DEVIATION → 修复任务；CONTRACT_GAP → 人工（增量 R0 + CP-1 或接受风险）；ENHANCEMENT → backlog。已确认修复的缺陷类关闭，重开需新证据；换 reviewer 继承台账与预算。
 - 一轮的 DEVIATION 合为一个修复波，按域并行；仅在彼此 scope 重叠时才互相 `Depends on`（对 Done 任务的依赖照旧，不破坏 `SCOPE_CONFLICT`）。CP-1 可预授权「1 个 FINAL 修复波、≤N 任务、仅 DEVIATION」；所有批准绑定 SHA。
 - R0 新增预言检查：每个 SCEN 须写明 Verify 走的真实入口（非夹具/孤立模块），以及错误实现如何使该 Verify 失败，缺失即 BLOCKER。契约后增量 R0 只对父 SHA 做增量，1 轮。
-- Tier 2：裁决对照 brief 的 **Requirement**；上限按交付计（≤2 个 reviewer、≤4 次裁决），换 reviewer 不重置；同类缺陷连续两轮，或独立 PASS 与指派 reviewer 的 BLOCKED 冲突，即并列两份裁决交人工。
+- Tier 2：裁决对照 brief 的 **Requirement**；上限按交付计（**已于 2026-11-20 收紧并对齐 `docs/tier2-reviewer-brief.md`：严格按交付计 1 次初审 + 至多 1 次 delta 复审，不许换人重置至 4 次**）。同类缺陷两轮未过或存在未解决 `BLOCKED`，直接呈递人工裁决。
 
 **评审健康度指标**（下次复盘直接对照）：FINAL 轮数 ≤2；blocker 100% 挂矩阵行；FINAL 中 CONTRACT_GAP 占比 → 0（每个都是 R0 盲点，回灌 R0 清单）；最长串行修复链 ≤2；循环内人工批准 ≤2。
 

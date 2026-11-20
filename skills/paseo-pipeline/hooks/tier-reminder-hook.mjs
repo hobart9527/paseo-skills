@@ -30,7 +30,7 @@ import { TIER_RULES, takeSnapshot, skipInjection, logHookError } from '../lib/ti
 // 关键词筛选全漏，而那恰恰是模型最容易直接动手的时刻。改为每条非斜杠消息都注入一行短提醒，
 // 评估类消息多看一行，代价远小于漏掉一次。
 export const REMINDER = [
-  '[分级提醒] 动手前输出计划行：',
+  '[分级提醒] 先只读探查影响面再动手：',
   TIER_RULES,
 ].join('\n');
 
