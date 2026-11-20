@@ -147,14 +147,37 @@ const createAgent = (tool_input, PASEO_HOME) => guard({ tool_name: 'mcp__paseo__
 test('create_agent: settings matching the profile exactly are allowed unchanged', (t) => {
   const PASEO_HOME = profileHome(t);
   assert.deepEqual(createAgent({ provider: 'claude/flash', title: 't', settings: { modeId: 'auto', thinkingOptionId: 'high' } }, PASEO_HOME), {});
-  // Omitted fields inherit the profile, so they are not checked.
-  assert.deepEqual(createAgent({ provider: 'codex/gpt', title: 't' }, PASEO_HOME), {});
   // No profile matches this pair: profiles are launch configuration, not a whitelist.
   assert.deepEqual(createAgent({ provider: 'claude/unknown', title: 't', settings: { modeId: 'bogus' } }, PASEO_HOME), {});
-  // An unreadable config cannot be compared, so the call is left alone.
+  // An unreadable config cannot be compared or filled, so the call is left alone.
   const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'paseo-home-'));
   t.after(() => fs.rmSync(empty, { recursive: true, force: true }));
   assert.deepEqual(createAgent({ provider: 'claude/flash', title: 't', settings: { modeId: 'bogus' } }, empty), {});
+});
+
+// Paseo inherits an omitted mode from the *calling* agent and only within the same provider:
+// a claude session dispatching antigravity or codex fails with "cannot inherit mode 'auto' from
+// caller (provider 'claude')", even though codex also has an `auto` mode. Omitting the mode is
+// therefore a call the server rejects, not a way to inherit the profile.
+test('create_agent: an omitted mode is filled from the matching profile', (t) => {
+  const PASEO_HOME = profileHome(t);
+  const filled = createAgent({ provider: 'codex/gpt', title: 't' }, PASEO_HOME);
+  assert.equal(filled.permissionDecision, 'allow');
+  assert.deepEqual(filled.updatedInput.settings, { modeId: 'auto-review' });
+  // Existing settings are kept; the fill lands next to them.
+  const merged = createAgent({ provider: 'claude/flash', title: 't', settings: { thinkingOptionId: 'high' } }, PASEO_HOME);
+  assert.deepEqual(merged.updatedInput.settings, { thinkingOptionId: 'high', modeId: 'auto' });
+  // An explicit null is the same "not stated" as an omission.
+  const nulled = createAgent({ provider: 'antigravity/gemini', title: 't', settings: { modeId: null } }, PASEO_HOME);
+  assert.deepEqual(nulled.updatedInput.settings, { modeId: 'full-access' });
+  // Conflicting modes across profiles sharing the pair are not guessed; the server names them.
+  const conflict = fs.mkdtempSync(path.join(os.tmpdir(), 'paseo-home-'));
+  t.after(() => fs.rmSync(conflict, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(conflict, 'config.json'), JSON.stringify({ daemon: { agentProfiles: [
+    { id: 'a', name: 'A', provider: 'codex', model: 'gpt', modeId: 'auto' },
+    { id: 'b', name: 'B', provider: 'codex', model: 'gpt', modeId: 'auto-review' },
+  ] } }));
+  assert.deepEqual(createAgent({ provider: 'codex/gpt', title: 't' }, conflict), {});
 });
 
 test('create_agent: a stale mode or thinking option is denied with both values named', (t) => {
@@ -207,7 +230,11 @@ test('create_agent: an explicit null optional setting is allowed where the profi
     { id: 'p5', name: '钦差 (验收)', provider: 'claude', model: 'cc', thinkingOptionId: 'high', features: { effort: 'max' } },
     { id: 'p6', name: '户部 (账目)', provider: 'claude', model: 'cc', modeId: 'auto', features: { effort: 'max' } },
   ] } }));
-  assert.deepEqual(createAgent({ provider: 'claude/cc', title: 't', settings: { thinkingOptionId: null, features: { effort: 'max' } } }, withFeatures), {});
+  // The pair states one mode, so an omitted/`null` one is filled from the profile (cross-provider
+  // omission is rejected by the server). The null `thinkingOptionId` is still allowed.
+  const inherited = createAgent({ provider: 'claude/cc', title: 't', settings: { thinkingOptionId: null, features: { effort: 'max' } } }, withFeatures);
+  assert.equal(inherited.permissionDecision, 'allow');
+  assert.equal(inherited.updatedInput.settings.modeId, 'auto');
   // Null inherits only where the profile sets nothing: a profile that does set the value still
   // catches a null that contradicts it.
   const contradicted = createAgent({ provider: 'claude/cc', title: 't', settings: { thinkingOptionId: 'high', features: null } }, withFeatures);
