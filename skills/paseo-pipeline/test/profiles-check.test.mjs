@@ -312,3 +312,19 @@ test('a non-authoring role carrying the contract-author brief is reported as an 
   const owned = runWith({ hanlin: withBrief('hanlin', author).hanlin });
   assert.doesNotMatch(owned.stdout, /ADVISORY_BRIEF_OUT_OF_SCOPE hanlin/);
 });
+
+// ---- Tools row documents --json (SCEN-PJ-08) ----------------------------------------------
+// The contract is a documentation row, so the assertion reads the real SKILL.md rather than a
+// fixture: `--json` and its four keys must be discoverable from the Tools table.
+test('SCEN-PJ-08 the Tools row documents profiles-check --json and its four keys', () => {
+  const skillFile = fileURLToPath(new URL('../SKILL.md', import.meta.url));
+  const skill = fs.readFileSync(skillFile, 'utf8');
+  const tools = skill.slice(skill.indexOf('## Tools'), skill.indexOf('\n## ', skill.indexOf('## Tools') + 1));
+  assert.ok(tools.length > 0, 'SKILL.md has a ## Tools section');
+  const row = tools.split('\n').find((line) => line.startsWith('| `profiles-check.mjs '));
+  assert.ok(row, 'Tools table has a profiles-check.mjs row');
+  for (const token of ['--json', 'roles', 'findings', 'advisories', 'ok']) {
+    assert.ok(row.includes(token), `profiles-check row names ${token}: ${row}`);
+  }
+  assert.ok(skill.length < 10000, `SKILL.md is ${skill.length} chars`);
+});
