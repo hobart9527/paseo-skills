@@ -10,7 +10,8 @@
   - Verify with: node --test skills/paseo-pipeline/test/profiles-check.test.mjs
   - Scenarios: SCEN-PJ-01, SCEN-PJ-02, SCEN-PJ-03, SCEN-PJ-04
 
-- [ ] 1.2 T-02 install-hook prints `displaced: <item>` lines before refusing and `replaced: <item>` lines after an approved `--replace-hooks`; SCEN-HOOK-01/02 stay green
+- [x] 1.2 T-02 install-hook prints `displaced: <item>` lines before refusing and `replaced: <item>` lines after an approved `--replace-hooks`; SCEN-HOOK-01/02 stay green
+  - Done: source=529003c review=worker
   - Depends on: none
   - Write scope: skills/paseo-pipeline/pipeline-run.mjs, skills/paseo-pipeline/test/pipeline-run.test.mjs
   - Est: S

@@ -273,6 +273,96 @@ test('SCEN-HOOK-02 an empty hooks directory still installs, and a live hook is n
   assert.equal(run(h.cwd, h.localEnv, ['install-hook', h.cwd]).status, 0);
 });
 
+// SCEN-PJ-05: a refusal must name every object it would displace, in the order the approval will
+// replace them, before the refusal sentence — a human reading stderr knows exactly what is lost.
+test('SCEN-PJ-05 refusal lists each displaced object first, on stderr', () => {
+  const f = fixture();
+  git(f.cwd, 'config', 'core.hooksPath', '.husky');
+  write(f.cwd, '.git/hooks/pre-commit', '#!/bin/sh\nexit 0\n');
+  fs.chmodSync(path.join(f.cwd, '.git/hooks/pre-commit'), 0o755);
+  const preCommit = path.join(f.cwd, '.git', 'hooks', 'pre-commit');
+
+  const refused = run(f.cwd, f.localEnv, ['install-hook', f.cwd]);
+  assert.notEqual(refused.status, 0, refused.out);
+  // Stream placement is part of the contract: audit lines belong on stderr with the refusal.
+  assert.equal(refused.stdout, '');
+  const lines = refused.stderr.split('\n');
+  const displacedAt = lines
+    .map((line, index) => (line.startsWith('displaced: ') ? index : -1))
+    .filter((index) => index >= 0);
+  const refusalAt = lines.findIndex((line) => line.startsWith('[pipeline-run]') && line.includes('--replace-hooks'));
+  assert.ok(refusalAt >= 0, refused.stderr);
+  // Exactly the two objects, both before the refusal sentence, in array order.
+  assert.deepEqual(
+    displacedAt.map((index) => lines[index]),
+    [`displaced: core.hooksPath=.husky`, `displaced: ${preCommit}`],
+  );
+  assert.ok(displacedAt.every((index) => index < refusalAt), refused.stderr);
+  // The refusal is before any write.
+  assert.equal(git(f.cwd, 'config', '--get', 'core.hooksPath'), '.husky');
+  assert.notEqual(spawnSync('git', ['config', '--get', 'extensions.worktreeConfig'], { cwd: f.cwd, env, encoding: 'utf8' }).stdout.trim(), 'true');
+});
+
+// SCEN-PJ-06: with the flag, the same objects are reported as replaced, on stdout, before the
+// install confirmation — and only because the write actually succeeded.
+test('SCEN-PJ-06 approved replace lists each replaced object, on stdout', () => {
+  const f = fixture();
+  git(f.cwd, 'config', 'core.hooksPath', '.husky');
+  write(f.cwd, '.git/hooks/pre-commit', '#!/bin/sh\nexit 0\n');
+  fs.chmodSync(path.join(f.cwd, '.git/hooks/pre-commit'), 0o755);
+  const preCommit = path.join(f.cwd, '.git', 'hooks', 'pre-commit');
+
+  const replaced = run(f.cwd, f.localEnv, ['install-hook', '--replace-hooks', f.cwd]);
+  assert.equal(replaced.status, 0, replaced.out);
+  const lines = replaced.stdout.split('\n');
+  const replacedAt = lines
+    .map((line, index) => (line.startsWith('replaced: ') ? index : -1))
+    .filter((index) => index >= 0);
+  const installedAt = lines.indexOf(`hook installed: ${f.cwd}`);
+  assert.ok(installedAt >= 0, replaced.stdout);
+  assert.deepEqual(
+    replacedAt.map((index) => lines[index]),
+    [`replaced: core.hooksPath=.husky`, `replaced: ${preCommit}`],
+  );
+  assert.ok(replacedAt.every((index) => index < installedAt), replaced.stdout);
+  // Replaced means replaced: the audit lines do not appear on the refusal stream.
+  assert.equal(replaced.stderr, '');
+  assert.match(git(f.cwd, 'config', '--worktree', '--get', 'core.hooksPath'), /paseo-pipeline\/hooks\/git$/);
+});
+
+// SCEN-PJ-07: nothing to displace means nothing to audit — no stray lines on either stream, with
+// or without the flag, and repeated installs stay quiet.
+test('SCEN-PJ-07 a fresh hooks dir prints no displaced or replaced lines', () => {
+  const f = fixture();
+  assert.ok(fs.existsSync(path.join(f.cwd, '.git', 'hooks', 'commit-msg.sample')));
+  const auditLines = (out) => out.split('\n').filter((line) => line.startsWith('displaced: ') || line.startsWith('replaced: '));
+
+  const first = run(f.cwd, f.localEnv, ['install-hook', f.cwd]);
+  assert.equal(first.status, 0, first.out);
+  assert.deepEqual(auditLines(`${first.stdout}${first.stderr}`), []);
+  const second = run(f.cwd, f.localEnv, ['install-hook', f.cwd]);
+  assert.equal(second.status, 0, second.out);
+  assert.deepEqual(auditLines(`${second.stdout}${second.stderr}`), []);
+  const flagged = run(f.cwd, f.localEnv, ['install-hook', '--replace-hooks', f.cwd]);
+  assert.equal(flagged.status, 0, flagged.out);
+  assert.deepEqual(auditLines(`${flagged.stdout}${flagged.stderr}`), []);
+  assert.ok(flagged.stdout.split('\n').includes(`hook installed: ${f.cwd}`), flagged.stdout);
+});
+
+// The audit line states a fact: no replacement is reported when the write that would perform it
+// fails.
+test('a failed install reports no replaced lines', () => {
+  const f = fixture();
+  git(f.cwd, 'config', 'core.hooksPath', '.husky');
+  // A held lock makes the config write fail the way a concurrent git process would.
+  fs.writeFileSync(path.join(f.cwd, '.git', 'config.lock'), 'held');
+  const r = run(f.cwd, f.localEnv, ['install-hook', '--replace-hooks', f.cwd]);
+  assert.notEqual(r.status, 0, r.out);
+  assert.doesNotMatch(r.stdout, /^replaced: /m, r.stdout);
+  assert.doesNotMatch(r.stdout, /hook installed/, r.stdout);
+  assert.match(r.stderr, /cannot (enable worktreeConfig|set core\.hooksPath)/);
+});
+
 test('plan warns when a change worktree is missing the author hook', () => {
   const f = fixture();
   const changeDir = path.join(f.cwd, 'openspec/changes/chg');
