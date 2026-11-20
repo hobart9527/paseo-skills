@@ -492,6 +492,8 @@ const SHELL_CONSTRUCT = /\b(?:for|while|if|case|until)\b/;
 // right side must be `exit`, so `a || exit 1` still propagates a red left leg.
 const SHELL_CONTROL_SHAPE = /^(?:for|while|until|if|case)\s/;
 const SHELL_BLOCK = (words) => (words.has('do') && words.has('done')) || (words.has('then') && words.has('fi'));
+// A pipe that masks a red leg is a single `|`; `||` is logical-or and is judged on its own.
+const PIPE = /(?<!\|)\|(?!\|)/;
 // `set -e; cmd` and `a || exit 1` are shell setup, not verify legs. commandParts
 // splits them into legs that prove nothing; name the real cause instead of the
 // downstream VERIFY_NOT_NARROW.
@@ -728,28 +730,36 @@ else {
       // quotes is an argument, not a pipeline, so it is masked before both judgements.
       const command = row.verify.replace(/^`+|`+$/g, '').trim();
       const maskQuoted = (text) => text.replace(/'[^']*'|"[^"]*"/g, (segment) => segment.replace(/\|/g, ' '));
-      const unquoted = maskQuoted(command);
-      // Any `bash -c`/`sh -c` wrapper: its body is a command in its own right, and quoting hides it
-      // from the ordinary pipe scan. Only a pipefail wrapper covers a `|` in that body; without it
-      // the wrapper hides exactly the red first leg it claims to surface.
+      // A `bash -c` body runs in a NEW shell: the executor's own `pipefail` is a shell option and is
+      // not inherited, so the body must enable it itself. Being enabled means set BEFORE the first
+      // pipeline and never turned off again — `node --test x | tail; set -o pipefail` mentions the
+      // option but leaves the pipeline uncovered, and `set +o pipefail` disables it mid-body.
       const wrapper = /^(?:bash|sh)\s+-[a-z]*c\s+(['"])(.*)\1$/is.exec(command);
-      const wrapped = wrapper ? wrapper[2] : null;
-      const pipefail = wrapped !== null && /(?:^|;|&&)\s*set\s+-o\s+pipefail\b/.test(wrapped);
-      // What the pipe and construct rules read: the wrapper body when there is one, else the command
+      const wrapped = wrapper ? wrapper[2].trim() : null;
+      // Split the body into statements so "enabled" means the FIRST statement turns it on and no
+      // later one turns it off; a `set` after the pipeline arrives too late to cover it.
+      const statements = wrapped === null ? [] : wrapped.split(/\|\||&&|;|(?<!\|)\|(?!\|)/).map((part) => part.trim()).filter(Boolean);
+      const setsPipefail = (part, sign) => new RegExp(`^set\\s+(?:-[A-Za-z]+\\s+)*\\${sign}o\\s+pipefail\\b`).test(part);
+      const pipefail = statements.length > 0
+        && setsPipefail(statements[0], '-')
+        && !statements.some((part) => setsPipefail(part, '+'));
+      // What the pipe and construct rules read: the wrapper body when there is one, else the command,
       // with quoted arguments masked (a `|` inside quotes is an argument, not a pipeline).
-      const judged = wrapped ?? unquoted;
+      const judged = maskQuoted(wrapped ?? command);
       // The pipe judgements run on every Required=yes command, before any shell-construct
       // exemption: a construct may only excuse the "proves nothing" leg check, never a masked pipe.
       const words = new Set(judged.split(/\s+/));
       const construct = SHELL_CONTROL_SHAPE.test(judged) || SHELL_BLOCK(words);
       const alternatives = /\|\|/.test(judged);
-      // `a || exit 1` propagates a red left leg and masks nothing. Anything else on the right
-      // makes one of two legs mandatory in an order nobody reads.
-      const propagation = alternatives && judged.split('||').slice(1).every((right) => /^\s*exit(?:\s+\d+)?\s*(?:;|$)/.test(right));
+      // `a || exit 1` propagates a red left leg and masks nothing. `|| exit 0` reports success for
+      // whichever leg failed, and any other right side makes one of two legs mandatory in an order
+      // nobody reads. A bare `exit` keeps the failing status, so it propagates too.
+      const propagation = alternatives && judged.split('||').slice(1)
+        .every((right) => /^\s*exit(?:\s+[1-9]\d*)?\s*(?:;|$)/.test(right));
       if (alternatives && !propagation) {
-        blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: \`||\` hides which leg is the check unless the right side is \`exit\`; use one command or a script that returns its own status`);
-      } else if (!alternatives && /\|/.test(judged) && !pipefail) {
-        blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: unquoted \`|\` reports only the last leg's exit status; write the check in a script and run that, or wrap it: \`bash -c 'set -o pipefail; node --test test/a.test.mjs | tail -n 20'\``);
+        blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: \`||\` hides which leg is the check unless the right side is \`exit\` with a non-zero status; use one command or a script that returns its own status`);
+      } else if (PIPE.test(judged) && !pipefail) {
+        blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: unquoted \`|\` reports only the last leg's exit status; write the check in a script and run that, or wrap it so pipefail is set first: \`bash -c 'set -o pipefail; node --test test/a.test.mjs | tail -n 20'\``);
       } else if (construct) {
         // A shell loop or condition (`for f in ...; do node "$f"; done`) is one command the leg
         // splitter cannot see inside. The task Verify rules treat that shape as an advisory, so the

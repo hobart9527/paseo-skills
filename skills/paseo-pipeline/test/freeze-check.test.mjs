@@ -951,6 +951,34 @@ test('SCEN-ACC-01 rework: `||` is failure propagation only when the right side i
   // A red left leg still fails the row through `exit`: nothing is masked, so it is allowed.
   assert.equal(freezeWith('node --test test/a.test.mjs \\|\\| exit 1').status, 0);
   assert.equal(freezeWith('node --test test/a.test.mjs \\|\\| exit 3').status, 0);
+  assert.equal(freezeWith('node --test test/a.test.mjs \\|\\| exit').status, 0);
+});
+
+// Rework round 2. Round 1 fixed the keyword-in-argument shape but still accepted three commands that
+// hide a red leg: `|| exit 0` reports success, a bare pipe inside a loop body skipped the pipe check
+// because any `||` was exempted, and `set -o pipefail` was matched anywhere in the text instead of
+// before the pipeline it must cover. Each case below is a reviewer repro.
+test('SCEN-ACC-01 rework 2: a masked failure is rejected in every wrapper shape', () => {
+  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
+  const freezeWith = (verify) => run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | ${verify} | yes | PENDING | pending |`) }));
+  const blocked = (verify, pattern) => {
+    const result = freezeWith(verify);
+    assert.equal(result.status, 1, `${verify}\n${result.stdout}`);
+    const report = JSON.parse(result.stdout);
+    assert.ok(report.blocking.some((item) => item.startsWith('BAD_ACCEPTANCE_VERIFY SCEN-1')), `${verify}: ${result.stdout}`);
+    assert.match(report.blocking.join('\n'), pattern, verify);
+  };
+  // `exit 0` reports success for whichever leg failed.
+  blocked('node --test test/a.test.mjs \\|\\| exit 0', /non-zero/);
+  assert.equal(freezeWith('node --test test/a.test.mjs \\|\\| exit 0').status, 1);
+  // An allowed `|| exit 1` must not switch the pipe check off for the other legs in the same row.
+  blocked('bash -c \'for f in test/a.test.mjs; do node --test "$f" \\| tail -n 20 \\|\\| exit 1; done\'', /unquoted/);
+  // pipefail must be set before the pipeline and never turned off.
+  blocked("bash -c 'node --test test/a.test.mjs \\| tail -n 20; set -o pipefail'", /unquoted/);
+  blocked("bash -c 'set -o pipefail; set +o pipefail; node --test test/a.test.mjs \\| tail -n 20'", /unquoted/);
+  // Still accepted: pipefail first, and a propagated failure status.
+  assert.equal(freezeWith("bash -c 'set -o pipefail; node --test test/a.test.mjs \\| tail -n 20'").status, 0);
+  assert.equal(freezeWith('node --test test/a.test.mjs \\|\\| exit 1').status, 0);
 });
 
 test('SCEN-ACC-01 rework: the `bash -c` pipefail suggestion is a command the gate accepts', () => {
