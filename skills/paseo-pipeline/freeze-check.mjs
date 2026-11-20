@@ -720,6 +720,14 @@ else {
       // Verify rules name, and a leg that proves nothing proves nothing here either. A pipe inside
       // quotes is an argument, not a pipeline, so it is masked before both judgements.
       const command = row.verify.replace(/^`+|`+$/g, '').trim();
+      // A shell loop or condition (`for f in ...; do node "$f" || exit 1; done`) is one command the
+      // leg splitter cannot see inside: the `||` there is the loop's own failure propagation, not two
+      // alternatives. The task Verify rules already treat that shape as an advisory, so the same
+      // judgement applies here instead of reading the inner `||` as a hidden check.
+      if (SHELL_CONSTRUCT.test(command)) {
+        advisories.push(`ADVISORY_SHELL_ACCEPTANCE_VERIFY ${row.scen}: Verify uses shell control syntax; the acceptance rule checks the command's own exit status, not the legs inside it`);
+        continue;
+      }
       const maskQuoted = (text) => text.replace(/'[^']*'|"[^"]*"/g, (segment) => segment.replace(/\|/g, ' '));
       const unquoted = maskQuoted(command);
       if (/\|\|/.test(unquoted)) {

@@ -909,6 +909,13 @@ test('SCEN-ACC-01 a Required=yes acceptance command that can hide a failure is r
   // Required=no rows are recorded only and never execute, so they are not judged this way.
   const withOptional = `${table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | npm test | yes | PENDING | pending |')}\n| SCEN-1 | CLI | T-01 | node --test test/a.test.mjs \\| tail -n 20 | no | PENDING | pending |\n`;
   assert.equal(run(change({ ...files, 'acceptance.md': withOptional })).status, 0);
+  // A shell loop is one command whose inner `|| exit 1` is the loop's own propagation, not two
+  // alternatives. Rejecting it would reverse the task Verify rule, which calls that shape an
+  // advisory, and it rejects every benchmark sink that iterates `scripts/specs/*.mjs`.
+  const loopRow = table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | for f in scripts/specs/*.mjs; do node "$f" \\|\\| exit 1; done | yes | PENDING | pending |');
+  const looped = run(change({ ...files, 'acceptance.md': loopRow }));
+  assert.equal(looped.status, 0, looped.stdout);
+  assert.match(looped.stdout, /ADVISORY_SHELL_ACCEPTANCE_VERIFY SCEN-1/);
 });
 
 test('a shell loop is an advisory, not invented legs', () => {
