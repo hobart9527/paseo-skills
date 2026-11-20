@@ -729,67 +729,111 @@ else {
       // Verify rules name, and a leg that proves nothing proves nothing here either. A pipe inside
       // quotes is an argument, not a pipeline, so it is masked before both judgements.
       const command = row.verify.replace(/^`+|`+$/g, '').trim();
-      const maskQuoted = (text) => text.replace(/'[^']*'|"[^"]*"/g, (segment) => segment.replace(/\|/g, ' '));
-      // A `bash -c`/`sh -c` body runs in a NEW shell: the executor's `pipefail` is a shell option and
-      // is not inherited, so the gate would have to parse shell semantics to know what the exit code
-      // means. Rather than recognize shape after shape (a piped `set`, a `{ set +o pipefail; }`
-      // group, a nested `bash -c` all read as "pipefail present" while leaving the pipeline red),
-      // only two bodies are accepted:
-      //   1. `set -o pipefail; <rest>` where `<rest>` runs no other `set`, no subshell `(`, no group
-      //      `{`, no backtick/`$(` and no nested shell. pipefail then covers every leg of `<rest>`
-      //      and cannot be turned off behind the gate's back.
-      //   2. a body with no operator at all: one command, judged exactly like a bare command.
-      // Everything else is rejected and told to become a script, which returns its own status.
-      const wrapper = /^(?:bash|sh)\s+-[a-z]*c\s+(['"])([\s\S]*)\1$/i.exec(command);
-      let pipefail = false;
-      let judged = maskQuoted(command);
-      if (wrapper) {
-        const body = wrapper[2].trim();
-        const canonical = /^set\s+-[A-Za-z]*o\s+pipefail\s*;\s*([\s\S]+)$/.exec(body);
-        const rest = canonical ? canonical[1] : null;
-        const opaque = /[(){}`]|\$\(/.test(body) || /(?:^|[;&|]\s*|\s)set\s/.test(rest ?? ' ') || /^(?:bash|sh)\s/.test(body);
-        const plain = !/[|;&]/.test(body) && !opaque;
-        if (rest !== null && !opaque) { pipefail = true; judged = maskQuoted(rest); }
-        else if (plain) judged = maskQuoted(body);
-        else {
-          blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: the \`bash -c\`/\`sh -c\` body runs in a new shell, so the gate cannot prove its exit status; put the check in a script whose name starts with \`test\` (e.g. \`bash scripts/test-<name>.sh\`) or that lives under a test path, and run that — the script returns its own status`);
-          continue;
+      // The executor runs `bash -c 'set -o pipefail; <command>'`, so the row passes only when that
+      // whole command exits 0. A shell sequence's exit status is provable for a few forms and not
+      // for the rest, and four review rounds each found one more unprovable shape (`echo if`,
+      // `a || exit 0`, `set -o pipefail | cat`, `{ set +o pipefail; }`, nested `bash -c`,
+      // `... | tail; true`, `if ...; then ...; fi`). Chasing shapes never converged, so the gate
+      // accepts only what it can prove and names a passing route for the rest:
+      //   - one command, or commands joined by `&&` — a failure in any leg IS the exit status;
+      //   - an optional trailing `|| exit <non-zero>` on the same command;
+      //   - `for VAR in LIST; do <provable>; done` — a failing iteration runs the body's own
+      //     `|| exit`, so the shell leaves non-zero instead of continuing.
+      // The same rules are applied recursively, so a loop cannot hide an unprovable body.
+      const maskQuotes = (text) => text.replace(/'[^']*'|"[^"]*"/g, (segment) => `${segment[0]}${'x'.repeat(Math.max(0, segment.length - 2))}${segment[0]}`);
+      const CONTROL_WORD = /(?:^|[\s;&|])(?:for|while|until|select|if|then|elif|else|fi|case|esac|do|done|function|coproc|time)\b/;
+      // Returns null when `text`'s exit status is provable, else the reason it is not. `loopList`
+      // carries the files a surrounding `for` iterates, so a body that runs `"$f"` is judged by what
+      // `f` ranges over.
+      const ITERATION_VAR = /^\$\{?([A-Za-z_]\w*)\}?$/;
+      // A loop body must end in `|| exit <non-zero>`, so a red iteration stops the shell. The body's
+      // contents are then judged like a task Verify loop: an advisory, not per-leg proof — the leg
+      // splitter cannot see inside it, and the task rules say the same.
+      const LEG_PROVES = (leg) => {
+        if (leg.broad || legProves(leg)) return true;
+        // A package-manager script (`npm --prefix pkg test`, `npm run build`) and a compiler or
+        // typechecker (`npx tsc --noEmit`) exit non-zero for real reasons; that is proof enough for
+        // an acceptance row even though they are not test runners.
+        const command = leg.command.replace(/^\s*(?:[A-Za-z_]\w*=\S*\s+)+/, '');
+        return /^(?:npm|pnpm|yarn|bun)\s+(?:--?[a-z-]+(?:=\S+)?\s+)*[A-Za-z]/.test(command)
+          || /^(?:npx\s+)?(?:tsc|eslint|biome|swc|babel)\b/.test(command)
+          || /^(?:make|cargo|go|dotnet|mvn|gradle)\s+(?:build|check|test|lint|vet)\b/.test(command);
+      };
+      const unprovable = (text, loopList = null) => {
+        const masked = maskQuotes(text);
+        // `bash -c`/`sh -c` starts a new shell: its body's status is not this command's status
+        // unless that body is proven in full, which is the parsing this rule refuses to do.
+        if (/^(?:bash|sh)\s+-[a-z]*c\s/.test(masked) || /^(?:bash|sh)\s+-[a-z]*c\s/.test(maskQuotes(text.replace(/^set\s+-\S+\s*;\s*/, '')))) {
+          return 'a `bash -c`/`sh -c` body runs in a new shell, so the gate cannot prove its exit status';
         }
-      }
-      // The pipe judgements run on every Required=yes command, before any shell-construct
-      // exemption: a construct may only excuse the "proves nothing" leg check, never a masked pipe.
-      const words = new Set(judged.split(/\s+/));
-      const construct = SHELL_CONTROL_SHAPE.test(judged) || SHELL_BLOCK(words);
-      const alternatives = /\|\|/.test(judged);
-      // `a || exit 1` propagates a red left leg and masks nothing. `|| exit 0` reports success for
-      // whichever leg failed, and any other right side makes one of two legs mandatory in an order
-      // nobody reads. A bare `exit` keeps the failing status, so it propagates too.
-      const propagation = alternatives && judged.split('||').slice(1)
-        .every((right) => /^\s*exit(?:\s+[1-9]\d*)?\s*(?:;|$)/.test(right));
-      if (alternatives && !propagation) {
-        blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: \`||\` hides which leg is the check unless the right side is \`exit\` with a non-zero status; use one command or a script that returns its own status`);
-      } else if (PIPE.test(judged) && !pipefail) {
-        blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: unquoted \`|\` reports only the last leg's exit status; write the check in a script and run that, or wrap it so pipefail is set first: \`bash -c 'set -o pipefail; node --test test/a.test.mjs | tail -n 20'\``);
-      } else if (construct) {
-        // A shell loop or condition (`for f in ...; do node "$f"; done`) is one command the leg
-        // splitter cannot see inside. The task Verify rules treat that shape as an advisory, so the
-        // same judgement applies here: no leg/proof judgement on the parts.
-        advisories.push(`ADVISORY_SHELL_ACCEPTANCE_VERIFY ${row.scen}: Verify uses shell control syntax; the acceptance rule checks the command's own exit status, not the legs inside it`);
-      } else {
-        // A propagated `|| exit` is status plumbing, not a leg: `node --test x || exit 1` proves
-        // what `node --test x` proves.
-        const subject = alternatives ? judged.replace(/\s*\|\|\s*exit(?:\s+\d+)?\s*/g, ' ').trim() : judged;
-        const legs = verifyLegs(subject);
-        // A pipefail body's exit status is red when ANY stage is red, so it proves something as
-        // soon as one stage has a leg that can fail — `node --test x | tail` fails on the tests.
-        // Any other command proves something when every one of its own legs does.
-        const stages = pipefail ? subject.split('|').map((stage) => verifyLegs(stage)).filter((list) => list.length) : [legs];
-        const proves = pipefail
-          ? stages.some((stage) => stage.some((leg) => legProves(leg)))
-          : legs.length > 0 && legs.every((leg) => legProves(leg));
-        if (!proves) {
-          blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: ${JSON.stringify(command)} proves nothing — run a real entry point or test command whose exit status can fail`);
+        // `for VAR in LIST; do <body>; done`. A failing iteration runs the body's own `|| exit`, so
+        // the shell leaves non-zero; the body is proven recursively with VAR bound to LIST.
+        const LOOP = /^for\s+([A-Za-z_]\w*)\s+in\s+([^;]+);\s*do\s+([\s\S]+?);?\s*done$/i;
+        const loop = LOOP.exec(text);
+        if (loop) {
+          const bodyReason = unprovable(loop[3], loop[2].trim().split(/\s+/));
+          if (bodyReason) return bodyReason;
+          // The body proves only if each failing iteration exits non-zero; without `|| exit` the loop
+          // continues after a red iteration and can finish with status 0.
+          return /\|\|\s*exit(?:\s+[1-9]\d*)?\s*;?\s*$/.test(maskQuotes(loop[3]))
+            ? null
+            : 'a `for` loop without a trailing `|| exit` continues after a failed iteration and can finish with status 0';
         }
+        // `cmd && cmd && for … done`: every leg's failure is the exit status, including the last, so
+        // decide each `&&` segment on its own. An `&&` inside a `for … done` body belongs to that body.
+        const loopSpan = /for\s+[A-Za-z_]\w*\s+in\s+[^;]+;\s*do[\s\S]*?\bdone\b/i.exec(masked);
+        const inLoop = (index) => loopSpan !== null && index >= loopSpan.index && index < loopSpan.index + loopSpan[0].length;
+        const cuts = [];
+        for (let i = masked.indexOf('&&'); i !== -1; i = masked.indexOf('&&', i + 2)) if (!inLoop(i)) cuts.push(i);
+        if (cuts.length) {
+          const segments = [];
+          let last = 0;
+          for (const cut of cuts) { segments.push([text.slice(last, cut), masked.slice(last, cut)]); last = cut + 2; }
+          segments.push([text.slice(last), masked.slice(last)]);
+          for (const [rawSegment] of segments) {
+            const segmentReason = unprovable(rawSegment.trim(), loopList);
+            if (segmentReason) return segmentReason;
+          }
+          return null;
+        }
+        // A trailing `|| exit N` converts a red leg into a non-zero status. Any other `||` makes one
+        // of two legs mandatory in an order nobody reads, and `|| exit 0` reports success outright.
+        let headMasked = masked;
+        let head = text;
+        if (/\|\|/.test(masked)) {
+          const tail = /\|\|\s*exit(?:\s+[1-9]\d*)?\s*$/.exec(masked);
+          if (!tail || /\|\|/.test(masked.slice(0, tail.index))) return '`||` hides which leg is the check unless it is a single trailing `|| exit` with a non-zero status';
+          headMasked = masked.slice(0, tail.index);
+          head = text.slice(0, tail.index);
+        }
+        // `;`, a bare `|`, `&`, a subshell, a group, a command substitution, a backtick or a control
+        // keyword each allows the command to exit 0 after a leg failed.
+        if (/[;|&`]|[(){}]|\$\(/.test(headMasked) || CONTROL_WORD.test(headMasked)) {
+          return 'only one command or commands joined by `&&` can have a provable exit status; `;`, `|`, a loop, a condition, a subshell or a nested shell can exit 0 after a leg failed';
+        }
+        // The leg splitter in lib/tasks.mjs splits on `|` too and does not mask quotes, so the text
+        // it reads has quoted pipes blanked: `"a | b"` is an argument, not a pipeline.
+        const legSource = head.replace(/'[^']*'|"[^"]*"/g, (segment) => segment.replace(/\|/g, ' '));
+        const legs = verifyLegs(legSource);
+        // A leg that runs the loop variable (`node "$f"`) proves what the loop list proves: the list
+        // must name a test path or a `test*` script.
+        const iterated = (leg) => {
+          if (!loopList) return false;
+          const target = leg.command.split(/\s+/).reverse().find((token) => !token.startsWith('-')) ?? '';
+          return !!ITERATION_VAR.exec(target.replace(/['"]/g, ''));
+        };
+        const provesLeg = (leg) => LEG_PROVES(leg) || (iterated(leg) && loopList.some((item) => {
+          const path = item.replace(/^['"]|['"]$/g, '');
+          return verifyTestPath(path) || testScript(`bash ${path}`) || legPaths(path).some((p) => verifyTestPath(p));
+        }));
+        if (!(legs.length > 0 && legs.every(provesLeg))) {
+          return `${JSON.stringify(command)} proves nothing — run a real entry point or test command whose exit status can fail`;
+        }
+        return null;
+      };
+      const reason = unprovable(command);
+      if (reason) {
+        blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: ${reason}; put the check in a script whose name starts with \`test\` (e.g. \`bash scripts/test-<name>.sh\`) or that lives under a test path, and run that — the script returns its own status`);
       }
     }
   }

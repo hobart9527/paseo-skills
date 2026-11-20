@@ -898,24 +898,28 @@ test('SCEN-ACC-01 a Required=yes acceptance command that can hide a failure is r
   };
   // A literal cell pipe is written `\|`; the gate reads the unescaped command, which is a pipeline.
   const piped = blocked('node --test test/a.test.mjs \\| tail -n 20');
-  assert.match(piped.blocking.join('\n'), /BAD_ACCEPTANCE_VERIFY SCEN-1: unquoted/);
+  assert.match(piped.blocking.join('\n'), /BAD_ACCEPTANCE_VERIFY SCEN-1: only one command/);
   assert.match(blocked('node --test test/a.test.mjs \\|\\| true').blocking.join('\n'), /hides which leg/);
   assert.match(blocked('node -e "0"').blocking.join('\n'), /proves nothing/);
-  assert.match(blocked('true').blocking.join('\n'), /proves nothing/);
-  // A quoted pipe is an argument, not a pipeline, and a real runner still passes.
+  assert.match(blocked('true').blocking.join('\n'), /proves nothing/);  // A quoted pipe is an argument, not a pipeline, and a real runner still passes.
   assert.equal(freezeWith('node --test test/shared.test.mjs "a \\| b"').status, 0);
   assert.equal(freezeWith('node --test test/a.test.mjs').status, 0);
   assert.equal(freezeWith('npm test').status, 0);
+  // Commands joined by `&&` still have a provable status: any red leg is the exit status.
+  assert.equal(freezeWith('node --test test/a.test.mjs && node --test test/b.test.mjs').status, 0);
   // Required=no rows are recorded only and never execute, so they are not judged this way.
   const withOptional = `${table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | npm test | yes | PENDING | pending |')}\n| SCEN-1 | CLI | T-01 | node --test test/a.test.mjs \\| tail -n 20 | no | PENDING | pending |\n`;
   assert.equal(run(change({ ...files, 'acceptance.md': withOptional })).status, 0);
-  // A shell loop is one command whose inner `|| exit 1` is the loop's own propagation, not two
-  // alternatives. Rejecting it would reverse the task Verify rule, which calls that shape an
-  // advisory, and it rejects every benchmark sink that iterates `scripts/specs/*.mjs`.
-  const loopRow = table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | for f in scripts/specs/*.mjs; do node "$f" \\|\\| exit 1; done | yes | PENDING | pending |');
-  const looped = run(change({ ...files, 'acceptance.md': loopRow }));
-  assert.equal(looped.status, 0, looped.stdout);
-  assert.match(looped.stdout, /ADVISORY_SHELL_ACCEPTANCE_VERIFY SCEN-1/);
+  // A `for` loop is provable when every failing iteration runs the body's own `|| exit <non-zero>`:
+  // the shell leaves non-zero instead of continuing. `node "$f"` is judged by the loop list.
+  const loopRow = (body) => table(`| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | for f in scripts/specs/*.mjs; do ${body}; done | yes | PENDING | pending |`);
+  assert.equal(run(change({ ...files, 'acceptance.md': loopRow('node "$f" \\|\\| exit 1') })).status, 0);
+  // Without that propagation the loop continues after a red iteration and can finish at 0.
+  const noExit = run(change({ ...files, 'acceptance.md': loopRow('node "$f"') }));
+  assert.equal(noExit.status, 1, noExit.stdout);
+  assert.match(noExit.stdout, /without a trailing `\|\| exit`/);
+  // `|| exit 0` reports success and is not propagation.
+  assert.equal(run(change({ ...files, 'acceptance.md': loopRow('node "$f" \\|\\| exit 0') })).status, 1);
 });
 
 // Rework round 1. The shell-construct exemption was a keyword search over the whole command, so a
@@ -932,12 +936,13 @@ test('SCEN-ACC-01 rework: a keyword in a path or argument is not a shell constru
     assert.ok(report.blocking.some((item) => item.startsWith('BAD_ACCEPTANCE_VERIFY SCEN-1')), `${verify}: ${result.stdout}`);
     assert.match(report.blocking.join('\n'), pattern, verify);
   };
-  // An argument that happens to be a reserved word proves nothing, and is not a loop.
-  blocking('echo if', /proves nothing/);
-  blocking('echo while', /proves nothing/);
+  // An argument that happens to be a reserved word is judged, not skipped: `echo if` is a command
+  // that proves nothing, and it is no longer misread as a loop and exempted.
+  blocking('echo if', /only one command|proves nothing/);
+  blocking('echo while', /only one command|proves nothing/);
   // The reserved word is inside a path, so the pipe in the pipeline is still a pipe.
-  blocking('node --test test/if.test.mjs \\| tail -n 20', /unquoted/);
-  blocking('node --test test/while.test.mjs \\| tail -n 20', /unquoted/);
+  blocking('node --test test/if.test.mjs \\| tail -n 20', /only one command/);
+  blocking('node --test test/while.test.mjs \\| tail -n 20', /only one command/);
 });
 
 test('SCEN-ACC-01 rework: `||` is failure propagation only when the right side is `exit`', () => {
@@ -954,12 +959,13 @@ test('SCEN-ACC-01 rework: `||` is failure propagation only when the right side i
   assert.equal(freezeWith('node --test test/a.test.mjs \\|\\| exit').status, 0);
 });
 
-// Rework round 3. Rounds 1 and 2 kept teaching the gate to recognize shell shapes, and each round
-// found a new one: a `set` piped into another process, a `{ set +o pipefail; }` group, a nested
-// `bash -c`. A `bash -c` body is a new shell, so proving its exit status means parsing shell
-// semantics in full. The rule no longer tries: only `set -o pipefail; <rest>` with an opaque-free
-// `<rest>`, or a single command with no operator, is accepted; anything else must become a script.
-test('SCEN-ACC-01 rework 3: an unparsable `bash -c` body is rejected, not guessed', () => {
+// Rework round 4. Rounds 1-3 each taught the gate to recognize another shell shape and each round
+// found one more it missed: `... | tail; true`, a nested `bash -c`, `if cmd; then echo ok; fi`.
+// A shell body's exit status is not decidable by pattern, so the gate stopped trying. It accepts
+// only what it can prove — one command, commands joined by `&&`, plus an optional trailing
+// `|| exit <non-zero>` — and every other operator, construct or nested shell is rejected with the
+// route that passes: a test script, which returns its own status.
+test('SCEN-ACC-01 rework 4: only a provable exit status is accepted', () => {
   const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
   const freezeWith = (verify) => run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | ${verify} | yes | PENDING | pending |`) }));
   const blocked = (verify, pattern) => {
@@ -969,16 +975,28 @@ test('SCEN-ACC-01 rework 3: an unparsable `bash -c` body is rejected, not guesse
     assert.ok(report.blocking.some((item) => item.startsWith('BAD_ACCEPTANCE_VERIFY SCEN-1')), `${verify}: ${result.stdout}`);
     assert.match(report.blocking.join('\n'), pattern, verify);
   };
-  // Reviewer round-3 repros: pipefail in a pipeline child, a group that turns it off, a nested shell.
+  // Reviewer round-3 and round-4 repros: every one of these can exit 0 after the test leg failed.
+  blocked("bash -c 'set -o pipefail; node --test test/a.test.mjs \\| tail -n 20; true'", /new shell/);
+  blocked('bash -c "set -o pipefail; bash -c \'node --test test/a.test.mjs \\| tail -n 20\'"', /new shell/);
+  blocked("bash -c 'set -o pipefail; if node --test test/a.test.mjs; then echo ok; fi'", /new shell/);
   blocked("bash -c 'set -o pipefail \\| cat; node --test test/a.test.mjs \\| tail -n 20'", /new shell/);
   blocked("bash -c 'set -o pipefail; { set +o pipefail; }; node --test test/a.test.mjs \\| tail -n 20'", /new shell/);
   blocked('bash -c "bash -c \'node --test test/a.test.mjs \\| tail -n 20\'"', /new shell/);
-  // The two accepted bodies: pipefail covering a rest with no other `set`/subshell/group, or one
-  // bare command judged like any other command.
-  assert.equal(freezeWith("bash -c 'set -o pipefail; node --test test/a.test.mjs \\| tail -n 20'").status, 0);
-  assert.equal(freezeWith("bash -c 'node --test test/a.test.mjs'").status, 0);
-  assert.equal(freezeWith("bash -c 'node --test test/a.test.mjs \\| tail -n 20'").status, 1);
+  // Contexts that can return 0 after a red leg, without a wrapper.
+  blocked('node --test test/a.test.mjs ; true', /only one command/);
+  blocked('true ; node --test test/a.test.mjs', /only one command/);
+  blocked('if node --test test/a.test.mjs; then echo ok; fi', /only one command/);
+  blocked('( node --test test/a.test.mjs )', /only one command/);
+  blocked('node --test test/a.test.mjs &', /only one command/);
+  // The provable forms: a single command, `&&` joins, and a trailing propagated failure.
+  assert.equal(freezeWith('node --test test/a.test.mjs').status, 0);
+  assert.equal(freezeWith('node --test test/a.test.mjs && node --test test/b.test.mjs').status, 0);
+  assert.equal(freezeWith('node --test test/a.test.mjs \\|\\| exit 1').status, 0);
   assert.equal(freezeWith('bash scripts/test-a.sh').status, 0);
+  // The route the message names must actually pass the gate.
+  const suggestion = freezeWith("bash -c 'true; node --test test/a.test.mjs'").stdout;
+  assert.match(suggestion, /a script whose name starts with `test`/);
+  assert.equal(freezeWith('bash scripts/test-check.sh').status, 0);
 });
 test('SCEN-ACC-01 rework 2: a masked failure is rejected in every wrapper shape', () => {
   const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
@@ -993,28 +1011,25 @@ test('SCEN-ACC-01 rework 2: a masked failure is rejected in every wrapper shape'
   // `exit 0` reports success for whichever leg failed.
   blocked('node --test test/a.test.mjs \\|\\| exit 0', /non-zero/);
   assert.equal(freezeWith('node --test test/a.test.mjs \\|\\| exit 0').status, 1);
-  // An allowed `|| exit 1` must not switch the pipe check off for the other legs in the same row.
+  // A `bash -c` body is a new shell whatever it contains; the round-4 rule rejects it outright.
   blocked('bash -c \'for f in test/a.test.mjs; do node --test "$f" \\| tail -n 20 \\|\\| exit 1; done\'', /new shell/);
-  // pipefail must be set before the pipeline and never turned off. Both bodies are now rejected
-  // outright by the round-3 rule rather than judged statement by statement.
   blocked("bash -c 'node --test test/a.test.mjs \\| tail -n 20; set -o pipefail'", /new shell/);
   blocked("bash -c 'set -o pipefail; set +o pipefail; node --test test/a.test.mjs \\| tail -n 20'", /new shell/);
-  // Still accepted: pipefail first, and a propagated failure status.
-  assert.equal(freezeWith("bash -c 'set -o pipefail; node --test test/a.test.mjs \\| tail -n 20'").status, 0);
+  // Still accepted: a single command and a propagated failure status.
+  assert.equal(freezeWith('node --test test/a.test.mjs').status, 0);
   assert.equal(freezeWith('node --test test/a.test.mjs \\|\\| exit 1').status, 0);
 });
 
-test('SCEN-ACC-01 rework: the `bash -c` pipefail suggestion is a command the gate accepts', () => {
+test('SCEN-ACC-01 rework: the rejection message names a route the gate accepts', () => {
   const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
   const freezeWith = (verify) => run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | ${verify} | yes | PENDING | pending |`) }));
   const piped = freezeWith('node --test test/a.test.mjs \\| tail -n 20');
   assert.equal(piped.status, 1);
-  // The message must name a wrapper that this same rule lets through.
-  const suggestion = JSON.parse(piped.stdout).blocking.join('\n').match(/`bash -c 'set -o pipefail; [^`]+`/);
-  assert.ok(suggestion, 'the unquoted-pipe message must name the pipefail wrapper');
-  assert.equal(freezeWith("bash -c 'set -o pipefail; node --test test/a.test.mjs \\| tail -n 20'").status, 0);
-  // Without pipefail the wrapper only hides a red first leg behind a green `tail`.
-  assert.equal(freezeWith("bash -c 'node --test test/a.test.mjs \\| tail -n 20'").status, 1);
+  // The message must name a script path that this same rule lets through: a `test*` script
+  // returns its own status, so no wrapper has to be proven.
+  assert.match(JSON.parse(piped.stdout).blocking.join('\n'), /a script whose name starts with `test`/);
+  assert.equal(freezeWith('bash scripts/test-a.sh').status, 0);
+  assert.equal(freezeWith('bash test/a.sh').status, 0);
 });
 
 test('a shell loop is an advisory, not invented legs', () => {
