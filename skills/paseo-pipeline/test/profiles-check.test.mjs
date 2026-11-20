@@ -103,3 +103,20 @@ test('brief path must exist under --root and notes must not claim read-only', ()
   assert.match(r.stdout, /MISSING_BRIEF gongbu nope\/missing.md/);
   assert.match(r.stdout, /FALSE_READONLY anchasi/);
 });
+
+test('brief accepts several ;-separated paths with a Tier label and checks each', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'profiles-multi-'));
+  fs.writeFileSync(path.join(dir, 'a.md'), 'x');
+  const skillFile = path.join(dir, 'SKILL.md');
+  const configFile = path.join(dir, 'config.json');
+  fs.writeFileSync(skillFile, skillText);
+  const mk = (brief) => ({ gongbu: { notes: `family: glm\nharness: claude\nwrite: w\nuse: u\nnot: n\nbrief: ${brief}` } });
+  const runWith = (brief) => {
+    fs.writeFileSync(configFile, JSON.stringify({ daemon: { agentProfiles: all(mk(brief)) } }));
+    return spawnSync('node', [script, '--skill', skillFile, '--config', configFile, '--root', dir], { encoding: 'utf8' });
+  };
+  assert.equal(runWith('Tier 3 a.md; Tier 2 a.md').status, 0);
+  const bad = runWith('Tier 3 a.md; Tier 2 gone.md');
+  assert.equal(bad.status, 1);
+  assert.match(bad.stdout, /MISSING_BRIEF gongbu gone\.md/);
+});

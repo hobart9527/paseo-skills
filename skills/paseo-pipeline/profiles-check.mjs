@@ -11,7 +11,7 @@
 //   write:   who guarantees the write boundary; antigravity must contain `diff-check`
 //   use:     one line, when to pick this profile
 //   not:     one line, what it does not do
-//   brief:   repo-relative path of the brief to paste into the task prompt, or `none`
+//   brief:   repo-relative path(s) of the brief to paste into the task prompt, `;`-separated, or `none`
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -49,7 +49,12 @@ export function check(roles, profiles, root = null) {
     for (const f of FIELDS) if (!field(p.notes, f)) findings.push(`MISSING_FIELD ${role} ${f}`);
     if (FALSE_READONLY.test(p.notes ?? '')) findings.push(`FALSE_READONLY ${role}`);
     const brief = field(p.notes, 'brief');
-    if (root && brief && brief !== 'none' && !fs.existsSync(path.resolve(root, brief))) findings.push(`MISSING_BRIEF ${role} ${brief}`);
+    if (root && brief && brief !== 'none') {
+      // One or more repo paths separated by `;`; an optional `Tier N ` label may precede each.
+      for (const part of brief.split(';').map((x) => x.trim().replace(/^Tier\s+\d+\s+/, '')).filter(Boolean)) {
+        if (!fs.existsSync(path.resolve(root, part))) findings.push(`MISSING_BRIEF ${role} ${part}`);
+      }
+    }
     if (p.provider === 'antigravity' && !/diff-check/i.test(field(p.notes, 'write') ?? '')) {
       findings.push(`UNENFORCED_WRITE ${role}`);
     }
