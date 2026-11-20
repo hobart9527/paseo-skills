@@ -30,7 +30,7 @@ Resolve provider/model/modeId/thinking via `list_profiles` at dispatch (`lib/rol
 | 开发（工部） `gongbu` | Default owner of tests and implementation within Write scope. |
 | 攻坚（高工） `gaogong` | Complex implementation (`Est: L` / `Risk-surface`) and bounded rework, not replanning. |
 | 界面（将作） `jiangzuo` | UI specialization plus UI skill; selected when scope is UI-focused. |
-| 审查（按察司） `anchasi` | Independent code audit (`FINAL` / Tier 2); review intent is not a sandbox guarantee. |
+| 审查（按察司） `anchasi` | Independent code audit (`FINAL` / Tier 2); review intent is not a read-only permission guarantee. |
 | 契约审查（Neon） `neon` | Independent read-only R0 (cannot review if same-family `chanpin` drafted Proposal). |
 | 协调（尚书） `shangshu` | Optional thin Tier 3 dispatch and reconciliation; main session is default. |
 
