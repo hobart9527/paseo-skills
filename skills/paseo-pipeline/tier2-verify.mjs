@@ -1,0 +1,142 @@
+#!/usr/bin/env node
+// Unified Tier 2 delivery gate (applies identically to main-session-in-worktree and /tier2-handoff).
+// Verifies isolation, OpenSpec contract & scenario Verify commands, executes every Verify command
+// at the current tip SHA, and runs risk-scan to decide if an independent reviewer is mandatory.
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { parseOptions } from './lib/cli.mjs';
+import { runGit } from './lib/git.mjs';
+import { repoContext } from './lib/tier-gate.mjs';
+import { loadSpecTree, scanScenVerify } from './lib/spec-scan.mjs';
+import { runVerifyCommand } from './lib/verify-runner.mjs';
+import { scanRepo } from './lib/risk-scan.mjs';
+
+const usage = 'Usage: tier2-verify.mjs <base> [--change-dir <dir>] [--verify <cmd>]... [--cwd <dir>] [--timeout ms] [--json]';
+
+let parsed;
+try {
+  parsed = parseOptions(process.argv.slice(2), {
+    'change-dir': 'value',
+    verify: 'repeat',
+    cwd: 'value',
+    timeout: 'value',
+    json: 'boolean',
+  });
+} catch (error) {
+  console.error(`[tier2-verify] ${error.message}\n${usage}`);
+  process.exit(2);
+}
+
+const [base] = parsed.positional;
+if (!base || parsed.positional.length > 1) {
+  console.error(usage);
+  process.exit(2);
+}
+
+const cwd = path.resolve(parsed.options.cwd || process.cwd());
+const timeout = Number(parsed.options.timeout ?? '300000');
+const ctx = repoContext(cwd);
+if (!ctx) {
+  console.error(`[tier2-verify] not a git repository: ${cwd}`);
+  process.exit(2);
+}
+
+const tipRes = runGit(cwd, ['rev-parse', 'HEAD']);
+if (tipRes.status !== 0) {
+  console.error('[tier2-verify] cannot resolve HEAD');
+  process.exit(2);
+}
+const tip = tipRes.stdout.trim();
+const dirty = runGit(cwd, ['status', '--porcelain=v1', '--untracked-files=all']).stdout.trim();
+
+const verifyCommands = [...(parsed.options.verify ?? [])];
+const missingVerify = [];
+let contractChecked = false;
+let openSpecStrictExit = null;
+let openSpecStrictError = null;
+
+const changeDir = parsed.options['change-dir'] ? path.resolve(cwd, parsed.options['change-dir']) : null;
+if (changeDir) {
+  if (!fs.existsSync(changeDir)) {
+    console.error(`[tier2-verify] missing change directory: ${changeDir}`);
+    process.exit(2);
+  }
+  contractChecked = true;
+  const specTree = loadSpecTree({ repoRoot: ctx.root, changeDir });
+  for (const { file, text } of specTree.current) {
+    for (const scen of scanScenVerify(text)) {
+      if (!scen.verify) missingVerify.push(`${scen.id} (${path.relative(changeDir, file)})`);
+      else {
+        const cleanVerify = scen.verify.replace(/^`(.+)`$/, '$1').trim();
+        if (!verifyCommands.includes(cleanVerify)) verifyCommands.push(cleanVerify);
+      }
+    }
+  }
+  const changeName = path.basename(changeDir);
+  const osCheck = spawnSync('openspec', ['validate', changeName, '--strict'], { cwd: ctx.root, encoding: 'utf8' });
+  if (osCheck.error) {
+    openSpecStrictError = osCheck.error.message;
+  } else {
+    openSpecStrictExit = osCheck.status;
+    if (osCheck.status !== 0 && osCheck.stderr) openSpecStrictError = osCheck.stderr.trim();
+  }
+}
+
+const verifyResults = [];
+let allVerifyPassed = missingVerify.length === 0 && verifyCommands.length > 0;
+for (const cmd of verifyCommands) {
+  const res = await runVerifyCommand(cmd, { cwd, timeout, streamToStdout: !parsed.options.json });
+  verifyResults.push({
+    command: cmd,
+    ok: res.ok,
+    status: res.status,
+    dirtyChanged: res.dirtyChanged,
+    durationMs: res.durationMs,
+    missingDependency: res.missingDependency,
+  });
+  if (!res.ok) allVerifyPassed = false;
+}
+
+const risk = scanRepo({ cwd, base, workingTree: Boolean(dirty) });
+const isolatedWorktree = !ctx.isPrimary;
+const contractOk = !contractChecked || (!openSpecStrictError && openSpecStrictExit === 0);
+const ok = isolatedWorktree && !dirty && allVerifyPassed && contractOk;
+const verdict = !ok ? 'FAIL' : (risk.reviewRequired ? 'REVIEW_REQUIRED' : 'PASS');
+
+const report = {
+  verdict,
+  repo: ctx.root,
+  branch: ctx.branch,
+  isolatedWorktree,
+  clean: !dirty,
+  base: risk.base,
+  tip,
+  contractChecked,
+  openSpecStrictExit,
+  openSpecStrictError,
+  missingVerify,
+  verifyResults,
+  risk,
+};
+
+if (parsed.options.json) {
+  console.log(JSON.stringify(report, null, 2));
+} else {
+  console.log(`[tier2-verify] ${ctx.branch || 'detached'} @ ${tip.slice(0, 7)} (base ${risk.base.slice(0, 7)})`);
+  console.log(`isolatedWorktree=${isolatedWorktree} clean=${!dirty} verifies=${verifyResults.length} riskReviewRequired=${risk.reviewRequired}`);
+  if (!isolatedWorktree) console.error('FAIL: Tier 2 delivery is on primary checkout instead of a linked worktree');
+  if (dirty) console.error('FAIL: worktree has uncommitted changes');
+  if (contractChecked && !contractOk) {
+    console.error(`FAIL: openspec validate --strict failed (exit=${openSpecStrictExit ?? 'unavailable'}${openSpecStrictError ? `: ${openSpecStrictError}` : ''})`);
+  }
+  if (missingVerify.length) console.error(`FAIL: scenarios missing **Verify:**: ${missingVerify.join(', ')}`);
+  if (!verifyCommands.length) console.error('FAIL: no Verify commands supplied or extracted from specs');
+  for (const r of verifyResults) console.log(`${r.ok ? 'PASS' : 'FAIL'} verify (${r.durationMs}ms): ${r.command}`);
+  if (risk.reviewRequired) {
+    console.log(`REVIEW_REQUIRED: classes=[${risk.classes.join(', ')}] testMutations=${risk.testMutations.length} -> run 1+1 independent reviewer (docs/tier2-reviewer-brief.md)`);
+  }
+  console.log(`RESULT tier2-verify: ${verdict}`);
+}
+
+process.exit(ok ? 0 : 1);

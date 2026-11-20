@@ -9,9 +9,10 @@ const read = (p) => fs.readFileSync(path.join(dir, p), 'utf8');
 const exists = (p) => assert.ok(fs.existsSync(path.join(dir, p)), p);
 
 test('pipeline prompt files and required headings exist', () => {
-  for (const p of ['SKILL.md', 'templates/author.md', 'templates/worker.md', 'templates/reviewer.md', 'templates/approvals.md', 'openspec-schema/schema.yaml']) exists(p);
+  for (const p of ['SKILL.md', 'templates/recon.md', 'templates/author.md', 'templates/worker.md', 'templates/reviewer.md', 'templates/approvals.md', 'openspec-schema/schema.yaml']) exists(p);
   for (const [file, headings] of Object.entries({
     'SKILL.md': ['# Paseo Pipeline', '## Roles', '## Entry and CP-1', '## Start and execute after CP-1', '## Tools', '## FINAL and CP-2', '## Hard lines'],
+    'templates/recon.md': ['# Recon & Proposal Research Brief', '## Scope', '## Return'],
     'templates/author.md': ['# Change Author Brief', '## Route first', '## DAG draft and route checks', '## Return envelope'],
     'templates/worker.md': ['# Worker Brief', '## Rules', '## Return envelope'],
     'templates/reviewer.md': ['# Independent Reviewer Brief', '## Requirement conformance first', '## R0', '## FINAL'],
@@ -21,34 +22,38 @@ test('pipeline prompt files and required headings exist', () => {
 
 test('skill preserves route, human gates and all dispatch profiles', () => {
   const skill = read('SKILL.md');
-  for (const token of ['maxWidth >= 2', 'tasks >= 4', 'never split', 'freeze-check', 'handoff', 'CP-1', 'CP-2', 'pipeline-run.mjs', 'preflight.mjs', 'namespace.mjs', 'pinned']) assert.ok(skill.includes(token), token);
-  for (const role of ['chanpin', 'hanlin', 'ceshi', 'gongbu', 'gaogong', 'jiangzuo', 'anchasi', 'shangshu']) assert.ok(skill.includes(role), role);
-  for (const token of ['list_profiles', 'Red tests', 'read-only', 'install-hook', 'Dispatch one `hanlin` author']) assert.ok(skill.includes(token), token);
+  for (const token of ['maxWidth >= 2', 'tasks >= 4', 'never split', 'freeze-check', 'handoff', 'CP-1', 'CP-2', 'pipeline-run.mjs', 'preflight.mjs', 'namespace.mjs', 'brief.mjs', 'worker-check', 'tier2-verify', 'acceptance sync', 'pinned']) assert.ok(skill.includes(token), token);
+  for (const role of ['chanpin', 'hanlin', 'ceshi', 'gongbu', 'gaogong', 'jiangzuo', 'anchasi', 'neon', 'shangshu']) assert.ok(skill.includes(role), role);
+  for (const token of ['list_profiles', 'Red tests', 'read-only', 'install-hook', 'Dispatch `hanlin`']) assert.ok(skill.includes(token), token);
   assert.ok(skill.length < 10000, `SKILL.md is ${skill.length} chars`);
 });
 
 test('author prompt puts route DAG before full artifact requirements', () => {
   const author = read('templates/author.md');
-  for (const token of ['task IDs', 'dependencies', 'maxWidth', 'one-line goal', 'freeze-check', 'handoff', 'proposal', 'SCEN-numbered', 'tasks', 'acceptance', 'review', 'design.md', 'path:line', 'COMPLETE', 'BLOCKED', 'INCOMPLETE']) assert.ok(author.includes(token), token);
+  for (const token of ['task IDs', 'dependencies', 'maxWidth', 'one-line goal', 'freeze-check', 'handoff', 'proposal', 'SCEN-numbered', 'tasks', 'acceptance', 'review', 'design.md', 'path:line', 'COMPLETE', 'BLOCKED', 'INCOMPLETE', 'acceptance sync']) assert.ok(author.includes(token), token);
   assert.ok(author.indexOf('## Route first') < author.indexOf('## DAG draft and route checks'));
   assert.ok(author.length < 7500, `author.md is ${author.length} chars`);
 });
 
 test('reviewer leads with conformance and preserves bounded advisory framing', () => {
   const reviewer = read('templates/reviewer.md');
-  for (const token of ['Requirement conformance first', 'bidirectional traceability', 'shared boundaries', 'real entry', 'matrix row', 'MET | NOT_MET | UNVERIFIABLE', 'DEVIATION', 'CONTRACT_GAP', 'ENHANCEMENT', 'NOT_MET', 'UNVERIFIABLE', 'CP-2', 'templates/approvals.md']) assert.ok(reviewer.includes(token), token);
+  for (const token of ['Requirement conformance first', 'bidirectional traceability', 'shared boundaries', 'real entry', 'matrix row', 'MET | NOT_MET | UNVERIFIABLE', 'DEVIATION', 'CONTRACT_GAP', 'ENHANCEMENT', 'NOT_MET', 'UNVERIFIABLE', 'CP-2', 'templates/approvals.md', '5 fixed standards', 'Oracle fidelity']) assert.ok(reviewer.includes(token), token);
+  assert.doesNotMatch(reviewer, /correctness on frozen paths|hard repository conventions/);
+  assert.match(reviewer, /never emit `ENHANCEMENT`/);
   assert.ok(reviewer.length < 6000, `reviewer.md is ${reviewer.length} chars`);
 });
 
-test('worker prompt keeps task-local scope and runtime verification', () => {
+test('worker prompt keeps task-local scope, ceshi immutability and worker-check', () => {
   const worker = read('templates/worker.md');
-  for (const token of ['Write scope', 'frozen Verify', 'write tests and implementation', 'environment fault, not a test result', 'Cannot find package', 'Do not silently widen scope', 'Pipeline-Author', 'Co-Authored-By']) assert.ok(worker.includes(token), token);
+  for (const token of ['Write scope', 'frozen Verify', 'write tests and implementation', 'environment fault, not a test result', 'Cannot find package', 'worker-check', 'ceshi', 'Pipeline-Author']) assert.ok(worker.includes(token), token);
   assert.ok(worker.length < 4000, `worker.md is ${worker.length} chars`);
 });
 
 test('recovery and destructive approval template has bounded choices and exact record format', () => {
   const approval = read('templates/approvals.md');
-  for (const token of ['Accept', 'New change', 'Terminate', 'review budget', 'NOT_MET', 'UNVERIFIABLE', 'reviewed SHA', 'CP-2', 'Object:', 'Command:', 'Executor:', 'verbatim', 'Push and history rewrite', 'allow-test-infra', 'allow-attempt-over', 'MERGE_HEAD']) assert.ok(approval.includes(token), token);
+  for (const token of ['Accept', 'Terminate', 'review budget', 'NOT_MET', 'UNVERIFIABLE', 'reviewed SHA', 'CP-2', 'Object:', 'Command:', 'Executor:', 'verbatim', 'Push and history rewrite', 'allow-test-infra', 'allow-attempt-over', 'MERGE_HEAD']) assert.ok(approval.includes(token), token);
+  assert.doesNotMatch(approval, /one reopen delta review/);
+  assert.match(approval, /never reopen delta R0/);
   assert.ok(approval.length < 3200, `approvals.md is ${approval.length} chars`);
 });
 
@@ -84,7 +89,8 @@ test('review round limits live in SKILL; templates point to limits and dispositi
   assert.match(reviewer, /Round limits: `SKILL\.md` § FINAL and CP-2/);
   assert.match(approval, /`SKILL\.md` § FINAL and CP-2 exhausts the review budget/);
   for (const text of [reviewer, approval]) assert.doesNotMatch(text, /(?:At most|Maximum|after) two (?:whole-package|FINAL) rounds/);
-  assert.match(approval, /one reopen delta review/);
+  assert.doesNotMatch(approval, /one reopen delta review/);
+  assert.doesNotMatch(skill, /one directed fix with delta check/);
 });
 
 test('retired design documents live only under history', () => {
@@ -111,27 +117,32 @@ test('Tier 2 handoff and review remain documented', () => {
   assert.match(fs.readFileSync(reviewPath, 'utf8'), /Requirement matrix/);
 });
 
-test('every Tier 2 delivery gets an evidence recheck; a reviewer needs a named risk class', () => {
+test('every Tier 2 delivery gets an evidence recheck and risk-scan; risky code or oracle mutation triggers 1+1 reviewer', () => {
   const handoff = fs.readFileSync(path.join(dir, '..', '..', 'docs', 'tier2-handoff-brief.md'), 'utf8');
   const review = fs.readFileSync(path.join(dir, '..', '..', 'docs', 'tier2-reviewer-brief.md'), 'utf8');
   const wrapper = fs.readFileSync(path.join(dir, '..', 'tier2-handoff', 'SKILL.md'), 'utf8');
   assert.match(handoff, /Evidence recheck[^\n]*every Tier 2 delivery/);
+  assert.match(handoff, /risk-scan\.mjs/);
+  assert.match(handoff, /money\/billing/);
+  assert.match(handoff, /external-write/);
   assert.match(handoff, /exit code/);
   assert.match(handoff, /Risk: none/);
   assert.match(review, /Risk class/);
+  assert.match(review, /Strict 1\+1 budget/);
+  assert.match(review, /Do not emit `Followups`/);
   assert.match(wrapper, /Evidence recheck/);
+  assert.match(wrapper, /risk-scan\.mjs/);
 });
 
-test('Tier 2 contract is two native OpenSpec files and the handoff points at it', () => {
+test('Tier 2 contract uses progressive native OpenSpec with SCEN + Verify and tier2-verify gate', () => {
   const docs = path.join(dir, '..', '..', 'docs');
   exists('../../docs/tier2-contract.md');
   const contract = fs.readFileSync(path.join(docs, 'tier2-contract.md'), 'utf8');
-  for (const token of ['specs/<capability>/spec.md', 'tasks.md', '#### Scenario:', '**Verify:**', 'openspec validate', '--strict', 'proposal.md']) assert.ok(contract.includes(token), token);
-  assert.doesNotMatch(contract, /SCEN-|acceptance\.md|freeze-check/, 'Tier 3 fields stay out of the Tier 2 template');
+  for (const token of ['specs/<capability>/spec.md', 'tasks.md', '#### Scenario: SCEN-', '**Verify:**', 'openspec validate', '--strict', 'tier2-verify.mjs']) assert.ok(contract.includes(token), token);
   assert.ok(contract.length < 2500, `tier2-contract.md is ${contract.length} chars`);
   const handoff = fs.readFileSync(path.join(docs, 'tier2-handoff-brief.md'), 'utf8');
   assert.match(handoff, /\*\*Contract:\*\*[^\n]*tier2-contract\.md/);
-  assert.match(handoff, /Evidence recheck[^\n]*\*\*Verify:\*\*/);
+  assert.match(handoff, /tier2-verify/);
 });
 
 test('Tier 2 contract is only for observable behaviour; mechanical work declares none', () => {
@@ -154,19 +165,19 @@ test('Tier 3 package is four required files; the rest is on demand', () => {
   assert.ok(tasks.length < 2600, `tasks template is ${tasks.length} chars`);
 });
 
-test('R0 checks Reach, Shape and Removal only, with a hard stop', () => {
+test('R0 checks Reach, Shape and Removal only, with a bounded scope budget', () => {
   const reviewer = read('templates/reviewer.md');
   const r0 = reviewer.slice(reviewer.indexOf('## R0'), reviewer.indexOf('## FINAL'));
-  for (const token of ['**Reach**', '**Shape**', '**Removal**', 'nothing else', 'minute 20', 'minute 25', 'pinned commit and approved external snapshots', 'confirmed decisions supplied to the author']) assert.ok(r0.includes(token), token);
+  for (const token of ['**Reach**', '**Shape**', '**Removal**', 'nothing else', 'Scope budget', 'pinned commit and approved external snapshots', 'confirmed decisions supplied to the author']) assert.ok(r0.includes(token), token);
   assert.match(r0, /author's `## Baseline`/);
   assert.match(r0, /does not rerun/);
   assert.ok(!/baseline pass/i.test(r0), 'R0 still asks for its own baseline pass');
   assert.ok(r0.length < 2300, `R0 section is ${r0.length} chars`);
 });
 
-test('dispatch names come from the plan line and the backstop is a Paseo heartbeat', () => {
+test('dispatch names come from the plan line and the backstop is a single Paseo heartbeat per change', () => {
   const skill = read('SKILL.md');
-  assert.match(skill, /title and `pipeline\.change` label its DISPATCH line prints/);
+  assert.match(skill, /pipeline\.change/);
   assert.match(skill, /create_heartbeat/);
 });
 

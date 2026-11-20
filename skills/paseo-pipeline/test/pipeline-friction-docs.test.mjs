@@ -23,8 +23,8 @@ test('a FINAL failure compares the integration base with main before it is calle
   has(skill, ['regression', 'main...<full-SHA>', 'git merge-base integration/<change> main'], 'SKILL.md');
 });
 
-test('every dispatch arms a heartbeat backstop and never duplicates the dispatch', () => {
-  has(skill, ['create_heartbeat', 'lost-notification backstop', 'never duplicate dispatch'], 'SKILL.md');
+test('every change keeps a single heartbeat backstop and never duplicates the dispatch', () => {
+  has(skill, ['create_heartbeat', 'never duplicate dispatch'], 'SKILL.md');
 });
 
 test('CP-1 follows R0, which follows the human choices', () => {
@@ -44,11 +44,11 @@ test('briefs carry pinned evidence, decision context and no fabricated scope', (
 // D8: the author researched for 11 minutes before the first file and the R0 reviewer ran 34
 // minutes without a verdict. The rule list comes first, the three risk checks are named, and
 // the reviewer stops on a clock.
-test('the author writes the rule list before the baseline research, and the reviewer stops on a clock', () => {
-  has(author, ['within 2 minutes', '**Reach**', '**Shape**', '**Removal**', 'exit code', '$PASEO_AGENT_ID'], 'author.md');
+test('the author writes the rule list before the baseline research, and the reviewer uses a bounded scope budget', () => {
+  has(author, ['before reading baseline code', '**Reach**', '**Shape**', '**Removal**', 'exit code', '$PASEO_AGENT_ID'], 'author.md');
   const at = (token) => { const index = author.indexOf(token); assert.ok(index > -1, token); return index; };
-  assert.ok(at('Write the rule list now') < at('the baseline is fair game'));
-  has(reviewer, ['minute 20', 'minute 25'], 'reviewer.md');
+  assert.ok(at('Write the rule list first') < at('the baseline is fair game'));
+  has(reviewer, ['Scope budget', 'never a pass'], 'reviewer.md');
   // The baseline belongs to the author (one run, recorded in `## Baseline`); the reviewer reads it.
   has(author, ['## Baseline', 'once'], 'author.md');
   has(reviewer, ["author's `## Baseline`", 'does not rerun'], 'reviewer.md');
@@ -82,13 +82,13 @@ test('scenario templates require Verify and handoff marks acceptance historical'
   has(specTemplate, ['**Verify:**'], 'spec template');
   assert.equal((specTemplate.match(/- \*\*WHEN\*\*/g) || []).length, (specTemplate.match(/- \*\*Verify:\*\*/g) || []).length, 'spec template scenario Verify count');
   has(schema, ['one `**Verify:**` line per scenario'], 'schema specs instruction');
-  has(author, ['existing `acceptance.md` is historical', 'superseded by Tier 2 Evidence recheck'], 'author.md handoff step');
+  has(author, ['existing `acceptance.md` is historical', 'superseded by `tier2-verify`'], 'author.md handoff step');
 });
 
-test('handoff Red commits are replayable and heartbeat timing is one-shot', () => {
+test('handoff Red commits are replayable and heartbeat avoids step crons', () => {
   const repoRoot = path.resolve(dir, '../..');
   const brief = fs.readFileSync(path.join(repoRoot, 'docs/tier2-handoff-brief.md'), 'utf8');
   has(brief, ['test files only, red on the base', 'implementation second', 'Red command at the test commit'], 'Tier 2 brief');
   assert.ok(!brief.includes('One commit per slice.'), 'Tier 2 brief stale one-commit rule');
-  has(skill, ['absolute one-shot cron', 'dispatch time plus the backstop window', 'timezone', 'maxRuns: 1', 'never `*/30`'], 'SKILL.md');
+  has(skill, ['create_heartbeat', 'never `*/30`'], 'SKILL.md');
 });

@@ -18,23 +18,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ROLE_PROFILE_IDS, AUTHOR_ROLES, IMPLEMENTER_ROLES, profileIdOf } from './lib/roles.mjs';
+
+export { ROLE_PROFILE_IDS, profileIdOf };
 
 const FIELDS = ['family', 'harness', 'write', 'use', 'not', 'brief'];
 const FALSE_READONLY = /纯只读|只读无写权限/;
-// Default implementation pairings only. A tester and auditor may share a family;
-// actual target contributors must be reconciled at dispatch, not inferred here.
-const WRITERS = ['gongbu', 'gaogong', 'jiangzuo'];
-
-// Roles whose live profile id is not `agent_profile_<role>`. A Paseo profile id is opaque, so
-// the mapping has to be declared: this one is 契约审查（Neon）, the independent R0 reviewer.
-// Every role not named here resolves through the `agent_profile_<role>` default.
-export const ROLE_PROFILE_IDS = { neon: 'agent_profile_mvvzv70y_bweu1x85oc9' };
-
-// The contract-author brief states a boundary only the contract author owns. A role whose scope
-// excludes authoring must not be handed it; 调研（中书）researches and drafts Proposal text, it does
-// not write the contract.
 const AUTHOR_BRIEF = 'templates/author.md';
-const AUTHOR_ROLES = ['hanlin'];
 
 function arg(name, fallback) {
   const i = process.argv.indexOf(name);
@@ -51,10 +41,6 @@ export function field(notes, key) {
   return m ? m[1] : null;
 }
 
-export function profileIdOf(role) {
-  return ROLE_PROFILE_IDS[role] ?? `agent_profile_${role}`;
-}
-
 export function check(roles, profiles, root = null) {
   const findings = [];
   const advisories = [];
@@ -67,15 +53,10 @@ export function check(roles, profiles, root = null) {
     if (FALSE_READONLY.test(p.notes ?? '')) findings.push(`FALSE_READONLY ${role}`);
     const brief = field(p.notes, 'brief');
     if (root && brief && brief !== 'none') {
-      // One or more repo paths separated by `;`; an optional `Tier N ` label may precede each.
       for (const part of brief.split(';').map((x) => x.trim().replace(/^Tier\s+\d+\s+/, '')).filter(Boolean)) {
         if (!fs.existsSync(path.resolve(root, part))) findings.push(`MISSING_BRIEF ${role} ${part}`);
       }
     }
-    // Brief and `use:` must agree on the boundary: the contract-author brief belongs to the role
-    // that writes the contract, and no other. Advisory, not a block: the live 调研（中书）profile
-    // still carries it and the live config is outside this repository (its edit is in the delivery
-    // report); a blocking rule here would make the required live run exit 1 forever.
     if (brief && brief !== 'none' && !AUTHOR_ROLES.includes(role)
       && brief.split(';').some((part) => part.trim().replace(/^Tier\s+\d+\s+/, '').endsWith(AUTHOR_BRIEF))) {
       advisories.push(`ADVISORY_BRIEF_OUT_OF_SCOPE ${role}: brief ${AUTHOR_BRIEF} belongs to ${AUTHOR_ROLES.join('/')}, and ${role} does not write the contract; point it at a brief matching its use: boundary`);
@@ -86,8 +67,11 @@ export function check(roles, profiles, root = null) {
   }
   const fam = (r) => field(byRole.get(r)?.notes, 'family')?.toLowerCase();
   const clash = (a, b) => fam(a) && fam(a) === fam(b) && findings.push(`FAMILY_CLASH ${a} ${b} (${fam(a)})`);
-  for (const w of WRITERS) clash('anchasi', w);
+  for (const w of IMPLEMENTER_ROLES) clash('anchasi', w);
   clash('ceshi', 'gongbu');
+  if (fam('chanpin') && fam('chanpin') === fam('neon')) {
+    advisories.push(`ADVISORY_FAMILY_PAIR chanpin neon (${fam('chanpin')}): if chanpin drafts Proposal content, neon must not review its R0`);
+  }
   return { findings, advisories };
 }
 

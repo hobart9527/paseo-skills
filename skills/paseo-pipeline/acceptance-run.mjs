@@ -2,9 +2,9 @@
 // Operator-invoked execution record, not a sandbox or a CP-2 authorization.
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
 import { runGit } from './lib/git.mjs';
 import { parseOptions } from './lib/cli.mjs';
+import { runShell } from './lib/verify-runner.mjs';
 
 function fail(message) { throw new Error(message); }
 function git(cwd, args) {
@@ -42,32 +42,7 @@ function rowsOf(text) {
   return rows;
 }
 function run(command, cwd, timeout) {
-  return new Promise((resolve) => {
-    // `sh` exits with the last pipeline leg's status, so `node --test x | tail -n 20` recorded PASS
-    // with red tests. bash's pipefail makes a red first leg fail the command; single commands behave
-    // identically. Freeze also rejects a Required=yes pipe, so this is the backstop for a matrix
-    // that reached execution some other way.
-    const child = spawn('/bin/bash', ['-c', `set -o pipefail; ${command}`], { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '', timedOut = false, overflow = false, error = null;
-    const limit = 1024 * 1024;
-    const stop = (abort = false) => {
-      try { process.kill(-child.pid, 'SIGKILL'); } catch {}
-      if (abort) { child.stdout.destroy(); child.stderr.destroy(); }
-    };
-    const timer = setTimeout(() => { timedOut = true; stop(true); }, timeout);
-    const capture = (which, chunk) => {
-      if (which === 'stdout') stdout += chunk; else stderr += chunk;
-      if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > limit) { overflow = true; stop(true); }
-    };
-    child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => capture('stdout', chunk));
-    child.stderr.on('data', (chunk) => capture('stderr', chunk));
-    child.on('error', (err) => { error = err.message; });
-    child.on('close', (status, signal) => {
-      clearTimeout(timer); stop();
-      resolve({ status, signal, timedOut, overflow, error, stdout: stdout.slice(0, limit), stderr: stderr.slice(0, limit) });
-    });
-  });
+  return runShell(command, { cwd, timeout, capture: true });
 }
 
 async function main() {

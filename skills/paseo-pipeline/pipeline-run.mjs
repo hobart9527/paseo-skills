@@ -10,7 +10,11 @@
 //   pipeline-run.mjs status <change-dir>
 //   pipeline-run.mjs cleanup <change-dir> [--json] [--change <name>]
 //   pipeline-run.mjs scenarios <change-dir> [--json]
-//   pipeline-run.mjs acceptance run|check <change-dir> --evidence <file> ...
+//   pipeline-run.mjs acceptance run|check|sync <change-dir> ...
+//   pipeline-run.mjs brief <role> --change <name> --repo <path> ...
+//   pipeline-run.mjs worker-check <change-dir> <task-id> [--timeout ms] [--allow-test-infra]
+//   pipeline-run.mjs tier2-verify <base> [--change-dir <dir>] [--verify <cmd>]... [--cwd <dir>] [--json]
+//   pipeline-run.mjs risk-scan <base> [<head>] [--cwd <dir>] [--working-tree] [--json] [--require-clean]
 //   pipeline-run.mjs install-hook <worktree> [<worktree>...]
 //
 // `merge` must run inside the integration worktree (`integration/<change>`).
@@ -83,7 +87,21 @@ function hookWarnings(change) {
 }
 
 if (command === 'acceptance') {
+  const [sub, ...subRest] = rest;
+  if (sub === 'sync') {
+    const result = spawnSync(process.execPath, [path.join(HOME, 'acceptance-sync.mjs'), ...subRest], { stdio: 'inherit' });
+    process.exit(result.status ?? 1);
+  }
   const result = spawnSync(process.execPath, [path.join(HOME, 'acceptance-run.mjs'), ...rest], { stdio: 'inherit' });
+  process.exit(result.status ?? 1);
+} else if (command === 'brief') {
+  const result = spawnSync(process.execPath, [path.join(HOME, 'brief.mjs'), ...rest], { stdio: 'inherit' });
+  process.exit(result.status ?? 1);
+} else if (command === 'worker-check') {
+  const result = spawnSync(process.execPath, [path.join(HOME, 'worker-check.mjs'), ...rest], { stdio: 'inherit' });
+  process.exit(result.status ?? 1);
+} else if (command === 'tier2-verify') {
+  const result = spawnSync(process.execPath, [path.join(HOME, 'tier2-verify.mjs'), ...rest], { stdio: 'inherit' });
   process.exit(result.status ?? 1);
 } else if (command === 'plan') {
   let parsed;
@@ -180,6 +198,9 @@ if (command === 'acceptance') {
   // separate process so it cannot even import the scheduler; the child's exit code is the answer.
   const result = spawnSync(process.execPath, [path.join(HOME, 'scenarios.mjs'), ...rest], { stdio: 'inherit' });
   process.exit(result.status ?? 1);
+} else if (command === 'risk-scan') {
+  const result = spawnSync(process.execPath, [path.join(HOME, 'risk-scan.mjs'), ...rest], { stdio: 'inherit' });
+  process.exit(result.status ?? 1);
 } else if (command === 'status') {
   let parsed;
   try { parsed = parseOptions(rest, { json: 'boolean' }); } catch (error) { die(error.message); }
@@ -213,5 +234,5 @@ if (command === 'acceptance') {
     for (const item of doneVerification(change, tasks, dir)) console.log(`ATTENTION ${item.task}: ${item.kind} — ${item.reason}`);
   }
 } else {
-  die('usage: pipeline-run.mjs plan|merge|status|cleanup|scenarios|acceptance <change-dir> ...', 2);
+  die('usage: pipeline-run.mjs plan|merge|status|cleanup|scenarios|acceptance|risk-scan|install-hook ...', 2);
 }

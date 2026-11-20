@@ -4,61 +4,57 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output: `openspec/changes/<change>/`.
 
 ## Route first
 
-1. Read `SKILL.md` and the schema templates this change needs: `openspec-schema/schema.yaml` and `openspec-schema/templates/` define artifacts, required content and validation, and are the rule source for every artifact below.
-2. Write the rule list now: `proposal.md` with `## What Changes` (one line per rule this change makes), `## OPEN-DECISION` for the choices the brief supplies, and an empty `## Baseline`. Commit it within 2 minutes and read no baseline code before that commit.
-3. Draft a compact DAG next: task IDs, dependencies, `maxWidth`, and one-line goal per task. Refine the dispatcher's rough DAG rather than redrawing it: the graph reflects real work, so Tier 3 means `tasks >= 4` and `maxWidth >= 2`, never a split or padded graph.
-4. After the rule-list commit, the baseline is fair game: research only what a listed rule needs, and commit each finding small.
-5. Run the supplied structural `freeze-check` on the committed package; it is authoritative for route. On handoff, existing `acceptance.md` is historical, superseded by Tier 2 Evidence recheck; return SHA/evidence. Handoff `COMPLETE` needs structural exit 0 with no blocks and matching checked/reported SHA.
-6. If route is `pipeline`, finish the package: proposal, SCEN-numbered spec deltas, tasks, acceptance, and the R0 review artifact. Create `design.md` only when schema criteria apply, using the exact template files the schema names.
+1. Read `SKILL.md` and schema templates (`openspec-schema/schema.yaml`, `openspec-schema/templates/`).
+2. Write the rule list first: `proposal.md` with `## What Changes` (one line per rule), `## OPEN-DECISION` for supplied choices, and an empty `## Baseline`. Commit this rule-list before reading baseline code.
+3. Draft a compact DAG next: task IDs, dependencies, `maxWidth`, and one-line goal per task. Refine the rough DAG rather than padding it: Tier 3 means `tasks >= 4` and `maxWidth >= 2`, never split to qualify.
+4. After the rule-list commit, the baseline is fair game: research only what a listed rule needs and commit small. Write `specs/` (SCEN-numbered, one `- **Verify:**` per scenario) and run `freeze-check --structural --stage specs` first to catch open hard decisions or collisions before authoring `tasks.md` and `acceptance.md`.
+5. Finish `tasks.md`, derive `acceptance.md` via `pipeline-run.mjs acceptance sync <change-dir>` (filling real `Entry` and `Required`), then run supplied structural `freeze-check` on the committed package; it is authoritative for route. On handoff, existing `acceptance.md` is historical, superseded by `tier2-verify`; return SHA/evidence. Handoff `COMPLETE` needs structural exit 0 with no blocks and matching checked/reported SHA.
+6. If route is `pipeline`, confirm package completion: proposal, SCEN-numbered spec deltas, tasks, acceptance, and the R0 review artifact. Create `design.md` only when schema criteria apply.
 
 ## Assignment and boundaries
 
-- Write only in the assigned author workspace, under `openspec/changes/<change>/`. One author writes the whole package; workspace creation, rerouting and handoff belong to the main session.
-- Package files: proposal (with `## Baseline`), specs, tasks, acceptance, review (R0 line); `design.md` only per the schema, nothing else. Baseline facts go in `proposal.md`.
-- The main-session brief supplies absolute workspace, baseline SHA, `PIPELINE_HOME`, exact preflight and structural commands, project constants and confirmed decisions; each command authorizes only itself.
-- Conflicting instructions or a denied required command mean `BLOCKED`: report exact command, cwd, verbatim denial and next responsible action, and stop there.
-- Run required read-only preflight before writing.
-- Cite source claims as `path:line`; mark unverified claims `UNVERIFIED`.
+- Write only in the assigned author workspace under `openspec/changes/<change>/`. One author writes the whole package; workspace creation, rerouting and handoff belong to the main session.
+- Package files: proposal (with `## Baseline`), specs, tasks, acceptance, review (R0 line); `design.md` only per schema, nothing else. Baseline facts go in `proposal.md`.
+- The brief supplies absolute workspace, baseline SHA, `PIPELINE_HOME`, exact preflight/structural commands, project constants and confirmed decisions; each command authorizes only itself.
+- Conflicting instructions or a denied required command mean `BLOCKED`: report exact command, cwd, verbatim denial and next responsible action, and stop.
+- Run required read-only preflight before writing. Cite source claims as `path:line`; mark unverified claims `UNVERIFIED`.
 
 ## Deliverables and decisions
 
-- Return assumptions with verification methods. Separate material product choices from ordinary ones: state options/consequences and leave choice to the human. Record unresolved choices as `OPEN-DECISION`; open hard decision: commit and return `BLOCKED (decision)` with options before specs/tasks.
+- Return assumptions with verification methods. Separate material product choices from ordinary ones: state options/consequences for the human. Record unresolved choices as `OPEN-DECISION`; open hard decision: commit and return `BLOCKED (decision)` with options before specs/tasks.
 - Keep behavior requirements observable. Freeze cross-task interfaces and decisions in a worker-reachable contract. Avoid invented behavior, ownership or dependencies.
 
 ## Three checks before the structural check
 
-Read baseline only for listed rules. Use `rg`, narrow windows and `path:line` beside each rule.
+Read baseline only for listed rules (`rg`, narrow windows, `path:line`).
 
-1. **Reach** — every SCEN names its entry, the file that owns it, and a Verify that exercises that entry through a real path. A Verify on an isolated helper passes while the user path stays dead. Each Verify leg runs in a fresh worktree, or states its dependency gap.
-2. **Shape** — every field, route, enum and payload the spec claims is cited from the baseline with its real shape and storage constraint (enum/`CHECK`/migration). A field the baseline does not carry is a new task or an `OPEN-DECISION`, never a value the test invents.
-3. **Removal** — every deletion lists the gate the deleted code carries today (submit blocking, validation, lease, ledger) and where that gate goes.
+1. **Reach** — every SCEN names its entry, owning file, and a Verify exercising that entry through a real path (not an isolated helper). Each Verify leg runs in a fresh worktree, or states its dependency gap.
+2. **Shape** — every field, route, enum and payload is cited from the baseline with its real shape and storage constraint (`CHECK`/enum/migration). Missing baseline fields need a new task or `OPEN-DECISION`, never invented test values.
+3. **Removal** — every deletion lists the gate the deleted code carries today (submit blocking, validation, lease, ledger) and where it goes.
 
 ## DAG draft and route checks
 
-Claim source: `tasks.md` `Scenarios:`; acceptance `Tasks` is its projection. Compare with read-only `pipeline-run.mjs scenarios`. Reuse baseline IDs only under MODIFIED/REMOVED; conflicting active declarations are errors.
+Claim source: `tasks.md` `Scenarios:`; acceptance `Tasks` is its projection (generated by `acceptance sync`). Reuse baseline IDs only under MODIFIED/REMOVED; conflicting active declarations are errors.
 
 List task ID, behavior goal, dependencies, Write scope and Verify for `freeze-check`. Keep vertical slices: behavior, wiring, fixtures and tests together. Wave 0 needs a shared contract and real consumers. For a shared assembly file, its task owns the SCEN, or components `Uses` a Wave 0 `Kind: skeleton`. Parallel Write scopes are disjoint; dependencies follow consumer readiness.
 
-Workers own tests and implementation. `Review: strict` selects independent Red: state why, test paths, real interface and runnable Verify. Risk alone adds no tester. Never invent future APIs; if rules force strict, disclose its tester stage.
-
-Apply the schema's full task format once the route is known; the structural check enforces the shape, so spend your attention on ownership, scope and Verify.
+Workers own tests and implementation. `Review: strict` selects independent Red: state why, test paths, real interface and runnable Verify. Risk alone adds no tester. Never invent future APIs. Apply the schema's full task format once route is known.
 
 ## Commit and check sequence
 
-1. Commit each artifact as it lands; record done and remaining work in the commit message.
-2. Run `namespace.mjs` (when supplied), add specs and freeze the SCEN set. Add design only when warranted, then tasks and acceptance.
-3. Run the sink's Verify on the baseline commit once and record each command's exit code in `## Baseline`. A script already red on the baseline stays out of the sink's Verify, or a task owns the fix.
-4. Run the structural check as soon as the package exists (evidence below); fix blockers in place and rerun.
-5. Before R0, the package is committed and the reported structural result is pinned to that commit.
-6. Every commit ends with `Pipeline-Role: <role>` and `Pipeline-Author: $(echo $PASEO_AGENT_ID)` — your own agent id, never the dispatcher's.
+1. Commit each artifact as it lands; record done/remaining in the commit message.
+2. Run `namespace.mjs` (when supplied), add specs and freeze the SCEN set. Add design only when warranted, then tasks and `acceptance sync`.
+3. Run the sink's Verify on the baseline commit once and record each exit code in `## Baseline`. A script already red on baseline stays out of sink Verify, or a task owns the fix.
+4. Run the structural check once the package exists; fix blockers in place and rerun. Before R0, package must be committed and checked SHA must match.
+5. Every commit ends with `Pipeline-Role: <role>` and `Pipeline-Author: $(echo $PASEO_AGENT_ID)`.
 
-## Time budget
+## Scope budget
 
-Record start time. Targets: rule-list commit by minute 2, complete package and structural result by minute 20. At minute 25, stop yourself: commit current state and report `INCOMPLETE` with the snapshot commit; budget exhaustion never means COMPLETE. Report planned stop, stop instruction delivery (if any), actual stop and snapshot commit separately.
+Work in bounded steps: rule-list commit first, then `specs` + `--stage specs`, then `tasks` + `acceptance sync` + full structural check. Never survey unrelated files. If blocked or hitting a dead end without structural convergence, commit current state and report `INCOMPLETE` with the snapshot commit; an unfinished draft never counts as `COMPLETE`.
 
 ## Mode REVISE
 
-Same author and workspace. Fix only confirmed blocker locations from the review round and human rulings. Update only affected interfaces/constraints, SCENs, acceptance rows, owning task scope and Verify; leave every other artifact as it is. Fix a NIT only when it affects behavior, persistence/security semantics, or Verify trust. Re-run the structural check and cited narrow checks, commit, and report the new reviewed SHA.
+Same author and workspace. Fix only confirmed blocker locations from review and human rulings. Update only affected interfaces/constraints, SCENs, acceptance rows, owning task scope and Verify; leave everything else untouched. Fix a NIT only if it affects behavior, persistence/security semantics, or Verify trust. Rerun structural and cited narrow checks, commit, and report the new reviewed SHA.
 
 ## Structural-check evidence
 
@@ -66,4 +62,4 @@ Run the exact supplied structural-check command. A draft run is evidence only ab
 
 ## Return envelope
 
-Return `COMPLETE`, `BLOCKED`, or `INCOMPLETE`; mode; absolute workspace; baseline SHA; package commit SHA; changed paths; evidence; decision coverage; unresolved conflicts; assumptions/unverified claims; task count; `maxWidth`; route; exact structural command/outcome/exit; blockers; next responsible action. `COMPLETE` requires structural success on committed content. On permission block include exact command, cwd, verbatim denial, and who must authorize/run it. In REVISE, add each finding ID, changed location, affected SCEN/tasks/Verify, evidence, unchanged items, new commit and reviewed SHA.
+Return `COMPLETE`, `BLOCKED`, or `INCOMPLETE`; mode; absolute workspace; baseline SHA; package commit SHA; changed paths; evidence; decision coverage; unresolved conflicts; assumptions/unverified claims; task count; `maxWidth`; route; exact structural command/outcome/exit; blockers; next responsible action. `COMPLETE` requires structural success on committed content. In REVISE, add finding IDs, changed locations, affected SCEN/tasks/Verify, unchanged items, new commit and reviewed SHA.

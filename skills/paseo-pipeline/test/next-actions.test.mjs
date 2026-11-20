@@ -482,44 +482,27 @@ test('next-actions: R0-r2 and FINAL-r2 roles are recognised, UNKNOWN stages stil
   assert.equal(run(cwd, localEnv).status, 0, 'a trailing description is still allowed');
 });
 
-// SKILL.md:34 lists 尚书 `shangshu` as a Tier 3 role, but the title parser did not know it, so a
-// `[Pipeline] shangshu FULL` agent failed the title check and exited 3. Worker roles stay as they are.
-test('next-actions: a shangshu agent is recognised as a non-worker pipeline role', () => {
-  const { cwd, localEnv } = fixture();
-  const paseo = path.join(cwd, '.fake-bin', 'paseo');
-  const name = '[Pipeline] shangshu FULL';
-  fs.writeFileSync(paseo, `#!/bin/sh\nif [ "$1" = inspect ]; then printf '%s' '${JSON.stringify({ Id: 'a', Name: name, Status: 'running', PendingPermissions: [] })}'; else printf '%s' '${JSON.stringify([{ id: 'a', name, status: 'running', cwd }])}'; fi\n`);
-  const result = run(cwd, localEnv);
-  assert.notEqual(result.status, 3, result.out);
-  assert.equal(result.status, 0, result.out);
+test('next-actions: a shangshu and neon agent are recognised as non-worker pipeline roles', () => {
+  for (const name of ['[Pipeline] shangshu FULL', '[Pipeline] neon R0']) {
+    const { cwd, localEnv } = fixture();
+    const paseo = path.join(cwd, '.fake-bin', 'paseo');
+    fs.writeFileSync(paseo, `#!/bin/sh\nif [ "$1" = inspect ]; then printf '%s' '${JSON.stringify({ Id: 'a', Name: name, Status: 'running', PendingPermissions: [] })}'; else printf '%s' '${JSON.stringify([{ id: 'a', name, status: 'running', cwd }])}'; fi\n`);
+    const result = run(cwd, localEnv);
+    assert.notEqual(result.status, 3, `${name}: ${result.out}`);
+    assert.equal(result.status, 0, `${name}: ${result.out}`);
+  }
 });
 
-// One source of truth for the role names: the SKILL.md table and the two patterns in
-// next-actions.mjs must name the same set.
-test('next-actions: the SKILL.md role table and the code role patterns name the same roles', () => {
+// One source of truth for the role names: the SKILL.md table and lib/roles.mjs must name the same set.
+test('next-actions: the SKILL.md role table and lib/roles.mjs name the same roles', async () => {
+  const { WRITER_ROLES, NON_WORKER_STAGE_ROLES } = await import('../lib/roles.mjs');
   const skillDir = path.dirname(script);
   const skill = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8');
-  const source = fs.readFileSync(script, 'utf8');
   const roles = skill.slice(skill.indexOf('## Roles'), skill.indexOf('## Tools'));
   const listed = new Set([...roles.matchAll(/^\|\s*[^`|\n]*`([a-z][a-z0-9-]*)`\s*\|/gm)].map((match) => match[1]));
   assert.ok(listed.size >= 8, `parsed ${listed.size} roles from SKILL.md: ${[...listed].join(', ')}`);
-  // Both role checks in the title parser: worker names, and the non-worker titles R0/FINAL/FULL.
-  const groups = [...source.matchAll(/\^\(([a-z|]+)\)\$\/\.test\(parts\[1\]\)/g)].map((match) => match[1]);
-  assert.equal(groups.length, 2, `expected two role patterns on parts[1], found ${groups.length}`);
-  const [worker, nonWorker] = groups;
-  // Worker roles are a closed list; only the non-worker list may track SKILL.md.
-  assert.equal(worker, 'gongbu|gaogong|jiangzuo|ceshi', 'worker roles changed');
-  const coded = new Set([...worker.split('|'), ...nonWorker.split('|')]);
-  // A dispatched role may be absent from the title parser only when SKILL.md says its stage title
-  // belongs to another role. 契约审查 (`neon`) reviews R0 while the title stays `[Pipeline] hanlin R0`,
-  // so the parser must NOT accept `neon` as a title — the exemption is spelled out, not skipped.
-  const TITLE_FREE = { neon: 'hanlin R0' };
-  const missing = [...listed].filter((role) => !coded.has(role));
-  assert.deepEqual(missing.sort(), Object.keys(TITLE_FREE).sort(), `roles in SKILL.md but not in the title parser: ${missing.join(', ')}`);
-  for (const [role, title] of Object.entries(TITLE_FREE)) {
-    assert.ok(!coded.has(role), `${role} must not be a title role: its stage title is ${title}`);
-    assert.ok(new RegExp(`\`${role}\`.*${title}`).test(roles), `SKILL.md must say ${role}'s stage title stays ${title}`);
-  }
-  assert.deepEqual([...listed].filter((role) => !(role in TITLE_FREE)).sort(), [...coded].sort(), `SKILL.md roles: ${[...listed].sort().join(', ')}; code roles: ${[...coded].sort().join(', ')}`);
+  assert.deepEqual([...WRITER_ROLES].sort(), ['ceshi', 'gaogong', 'gongbu', 'jiangzuo']);
+  const coded = new Set([...WRITER_ROLES, ...NON_WORKER_STAGE_ROLES]);
+  assert.deepEqual([...listed].sort(), [...coded].sort(), `SKILL.md roles: ${[...listed].sort().join(', ')}; lib/roles.mjs: ${[...coded].sort().join(', ')}`);
 });
 
