@@ -917,7 +917,7 @@ test('SCEN-ACC-01 a Required=yes acceptance command that can hide a failure is r
   // Without that propagation the loop continues after a red iteration and can finish at 0.
   const noExit = run(change({ ...files, 'acceptance.md': loopRow('node "$f"') }));
   assert.equal(noExit.status, 1, noExit.stdout);
-  assert.match(noExit.stdout, /without a trailing `\|\| exit`/);
+  assert.match(noExit.stdout, /without a trailing `\|\| exit <1-255>`/);
   // `|| exit 0` reports success and is not propagation.
   assert.equal(run(change({ ...files, 'acceptance.md': loopRow('node "$f" \\|\\| exit 0') })).status, 1);
 });
@@ -1009,7 +1009,7 @@ test('SCEN-ACC-01 rework 2: a masked failure is rejected in every wrapper shape'
     assert.match(report.blocking.join('\n'), pattern, verify);
   };
   // `exit 0` reports success for whichever leg failed.
-  blocked('node --test test/a.test.mjs \\|\\| exit 0', /non-zero/);
+  blocked('node --test test/a.test.mjs \\|\\| exit 0', /1-255/);
   assert.equal(freezeWith('node --test test/a.test.mjs \\|\\| exit 0').status, 1);
   // A `bash -c` body is a new shell whatever it contains; the round-4 rule rejects it outright.
   blocked('bash -c \'for f in test/a.test.mjs; do node --test "$f" \\| tail -n 20 \\|\\| exit 1; done\'', /new shell/);
@@ -1020,8 +1020,41 @@ test('SCEN-ACC-01 rework 2: a masked failure is rejected in every wrapper shape'
   assert.equal(freezeWith('node --test test/a.test.mjs \\|\\| exit 1').status, 0);
 });
 
-test('SCEN-ACC-01 rework: the rejection message names a route the gate accepts', () => {
+// Rework round 5. The whitelist was right, but the prover itself could be fooled: it read a
+// positive integer as a non-zero exit code, expanded a loop list it never inspected, and blanked
+// text inside double quotes where `$(...)` still runs. Each repro exits 0 after the test leg is red.
+test('SCEN-ACC-01 rework 5: the prover cannot be fooled by masking or shell arithmetic', () => {
   const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
+  const freezeWith = (verify) => run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | ${verify} | yes | PENDING | pending |`) }));
+  const blocked = (verify, pattern) => {
+    const result = freezeWith(verify);
+    assert.equal(result.status, 1, `${verify}\n${result.stdout}`);
+    const report = JSON.parse(result.stdout);
+    assert.ok(report.blocking.some((item) => item.startsWith('BAD_ACCEPTANCE_VERIFY SCEN-1')), `${verify}: ${result.stdout}`);
+    assert.match(report.blocking.join('\n'), pattern, verify);
+  };
+  // The shell keeps the low 8 bits, so `exit 256` is `exit 0`.
+  blocked('node --test test/a.test.mjs \\|\\| exit 256', /1-255/);
+  assert.equal(freezeWith('node --test test/a.test.mjs \\|\\| exit 255').status, 0);
+  // A list expanded by the shell can fail on its own, leaving the loop with zero iterations.
+  // A command substitution is rejected before the loop is even parsed, which is the same answer.
+  blocked('for f in $(node --test test/a.test.mjs); do node "$f" \\|\\| exit 1; done', /loop list|command substitution/);
+  // `$(...)` still runs inside double quotes, so the test's status is thrown away by `echo`.
+  blocked('echo "$(node --test test/a.test.mjs)"', /command substitution/);
+  // A backslash escapes the quote a naive scan reads, so the trailing `true` is a live command.
+  blocked('node --test test/a.test.mjs \\"; true test/a.test.mjs # "', /escaped character|only one command/);
+  // A newline separates commands exactly like `;`. The table itself rejects a row that spans two
+  // lines, so this is rejected one layer earlier; kept as a guard for any other reader.
+  const newline = freezeWith('node --test test/a.test.mjs\ntrue test/a.test.mjs');
+  assert.equal(newline.status, 1);
+  assert.match(newline.stdout, /MALFORMED_ACCEPTANCE_ROW|newline/);
+  // Still accepted: a plain single command, its propagated failure, and the real sink loop.
+  assert.equal(freezeWith('node --test test/a.test.mjs').status, 0);
+  assert.equal(freezeWith('node --test test/a.test.mjs \\|\\| exit 1').status, 0);
+  assert.equal(freezeWith('for f in scripts/specs/*.mjs; do node "$f" \\|\\| exit 1; done').status, 0);
+});
+
+test('SCEN-ACC-01 rework: the rejection message names a route the gate accepts', () => {  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
   const freezeWith = (verify) => run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | ${verify} | yes | PENDING | pending |`) }));
   const piped = freezeWith('node --test test/a.test.mjs \\| tail -n 20');
   assert.equal(piped.status, 1);

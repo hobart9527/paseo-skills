@@ -740,8 +740,35 @@ else {
       //   - `for VAR in LIST; do <provable>; done` — a failing iteration runs the body's own
       //     `|| exit`, so the shell leaves non-zero instead of continuing.
       // The same rules are applied recursively, so a loop cannot hide an unprovable body.
+      // Two masks. `maskQuotes` blanks every quoted word, for judgements where a quoted `|` is an
+      // argument rather than a pipeline. `maskShell` keeps the characters that still act inside
+      // double quotes — `$`, a backtick and a backslash — so a structure check cannot be blinded by
+      // quoting. Single-quoted text is fully literal, so it is blanked by both.
       const maskQuotes = (text) => text.replace(/'[^']*'|"[^"]*"/g, (segment) => `${segment[0]}${'x'.repeat(Math.max(0, segment.length - 2))}${segment[0]}`);
+      const maskShell = (text) => {
+        let out = '';
+        let quote = null;
+        for (const ch of text) {
+          if (quote === "'") { if (ch === "'") { quote = null; out += ch; } else out += ch === '\n' ? ch : 'x'; }
+          else if (quote === '"') {
+            // `$(` runs a command even inside double quotes, so the character right after a kept
+            // `$` is kept too; otherwise a lone `(` is a literal and is blanked.
+            if ('$`\\'.includes(ch) || out.endsWith('$')) out += ch;
+            else if (ch === '"') { quote = null; out += ch; }
+            else out += ch === '\n' ? ch : 'x';
+          } else if (ch === "'" || ch === '"') { quote = ch; out += ch; }
+          else out += ch;
+        }
+        return out;
+      };
+      // A simple `$name`/`${name}` expansion only substitutes a value; anything else `$` can do runs
+      // a command of its own. Blank the simple form with a same-length mask, then treat a surviving
+      // `$` as a substitution. Same length, so indices still line up with the raw text.
+      const SIMPLE_PARAM = /\$\{?[A-Za-z_]\w*\}?/g;
       const CONTROL_WORD = /(?:^|[\s;&|])(?:for|while|until|select|if|then|elif|else|fi|case|esac|do|done|function|coproc|time)\b/;
+      // `exit N` only propagates a failure when N is 1-255: the shell keeps the low 8 bits, so
+      // `exit 256` is `exit 0`.
+      const EXIT_NONZERO = /\|\|\s*exit(?:\s+(?:[1-9]|[1-9]\d|1\d\d|2[0-4]\d|25[0-5]))?\s*$/;
       // Returns null when `text`'s exit status is provable, else the reason it is not. `loopList`
       // carries the files a surrounding `for` iterates, so a body that runs `"$f"` is judged by what
       // `f` ranges over.
@@ -760,24 +787,40 @@ else {
           || /^(?:make|cargo|go|dotnet|mvn|gradle)\s+(?:build|check|test|lint|vet)\b/.test(command);
       };
       const unprovable = (text, loopList = null) => {
+        // A newline is a command separator exactly like `;`; a two-line cell would run its second
+        // line and its status would be the row's status.
+        if (/\n/.test(text.trim())) return 'a newline starts another command, so the row\'s status is not the first command\'s status; put the checks in one `&&` chain or in a `test*` script';
         const masked = maskQuotes(text);
+        const shell = maskShell(text).replace(SIMPLE_PARAM, (m) => 'x'.repeat(m.length));
         // `bash -c`/`sh -c` starts a new shell: its body's status is not this command's status
         // unless that body is proven in full, which is the parsing this rule refuses to do.
         if (/^(?:bash|sh)\s+-[a-z]*c\s/.test(masked) || /^(?:bash|sh)\s+-[a-z]*c\s/.test(maskQuotes(text.replace(/^set\s+-\S+\s*;\s*/, '')))) {
           return 'a `bash -c`/`sh -c` body runs in a new shell, so the gate cannot prove its exit status';
+        }
+        // `$(`/backtick run a command whose status is thrown away; a backslash escapes the next
+        // character, so a quote scan would read structure that is not there. Both are judged on
+        // `maskShell`, which keeps them visible inside double quotes.
+        if (/[`\\]|\$\(/.test(shell)) {
+          return 'a command substitution or an escaped character means a leg of this row is not the command the shell actually runs; run the check in a `test*` script';
         }
         // `for VAR in LIST; do <body>; done`. A failing iteration runs the body's own `|| exit`, so
         // the shell leaves non-zero; the body is proven recursively with VAR bound to LIST.
         const LOOP = /^for\s+([A-Za-z_]\w*)\s+in\s+([^;]+);\s*do\s+([\s\S]+?);?\s*done$/i;
         const loop = LOOP.exec(text);
         if (loop) {
-          const bodyReason = unprovable(loop[3], loop[2].trim().split(/\s+/));
+          // The list is expanded by the shell before the body runs; a list that is not plain words
+          // or globs can fail on its own and leave the loop running zero times with status 0.
+          const list = loop[2].trim();
+          if (/[$`'"();&|<>\\]/.test(maskShell(list))) {
+            return 'a loop list with a substitution, quote or redirection is expanded by the shell and can leave the loop with zero iterations and status 0';
+          }
+          const bodyReason = unprovable(loop[3], list.split(/\s+/));
           if (bodyReason) return bodyReason;
           // The body proves only if each failing iteration exits non-zero; without `|| exit` the loop
           // continues after a red iteration and can finish with status 0.
-          return /\|\|\s*exit(?:\s+[1-9]\d*)?\s*;?\s*$/.test(maskQuotes(loop[3]))
+          return EXIT_NONZERO.test(maskQuotes(loop[3]).trim())
             ? null
-            : 'a `for` loop without a trailing `|| exit` continues after a failed iteration and can finish with status 0';
+            : 'a `for` loop without a trailing `|| exit <1-255>` continues after a failed iteration and can finish with status 0';
         }
         // `cmd && cmd && for … done`: every leg's failure is the exit status, including the last, so
         // decide each `&&` segment on its own. An `&&` inside a `for … done` body belongs to that body.
@@ -797,18 +840,23 @@ else {
           return null;
         }
         // A trailing `|| exit N` converts a red leg into a non-zero status. Any other `||` makes one
-        // of two legs mandatory in an order nobody reads, and `|| exit 0` reports success outright.
-        let headMasked = masked;
-        let head = text;
-        if (/\|\|/.test(masked)) {
-          const tail = /\|\|\s*exit(?:\s+[1-9]\d*)?\s*$/.exec(masked);
-          if (!tail || /\|\|/.test(masked.slice(0, tail.index))) return '`||` hides which leg is the check unless it is a single trailing `|| exit` with a non-zero status';
-          headMasked = masked.slice(0, tail.index);
-          head = text.slice(0, tail.index);
+        // of two legs mandatory in an order nobody reads, and `|| exit 0` (or `exit 256`, which the
+        // shell wraps to 0) reports success outright.
+        let headMasked = masked.trim();
+        let head = text.trim();
+        let headShell = shell.trim();
+        if (/\|\|/.test(headMasked)) {
+          const tail = EXIT_NONZERO.exec(headMasked);
+          if (!tail || /\|\|/.test(headMasked.slice(0, tail.index))) return '`||` hides which leg is the check unless it is a single trailing `|| exit <1-255>`';
+          const cutAt = headMasked.length - tail[0].length;
+          headMasked = headMasked.slice(0, cutAt);
+          headShell = headShell.slice(0, cutAt);
+          head = head.slice(0, cutAt);
         }
         // `;`, a bare `|`, `&`, a subshell, a group, a command substitution, a backtick or a control
-        // keyword each allows the command to exit 0 after a leg failed.
-        if (/[;|&`]|[(){}]|\$\(/.test(headMasked) || CONTROL_WORD.test(headMasked)) {
+        // keyword each allows the command to exit 0 after a leg failed. `headShell` keeps `$(`,
+        // backtick and backslash visible inside double quotes, where they still run.
+        if (/[;|&`\\]|[(){}]|\$\(/.test(headShell) || CONTROL_WORD.test(headMasked)) {
           return 'only one command or commands joined by `&&` can have a provable exit status; `;`, `|`, a loop, a condition, a subshell or a nested shell can exit 0 after a leg failed';
         }
         // The leg splitter in lib/tasks.mjs splits on `|` too and does not mask quotes, so the text
