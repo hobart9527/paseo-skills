@@ -875,22 +875,92 @@ else {
         const legs = verifyLegs(legSource);
         // Positive entry check. Every earlier round found another way to make the row's *word* not
         // the test: `e""val`, `busybox sh -c`, `bash -o pipefail -c`, `/bin/sh -c`. Enumerating
-        // those spellings never converges, so the first word must instead be a known test entry, or
-        // a shell running a `test*` script with no options. A spliced word (`e""val`) is not any of
-        // them, whatever the shell later makes of it.
-        const ENTRY = /^(?:node|npm|pnpm|yarn|bun|bunx|npx|deno|go|cargo|python[0-9.]*|pytest|uv|poetry|make|dotnet|mvn|gradle|tsc|eslint|biome|swc|babel|jest|vitest|mocha|playwright|cypress|phpunit|rspec|ruby|php|swift|xcodebuild)\b/;
-        // A whitelisted entry can still be told to evaluate a string instead of running a suite:
-        // `node --eval 'process.exit(0)' test/a.test.mjs` exits 0 without running the test, and the
-        // path argument makes it look proven. The code-loading flags are named here by option only.
-        const INLINE_CODE = /^(?:node|bun|deno)\b.*(?:^|\s)(?:-e|--eval|--print|-p)(?:\s|=|$)/;
+        // those spellings never converges, so the entry must instead be a known *test invocation*:
+        // a program together with a subcommand that runs the paths after it. A spliced word
+        // (`e""val`) matches none, and `go run ./cmd/x test/a.test.mjs` is not a test invocation
+        // even though `go` and a test path both appear.
         const entryOf = (leg) => leg.command.replace(/^\s*(?:[A-Za-z_]\w*=\S*\s+)+/, '').trim()
           .replace(/^(?:[\w.-]*\/)+([\w.-]+)/, '$1');
+        const wordsOf = (leg) => entryOf(leg).split(/\s+/).filter((word) => word && !/^[A-Za-z_]\w*=/.test(word));
+        // A whitelisted program can be told to evaluate a string instead of running a suite:
+        // `node -e '…' test/a.test.mjs` exits 0 without running the test. Those flags are excluded
+        // for every program that has one.
+        // A program that executes a string instead of a suite: `node -e '…'` exits 0 without
+        // running the test. Only interpreters have these flags; for `tsc`, `-p` names a project.
+        const INLINE_CODE = /^(?:node|bun|deno|python[0-9.]*|ruby|perl|php)\b.*(?:^|\s)(?:-e|--eval|--print|-p)(?:\s|=|$)/;
+        // The arguments must be a known test invocation of that program, leading options included.
+        // Options that take a value are consumed by the pattern where they matter.
+        // Programs whose bare invocation is a check: running them with any arguments proves the
+        // same thing, so their argument shape is not constrained.
+        const ANY_ARGS = new Set(['tsc', 'eslint', 'swc', 'babel', 'jest', 'mocha', 'phpunit', 'rspec', 'php', 'pytest']);
+        const RUNS_TESTS = {          node: /^(?:-\S+\s+)*--test(?:\s|$)/,
+          npm: /^(?:(?:-\S+)\s+)*(?:test|t|run(?:-script)?(?:\s+(?:test|build|lint|check|typecheck))?)(?:\s|$)/,
+          pnpm: /^(?:(?:-\S+)\s+)*(?:test|t|run(?:\s+(?:test|build|lint|check|typecheck))?)(?:\s|$)/,
+          yarn: /^(?:(?:-\S+)\s+)*(?:test|run(?:\s+(?:test|build|lint|check|typecheck))?)(?:\s|$)/,
+          bun: /^(?:(?:-\S+)\s+)*(?:test|run(?:\s+(?:test|build|lint|check|typecheck))?)(?:\s|$)/,
+          deno: /^(?:(?:-\S+)\s+)*test(?:\s|$)/,
+          go: /^(?:(?:-\S+)\s+)*test(?:\s|$)/,
+          cargo: /^(?:(?:-\S+)\s+)*(?:test|nextest)(?:\s|$)/,
+          make: /^(?:(?:-\S+|\S+=\S*)\s+)*(?:test|check|lint)(?:\s|$)/,
+          pytest: /^(?:(?:-\S+)\s+)*\S/,
+          python: /^(?:(?:-\S+)\s+)*-m\s+pytest(?:\s|$)/,
+          python3: /^(?:(?:-\S+)\s+)*-m\s+pytest(?:\s|$)/,
+          uv: /^(?:(?:-\S+)\s+)*(?:run\s+)?pytest(?:\s|$)/,
+          poetry: /^(?:(?:-\S+)\s+)*(?:run\s+)?pytest(?:\s|$)/,
+          dotnet: /^(?:(?:-\S+)\s+)*test(?:\s|$)/,
+          mvn: /^(?:(?:-\S+)\s+)*(?:test|verify)(?:\s|$)/,
+          gradle: /^(?:(?:-\S+)\s+)*(?:test|check)(?:\s|$)/,
+          tsc: /^(?:-\S+\s+)*\S/,
+          eslint: /^(?:-\S+\s+)*\S/,
+          biome: /^(?:(?:-\S+)\s+)*(?:check|ci)(?:\s|$)/,
+          swc: /^(?:-\S+\s+)*\S/,
+          babel: /^(?:-\S+\s+)*\S/,
+          jest: /^(?:-\S+\s+)*\S/,
+          vitest: /^(?:(?:-\S+)\s+)*(?:run)?(?:\s|$)/,
+          mocha: /^(?:-\S+\s+)*\S/,
+          playwright: /^(?:(?:-\S+)\s+)*test(?:\s|$)/,
+          cypress: /^(?:(?:-\S+)\s+)*run(?:\s|$)/,
+          phpunit: /^(?:-\S+\s+)*\S/,
+          rspec: /^(?:-\S+\s+)*\S/,
+          ruby: /^(?:-\S+\s+)*-e(?:\s|$)/,
+          php: /^(?:-\S+\s+)*\S/,
+          swift: /^(?:(?:-\S+)\s+)*test(?:\s|$)/,
+          xcodebuild: /^(?:(?:-\S+)\s+)*test(?:\s|$)/,
+          npx: /^(?:(?:-\S+)\s+)*(?:tsc|eslint|biome|swc|babel|jest|vitest|mocha|playwright|cypress|tsx|ts-node)(?:\s|$)/,
+          bunx: /^(?:(?:-\S+)\s+)*(?:tsc|eslint|biome|swc|babel|jest|vitest|mocha|playwright|cypress|tsx|ts-node)(?:\s|$)/,
+        };
+        const testInvocation = (leg) => {
+          const words = wordsOf(leg);
+          const program = words[0] ?? '';
+          if (INLINE_CODE.test(leg.command)) return false;
+          // A leg that runs the loop variable proves through the loop: `node "$f"` inside
+          // `for f in scripts/specs/*.mjs` runs whatever that list names, and `provesLeg` decides
+          // whether the list is a test target.
+          if (loopList && /^\$/.test((words[words.length - 1] ?? '').replace(/^['"]|['"]$/g, ''))) return true;
+          if (Object.prototype.hasOwnProperty.call(RUNS_TESTS, program)) {
+            // A tool whose whole job is a check (`tsc`, `eslint`, `jest`) is proven by running at
+            // all, however its flags are shaped; only its presence in this table matters.
+            if (ANY_ARGS.has(program)) return words.length > 1;
+            // `node <script under a test path>` runs a check script whose exit status is its own.
+            // `node -e …` is excluded by INLINE_CODE above.
+            if ((program === 'node' || program === 'bun' || program === 'deno')
+              && words.length === 2 && verifyTestPath(words[1].replace(/^['"]|['"]$/g, ''))) return true;
+            // Options that take a value (`--prefix dir`) are skipped with their value, so the
+            // subcommand that follows is what the pattern sees.
+            const args = [];
+            for (let i = 1; i < words.length; i += 1) {
+              if (/^(?:--prefix|-C|--dir|--cwd|--project|-p|-c|--config|--reporter|--filter)$/.test(words[i])) { i += 1; continue; }
+              args.push(words[i]);
+            }
+            return RUNS_TESTS[program].test(args.join(' '));
+          }
+          return testScript(leg.command);
+        };
         const entryOk = (leg) => {
-          if (INLINE_CODE.test(entryOf(leg))) return false;
-          if (ENTRY.test(entryOf(leg)) || testScript(leg.command)) return true;
+          if (testInvocation(leg)) return true;
           // `bash <script>` runs a named script in a new shell — but only with no options, and only
           // when the script is one under a test path. `bash -c …` carries an option and is excluded.
-          const words = entryOf(leg).split(/\s+/);
+          const words = wordsOf(leg);
           const head = words[0] ?? '';
           if (!/^(?:[\w.-]*\/)*(?:bash|sh)$/.test(head)) return false;
           const target = words[1] ?? '';
@@ -905,7 +975,12 @@ else {
           const target = leg.command.split(/\s+/).reverse().find((token) => !token.startsWith('-')) ?? '';
           return !!ITERATION_VAR.exec(target.replace(/['"]/g, ''));
         };
-        const provesLeg = (leg) => LEG_PROVES(leg) || (iterated(leg) && loopList.some((item) => {
+        const provesLeg = (leg) => LEG_PROVES(leg)
+          // A leg the entry table already proved as a real test invocation needs no separate path
+          // proof: `npx tsc --noEmit -p x.json` is a typecheck, and the leg splitter cuts `-p`'s
+          // value into a second leg, so path-based proof would miss it.
+          || testInvocation(leg)
+          || (iterated(leg) && loopList.some((item) => {
           const path = item.replace(/^['"]|['"]$/g, '');
           return verifyTestPath(path) || testScript(`bash ${path}`) || legPaths(path).some((p) => verifyTestPath(p));
         }));

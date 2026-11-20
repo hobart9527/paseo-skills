@@ -1135,6 +1135,39 @@ test('SCEN-ACC-01 rework 8: the entry word must be a known test, not a spelling 
   assert.equal(freezeWith('for f in scripts/specs/*.mjs; do node "$f" \\|\\| exit 1; done').status, 0);
 });
 
+// Rework round 10. The positive list named programs, but a program is not a test: `go run ./x
+// test/a.test.mjs` and `python3 -m timeit … test/a.test.mjs` run something else while a test path
+// satisfies proof. The entry must be a known *test invocation* — a program together with the
+// subcommand that runs its paths.
+test('SCEN-ACC-01 rework 10: a known program is not a known test invocation', () => {
+  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
+  const freezeWith = (verify) => run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | ${verify} | yes | PENDING | pending |`) }));
+  const blocked = (verify) => {
+    const result = freezeWith(verify);
+    assert.equal(result.status, 1, `${verify}\n${result.stdout}`);
+    assert.ok(JSON.parse(result.stdout).blocking.some((item) => item.startsWith('BAD_ACCEPTANCE_VERIFY SCEN-1')), verify);
+  };
+  // The program is known and a test path appears, but the subcommand is not the test runner.
+  blocked('go run ./cmd/x test/a.test.mjs');
+  blocked('cargo run --bin x test/a.test.mjs');
+  blocked('python3 -m timeit pass test/a.test.mjs');
+  blocked('make -f /dev/null test/a.test.mjs');
+  blocked('gradle -I /tmp/x.gradle test');
+  blocked('npx --no-install some-pkg test/a.test.mjs');
+  // The real invocations and the real sink chain still pass.
+  assert.equal(freezeWith('node --test test/a.test.mjs').status, 0);
+  assert.equal(freezeWith('npm test').status, 0);
+  assert.equal(freezeWith('npm --prefix packages/server test').status, 0);
+  assert.equal(freezeWith('npm --prefix packages/web run build').status, 0);
+  assert.equal(freezeWith('npx tsc --noEmit -p packages/web/tsconfig.test.json').status, 0);
+  assert.equal(freezeWith('python3 -m pytest').status, 0);
+  assert.equal(freezeWith('go test ./pkg/a').status, 0);
+  assert.equal(freezeWith('cargo test --lib').status, 0);
+  assert.equal(freezeWith('node scripts/specs/a.mjs').status, 0);
+  // The whole converged sink row, which is the hardest real constraint.
+  assert.equal(freezeWith('npm --prefix packages/server test && npm --prefix packages/web run build && npx tsc --noEmit -p packages/web/tsconfig.test.json && TSX_TSCONFIG_PATH=packages/web/tsconfig.test.json node --test --import=tsx packages/web/test/*.test.tsx packages/web/test/*.test.ts && for f in scripts/specs/*.mjs; do node "$f" \\|\\| exit 1; done').status, 0);
+});
+
 test('SCEN-ACC-01 rework: the rejection message names a route the gate accepts', () => {  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
   const freezeWith = (verify) => run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | ${verify} | yes | PENDING | pending |`) }));
   const piped = freezeWith('node --test test/a.test.mjs \\| tail -n 20');
