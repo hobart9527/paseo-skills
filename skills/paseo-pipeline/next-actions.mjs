@@ -220,18 +220,52 @@ function labelledFor(other, id) {
   }
   return otherChanges.get(other).has(id);
 }
+// A `[Pipeline]` agent whose worktree was deleted (or that belongs to another repository) cannot
+// be attributed to any change of this one. A non-running one is a diagnostic, not a deadlock:
+// nothing can dispatch a duplicate worker through it, and a deleted worktree can never be
+// inspected back into service. A running or permission-blocked agent stays an error (SCEN-PLAN-02).
+const staleAgents = [];
 for (const agent of allAgents) {
   if (!agent || typeof agent.id !== 'string' || typeof agent.name !== 'string' || typeof agent.status !== 'string') {
     console.error('[next-actions] invalid global Paseo agent identity or status');
     process.exit(3);
   }
-  if (agent.status === 'closed' || labelledIds.has(agent.id)) continue;
   if (!agent.name.startsWith('[Pipeline]') && !/^(gongbu|gaogong|jiangzuo|ceshi|hanlin|anchasi)-/.test(agent.name)) continue;
+  if (labelledIds.has(agent.id)) continue;
+  if (agent.status === 'closed') {
+    // A closed agent is completion evidence only inside this repository. One whose cwd was
+    // deleted or belongs to another repository is reported, then ignored: it can neither
+    // hold a task nor be dispatched through.
+    const closedRepo = commonDir(agent.cwd);
+    if (closedRepo !== repository) {
+      staleAgents.push({ agent: agent.id, kind: closedRepo ? 'FOREIGN_REPO_AGENT' : 'STALE_AGENT_CWD', reason: closedRepo ? `cwd ${agent.cwd} belongs to another git repository, so it cannot belong to any change of this one` : `cwd ${agent.cwd ?? '(none)'} no longer resolves to a git repository and the agent is closed; it cannot belong to any change of this repository` });
+    }
+    continue;
+  }
   const agentRepo = commonDir(agent.cwd);
-  if (agentRepo && agentRepo !== repository) continue;
+  if (agentRepo && agentRepo !== repository) {
+    // Another repository's pipeline is not this plan's business. A live one there is expected;
+    // a dormant one is worth naming so the operator can tell why it is being ignored.
+    if (!['running', 'initializing'].includes(agent.status)) {
+      staleAgents.push({ agent: agent.id, kind: 'FOREIGN_REPO_AGENT', reason: `cwd ${agent.cwd} belongs to another git repository, so it cannot belong to any change of this one` });
+    }
+    continue;
+  }
   const identity = agent.name.match(/^\[Pipeline\]\s+\S+\s+\S+\s+(\S+)$/);
   const candidates = new Set([...knownChanges, ...changesIn(agent.cwd).filter((item) => item !== change), ...(identity && identity[1] !== change ? [identity[1]] : [])]);
   if ([...candidates].some((other) => labelledFor(other, agent.id))) continue;
+  if (!agentRepo) {
+    // Only an inspect call can say whether an idle agent is parked on a permission prompt.
+    const detail = spawnSync('paseo', ['inspect', agent.id, '--json'], { encoding: 'utf8', timeout: 10_000 });
+    let inspected;
+    try { inspected = detail.status === 0 && !detail.error ? JSON.parse(detail.stdout) : null; } catch { inspected = null; }
+    const activeStates = ['running', 'initializing'];
+    const busy = activeStates.includes(agent.status) || activeStates.includes(inspected?.Status) || (inspected?.PendingPermissions ?? []).length > 0;
+    if (inspected && typeof inspected === 'object' && !Array.isArray(inspected) && !busy) {
+      staleAgents.push({ agent: agent.id, kind: 'STALE_AGENT_CWD', reason: `cwd ${agent.cwd ?? '(none)'} no longer resolves to a git repository and the agent is ${agent.status}; it cannot belong to any change of this repository` });
+      continue;
+    }
+  }
   console.error(`[next-actions] active pipeline agent lacks a matching change label or unambiguous identity: ${agent.id} ${agent.name}. Verify its change label, then pass --other-change <id> to verify that label; otherwise inspect and resolve the agent before planning`);
   process.exit(3);
 }
@@ -288,6 +322,9 @@ for (const agent of listedAgents) {
 
 const result = frontier(tasks, { done, branches, agents }, { ...options, allowAttemptOver });
 result.attention.push(...doneUnverified);
+// A stale, un-attributable pipeline agent is printed for the operator; it never blocks dispatch
+// through any task of this change, so it is a diagnostic on the report rather than an error.
+result.staleAgents = staleAgents;
 result.attention.sort((a, b) => `${a.task}${a.kind}`.localeCompare(`${b.task}${b.kind}`));
 // The integration branch is created after CP-1, so its absence is a precise signal that the
 // contract is not frozen yet. The DAG preview is still useful before then, but a DISPATCH shown
@@ -343,5 +380,6 @@ else {
   for (const item of report.scopeWaiting) console.log(`SCOPE-WAIT ${item.task}: waiting for ${item.on.join(', ')}`);
   for (const item of report.blocked) console.log(`BLOCKED ${item.task}: ${item.kind} — ${item.reason}`);
   for (const item of report.attention) console.log(`ATTENTION ${item.task || '?'} ${item.agent}: ${item.kind} — ${item.reason}`);
+  for (const item of report.staleAgents) console.log(`DIAGNOSTIC ${item.agent}: ${item.kind} — ${item.reason}`);
   if (!report.dispatch.length && !report.attention.length) console.log('nothing to dispatch');
 }

@@ -363,6 +363,48 @@ test('next-actions: other pre-CP1 change discovered in agent worktree', () => {
   assert.equal(result.json.dispatch[0].action, 'dispatch-worker');
 });
 
+test('SCEN-PLAN-01 a closed agent from a deleted or foreign worktree does not block a new change', () => {
+  const { cwd, localEnv } = fixture();
+  const paseo = path.join(cwd, '.fake-bin', 'paseo');
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-other-'));
+  spawnSync('git', ['init', '-q', other], { env: localEnv });
+  // Neither title nor label names any change of this repository, and the cwd cannot be resolved:
+  // this agent was left behind by a deleted worktree. It used to exit 3 before planning ran.
+  const cases = [
+    { id: 'stale', name: '[Pipeline] gongbu T-77 old change', status: 'closed', cwd: path.join(cwd, 'deleted-worktree') },
+    { id: 'stale', name: '[Pipeline] gongbu T-77 old change', status: 'idle', cwd: path.join(cwd, 'deleted-worktree') },
+    { id: 'stale', name: '[Pipeline] gongbu T-77 old change', status: 'idle', cwd: other },
+    { id: 'stale', name: '[Pipeline] gongbu T-77 old change', status: 'error', cwd: path.join(cwd, 'deleted-worktree') },
+  ];
+  for (const agent of cases) {
+    // The real CLI passes `--label` and `pipeline.change=<id>` as two argv entries; the labelled
+    // query must answer `[]`, otherwise the agent counts as attributed and never reaches the
+    // stale-cwd path this test is about.
+    fs.writeFileSync(paseo, `#!/bin/sh\nif [ "$1" = inspect ]; then printf '%s' '${JSON.stringify({ Id: agent.id, Name: agent.name, Status: agent.status, PendingPermissions: [] })}'; else case " $* " in *" --label "*) printf '[]' ;; *) printf '%s' '${JSON.stringify([agent])}' ;; esac; fi\n`);
+    const result = run(cwd, localEnv);
+    assert.equal(result.status, 0, `${agent.status} ${agent.cwd}: ${result.out}`);
+    // The plan still dispatches the ready task, and reports the agent as a diagnostic.
+    assert.deepEqual(result.json.dispatch.map((item) => `${item.task}:${item.action}`), ['T-01:dispatch-worker']);
+    assert.equal(result.json.staleAgents.length, 1, result.out);
+    assert.equal(result.json.staleAgents[0].kind, agent.cwd === other ? 'FOREIGN_REPO_AGENT' : 'STALE_AGENT_CWD');
+    assert.match(result.out, /FOREIGN_REPO_AGENT|STALE_AGENT_CWD/);
+  }
+});
+
+test('SCEN-PLAN-02 a running agent with an unattributable identity still stops the plan', () => {
+  const { cwd, localEnv } = fixture();
+  const paseo = path.join(cwd, '.fake-bin', 'paseo');
+  // Same shape as SCEN-PLAN-01 but active: a duplicate worker could still be running, so the
+  // planner must stay fail-closed rather than treat a live agent as stale.
+  for (const [status, pending] of [['running', []], ['initializing', []], ['idle', [{ id: 'p' }]]]) {
+    const agent = { id: 'live', name: '[Pipeline] gongbu T-77 old change', status, cwd: path.join(cwd, 'deleted-worktree') };
+    fs.writeFileSync(paseo, `#!/bin/sh\nif [ "$1" = inspect ]; then printf '%s' '${JSON.stringify({ Id: agent.id, Name: agent.name, Status: status, PendingPermissions: pending })}'; else case " $* " in *" --label "*) printf '[]' ;; *) printf '%s' '${JSON.stringify([agent])}' ;; esac; fi\n`);
+    const result = run(cwd, localEnv);
+    assert.equal(result.status, 3, `${status}: ${result.out}`);
+    assert.match(result.out, /lacks a matching change label/);
+  }
+});
+
 test('next-actions: removed cwd closed worker is retained as completion evidence', () => {
   const { cwd, localEnv } = fixture();
   const agent = { id: 'w', name: '[Pipeline] gongbu T-01 old description', status: 'closed', cwd: path.join(cwd, 'removed') };
