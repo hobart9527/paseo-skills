@@ -44,7 +44,7 @@ const design = '## Impact Inventory\nnone\n';
 // A valid R0 sign-off written by hanlin after independent review.
 const REVIEW = 'R0: pass(9b2f4c1e-aaaa-4a2b-8c3d-000000000099@abcdef1)\n';
 test('accepts narrow non-sink tasks and reports concurrency', () => {
-  const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node -e "0" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW });
+  const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node --test test/shared.test.mjs | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW });
   const result = run(dir);
   assert.equal(result.status, 0);
 });
@@ -93,7 +93,7 @@ test('rejects wave scope conflict', () => {
 });
 
 const table = (rows) => `| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |\n| --- | --- | --- | --- | --- | --- | --- |\n${rows}`;
-const acceptance = table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node -e "0" | yes | PENDING | pending |');
+const acceptance = table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node --test test/shared.test.mjs | yes | PENDING | pending |');
 test('accepts schema scenario headings with descriptions and rejects hidden full-suite legs', () => {
   const bad = contract.replace('node --test test/alpha.test.mjs', 'npm test && node --test test/alpha.test.mjs');
   const dir = change({ 'tasks.md': bad, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1 successful alpha\n- **Verify:** node --test test/shared.test.mjs\n' });
@@ -114,9 +114,9 @@ test('rejects zero parsed tasks and multiple full-suite sinks', () => {
 test('validates required acceptance scenarios and frozen state', () => {
   const good = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1 alpha works\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW });
   assert.equal(run(good).status, 0);
-  const unknown = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-X | CLI | T-02 | node -e "0" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n' });
+  const unknown = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-X | CLI | T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n' });
   assert.match(run(unknown).stdout, /UNKNOWN_ACCEPTANCE_SCEN/);
-  const notPending = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-02 | node -e "0" | yes | PASS | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n' });
+  const notPending = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-02 | node --test test/shared.test.mjs | yes | PASS | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n' });
   assert.match(run(notPending).stdout, /ACCEPTANCE_NOT_FROZEN/);
   const noRequired = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-02 | node -e "0" | no | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n' });
   assert.match(run(noRequired).stdout, /MISSING_REQUIRED_ACCEPTANCE/);
@@ -132,7 +132,7 @@ test('rejects scenario-less and fixture-only tasks; design.md is optional', () =
   // T-03 drops its SCEN claim when it becomes mechanical, so acceptance must stop listing it.
   const mech = change({
     ...files,
-    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-04 | node -e "0" | yes | PENDING | pending |'),
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-04 | node --test test/shared.test.mjs | yes | PENDING | pending |'),
     'tasks.md': contract.replace(/(T-03 beta[\s\S]*?)  - Scen: SCEN-1\n/, '$1  - Review: mechanical\n').replace('src/beta,test/beta.test.mjs', 'test/beta.test.mjs'),
   });
   assert.equal(run(mech).status, 0);
@@ -251,7 +251,7 @@ const diamond = (n) => Array.from({ length: n }, (_, i) => i).map((i) => `- [ ] 
 test('low speedup advisory fires on a near-serial DAG and stays silent on a wide one', () => {
   const files = { 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
   const adv = (tasks, acc = acceptance) => JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change({ ...files, 'acceptance.md': acc, 'tasks.md': tasks }), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
-  const wide = adv(diamond(6), table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04,T-05,T-06 | node -e "0" | yes | PENDING | pending |')); // T-01 then 5 parallel: 6 tasks / 2 waves = 3x
+  const wide = adv(diamond(6), table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04,T-05,T-06 | node --test test/shared.test.mjs | yes | PENDING | pending |')); // T-01 then 5 parallel: 6 tasks / 2 waves = 3x
   assert.equal(wide.route, 'pipeline');
   assert.deepEqual(wide.advisories, []);
   const chain = adv(`- [ ] 1.1 T-01 a\n  - Write scope: src/a.mjs,test/a.test.mjs\n  - Verify with: node --test test/a.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.2 T-02 b\n  - Depends on: T-01\n  - Write scope: src/b.mjs,test/b.test.mjs\n  - Verify with: node --test test/b.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.3 T-03 c\n  - Depends on: T-01\n  - Write scope: src/c.mjs,test/c.test.mjs\n  - Verify with: node --test test/c.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.4 T-04 d\n  - Depends on: T-02,T-03\n  - Write scope: src/d.mjs,test/d.test.mjs\n  - Verify with: node --test test/d.test.mjs\n  - Scen: SCEN-1`);
@@ -375,7 +375,7 @@ function sinkContract(verify, extra = '') {
   return contract.replace('Verify with: npm test', `Verify with: ${verify}`).replace('  - Scen: SCEN-1\n', '  - Scen: SCEN-1\n').replace(/(1\.4 T-04 sink\n)/, `$1${extra}`);
 }
 function freezeOf(tasks) {
-  return run(change({ 'tasks.md': tasks, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node -e "0" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW }));
+  return run(change({ 'tasks.md': tasks, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node --test test/shared.test.mjs | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW }));
 }
 test('sink without a full-suite leg must still have a narrow Verify', () => {
   const result = freezeOf(sinkContract('echo ok'));
@@ -599,7 +599,7 @@ const scheduleFiles = (tasks) => ({
   'tasks.md': tasks,
   'proposal.md': 'x',
   'design.md': design,
-  'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03 | node -e "0" | yes | PENDING | pending |'),
+  'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03 | node --test test/shared.test.mjs | yes | PENDING | pending |'),
   'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n',
 });
 const freezeStructural = (tasks) => run(change(scheduleFiles(tasks)), ['--structural', '--skip-signer-check']);
@@ -751,7 +751,7 @@ test('accepts Reads ordered in either dependency direction', () => {
     base.replace('  - Reads: src/generated.mjs', '  - Depends on: T-02\n  - Reads: src/generated.mjs'),
     base.replace('  - Write scope: src/generated.mjs,test/write.test.mjs', '  - Depends on: T-01\n  - Write scope: src/generated.mjs,test/write.test.mjs'),
   ]) {
-    const dir = change({ ...scheduleFiles(tasks), 'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node -e "0" | yes | PENDING | pending |') });
+    const dir = change({ ...scheduleFiles(tasks), 'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |') });
     execFileSync('git', ['init', '-q'], { cwd: dir });
     assert.equal(run(dir, ['--structural', '--skip-signer-check']).status, 0, run(dir, ['--structural', '--skip-signer-check']).stdout);
   }
@@ -759,7 +759,7 @@ test('accepts Reads ordered in either dependency direction', () => {
 
 test('accepts a task reading a path it writes itself', () => {
   const tasks = `- [ ] 1.1 T-01 self reader\n  - Write scope: src/generated.mjs,test/read.test.mjs\n  - Reads: src/generated.mjs\n  - Verify with: node --test test/read.test.mjs\n  - Scenarios: SCEN-1`;
-  const dir = change({ ...scheduleFiles(tasks), 'acceptance.md': table('| SCEN-1 | CLI | T-01 | node -e "0" | yes | PENDING | pending |') });
+  const dir = change({ ...scheduleFiles(tasks), 'acceptance.md': table('| SCEN-1 | CLI | T-01 | node --test test/shared.test.mjs | yes | PENDING | pending |') });
   execFileSync('git', ['init', '-q'], { cwd: dir });
   assert.equal(run(dir, ['--structural', '--skip-signer-check']).status, 0, run(dir, ['--structural', '--skip-signer-check']).stdout);
 });
@@ -867,7 +867,7 @@ test('an acceptance row split by an unescaped pipe is a named block, not a silen
   assert.equal(result.status, 1);
   assert.match(result.stdout, /MALFORMED_ACCEPTANCE_ROW/);
   // An escaped pipe keeps the column count and is accepted.
-  const escaped = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | echo "a \\| b" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW });
+  const escaped = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node --test test/shared.test.mjs "a \\| b" | yes | PENDING | pending |'), 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW });
   assert.equal(run(escaped).status, 0);
 });
 
@@ -880,6 +880,35 @@ test('shell setup is not a verify leg: set -e and || are named blocks', () => {
   const orResult = run(change({ 'tasks.md': sinkOr, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n' }));
   assert.match(orResult.stdout, /VERIFY_JUNK_LEG T-04/);
   assert.match(orResult.stdout, /mandatory legs/);
+});
+
+// F-5: a Required=yes acceptance command is what the executor's exit status will be read from.
+// A pipeline reports only its last leg's status, `||` makes an unreviewed leg mandatory, and a
+// command with no test runner or test path cannot fail for a reason the row cares about. All three
+// freeze-time rejects reuse the task Verify leg/proves/fixture judgement.
+test('SCEN-ACC-01 a Required=yes acceptance command that can hide a failure is rejected at freeze', () => {
+  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
+  const freezeWith = (verify, required = 'yes') => run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | ${verify} | ${required} | PENDING | pending |`) }));
+  const blocked = (verify) => {
+    const result = freezeWith(verify);
+    assert.equal(result.status, 1, verify);
+    const report = JSON.parse(result.stdout);
+    assert.ok(report.blocking.some((item) => item.startsWith('BAD_ACCEPTANCE_VERIFY SCEN-1')), verify);
+    return report;
+  };
+  // A literal cell pipe is written `\|`; the gate reads the unescaped command, which is a pipeline.
+  const piped = blocked('node --test test/a.test.mjs \\| tail -n 20');
+  assert.match(piped.blocking.join('\n'), /BAD_ACCEPTANCE_VERIFY SCEN-1: unquoted/);
+  assert.match(blocked('node --test test/a.test.mjs \\|\\| true').blocking.join('\n'), /hides which leg/);
+  assert.match(blocked('node -e "0"').blocking.join('\n'), /proves nothing/);
+  assert.match(blocked('true').blocking.join('\n'), /proves nothing/);
+  // A quoted pipe is an argument, not a pipeline, and a real runner still passes.
+  assert.equal(freezeWith('node --test test/shared.test.mjs "a \\| b"').status, 0);
+  assert.equal(freezeWith('node --test test/a.test.mjs').status, 0);
+  assert.equal(freezeWith('npm test').status, 0);
+  // Required=no rows are recorded only and never execute, so they are not judged this way.
+  const withOptional = `${table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | npm test | yes | PENDING | pending |')}\n| SCEN-1 | CLI | T-01 | node --test test/a.test.mjs \\| tail -n 20 | no | PENDING | pending |\n`;
+  assert.equal(run(change({ ...files, 'acceptance.md': withOptional })).status, 0);
 });
 
 test('a shell loop is an advisory, not invented legs', () => {
@@ -1007,12 +1036,12 @@ test('non-graph blocks retain advisory route needed before R0', () => {
 test('acceptance Required accepts yes/no case-insensitively and rejects invalid values even beside yes', () => {
   const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
   for (const required of ['yes', 'YES', 'Yes', 'no', 'NO', 'No', '`yes`', '`no`']) {
-    const rows = `${acceptance}\n| SCEN-1 | CLI | T-02 | node -e "0" | ${required} | PENDING | pending |`;
+    const rows = `${acceptance}\n| SCEN-1 | CLI | T-02 | node --test test/shared.test.mjs | ${required} | PENDING | pending |`;
     const result = run(change({ ...files, 'acceptance.md': rows }));
     assert.equal(result.status, 0, `${required}: ${result.stdout}`);
   }
   for (const required of ['', 'maybe', 'y', 'true', 'nope', 'yes please']) {
-    const rows = `${acceptance}\n| SCEN-1 | CLI | T-02 | node -e "0" | ${required} | PENDING | pending |`;
+    const rows = `${acceptance}\n| SCEN-1 | CLI | T-02 | node --test test/shared.test.mjs | ${required} | PENDING | pending |`;
     const result = run(change({ ...files, 'acceptance.md': rows }));
     assert.equal(result.status, 1, required);
     assert.match(result.stdout, /BAD_ACCEPTANCE_REQUIRED/);
@@ -1024,9 +1053,9 @@ test('acceptance requires the same seven-column header as runner', () => {
   const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
   const original = '| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |';
   for (const [header, row] of [
-    ['| Scenario | Entry | Tasks | Verify | Required | Result | Evidence | Extra |', '| SCEN-1 | CLI | T-02 | node -e "0" | yes | PENDING | pending | extra |'],
-    ['| Scenario | Entry | Tasks | Verify | Required | Outcome | Evidence |', '| SCEN-1 | CLI | T-02 | node -e "0" | yes | PENDING | pending |'],
-    ['| Scenario | Entry | Tasks | Verify | Required | Evidence | Result |', '| SCEN-1 | CLI | T-02 | node -e "0" | yes | PENDING | pending |'],
+    ['| Scenario | Entry | Tasks | Verify | Required | Result | Evidence | Extra |', '| SCEN-1 | CLI | T-02 | node --test test/shared.test.mjs | yes | PENDING | pending | extra |'],
+    ['| Scenario | Entry | Tasks | Verify | Required | Outcome | Evidence |', '| SCEN-1 | CLI | T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |'],
+    ['| Scenario | Entry | Tasks | Verify | Required | Evidence | Result |', '| SCEN-1 | CLI | T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |'],
   ]) {
     const content = table(row).replace(original, header);
     const result = run(change({ ...files, 'acceptance.md': content }));
@@ -1037,7 +1066,7 @@ test('acceptance requires the same seven-column header as runner', () => {
     const result = run(change({ ...files, 'acceptance.md': acceptance.replace(original, header) }));
     assert.equal(result.status, 0, result.stdout);
   }
-  const missing = run(change({ ...files, 'acceptance.md': '| SCEN-1 | CLI | T-02 | node -e "0" | yes | PENDING | pending |' }));
+  const missing = run(change({ ...files, 'acceptance.md': '| SCEN-1 | CLI | T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |' }));
   assert.equal(missing.status, 1);
   assert.match(missing.stdout, /BAD_ACCEPTANCE_HEADER/);
 });
@@ -1059,7 +1088,7 @@ function aligned(files = {}) {
     'tasks.md': tasks,
     'proposal.md': 'x',
     'design.md': '## Decisions\n- **D-01 shared helper** 影响模块/路径: src/shared\n- **D-02 wiring** 影响模块/路径: src/app.mjs\n',
-    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node -e "0" | yes | PENDING | pending |'),
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |'),
     'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n',
     'review.md': REVIEW,
     ...files,
@@ -1071,14 +1100,14 @@ const codes = (result) => {
 
 test('BAD_ACCEPTANCE_TASKS: an empty Tasks cell is rejected, as are non-task tokens', () => {
   const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
-  const derived = run(change({ ...files, 'acceptance.md': table('| SCEN-1 | CLI |  | node -e "0" | yes | PENDING | pending |') }));
+  const derived = run(change({ ...files, 'acceptance.md': table('| SCEN-1 | CLI |  | node --test test/shared.test.mjs | yes | PENDING | pending |') }));
   assert.equal(derived.status, 1, derived.stdout);
   assert.match(codes(derived).join('\n'), /^BAD_ACCEPTANCE_TASKS acceptance\.md:3 SCEN-1: Tasks cell is empty/m);
-  const bad = run(change({ ...files, 'acceptance.md': table('| SCEN-1 | CLI | T-01 and T-02 | node -e "0" | yes | PENDING | pending |') }));
+  const bad = run(change({ ...files, 'acceptance.md': table('| SCEN-1 | CLI | T-01 and T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |') }));
   assert.equal(bad.status, 1);
   assert.match(codes(bad).join('\n'), /^BAD_ACCEPTANCE_TASKS acceptance\.md:3 SCEN-1: Tasks token T-01 and T-02 is not a task id$/m);
   // A placeholder on a Required=no row must not silently derive owners either.
-  const placeholder = run(change({ ...files, 'acceptance.md': table('| SCEN-1 | CLI | TBD | node -e "0" | no | PENDING | pending |\n| SCEN-1 | CLI | T-01 | node -e "0" | yes | PENDING | pending |') }));
+  const placeholder = run(change({ ...files, 'acceptance.md': table('| SCEN-1 | CLI | TBD | node -e "0" | no | PENDING | pending |\n| SCEN-1 | CLI | T-01 | node --test test/shared.test.mjs | yes | PENDING | pending |') }));
   assert.equal(placeholder.status, 1);
   assert.match(codes(placeholder).join('\n'), /^BAD_ACCEPTANCE_TASKS acceptance\.md:3 SCEN-1: Tasks token TBD is not a task id$/m);
 });
@@ -1086,7 +1115,7 @@ test('BAD_ACCEPTANCE_TASKS: an empty Tasks cell is rejected, as are non-task tok
 test('UNKNOWN_ACCEPTANCE_TASK: a Tasks cell naming a task absent from tasks.md is rejected', () => {
   const result = run(change({
     'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW,
-    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04,T-99 | node -e "0" | yes | PENDING | pending |'),
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04,T-99 | node --test test/shared.test.mjs | yes | PENDING | pending |'),
   }));
   assert.equal(result.status, 1);
   assert.match(codes(result).join('\n'), /^UNKNOWN_ACCEPTANCE_TASK SCEN-1: T-99 is not a task in tasks\.md$/m);
@@ -1104,7 +1133,7 @@ test('UNOWNED_ACCEPTANCE_SCEN: the Tasks cell must name at least one task claimi
   - Scen: SCEN-2`;
   const result = run(change({
     'tasks.md': tasks, 'proposal.md': 'x', 'design.md': design, 'review.md': REVIEW,
-    'acceptance.md': table('| SCEN-1 | CLI | T-02 | node -e "0" | yes | PENDING | pending |\n| SCEN-2 | CLI | T-01 | node -e "0" | yes | PENDING | pending |'),
+    'acceptance.md': table('| SCEN-1 | CLI | T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |\n| SCEN-2 | CLI | T-01 | node --test test/shared.test.mjs | yes | PENDING | pending |'),
     'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n### Scenario: SCEN-2\n- **Verify:** node --test test/sink.test.mjs\n',
   }));
   assert.equal(result.status, 1);
@@ -1126,7 +1155,7 @@ test('UNACCEPTED_SCEN: every declared SCEN needs an acceptance row', () => {
 test('UNACCEPTED_TASK_SCEN: every claiming task must appear in that SCEN\'s Tasks cell', () => {
   const result = run(change({
     'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW,
-    'acceptance.md': table('| SCEN-1 | CLI | T-02,T-03,T-04 | node -e "0" | yes | PENDING | pending |'),
+    'acceptance.md': table('| SCEN-1 | CLI | T-02,T-03,T-04 | node --test test/shared.test.mjs | yes | PENDING | pending |'),
   }));
   assert.equal(result.status, 1);
   assert.match(codes(result).join('\n'), /^UNACCEPTED_TASK_SCEN T-01: SCEN-1 is claimed but no acceptance row lists T-01$/m);
@@ -1155,8 +1184,8 @@ const splitEntry = [
   entryTask('T-01', { scope: 'src/form/ExpenseLine.tsx,test/t-01.test.mjs', scen: 'SCEN-1' }),
   entryTask('T-02', { scope: 'src/form/ExpenseBillForm.tsx,test/t-02.test.mjs', scen: 'SCEN-2' }),
 ];
-const splitRow = (tasks, entry = 'src/form/ExpenseBillForm.tsx') => `| SCEN-1 | ${entry} | ${tasks} | node -e "0" | yes | PENDING | pending |
-| SCEN-2 | GET /api/other | T-02 | node -e "0" | yes | PENDING | pending |`;
+const splitRow = (tasks, entry = 'src/form/ExpenseBillForm.tsx') => `| SCEN-1 | ${entry} | ${tasks} | node --test test/shared.test.mjs | yes | PENDING | pending |
+| SCEN-2 | GET /api/other | T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |`;
 
 test('ENTRY_OWNER_UNCLAIMED: a row owner that does not write the Entry and cannot reach its writer blocks', () => {
   const result = entryRun(splitEntry, splitRow('T-01'));
@@ -1189,7 +1218,7 @@ test('ENTRY_OWNER_UNCLAIMED: a skeleton that pre-wires the Entry satisfies the c
     entryTask('T-01', { uses: 'T-00', scope: 'src/form/ExpenseLine.tsx,test/t-01.test.mjs', scen: 'SCEN-1' }),
   ];
   // The short name resolves against the skeleton's Write scope.
-  assert.equal(entryRun(tasks, '| SCEN-1 | ExpenseBillForm.tsx | T-01 | node -e "0" | yes | PENDING | pending |', '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n').status, 0);
+  assert.equal(entryRun(tasks, '| SCEN-1 | ExpenseBillForm.tsx | T-01 | node --test test/shared.test.mjs | yes | PENDING | pending |', '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n').status, 0);
 });
 
 test('ENTRY_OWNER_UNCLAIMED: entries without a file token or without a writer are left to R0', () => {
@@ -1240,9 +1269,9 @@ const userEntryTasks = [
   entryTask('T-03', { scope: 'packages/server/src/services/bill-submit-service.ts,test/t-03.test.mjs', scen: 'SCEN-3' }),
 ];
 const userEntryRows = [
-  '| SCEN-1 | UI `?view=SUBMIT_HUB&entry=EXPENSE` total | T-01 | node -e "0" | yes | PENDING | pending |',
-  '| SCEN-2 | UI `?view=SUBMIT_HUB&entry=EXPENSE` form | T-02 | node -e "0" | yes | PENDING | pending |',
-  '| SCEN-3 | POST /api/v1/bills/submit | T-03 | node -e "0" | yes | PENDING | pending |',
+  '| SCEN-1 | UI `?view=SUBMIT_HUB&entry=EXPENSE` total | T-01 | node --test test/shared.test.mjs | yes | PENDING | pending |',
+  '| SCEN-2 | UI `?view=SUBMIT_HUB&entry=EXPENSE` form | T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |',
+  '| SCEN-3 | POST /api/v1/bills/submit | T-03 | node --test test/shared.test.mjs | yes | PENDING | pending |',
 ].join('\n');
 
 test('ADVISORY_ENTRY_NOT_EXERCISED: a UI entry owned by a helper-only task is advised, not blocked', () => {
@@ -1261,7 +1290,7 @@ test('ADVISORY_ENTRY_NOT_EXERCISED: an HTTP entry owned by a helper-only task is
   const tasks = [
     entryTask('T-01', { scope: 'src/utils/payload.ts,test/t-01.test.mjs', scen: 'SCEN-1' }),
   ];
-  const result = entryRun(tasks, '| SCEN-1 | POST /api/v1/bills/submit | T-01 | node -e "0" | yes | PENDING | pending |', '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n');
+  const result = entryRun(tasks, '| SCEN-1 | POST /api/v1/bills/submit | T-01 | node --test test/shared.test.mjs | yes | PENDING | pending |', '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n');
   assert.equal(result.status, 0, result.stdout);
   assert.match(JSON.parse(result.stdout).advisories.join('\n'), /^ADVISORY_ENTRY_NOT_EXERCISED SCEN-1 acceptance\.md:3:/m);
 });
@@ -1269,7 +1298,7 @@ test('ADVISORY_ENTRY_NOT_EXERCISED: an HTTP entry owned by a helper-only task is
 test('ADVISORY_ENTRY_NOT_EXERCISED: a server package root does not hide helpers or domain modules', () => {
   for (const scope of ['packages/server/src/utils/payload.ts', 'packages/server/src/domain/invoice.ts']) {
     const tasks = [entryTask('T-01', { scope: `${scope},test/t-01.test.mjs`, scen: 'SCEN-1' })];
-    const result = entryRun(tasks, '| SCEN-1 | POST /api/v1/bills/submit | T-01 | node -e "0" | yes | PENDING | pending |', '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n');
+    const result = entryRun(tasks, '| SCEN-1 | POST /api/v1/bills/submit | T-01 | node --test test/shared.test.mjs | yes | PENDING | pending |', '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n');
     assert.equal(result.status, 0, result.stdout);
     const hits = JSON.parse(result.stdout).advisories.filter((item) => item.startsWith('ADVISORY_ENTRY_NOT_EXERCISED'));
     assert.equal(hits.length, 1, `${scope}: ${result.stdout}`);
@@ -1282,11 +1311,11 @@ test('ADVISORY_ENTRY_NOT_EXERCISED: entries that name no user path are left to t
     entryTask('T-01', { scope: 'src/utils/totals.ts,test/t-01.test.mjs', scen: 'SCEN-1' }),
     entryTask('T-02', { scope: 'src/form/ExpenseBillForm.tsx,test/t-02.test.mjs', scen: 'SCEN-2' }),
   ];
-  const cli = entryRun(tasks, '| SCEN-1 | CLI | T-01 | node -e "0" | yes | PENDING | pending |\n| SCEN-2 | CLI | T-02 | node -e "0" | yes | PENDING | pending |', '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n### Scenario: SCEN-2\n- **Verify:** node --test test/sink.test.mjs\n');
+  const cli = entryRun(tasks, '| SCEN-1 | CLI | T-01 | node --test test/shared.test.mjs | yes | PENDING | pending |\n| SCEN-2 | CLI | T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |', '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n### Scenario: SCEN-2\n- **Verify:** node --test test/sink.test.mjs\n');
   assert.equal(cli.status, 0, cli.stdout);
   assert.doesNotMatch(JSON.parse(cli.stdout).advisories.join('\n'), /ADVISORY_ENTRY_NOT_EXERCISED/);
   // A file Entry is judged by ENTRY_OWNER_UNCLAIMED, so it is never reported twice.
-  const file = entryRun(tasks, '| SCEN-1 | src/form/ExpenseBillForm.tsx | T-01 | node -e "0" | yes | PENDING | pending |\n| SCEN-2 | CLI | T-02 | node -e "0" | yes | PENDING | pending |', '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n### Scenario: SCEN-2\n- **Verify:** node --test test/sink.test.mjs\n');
+  const file = entryRun(tasks, '| SCEN-1 | src/form/ExpenseBillForm.tsx | T-01 | node --test test/shared.test.mjs | yes | PENDING | pending |\n| SCEN-2 | CLI | T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |', '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n### Scenario: SCEN-2\n- **Verify:** node --test test/sink.test.mjs\n');
   assert.equal(file.status, 1);
   assert.match(codes(file).join('\n'), /^ENTRY_OWNER_UNCLAIMED SCEN-1 acceptance\.md:3:/m);
   assert.doesNotMatch(JSON.parse(file.stdout).advisories.join('\n'), /ADVISORY_ENTRY_NOT_EXERCISED/);
@@ -1296,12 +1325,12 @@ test('BAD_ACCEPTANCE_TASKS: a comma-only or empty Tasks cell fails', () => {
   const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
   for (const cell of [',', ' , ', ',,', 'TBD,', ', ,']) {
     for (const required of ['no', 'yes']) {
-      const result = run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | ${cell} | node -e "0" | ${required} | PENDING | pending |\n| SCEN-1 | CLI | T-01 | node -e "0" | yes | PENDING | pending |`) }));
+      const result = run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | ${cell} | node --test test/shared.test.mjs | ${required} | PENDING | pending |\n| SCEN-1 | CLI | T-01 | node --test test/shared.test.mjs | yes | PENDING | pending |`) }));
       assert.equal(result.status, 1, `${JSON.stringify(cell)} ${required}`);
       assert.match(codes(result).join('\n'), /^BAD_ACCEPTANCE_TASKS acceptance\.md:3 SCEN-1:/m, `${JSON.stringify(cell)} ${required}`);
     }
   }
-  const empty = run(change({ ...files, 'acceptance.md': table('| SCEN-1 | CLI |  | node -e "0" | yes | PENDING | pending |') }));
+  const empty = run(change({ ...files, 'acceptance.md': table('| SCEN-1 | CLI |  | node --test test/shared.test.mjs | yes | PENDING | pending |') }));
   assert.equal(empty.status, 1, empty.stdout);
   assert.match(codes(empty).join('\n'), /^BAD_ACCEPTANCE_TASKS acceptance\.md:3 SCEN-1: Tasks cell is empty/m);
 });
@@ -1537,7 +1566,7 @@ test('UNOWNED_ACCEPTANCE_SCEN: a Required=no owner row cannot excuse a wrong Req
   const result = run(change({
     'tasks.md': tasks, 'proposal.md': 'x', 'design.md': design, 'review.md': REVIEW,
     'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n### Scenario: SCEN-2\n- **Verify:** node --test test/sink.test.mjs\n',
-    'acceptance.md': table('| SCEN-1 | CLI | T-02 | node -e "0" | yes | PENDING | pending |\n| SCEN-1 | CLI | T-01 | node -e "0" | no | PENDING | pending |\n| SCEN-2 | CLI | T-02 | node -e "0" | yes | PENDING | pending |'),
+    'acceptance.md': table('| SCEN-1 | CLI | T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |\n| SCEN-1 | CLI | T-01 | node -e "0" | no | PENDING | pending |\n| SCEN-2 | CLI | T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |'),
   }));
   assert.equal(result.status, 1);
   const blocking = codes(result).join('\n');
@@ -1603,7 +1632,7 @@ test('UNOWNED_ACCEPTANCE_SCEN: every id in the Tasks cell must claim the SCEN', 
   const result = run(change({
     'tasks.md': tasks, 'proposal.md': 'x', 'design.md': design, 'review.md': REVIEW,
     'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n### Scenario: SCEN-2\n- **Verify:** node --test test/sink.test.mjs\n',
-    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node -e "0" | yes | PENDING | pending |\n| SCEN-2 | CLI | T-02 | node -e "0" | yes | PENDING | pending |'),
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |\n| SCEN-2 | CLI | T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |'),
   }));
   assert.equal(result.status, 1);
   const blocking = codes(result).join('\n');
@@ -1624,7 +1653,7 @@ test('UNKNOWN_DECISION: Implements is unresolved when design.md is absent', () =
   - Scen: SCEN-1`;
   const result = run(change({
     'tasks.md': tasks, 'proposal.md': 'x', 'review.md': REVIEW,
-    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node -e "0" | yes | PENDING | pending |'),
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |'),
     'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n',
   }));
   assert.equal(result.status, 1);
@@ -1634,7 +1663,7 @@ test('UNKNOWN_DECISION: Implements is unresolved when design.md is absent', () =
 test('BAD_ACCEPTANCE_TASKS: a non-task token in the Tasks cell is named', () => {
   const result = run(change({
     'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW,
-    'acceptance.md': table('| SCEN-1 | CLI | T-01, T-02 (integration) | node -e "0" | yes | PENDING | pending |'),
+    'acceptance.md': table('| SCEN-1 | CLI | T-01, T-02 (integration) | node --test test/shared.test.mjs | yes | PENDING | pending |'),
   }));
   assert.equal(result.status, 1);
   assert.match(codes(result).join('\n'), /^BAD_ACCEPTANCE_TASKS acceptance\.md:3 SCEN-1: Tasks token T-02 \(integration\) is not a task id$/m);
@@ -1681,7 +1710,7 @@ test('ADVISORY_SINK_TEST_ONLY: a test-only sink is an advisory, not proof of a m
   - Verify with: npm test`;
   const result = run(change({
     'tasks.md': tasks, 'proposal.md': 'x', 'review.md': REVIEW,
-    'acceptance.md': table('| SCEN-1 | CLI | T-01 | node -e "0" | yes | PENDING | pending |'),
+    'acceptance.md': table('| SCEN-1 | CLI | T-01 | node --test test/shared.test.mjs | yes | PENDING | pending |'),
     'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n',
   }));
   assert.equal(result.status, 0, JSON.stringify(codes(result)));
@@ -1703,7 +1732,7 @@ test('the sink advisory is evidence to check, not a closure proof, and behavior-
   - Scen: SCEN-1`;
   const dir = change({
     'tasks.md': testOnlyBehavior, 'proposal.md': 'x', 'review.md': REVIEW,
-    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node -e "0" | yes | PENDING | pending |'),
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |'),
     'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n',
   });
   const result = run(dir);
@@ -1715,7 +1744,7 @@ test('the sink advisory is evidence to check, not a closure proof, and behavior-
   const cycle = change({
     'tasks.md': `- [ ] 1.1 T-01 a\n  - Depends on: T-02\n  - Write scope: src/a,test/a.test.mjs\n  - Verify with: node --test test/a.test.mjs\n  - Scen: SCEN-1\n- [ ] 1.2 T-02 b\n  - Depends on: T-01\n  - Write scope: src/b,test/b.test.mjs\n  - Verify with: node --test test/b.test.mjs\n  - Scen: SCEN-1`,
     'proposal.md': 'x', 'review.md': REVIEW,
-    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node -e "0" | yes | PENDING | pending |'),
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |'),
     'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n',
   });
   assert.match(codes(run(cycle)).join('\n'), /^CYCLE/m);
@@ -1950,7 +1979,7 @@ function fullRepo({ scen = 'SCEN-CAP-01', verify = true, ...overrides } = {}) {
   - Scen: ${scen}
 `);
   fs.writeFileSync(path.join(dir, 'design.md'), design);
-  fs.writeFileSync(path.join(dir, 'acceptance.md'), table(`| ${scen} | CLI | T-01 | node -e "0" | yes | PENDING | pending |`));
+  fs.writeFileSync(path.join(dir, 'acceptance.md'), table(`| ${scen} | CLI | T-01 | node --test test/shared.test.mjs | yes | PENDING | pending |`));
   const sh = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
   sh('add', '-A');
   sh('-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-q', '-m', 'fixture');
@@ -2000,7 +2029,7 @@ test('the full run without --stage is byte-identical to main on a complete packa
   - Scen: SCEN-1,SCEN-2
 `,
     'proposal.md': 'x\n',
-    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node -e "0" | yes | PENDING | pending |\n| SCEN-2 | CLI | T-02 | node -e "0" | no | PENDING | pending |'),
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |\n| SCEN-2 | CLI | T-02 | node -e "0" | no | PENDING | pending |'),
     'specs/cap/spec.md': '## ADDED Requirements\n### Requirement: Added one\n#### Scenario: SCEN-1 one\nWHEN a\nTHEN b\n- **Verify:** node --test test/sink.test.mjs\n',
     'specs/other/spec.md': '## MODIFIED Requirements\n### Requirement: Changed\n#### Scenario: SCEN-2 two\nWHEN c\nTHEN d\n- **Verify:** node --test test/sink.test.mjs\n',
   });
@@ -2045,7 +2074,7 @@ function unreadableFixture(where) {
     'tasks.md': contract,
     'proposal.md': 'x',
     'design.md': design,
-    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node -e "0" | yes | PENDING | pending |'),
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |'),
     'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n',
   });
   const sh = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
@@ -2154,7 +2183,7 @@ test('invalid acceptance diagnostics keep base order and spelling, not a grouped
       '| SCEN-aB | CLI | T-01 | node -e "0" | maybe | PENDING | pending |',
     ].join('\n')),
     'tasks token in mixed case': table([
-      '| SCEN-1 | CLI | t-99 | node -e "0" | yes | PENDING | pending |',
+      '| SCEN-1 | CLI | t-99 | node --test test/shared.test.mjs | yes | PENDING | pending |',
       '| SCEN-1 | CLI | T-01 | node -e "0" |',
     ].join('\n')),
   };
@@ -2186,7 +2215,7 @@ test('short acceptance headers preserve base JSON diagnostics and never crash', 
   ];
   const rows = headers.map((header, index) => {
     const width = header.split('|').length - 2;
-    const cells = ['SCEN-X', 'x', 'T-01', 'node -e "0"', 'yes', 'PENDING', 'pending', 'extra'].slice(0, width);
+    const cells = ['SCEN-X', 'x', 'T-01', 'node --test test/shared.test.mjs', 'yes', 'PENDING', 'pending', 'extra'].slice(0, width);
     return [header, `| ${Array(width).fill('---').join(' | ')} |`, `| ${cells.join(' | ')} |`].join('\n');
   });
   rows.push('| Scenario | Entry |\n| --- | --- |\n| SCEN-X | x |');
@@ -2223,7 +2252,7 @@ test('short and malformed acceptance tables match D4 base JSON output without th
   ];
   const cases = headers.map((header) => {
     const width = header.split('|').length - 2;
-    const cells = ['SCEN-X', 'x', 'T-01', 'node -e "0"', 'yes', 'PENDING', 'pending', 'extra'].slice(0, width);
+    const cells = ['SCEN-X', 'x', 'T-01', 'node --test test/shared.test.mjs', 'yes', 'PENDING', 'pending', 'extra'].slice(0, width);
     return `${header}\n| ${Array(width).fill('---').join(' | ')} |\n| ${cells.join(' | ')} |`;
   });
   cases.push('| Scenario | Entry |\n| --- | --- |\n| SCEN-X | x |');
@@ -2249,7 +2278,7 @@ const affectsRun = (designMarkdown, scope = 'src/shared,test/t-01.test.mjs') => 
   'design.md': designMarkdown,
   'review.md': REVIEW,
   'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n',
-  'acceptance.md': table('| SCEN-1 | CLI | T-01 | node -e "0" | yes | PENDING | pending |'),
+  'acceptance.md': table('| SCEN-1 | CLI | T-01 | node --test test/shared.test.mjs | yes | PENDING | pending |'),
 }));
 
 test('ADVISORY_DECISION_UNOWNED: a module named in design.md but written by no task is advised', () => {
@@ -2291,7 +2320,7 @@ test('a referenced open hard decision blocks routing', () => {
     'tasks.md': tasks,
     'proposal.md': proposal,
     'design.md': design,
-    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node -e "0" | yes | PENDING | pending |'),
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node --test test/shared.test.mjs | yes | PENDING | pending |'),
     'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n',
     'review.md': REVIEW,
   });
@@ -2315,7 +2344,7 @@ test('decided, unreferenced and product decisions do not lose the graph route', 
       'tasks.md': tasks,
       'proposal.md': proposal,
       'design.md': design,
-      'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node -e "0" | yes | PENDING | pending |'),
+      'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node --test test/shared.test.mjs | yes | PENDING | pending |'),
       'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n',
       'review.md': REVIEW,
     });
@@ -2337,7 +2366,7 @@ test('a referenced open decision missing Class counts as hard', () => {
     'tasks.md': tasks,
     'proposal.md': proposal,
     'design.md': design,
-    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node -e "0" | yes | PENDING | pending |'),
+    'acceptance.md': table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node --test test/shared.test.mjs | yes | PENDING | pending |'),
     'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n',
     'review.md': REVIEW,
   });

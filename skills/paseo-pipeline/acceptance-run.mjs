@@ -43,7 +43,11 @@ function rowsOf(text) {
 }
 function run(command, cwd, timeout) {
   return new Promise((resolve) => {
-    const child = spawn('/bin/sh', ['-c', command], { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    // `sh` exits with the last pipeline leg's status, so `node --test x | tail -n 20` recorded PASS
+    // with red tests. bash's pipefail makes a red first leg fail the command; single commands behave
+    // identically. Freeze also rejects a Required=yes pipe, so this is the backstop for a matrix
+    // that reached execution some other way.
+    const child = spawn('/bin/bash', ['-c', `set -o pipefail; ${command}`], { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '', timedOut = false, overflow = false, error = null;
     const limit = 1024 * 1024;
     const stop = (abort = false) => {

@@ -495,26 +495,27 @@ const FIXTURE_DIR = /(?:^|\/)(?:fixtures?|testdata|__snapshots__)(?:\/|$)/i;
 const verifyTestPath = (p) => isTestPath(p) && !FIXTURE_DIR.test(p);
 const testScript = (command) => /^(?:(?:bash|sh)\s+)?(?:\.\/)?(?:[\w.-]+\/)*test(?:[._-][\w.-]+)?\.(?:sh|bash)(?:\s|$)/i.test(command)
   && !FIXTURE_DIR.test(command.replace(/^(?:bash|sh)\s+/, '').split(/\s/)[0]);
+// A leg must also prove something: a known test runner, or a test/spec path. `true`,
+// `echo ok` and `node src/a.mjs` pass a path-only check but verify nothing.
+// A runner pointed only at fixture paths runs no real test either.
+// Option arguments (`--config test/fixtures/jest.config.js`) configure the run; they are not what it
+// runs. `--test` and `--` are boolean, so the path after them is a real target.
+// Known limitation: a flag value is skipped wholesale, so `node --test --test-only test/fixtures/foo.test.mjs`
+// sees no target (targets=[]) and the fixture is treated as a real verification target. Not fixed here.
+const fixtureOnlyLeg = (leg) => {
+  const tokens = leg.command.split(/\s+/);
+  const targets = tokens.flatMap((token, i) => {
+    const prev = tokens[i - 1] ?? '';
+    if (/^-/.test(prev) && !/=/.test(prev) && prev !== '--' && prev !== '--test') return [];
+    return legPaths(token);
+  });
+  return targets.length > 0 && targets.every((p) => FIXTURE_DIR.test(p));
+};
+const legProves = (leg) => (FULL_SUITE_LEG.test(leg.command) && !fixtureOnlyLeg(leg)) || testScript(leg.command) || leg.paths.some(verifyTestPath);
 for (const task of tasks) {
   const legs = verifyLegs(task.verify);
   const broadLegs = legs.filter((leg) => leg.broad).length;
-  // A leg must also prove something: a known test runner, or a test/spec path. `true`,
-  // `echo ok` and `node src/a.mjs` pass a path-only check but verify nothing.
-  // A runner pointed only at fixture paths runs no real test either.
-  // Option arguments (`--config test/fixtures/jest.config.js`) configure the run; they are not what it
-  // runs. `--test` and `--` are boolean, so the path after them is a real target.
-  // Known limitation: a flag value is skipped wholesale, so `node --test --test-only test/fixtures/foo.test.mjs`
-  // sees no target (targets=[]) and the fixture is treated as a real verification target. Not fixed here.
-  const fixtureOnly = (leg) => {
-    const tokens = leg.command.split(/\s+/);
-    const targets = tokens.flatMap((token, i) => {
-      const prev = tokens[i - 1] ?? '';
-      if (/^-/.test(prev) && !/=/.test(prev) && prev !== '--' && prev !== '--test') return [];
-      return legPaths(token);
-    });
-    return targets.length > 0 && targets.every((p) => FIXTURE_DIR.test(p));
-  };
-  const proves = (leg) => (FULL_SUITE_LEG.test(leg.command) && !fixtureOnly(leg)) || testScript(leg.command) || leg.paths.some(verifyTestPath);
+  const proves = legProves;
   const allowed = verifyScope(task);
   const unscoped = legs.filter((leg) => !leg.broad && (!proves(leg) || leg.paths.some((path) => !isFileWithinScopes(path, allowed))));
   // Shell loops are legitimate (a sink iterating `scripts/specs/*.mjs`), but the
@@ -712,6 +713,26 @@ else {
   for (const row of requiredRows) {
     if (row.result !== 'PENDING') blocking.push(`ACCEPTANCE_NOT_FROZEN ${row.scen}: Result must start PENDING`);
     if (/^`?\s*(?:!|manual|手工|自然语言)/i.test(row.verify)) blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: Required=yes needs one executable command`);
+    else {
+      // The acceptance executor judges the command's own exit status. A pipeline reports only its
+      // last leg's status (`node --test x | tail` is green when the tests are red), and `||` makes
+      // one of two legs mandatory in an order nobody reads. Both are the same defects the task
+      // Verify rules name, and a leg that proves nothing proves nothing here either. A pipe inside
+      // quotes is an argument, not a pipeline, so it is masked before both judgements.
+      const command = row.verify.replace(/^`+|`+$/g, '').trim();
+      const maskQuoted = (text) => text.replace(/'[^']*'|"[^"]*"/g, (segment) => segment.replace(/\|/g, ' '));
+      const unquoted = maskQuoted(command);
+      if (/\|\|/.test(unquoted)) {
+        blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: \`||\` hides which leg is the check; use one command or a script that returns its own status`);
+      } else if (/\|/.test(unquoted)) {
+        blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: unquoted \`|\` reports only the last leg's exit status; write the check in a script and run that, or use \`bash -c 'set -o pipefail; ...'\``);
+      } else {
+        const legs = verifyLegs(unquoted);
+        if (!legs.length || legs.some((leg) => !legProves(leg))) {
+          blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: ${JSON.stringify(command)} proves nothing — run a real entry point or test command whose exit status can fail`);
+        }
+      }
+    }
   }
 }
 

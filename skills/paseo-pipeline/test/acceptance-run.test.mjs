@@ -104,8 +104,31 @@ test('escaped pipe passes through and output overflow fails closed', () => {
   assert.equal(JSON.parse(fs.readFileSync(tooBig)).rows[0].overflow, true);
 });
 
+// SCEN-ACC-02: a pipeline reports only its last leg's status under plain `sh`, so a red first leg
+// followed by a green one recorded PASS. The runner now executes under bash pipefail.
+test('SCEN-ACC-02 a red leg inside a pipeline is not PASS', () => {
+  // The literal cell pipe must be escaped as `\|`; the command the runner executes is `false | true`.
+  const f = fixture('false \\| true');
+  const ev = path.join(f.base, 'result.json');
+  assert.notEqual(execute(f, ev).status, 0);
+  const record = JSON.parse(fs.readFileSync(ev));
+  assert.equal(record.rows[0].command, 'false | true');
+  assert.equal(record.rows[0].result, 'FAIL');
+  assert.equal(record.valid, false);
+  assert.notEqual(invoke(f, 'check', ev).status, 0);
+  // A green pipeline is still PASS: pipefail must not turn a passing pipeline into a failure.
+  const green = fixture('echo ok \\| cat');
+  const greenEv = path.join(green.base, 'result.json');
+  assert.equal(execute(green, greenEv).status, 0);
+  assert.equal(JSON.parse(fs.readFileSync(greenEv)).rows[0].result, 'PASS');
+});
+
 test('legacy CP-1 accepted matrix executes and checks at committed integration HEAD', () => {
-  const f = fixture('printf hello', '| SCEN-1 | CLI | T-02 | touch should-not-run | no | BLOCKED | legacy evidence |\n');
+  // A Required=yes row must name a command that can fail (freeze rejects `printf hello`); the
+  // legacy shape this test is about is the BLOCKED/evidence cells, not the command's weakness.
+  const f = fixture('bash test/a.test.sh', '| SCEN-1 | CLI | T-02 | touch should-not-run | no | BLOCKED | legacy evidence |\n');
+  fs.mkdirSync(path.join(f.repo, 'test'), { recursive: true });
+  fs.writeFileSync(path.join(f.repo, 'test/a.test.sh'), '#!/bin/sh\necho hello\n');
   const matrix = path.join(f.dir, 'acceptance.md');
   fs.writeFileSync(matrix, fs.readFileSync(matrix, 'utf8')
     .replace('| CLI | T-01 |', '| CLI | T-01,T-02,T-03,T-04 |')

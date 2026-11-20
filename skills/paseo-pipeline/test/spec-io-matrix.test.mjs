@@ -64,7 +64,7 @@ function fixture() {
   - Scen: SCEN-1,SCEN-2
 `);
   write('openspec/changes/current/proposal.md', 'x\n');
-  write('openspec/changes/current/acceptance.md', table('| SCEN-1 | CLI | T-01,T-02 | node -e "0" | yes | PENDING | pending |\n| SCEN-2 | CLI | T-02 | node -e "0" | no | PENDING | pending |'));
+  write('openspec/changes/current/acceptance.md', table('| SCEN-1 | CLI | T-01,T-02 | node --test test/shared.test.mjs | yes | PENDING | pending |\n| SCEN-2 | CLI | T-02 | node -e "0" | no | PENDING | pending |'));
   write('openspec/changes/current/specs/cap/spec.md', '## ADDED Requirements\n### Requirement: Added one\n#### Scenario: SCEN-1 one\nWHEN a\nTHEN b\n- **Verify:** node --test test/scen-1.test.mjs\n');
   write('openspec/changes/current/specs/other/spec.md', '## MODIFIED Requirements\n### Requirement: Changed\n#### Scenario: SCEN-2 two\nWHEN c\nTHEN d\n- **Verify:** node --test test/scen-2.test.mjs\n');
   write('openspec/specs/cap/spec.md', '## Requirements\n### Scenario: SCEN-9 base\n- **Verify:** node --test test/scen-9.test.mjs\n');

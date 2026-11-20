@@ -456,7 +456,7 @@ test('odd acceptance tables fail structurally without crashing or printing candi
     '| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |',
     '| --- | --- | --- | --- | --- | --- | --- |',
     '| Scenario | Entry |\n| --- | --- |\n| SCEN-CAP-01 | x |',
-    '| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |\n| --- | --- | --- | --- | --- | --- | --- |\n| SCEN-CAP-01 | x | T-01 | node -e "0" | yes | PENDING | pending | trailing |',
+    '| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |\n| --- | --- | --- | --- | --- | --- | --- |\n| SCEN-CAP-01 | x | T-01 | node --test test/shared.test.mjs | yes | PENDING | pending | trailing |',
     '| SCEN-CAP-01 |',
   ];
   for (const [index, acceptance] of variants.entries()) {

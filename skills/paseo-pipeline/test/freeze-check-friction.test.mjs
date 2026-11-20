@@ -22,7 +22,7 @@ function change(files) {
 }
 
 const table = (rows) => `| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |\n| --- | --- | --- | --- | --- | --- | --- |\n${rows}`;
-const acceptance = table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node -e "0" | yes | PENDING | pending |');
+const acceptance = table('| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | node --test test/shared.test.mjs | yes | PENDING | pending |');
 const contract = `- [ ] 1.1 T-01 shared
   - Write scope: src/shared,test/shared.test.mjs
   - Verify with: node --test test/shared.test.mjs
