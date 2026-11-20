@@ -33,7 +33,7 @@ Resolve provider/model/modeId/thinking via `list_profiles` at dispatch.
 | 审查（按察司） `anchasi` | Independent code audit; review intent is not a read-only permission guarantee. |
 | 协调（尚书） `shangshu` | Optional thin Tier 3 dispatch and reconciliation; main session is default. |
 
-Daily: 调研, 架构, 开发, 攻坚, 审查, not serial stages; 测试, 界面, 协调 on demand. Notes (`family/harness/write/use/not/brief`) guide selection only: paste the `brief:` file. `plan` sets the stage; dispatcher picks `gongbu`/`gaogong`. `docs/agent-team.md`: team map; `docs/agent-profiles.json`: unapplied.
+Daily: 调研, 架构, 开发, 攻坚, 审查, not serial stages; 测试, 界面, 协调 on demand. Notes (`family/harness/write/use/not/brief`) guide selection only: paste the `brief:` file. `plan` sets the stage; dispatcher picks `gongbu`/`gaogong`.
 
 `Review: strict` selects independent Red tests; risk alone adds no tester. Briefs: `templates/{author,tester,worker,reviewer}.md`.
 
