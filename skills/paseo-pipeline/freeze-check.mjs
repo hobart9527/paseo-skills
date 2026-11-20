@@ -485,6 +485,13 @@ const CLAIMABLE_FILE = /\.(?:[cm]?[jt]sx?|py|go|rs|rb|java|kt|swift|php|sh|bash)
 // regresses (a monorepo sink runs each package suite explicitly); final acceptance
 // always runs on integration HEAD.
 const SHELL_CONSTRUCT = /\b(?:for|while|if|case|until)\b/;
+// A reserved word anywhere in the string is not a shell construct: `echo if` and
+// `node --test test/if.test.mjs` are ordinary commands, and treating them as loops skipped the very
+// pipe checks that catch a masked failure. Control syntax is a shape — the command begins with a
+// control keyword, or it closes a `do`…`done` / `then`…`fi` block. `||` is handled separately: its
+// right side must be `exit`, so `a || exit 1` still propagates a red left leg.
+const SHELL_CONTROL_SHAPE = /^(?:for|while|until|if|case)\s/;
+const SHELL_BLOCK = (words) => (words.has('do') && words.has('done')) || (words.has('then') && words.has('fi'));
 // `set -e; cmd` and `a || exit 1` are shell setup, not verify legs. commandParts
 // splits them into legs that prove nothing; name the real cause instead of the
 // downstream VERIFY_NOT_NARROW.
@@ -720,23 +727,47 @@ else {
       // Verify rules name, and a leg that proves nothing proves nothing here either. A pipe inside
       // quotes is an argument, not a pipeline, so it is masked before both judgements.
       const command = row.verify.replace(/^`+|`+$/g, '').trim();
-      // A shell loop or condition (`for f in ...; do node "$f" || exit 1; done`) is one command the
-      // leg splitter cannot see inside: the `||` there is the loop's own failure propagation, not two
-      // alternatives. The task Verify rules already treat that shape as an advisory, so the same
-      // judgement applies here instead of reading the inner `||` as a hidden check.
-      if (SHELL_CONSTRUCT.test(command)) {
-        advisories.push(`ADVISORY_SHELL_ACCEPTANCE_VERIFY ${row.scen}: Verify uses shell control syntax; the acceptance rule checks the command's own exit status, not the legs inside it`);
-        continue;
-      }
       const maskQuoted = (text) => text.replace(/'[^']*'|"[^"]*"/g, (segment) => segment.replace(/\|/g, ' '));
       const unquoted = maskQuoted(command);
-      if (/\|\|/.test(unquoted)) {
-        blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: \`||\` hides which leg is the check; use one command or a script that returns its own status`);
-      } else if (/\|/.test(unquoted)) {
-        blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: unquoted \`|\` reports only the last leg's exit status; write the check in a script and run that, or use \`bash -c 'set -o pipefail; ...'\``);
+      // Any `bash -c`/`sh -c` wrapper: its body is a command in its own right, and quoting hides it
+      // from the ordinary pipe scan. Only a pipefail wrapper covers a `|` in that body; without it
+      // the wrapper hides exactly the red first leg it claims to surface.
+      const wrapper = /^(?:bash|sh)\s+-[a-z]*c\s+(['"])(.*)\1$/is.exec(command);
+      const wrapped = wrapper ? wrapper[2] : null;
+      const pipefail = wrapped !== null && /(?:^|;|&&)\s*set\s+-o\s+pipefail\b/.test(wrapped);
+      // What the pipe and construct rules read: the wrapper body when there is one, else the command
+      // with quoted arguments masked (a `|` inside quotes is an argument, not a pipeline).
+      const judged = wrapped ?? unquoted;
+      // The pipe judgements run on every Required=yes command, before any shell-construct
+      // exemption: a construct may only excuse the "proves nothing" leg check, never a masked pipe.
+      const words = new Set(judged.split(/\s+/));
+      const construct = SHELL_CONTROL_SHAPE.test(judged) || SHELL_BLOCK(words);
+      const alternatives = /\|\|/.test(judged);
+      // `a || exit 1` propagates a red left leg and masks nothing. Anything else on the right
+      // makes one of two legs mandatory in an order nobody reads.
+      const propagation = alternatives && judged.split('||').slice(1).every((right) => /^\s*exit(?:\s+\d+)?\s*(?:;|$)/.test(right));
+      if (alternatives && !propagation) {
+        blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: \`||\` hides which leg is the check unless the right side is \`exit\`; use one command or a script that returns its own status`);
+      } else if (!alternatives && /\|/.test(judged) && !pipefail) {
+        blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: unquoted \`|\` reports only the last leg's exit status; write the check in a script and run that, or wrap it: \`bash -c 'set -o pipefail; node --test test/a.test.mjs | tail -n 20'\``);
+      } else if (construct) {
+        // A shell loop or condition (`for f in ...; do node "$f"; done`) is one command the leg
+        // splitter cannot see inside. The task Verify rules treat that shape as an advisory, so the
+        // same judgement applies here: no leg/proof judgement on the parts.
+        advisories.push(`ADVISORY_SHELL_ACCEPTANCE_VERIFY ${row.scen}: Verify uses shell control syntax; the acceptance rule checks the command's own exit status, not the legs inside it`);
       } else {
-        const legs = verifyLegs(unquoted);
-        if (!legs.length || legs.some((leg) => !legProves(leg))) {
+        // A propagated `|| exit` is status plumbing, not a leg: `node --test x || exit 1` proves
+        // what `node --test x` proves.
+        const subject = alternatives ? judged.replace(/\s*\|\|\s*exit(?:\s+\d+)?\s*/g, ' ').trim() : judged;
+        const legs = verifyLegs(subject);
+        // A pipefail body's exit status is red when ANY stage is red, so it proves something as
+        // soon as one stage has a leg that can fail — `node --test x | tail` fails on the tests.
+        // Any other command proves something when every one of its own legs does.
+        const stages = pipefail ? subject.split('|').map((stage) => verifyLegs(stage)).filter((list) => list.length) : [legs];
+        const proves = pipefail
+          ? stages.some((stage) => stage.some((leg) => legProves(leg)))
+          : legs.length > 0 && legs.every((leg) => legProves(leg));
+        if (!proves) {
           blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: ${JSON.stringify(command)} proves nothing — run a real entry point or test command whose exit status can fail`);
         }
       }

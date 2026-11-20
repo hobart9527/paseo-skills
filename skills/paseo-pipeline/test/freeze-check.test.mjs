@@ -918,6 +918,54 @@ test('SCEN-ACC-01 a Required=yes acceptance command that can hide a failure is r
   assert.match(looped.stdout, /ADVISORY_SHELL_ACCEPTANCE_VERIFY SCEN-1/);
 });
 
+// Rework round 1. The shell-construct exemption was a keyword search over the whole command, so a
+// keyword in a filename or argument marked the row as a construct and skipped every pipe and proof
+// check — the exact masking F-5 exists to stop. Control syntax is now a command shape, and the pipe
+// and `||` checks run before any exemption.
+test('SCEN-ACC-01 rework: a keyword in a path or argument is not a shell construct', () => {
+  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
+  const freezeWith = (verify) => run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | ${verify} | yes | PENDING | pending |`) }));
+  const blocking = (verify, pattern) => {
+    const result = freezeWith(verify);
+    assert.equal(result.status, 1, `${verify}\n${result.stdout}`);
+    const report = JSON.parse(result.stdout);
+    assert.ok(report.blocking.some((item) => item.startsWith('BAD_ACCEPTANCE_VERIFY SCEN-1')), `${verify}: ${result.stdout}`);
+    assert.match(report.blocking.join('\n'), pattern, verify);
+  };
+  // An argument that happens to be a reserved word proves nothing, and is not a loop.
+  blocking('echo if', /proves nothing/);
+  blocking('echo while', /proves nothing/);
+  // The reserved word is inside a path, so the pipe in the pipeline is still a pipe.
+  blocking('node --test test/if.test.mjs \\| tail -n 20', /unquoted/);
+  blocking('node --test test/while.test.mjs \\| tail -n 20', /unquoted/);
+});
+
+test('SCEN-ACC-01 rework: `||` is failure propagation only when the right side is `exit`', () => {
+  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
+  const freezeWith = (verify) => run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | ${verify} | yes | PENDING | pending |`) }));
+  for (const right of ['true', 'echo retry', 'node other.mjs']) {
+    const result = freezeWith(`node --test test/a.test.mjs \\|\\| ${right}`);
+    assert.equal(result.status, 1, `${right}: ${result.stdout}`);
+    assert.match(result.stdout, /hides which leg/, right);
+  }
+  // A red left leg still fails the row through `exit`: nothing is masked, so it is allowed.
+  assert.equal(freezeWith('node --test test/a.test.mjs \\|\\| exit 1').status, 0);
+  assert.equal(freezeWith('node --test test/a.test.mjs \\|\\| exit 3').status, 0);
+});
+
+test('SCEN-ACC-01 rework: the `bash -c` pipefail suggestion is a command the gate accepts', () => {
+  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
+  const freezeWith = (verify) => run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | ${verify} | yes | PENDING | pending |`) }));
+  const piped = freezeWith('node --test test/a.test.mjs \\| tail -n 20');
+  assert.equal(piped.status, 1);
+  // The message must name a wrapper that this same rule lets through.
+  const suggestion = JSON.parse(piped.stdout).blocking.join('\n').match(/`bash -c 'set -o pipefail; [^`]+`/);
+  assert.ok(suggestion, 'the unquoted-pipe message must name the pipefail wrapper');
+  assert.equal(freezeWith("bash -c 'set -o pipefail; node --test test/a.test.mjs \\| tail -n 20'").status, 0);
+  // Without pipefail the wrapper only hides a red first leg behind a green `tail`.
+  assert.equal(freezeWith("bash -c 'node --test test/a.test.mjs \\| tail -n 20'").status, 1);
+});
+
 test('a shell loop is an advisory, not invented legs', () => {
   const loop = contract
     .replace('Write scope: src/sink.mjs,test/sink.test.mjs', 'Write scope: src/sink.mjs,test/sink.test.mjs,scripts/specs/probe.mjs')
