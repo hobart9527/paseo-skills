@@ -93,3 +93,47 @@ After install `git config --worktree --get core.hooksPath` returned the pipeline
 - No product edits; no failures in any command above.
 - Repo `.git/hooks` already held other hooks in the earlier (first) temp-repo run and both paths behaved identically; the recorded output is from the second, clean temp repo.
 - 2026-11-20T16:04:05.336Z merge task=T-04 source=b9599781cb6d888dbe8463b813e993e244b03ba4 verify="bash skills/paseo-pipeline/test/run-all.sh" timing_ms={"verify":32978,"regression":8,"replayed":0,"total":33161}
+
+## CP-2 merge and cleanup, after main moved
+
+Approval: 2026-11-20T16:27:16.716Z 合入 main 并清理 worktree
+Object: integration/pipeline-json-audit -> main (CP-2 merge)
+Command: git merge --no-ff main under .claude/worktrees/integration-pipeline-json-audit; then git merge --ff-only integration/pipeline-json-audit in the primary checkout
+Executor: main session
+
+`main` had moved `7e20375` -> `aba7238` (another session) after CP-2, so the approved fast-forward became a real merge.
+One content conflict, `skills/paseo-pipeline/SKILL.md`: kept main's rewritten sections, re-applied this change's
+`--json` Tools row (with the "not independence/sandbox proof" caveat main's copy also lacked). SKILL.md 9591 chars.
+Merged main = `936efe9`. Rollback point before this merge = `aba7238` (`git reset --hard aba7238` on main).
+
+Post-merge evidence at `936efe9`:
+- `bash skills/paseo-pipeline/test/run-all.sh` exit 0, 684/684 pass.
+  main alone was 673; +11 are this change's new tests (pipeline-run +4, profiles-check +7).
+  The reviewed tip's 694 is higher because main's `aba7238` rewrote `tier-gate.test.mjs`/`tier-gate-friction.test.mjs` (-24 tests there).
+- All three frozen Verify commands re-run at the merged SHA, exit 0:
+  `profiles-check.test.mjs` 23/23, `pipeline-run.test.mjs` 31/31, `profiles-check+docs` 42/42.
+- `acceptance run --source 936efe9` refuses ("integration branch changed"): the recorded source SHA must be on
+  `integration/<change>`, which no longer exists as a distinct tip after the merge. Same operator limitation noted
+  in the resume file; the per-row Verify commands above are the substitute evidence.
+
+Cleanup objects (all merged into main, all worktrees clean):
+
+```text
+Object: git worktree remove .claude/worktrees/integration-pipeline-json-audit
+Object: git worktree remove .claude/worktrees/task-pipeline-json-audit-T-01
+Object: git worktree remove .claude/worktrees/task-pipeline-json-audit-T-02
+Object: git worktree remove .claude/worktrees/task-pipeline-json-audit-T-03
+Object: git worktree remove .claude/worktrees/task-pipeline-json-audit-T-04
+Object: git worktree remove .claude/worktrees/authors+pipeline-json-audit
+Object: git worktree remove .claude/worktrees/final-pipeline-json-audit
+Object: git branch -d integration/pipeline-json-audit
+Object: git branch -d task/pipeline-json-audit/T-01
+Object: git branch -d task/pipeline-json-audit/T-02
+Object: git branch -d task/pipeline-json-audit/T-03
+Object: git branch -d task/pipeline-json-audit/T-04
+Object: git branch -d worktree-authors+pipeline-json-audit
+Command: as listed; `git branch -d` (safe form) only, never -D
+Executor: main session
+```
+
+`fix-neon-f1-f7` belongs to the earlier 7-BLOCKER branch and is out of this cleanup.
