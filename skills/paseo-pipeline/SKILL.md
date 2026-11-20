@@ -33,6 +33,8 @@ Resolve provider/model/modeId/thinking with `list_profiles` at dispatch; model I
 | 按察司 `anchasi` | Independent read-only audit; heterogeneity per profile notes. |
 | 尚书 `shangshu` | Tier 3 orchestration and reconciliation, read-only; main session may orchestrate instead. |
 
+Daily set, also the delegates for Tier 2: 中书 research and proposals; 翰林 architecture, requirements and contract; 工部 default execution; 高工 hard or reworked tasks; 按察司 audit of risky code. 测试, 将作 and 尚书 are Tier 3 or UI only; keep their ids, gates match them by name. Each profile's notes carry `family:`, `harness:` and `write:` lines; `profiles-check.mjs` checks them.
+
 `Review:` is risk metadata; it selects `ceshi` for strict tasks and nothing else. Stage rules: `templates/author.md`, `templates/worker.md`, `templates/reviewer.md`.
 
 ## Tools
@@ -41,6 +43,7 @@ All under `$PIPELINE_HOME` (set by `install.sh`). Each prints usage on bad argum
 
 | Script | When |
 |---|---|
+| `profiles-check.mjs [--skill F] [--config F]` | After editing profiles in Paseo: role has a profile, notes fields, auditor/writer family differ, antigravity declares `diff-check`. Read-only. |
 | `preflight.mjs <repo>` | Before authoring: read-only capability probe (test env, lockfiles). |
 | `namespace.mjs <change-dir>` | Author, before specs: SCEN prefixes and requirement headings already in use. |
 | `freeze-check.mjs <change-dir> --structural` | Author and main session: structural gate and route; without `--structural` also checks R0 sign-off. |
