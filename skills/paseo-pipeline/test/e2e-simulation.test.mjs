@@ -112,12 +112,16 @@ test('E2E simulation: full SDD pipeline lifecycle with adversarial fault injecti
   write(`openspec/changes/${change}/specs/math/spec.md`, `# Math Specification
 ### Scenario: SCEN-CORE base operations
 Validate numeric types.
+- **Verify:** node --test test/core.test.mjs
 ### Scenario: SCEN-ADD addition
 Add numbers.
+- **Verify:** node --test test/add.test.mjs
 ### Scenario: SCEN-MUL multiplication
 Multiply numbers.
+- **Verify:** node --test test/mul.test.mjs
 ### Scenario: SCEN-INTEGRATION calculator facade
 Composite arithmetic expressions.
+- **Verify:** npm test
 `);
 
   // design.md names decisions and affected modules only; task ids live in tasks.md.

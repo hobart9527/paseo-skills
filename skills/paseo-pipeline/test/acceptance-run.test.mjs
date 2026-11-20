@@ -132,7 +132,7 @@ test('legacy CP-1 accepted matrix executes and checks at committed integration H
   fs.writeFileSync(path.join(f.dir, 'proposal.md'), 'x\n');
   fs.writeFileSync(path.join(f.dir, 'design.md'), '## Impact Inventory\nnone\n');
   fs.mkdirSync(path.join(f.dir, 'specs/a'), { recursive: true });
-  fs.writeFileSync(path.join(f.dir, 'specs/a/spec.md'), '### Scenario: SCEN-1\n');
+  fs.writeFileSync(path.join(f.dir, 'specs/a/spec.md'), '### Scenario: SCEN-1\n- **Verify:** node --test test/a.test.mjs\n');
   f.git('add', '.'); f.git('commit', '-qm', 'reviewed contract');
   fs.writeFileSync(path.join(f.dir, 'review.md'), `R0: pass(9b2f4c1e-aaaa-4a2b-8c3d-000000000099@${f.git('rev-parse', 'HEAD')})\n`);
   f.git('add', '.'); f.git('commit', '-qm', 'review'); f.sha = f.git('rev-parse', 'HEAD');

@@ -49,7 +49,7 @@ const files = (tasks = contract) => ({
   'proposal.md': 'x',
   'design.md': design,
   'acceptance.md': acceptance,
-  'specs/a/spec.md': '### Scenario: SCEN-1\n',
+  'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n',
   'review.md': REVIEW,
 });
 

@@ -111,7 +111,7 @@ function sandbox() {
   write('openspec/changes/sandbox/proposal.md', '# Proposal\nsandbox\n');
   write('openspec/changes/sandbox/design.md', '# Design\n## Impact Inventory\nnone\n');
   write('openspec/changes/sandbox/acceptance.md', acceptance);
-  write('openspec/changes/sandbox/specs/core/spec.md', '#### Scenario: SCEN-CORE behavior\n');
+  write('openspec/changes/sandbox/specs/core/spec.md', '#### Scenario: SCEN-CORE behavior\n- **Verify:** node --test test/core.test.mjs\n');
   git('init', '-q', '-b', 'main');
   git('add', '.');
   git('commit', '-qm', 'contract');

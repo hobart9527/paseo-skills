@@ -72,10 +72,14 @@ function packageFiles({ acceptanceRows, tasksOverride } = {}) {
     .replace('<!-- requirement text -->', 'The system SHALL export data.')
     .replace('<!-- optional description -->', 'export runs')
     .replace('<!-- condition -->', 'invoked')
-    .replace('<!-- expected outcome -->', 'it exports')}
+    .replace('<!-- expected outcome -->', 'it exports')
+    // The template's Verify placeholder is an HTML comment, so it is not a visible command: the
+    // author must replace it with one, which is what the full run now requires (F-1).
+    .replace('<!-- command proving this scenario -->', 'node --test test/app.test.mjs')}
 #### Scenario: SCEN-CAP-02 export fails loudly
 - **WHEN** invoked badly
 - **THEN** it fails
+- **Verify:** node --test test/export.test.mjs
 `;
   return {
     'openspec/changes/chg/tasks.md': filled,

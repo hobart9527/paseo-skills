@@ -38,7 +38,8 @@ export function checkContract(tasksMarkdown, changeName = 'benchmark') {
 
   const scenarios = [...new Set(parsed.tasks.flatMap((task) => task.scenarios))];
   write(`openspec/changes/${changeName}/specs/spec.md`,
-    scenarios.map((scenario) => `#### Scenario: ${scenario} behaviour\n`).join(''));
+    // A scenario without a Verify line is a full-run block (F-1), so the generated package carries one.
+    scenarios.map((scenario) => `#### Scenario: ${scenario} behaviour\n- **Verify:** node --test test/bench.test.mjs\n`).join(''));
 
   // Every declared SCEN needs an acceptance row, and each row must list every task that claims it
   // (freeze-check now cross-checks the Tasks cell against tasks.md Scenarios in both directions).

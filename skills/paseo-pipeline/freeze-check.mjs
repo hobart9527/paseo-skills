@@ -189,6 +189,48 @@ for (const problem of specTree.problems) {
   }
 }
 
+// Every declared scenario needs one `- **Verify:**` line. A scenario with no command under it
+// cannot be proven, and `openspec-schema` already requires the line. Judged on the same visible
+// text the declaration scan uses. Computed once, before the stage dispatch, so the staged specs
+// run and the full run apply the same rule instead of only the former.
+const scenVerifyFindings = [];
+for (const { file, text } of specTree.current) {
+  for (const scen of scanScenVerify(text)) {
+    if (!scen.verify) scenVerifyFindings.push(`MISSING_SCEN_VERIFY ${scen.id} ${path.relative(changeDir, file)}`);
+  }
+}
+
+// Requirement overlap: another active change already adds, modifies or removes a requirement
+// this change modifies or removes. Structural misses it because each side is a valid delta alone;
+// the merge gives the capability two intentions for one requirement. Shared by both run modes.
+const reqOverlapAdvisories = [];
+if (repoRoot) {
+  const current = { ADDED: new Set(), MODIFIED: new Set(), REMOVED: new Set(), RENAMED: new Set() };
+  for (const { text } of specTree.current) {
+    for (const found of scanRequirements(text)) current[found.section]?.add(found.name);
+  }
+  // Unreadable sources are already blocking (see the collision block above) and are absent from
+  // the snapshot, so this pass never treats them as requirements-free files.
+  const external = new Map();
+  for (const { change, text } of specTree.others) {
+    for (const found of scanRequirements(text)) {
+      if (!['ADDED', 'MODIFIED', 'REMOVED', 'RENAMED'].includes(found.section)) continue;
+      if (!external.has(found.name)) external.set(found.name, new Map());
+      if (!external.get(found.name).has(change)) external.get(found.name).set(change, new Set());
+      external.get(found.name).get(change).add(found.section);
+    }
+  }
+  const touched = [...new Set([...current.MODIFIED, ...current.REMOVED])].sort();
+  for (const name of touched) {
+    const mine = current.MODIFIED.has(name) ? 'MODIFIED' : 'REMOVED';
+    for (const [other, sections] of [...(external.get(name) ?? new Map()).entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const theirs = ['ADDED', 'MODIFIED', 'REMOVED', 'RENAMED'].filter((section) => sections.has(section));
+      if (!theirs.length) continue;
+      reqOverlapAdvisories.push(`ADVISORY_REQ_OVERLAP ${name}: this change ${mine} it, and ${other} also ${theirs.join('/')} it`);
+    }
+  }
+}
+
 // With --stage specs, only the declaration rules run: duplicates, cross-change collisions and an
 // empty scenario set. Full-run rules that need tasks.md, acceptance.md and design.md are skipped
 // because those artifacts do not exist yet.
@@ -210,11 +252,7 @@ if (stage === 'specs') {
   for (const message of stageDecision.advisories) advisories.push(message);
   // A scenario with no command under it cannot be proven, and `openspec-schema` already requires
   // the line; until now no script read it. Judged on the same visible text the declaration scan uses.
-  for (const { file, text } of specTree.current) {
-    for (const scen of scanScenVerify(text)) {
-      if (!scen.verify) specBlocking.push(`MISSING_SCEN_VERIFY ${scen.id} ${path.relative(changeDir, file)}`);
-    }
-  }
+  for (const message of scenVerifyFindings) specBlocking.push(message);
   // A specs-only change that declares scenarios is fine; one that declares none is not. The name
   // says what is wrong without borrowing the task-level NO_SCEN rule.
   if (declared.size === 0) specBlocking.push('NO_SPEC_SCEN: specs/ declares no SCEN scenario; every capability delta needs at least one');
@@ -222,32 +260,7 @@ if (stage === 'specs') {
   // Requirement overlap: another active change already adds, modifies or removes a requirement
   // this change modifies or removes. Structural misses it because each side is a valid delta alone;
   // the merge gives the capability two intentions for one requirement.
-  if (repoRoot) {
-    const current = { ADDED: new Set(), MODIFIED: new Set(), REMOVED: new Set(), RENAMED: new Set() };
-    for (const { text } of specTree.current) {
-      for (const found of scanRequirements(text)) current[found.section]?.add(found.name);
-    }
-    // Unreadable sources are already blocking (see the collision block above) and are absent from
-    // the snapshot, so this pass never treats them as requirements-free files.
-    const external = new Map();
-    for (const { change, text } of specTree.others) {
-      for (const found of scanRequirements(text)) {
-        if (!['ADDED', 'MODIFIED', 'REMOVED', 'RENAMED'].includes(found.section)) continue;
-        if (!external.has(found.name)) external.set(found.name, new Map());
-        if (!external.get(found.name).has(change)) external.get(found.name).set(change, new Set());
-        external.get(found.name).get(change).add(found.section);
-      }
-    }
-    const touched = [...new Set([...current.MODIFIED, ...current.REMOVED])].sort();
-    for (const name of touched) {
-      const mine = current.MODIFIED.has(name) ? 'MODIFIED' : 'REMOVED';
-      for (const [other, sections] of [...(external.get(name) ?? new Map()).entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-        const theirs = ['ADDED', 'MODIFIED', 'REMOVED', 'RENAMED'].filter((section) => sections.has(section));
-        if (!theirs.length) continue;
-        stageAdvisories.push(`ADVISORY_REQ_OVERLAP ${name}: this change ${mine} it, and ${other} also ${theirs.join('/')} it`);
-      }
-    }
-  }
+  for (const message of reqOverlapAdvisories) stageAdvisories.push(message);
   const summary = { change: path.resolve(changeDir), stage: 'specs', blocking: [...new Set(specBlocking)], advisories: [...new Set(stageAdvisories)] };
   if (json) console.log(JSON.stringify(summary, null, 2));
   else {
@@ -258,6 +271,14 @@ if (stage === 'specs') {
   }
   process.exit(summary.blocking.length ? 1 : 0);
 }
+
+// The full run enforces the same two spec rules the staged run does; `--structural` is a mode of
+// this same run, so it does not skip them either.
+for (const message of scenVerifyFindings) {
+  blocking.push(message);
+  fixes.set('MISSING_SCEN_VERIFY', RULE_FIXES.MISSING_SCEN_VERIFY);
+}
+for (const message of reqOverlapAdvisories) advisories.push(message);
 
 // Dispatch-dependency wave width is a planning heuristic, not exact maximum concurrency.
 // Runtime dispatch follows the ready frontier, without wave barriers.
