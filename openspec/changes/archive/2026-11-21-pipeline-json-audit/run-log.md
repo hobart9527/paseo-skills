@@ -137,3 +137,10 @@ Executor: main session
 ```
 
 `fix-neon-f1-f7` belongs to the earlier 7-BLOCKER branch and is out of this cleanup.
+
+## Evidence persisted
+
+`evidence/acceptance-bb608bf.json` is the `acceptance run --execute` record from the reviewed SHA
+`bb608bff7d03f2ecaadcbf3787e5c8a2545e821a`: `valid: true`, 8 rows, every row exit 0. Copied here from
+`/tmp/acceptance-pipeline-json-audit.txt` before `/tmp` is cleared; the JSON embeds the frozen matrix
+and each row's stdout.
