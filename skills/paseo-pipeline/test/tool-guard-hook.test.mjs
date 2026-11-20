@@ -192,6 +192,32 @@ test('create_agent: a shared provider/model pair is checked against every matchi
   assert.match(stale.permissionDecisionReason, /工部/);
 });
 
+// SCEN-GUARD-01: an explicit `null` is the same "inherit" an omitted field is, on a profile that
+// sets no value for it. Dispatchers copy `list_profiles` verbatim, and that list spells a missing
+// optional setting as `null`; comparing null against `undefined` denied every such launch.
+test('create_agent: an explicit null optional setting is allowed where the profile sets none', (t) => {
+  const PASEO_HOME = profileHome(t);
+  assert.deepEqual(createAgent({ provider: 'antigravity/gemini', title: 't', settings: { modeId: 'full-access', thinkingOptionId: null } }, PASEO_HOME), {});
+  assert.deepEqual(createAgent({ provider: 'antigravity/gemini', title: 't', settings: { modeId: 'full-access', features: null } }, PASEO_HOME), {});
+  // A real profile that does set features is matched against: null is inherit only where the
+  // profile has no value, so a profile that sets one still denies a null that contradicts it.
+  const withFeatures = fs.mkdtempSync(path.join(os.tmpdir(), 'paseo-home-'));
+  t.after(() => fs.rmSync(withFeatures, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(withFeatures, 'config.json'), JSON.stringify({ daemon: { agentProfiles: [
+    { id: 'p5', name: '钦差 (验收)', provider: 'claude', model: 'cc', thinkingOptionId: 'high', features: { effort: 'max' } },
+    { id: 'p6', name: '户部 (账目)', provider: 'claude', model: 'cc', modeId: 'auto', features: { effort: 'max' } },
+  ] } }));
+  assert.deepEqual(createAgent({ provider: 'claude/cc', title: 't', settings: { thinkingOptionId: null, features: { effort: 'max' } } }, withFeatures), {});
+  // Null inherits only where the profile sets nothing: a profile that does set the value still
+  // catches a null that contradicts it.
+  const contradicted = createAgent({ provider: 'claude/cc', title: 't', settings: { thinkingOptionId: 'high', features: null } }, withFeatures);
+  assert.equal(contradicted.permissionDecision, 'deny');
+  assert.match(contradicted.permissionDecisionReason, /features/);
+  const stale = createAgent({ provider: 'claude/cc', title: 't', settings: { thinkingOptionId: 'high', features: { effort: 'low' } } }, withFeatures);
+  assert.equal(stale.permissionDecision, 'deny');
+  assert.match(stale.permissionDecisionReason, /features/);
+});
+
 // The flat shape is only a compatibility fallback; the call shape every dispatch uses is nested.
 test('create_agent: settings are read from the nested `settings` object, not only top level', (t) => {
   const PASEO_HOME = profileHome(t);

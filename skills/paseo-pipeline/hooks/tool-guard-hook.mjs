@@ -95,7 +95,10 @@ function settingsMismatchReason(input) {
   const stated = SETTINGS.filter((field) => valueOf(field) !== undefined);
   if (!stated.length) return null;
   const agrees = (profile, field) => profile[field] === undefined || profile[field] === null
-    ? valueOf(field) === profile[field]
+    // Both `undefined` (omitted) and an explicit `null` mean "inherit what the profile says".
+    // Requiring the two spellings to match denied `thinkingOptionId: null` on every profile
+    // that sets no option, which is exactly the call the comment above promises to allow.
+    ? valueOf(field) === null || valueOf(field) === undefined
     : sameValue(profile[field], valueOf(field));
   if (matches.some((profile) => stated.every((field) => agrees(profile, field)))) return null;
   const role = (profile) => String(profile.name ?? profile.id ?? provider).split(/\s/)[0];
