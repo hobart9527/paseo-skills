@@ -25,3 +25,15 @@ No contract change in response (per `templates/author.md` Mode REVISE, a NIT is 
 
 - `SKILL.md` has only 14 characters of headroom under the 10000-char cap (`test/docs.test.mjs:27`); T-03 must shorten Tools-table wording to fit `--json` while keeping every token `docs.test.mjs:22-28` asserts. T-03's Verify runs `docs.test.mjs`, so a bad cut fails there.
 - `install-hook` writes to the shared repository config (`extensions.worktreeConfig`, `core.hooksPath`); SCEN-PJ-05 asserts no write happens on refusal, and the refusal path is unchanged.
+
+## FINAL
+
+FINAL: pass(7585bd38-f2f8-4945-8e79-1dbdf3b2de0d@bb608bff7d03f2ecaadcbf3787e5c8a2545e821a)
+
+Reviewer: 审查（按察司） `agent_profile_anchasi`, provider `codex/gpt`, mode `auto-review`, family openai.
+Range: `main` `7e203750e6a6dba9ba5044a5b674299c9e7e1ad8` .. reviewed tip `bb608bff7d03f2ecaadcbf3787e5c8a2545e821a`. `main` had not moved since the contract froze.
+Round 1 of 2 (full). Reviewer snapshot: HEAD and `git status --porcelain --untracked-files=all` unchanged before and after.
+
+Matrix at that SHA: 8 SCEN rows MET, 8 acceptance rows MET, 3 named standards MET (Verify spawns the real CLI; every product edit stayed inside its task's declared Write scope; the `install-hook` refusal branch precedes both config writes). Ledger: no findings, no `F-*` entries.
+
+Operator evidence at the same SHA: `bash skills/paseo-pipeline/test/run-all.sh` exit 0 (694/694); `pipeline-run.mjs acceptance run --source bb608bf… --execute` all 8 rows PASS (`valid: true`), recorded in `run-log.md`.
