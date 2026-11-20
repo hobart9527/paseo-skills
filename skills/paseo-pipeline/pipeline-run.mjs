@@ -132,6 +132,8 @@ if (command === 'acceptance') {
       }
     }
     if (displaced.length && !parsed.options['replace-hooks']) {
+      // Name each object before refusing so the human approving --replace-hooks sees what is lost.
+      for (const item of displaced) console.error(`displaced: ${item}`);
       console.error(`[pipeline-run] ${target} already has hooks this install would displace: ${displaced.join(', ')}; re-run with --replace-hooks after confirming replacing them is intended`);
       failed = true;
       continue;
@@ -140,6 +142,8 @@ if (command === 'acceptance') {
     if (enable.status !== 0) { console.error(`[pipeline-run] cannot enable worktreeConfig in ${target}: ${enable.stderr.trim()}`); failed = true; continue; }
     const set = runGit(target, ['config', '--worktree', 'core.hooksPath', HOOKS_DIR]);
     if (set.status !== 0) { console.error(`[pipeline-run] cannot set core.hooksPath in ${target}: ${set.stderr.trim()}`); failed = true; continue; }
+    // Only after the install succeeded: an approved replacement is now factual.
+    for (const item of displaced) console.log(`replaced: ${item}`);
     console.log(`hook installed: ${target}`);
   }
   process.exit(failed ? 1 : 0);
