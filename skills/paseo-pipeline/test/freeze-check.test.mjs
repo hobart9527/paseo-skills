@@ -1100,6 +1100,37 @@ test('SCEN-ACC-01 rework 7: an interpreter reached by path or eval is rejected',
   assert.equal(freezeWith('for f in scripts/specs/*.mjs; do node "$f" \\|\\| exit 1; done').status, 0);
 });
 
+// Rework round 8. Rounds 7 and 8 each found another spelling for "the row's first word is not a
+// test": `e""val`, `busybox sh -c`, `bash -o pipefail -c`. A negative list cannot converge, so the
+// first word must now be a known test entry, or a shell running a `test*` script with no options.
+test('SCEN-ACC-01 rework 8: the entry word must be a known test, not a spelling of one', () => {
+  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
+  const freezeWith = (verify) => run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | ${verify} | yes | PENDING | pending |`) }));
+  const blocked = (verify, pattern) => {
+    const result = freezeWith(verify);
+    assert.equal(result.status, 1, `${verify}\n${result.stdout}`);
+    const report = JSON.parse(result.stdout);
+    assert.ok(report.blocking.some((item) => item.startsWith('BAD_ACCEPTANCE_VERIFY SCEN-1')), `${verify}: ${result.stdout}`);
+    if (pattern) assert.match(report.blocking.join('\n'), pattern, verify);
+  };
+  // Splice the word, change the shell binary's spelling, put an option between the shell and `-c`.
+  blocked('e""val \'node --test test/a.test.mjs \\|\\| true\'');
+  blocked('for f in test/a.test.mjs; do e""val \'node --test test/a.test.mjs \\|\\| true\' \\|\\| exit 1; done');
+  blocked("bash -o pipefail -c 'node --test test/a.test.mjs \\|\\| true'");
+  blocked("busybox sh -c 'node --test test/a.test.mjs \\|\\| true'");
+  blocked("nohup bash -c 'node --test test/a.test.mjs \\|\\| true'");
+  blocked("\\\\eval 'node --test test/a.test.mjs \\|\\| true'");
+  // The route still has to name commands the gate accepts.
+  assert.equal(freezeWith('node --test test/a.test.mjs').status, 0);
+  assert.equal(freezeWith('npm test').status, 0);
+  assert.equal(freezeWith('npx tsc --noEmit').status, 0);
+  assert.equal(freezeWith('bash scripts/test-a.sh').status, 0);
+  assert.equal(freezeWith('bash test/a.sh').status, 0);
+  assert.equal(freezeWith('MOCK_MODE=true NODE_ENV=test node --test test/a.test.mjs').status, 0);
+  assert.equal(freezeWith('node --test test/a.test.mjs && npx tsc --noEmit').status, 0);
+  assert.equal(freezeWith('for f in scripts/specs/*.mjs; do node "$f" \\|\\| exit 1; done').status, 0);
+});
+
 test('SCEN-ACC-01 rework: the rejection message names a route the gate accepts', () => {  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
   const freezeWith = (verify) => run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | ${verify} | yes | PENDING | pending |`) }));
   const piped = freezeWith('node --test test/a.test.mjs \\| tail -n 20');

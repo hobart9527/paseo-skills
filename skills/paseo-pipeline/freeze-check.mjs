@@ -873,6 +873,26 @@ else {
         // it reads has quoted pipes blanked: `"a | b"` is an argument, not a pipeline.
         const legSource = head.replace(/'[^']*'|"[^"]*"/g, (segment) => segment.replace(/\|/g, ' '));
         const legs = verifyLegs(legSource);
+        // Positive entry check. Every earlier round found another way to make the row's *word* not
+        // the test: `e""val`, `busybox sh -c`, `bash -o pipefail -c`, `/bin/sh -c`. Enumerating
+        // those spellings never converges, so the first word must instead be a known test entry, or
+        // a shell running a `test*` script with no options. A spliced word (`e""val`) is not any of
+        // them, whatever the shell later makes of it.
+        const ENTRY = /^(?:node|npm|pnpm|yarn|bun|bunx|npx|deno|go|cargo|python[0-9.]*|pytest|uv|poetry|make|dotnet|mvn|gradle|tsc|eslint|biome|swc|babel|jest|vitest|mocha|playwright|cypress|phpunit|rspec|ruby|php|swift|xcodebuild)\b/;
+        const entryOf = (leg) => leg.command.replace(/^\s*(?:[A-Za-z_]\w*=\S*\s+)+/, '').trim()
+          .replace(/^(?:[\w.-]*\/)+([\w.-]+)/, '$1');
+        const entryOk = (leg) => {
+          if (ENTRY.test(entryOf(leg)) || testScript(leg.command)) return true;
+          // `bash <script>` runs a named script in a new shell — but only with no options, and only
+          // when the script is one under a test path. `bash -c …` carries an option and is excluded.
+          const words = entryOf(leg).split(/\s+/);
+          const head = words[0] ?? '';
+          if (!/^(?:[\w.-]*\/)*(?:bash|sh)$/.test(head)) return false;
+          const target = words[1] ?? '';
+          if (!target || target.startsWith('-') || words.length !== 2) return false;
+          const path = target.replace(/^['"]|['"]$/g, '');
+          return testScript(`bash ${path}`) || verifyTestPath(path);
+        };
         // A leg that runs the loop variable (`node "$f"`) proves what the loop list proves: the list
         // must name a test path or a `test*` script.
         const iterated = (leg) => {
@@ -884,7 +904,7 @@ else {
           const path = item.replace(/^['"]|['"]$/g, '');
           return verifyTestPath(path) || testScript(`bash ${path}`) || legPaths(path).some((p) => verifyTestPath(p));
         }));
-        if (!(legs.length > 0 && legs.every(provesLeg))) {
+        if (!(legs.length > 0 && legs.every((leg) => entryOk(leg) && provesLeg(leg)))) {
           return `${JSON.stringify(command)} proves nothing — run a real entry point or test command whose exit status can fail`;
         }
         return null;
