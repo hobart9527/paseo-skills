@@ -1076,6 +1076,30 @@ test('SCEN-ACC-01 rework 6: a reversed or misquoted leg is not a passed check', 
   assert.equal(freezeWith('node --test test/a.test.mjs').status, 0);
 });
 
+// Rework round 7. A new shell can be reached without the word `bash` at the start of the row, and
+// `eval` runs its quoted argument as code. Both keep the body's real status out of reach.
+test('SCEN-ACC-01 rework 7: an interpreter reached by path or eval is rejected', () => {
+  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
+  const freezeWith = (verify) => run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | ${verify} | yes | PENDING | pending |`) }));
+  const blocked = (verify, pattern) => {
+    const result = freezeWith(verify);
+    assert.equal(result.status, 1, `${verify}\n${result.stdout}`);
+    const report = JSON.parse(result.stdout);
+    assert.ok(report.blocking.some((item) => item.startsWith('BAD_ACCEPTANCE_VERIFY SCEN-1')), `${verify}: ${result.stdout}`);
+    assert.match(report.blocking.join('\n'), pattern, verify);
+  };
+  // `eval 'x || true'` re-interprets the string; the quoted `|| true` runs and masks the failure.
+  blocked("eval 'node --test test/a.test.mjs \\|\\| true'", /eval/);
+  blocked("for f in test/a.test.mjs; do eval 'node --test test/a.test.mjs \\|\\| true' \\|\\| exit 1; done", /eval/);
+  // A shell reached by absolute path or by a wrapper is still a new shell.
+  blocked("/bin/bash -c 'node --test test/a.test.mjs \\|\\| true'", /new shell/);
+  blocked('/bin/sh -c "node --test test/a.test.mjs \\|\\| true"', /new shell/);
+  blocked('env bash -c \'node --test test/a.test.mjs \\|\\| true\'', /new shell/);
+  // Still accepted: a plain command and the real sink loop, which runs `node`, not a shell word.
+  assert.equal(freezeWith('node --test test/a.test.mjs').status, 0);
+  assert.equal(freezeWith('for f in scripts/specs/*.mjs; do node "$f" \\|\\| exit 1; done').status, 0);
+});
+
 test('SCEN-ACC-01 rework: the rejection message names a route the gate accepts', () => {  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
   const freezeWith = (verify) => run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | ${verify} | yes | PENDING | pending |`) }));
   const piped = freezeWith('node --test test/a.test.mjs \\| tail -n 20');

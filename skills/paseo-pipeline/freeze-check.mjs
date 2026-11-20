@@ -795,9 +795,16 @@ else {
         const masked = maskQuotes(text);
         const shell = maskShell(text).replace(SIMPLE_PARAM, (m) => 'x'.repeat(m.length));
         // `bash -c`/`sh -c` starts a new shell: its body's status is not this command's status
-        // unless that body is proven in full, which is the parsing this rule refuses to do.
-        if (/^(?:bash|sh)\s+-[a-z]*c\s/.test(masked) || /^(?:bash|sh)\s+-[a-z]*c\s/.test(maskQuotes(text.replace(/^set\s+-\S+\s*;\s*/, '')))) {
+        // unless that body is proven in full, which is the parsing this rule refuses to do. The
+        // binary may be reached by any path (`/bin/bash`, `env bash`, a versioned name), so match
+        // the word anywhere in the command, not only at its start.
+        if (/(?:^|[\s=])(?:[\w.-]*\/)*(?:bash|sh|dash|zsh|ksh|fish)(?:-[\d.]*)?\s+-[a-z]*c\s/.test(masked)) {
           return 'a `bash -c`/`sh -c` body runs in a new shell, so the gate cannot prove its exit status';
+        }
+        // `eval`, `source` and `.` re-interpret their argument as shell code, so a quoted body is
+        // not an argument: its operators run. No proof is possible without parsing that body.
+        if (/(?:^|[\s;&|(){}])(?:eval|source|command\s+eval|builtin\s+eval)(?:\s|$)|(?:^|[\s;|&])\.\s+\S/.test(masked)) {
+          return '`eval`/`source` re-interpret their argument as shell code, so a quoted body is not an argument; run the check in its own `test*` script';
         }
         // `$(`/backtick run a command whose status is thrown away; a backslash escapes the next
         // character, so a quote scan would read structure that is not there. Both are judged on
