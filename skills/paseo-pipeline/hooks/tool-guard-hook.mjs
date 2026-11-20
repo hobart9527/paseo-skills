@@ -76,13 +76,31 @@ function bareProviderReason(input) {
 // Runtime settings are launch configuration copied from `list_profiles`, so a stale mode or
 // thinking option silently runs the agent under the wrong configuration. They travel nested under
 // `settings` (the shape every dispatch uses); the flat fields are only a compatibility fallback.
-// Check only what the call states: an omitted field inherits the profile. Several profiles may
-// share one provider/model pair (claude/flash is both 尚书 and 工部), so the pair selects a set:
-// the call passes when it agrees with at least one of them, and the role is never guessed from the
-// title. With no profile for the pair there is nothing to compare against — profiles are not a
-// whitelist — so the call is left alone. `features` is `undefined`/`null` in every current
-// profile, which means "no feature requirement".
+// Several profiles may share one provider/model pair (claude/flash is both 尚书 and 工部), so the
+// pair selects a set: a stated value passes when it agrees with at least one of them, and the role
+// is never guessed from the title. With no profile for the pair there is nothing to compare
+// against — profiles are not a whitelist — so the call is left alone. `features` is
+// `undefined`/`null` in every current profile, which means "no feature requirement".
 const SETTINGS = ['modeId', 'thinkingOptionId', 'features'];
+// Paseo inherits an omitted `settings.modeId` from the *calling* agent, and only when the new
+// agent uses the caller's provider: a claude session dispatching antigravity fails with
+// "cannot inherit mode 'auto' from caller (provider 'claude') for new agent (provider
+// 'antigravity')", and codex fails the same way although it also has an `auto` mode. So omission
+// is not "inherit the profile" — cross-provider dispatch is the normal pipeline shape, and an
+// omitted mode is a call the server rejects. Fill it from the matching profile when every match
+// agrees; conflicting modes are left to the server, which names the available ones.
+function filledModeId(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const provider = typeof input.provider === 'string' ? input.provider.trim() : '';
+  if (!provider.includes('/')) return null;
+  const nested = input.settings && typeof input.settings === 'object' && !Array.isArray(input.settings) ? input.settings : {};
+  const stated = 'modeId' in nested ? nested.modeId : input.modeId;
+  if (stated !== undefined && stated !== null) return null;
+  const modes = [...new Set(loadProfiles().filter((profile) => profilePair(profile) === provider)
+    .map((profile) => profile.modeId).filter((mode) => typeof mode === 'string' && mode))];
+  if (modes.length !== 1) return null;
+  return { ...input, settings: { ...nested, modeId: modes[0] } };
+}
 const sameValue = (left, right) => canonical(left) === canonical(right);
 function settingsMismatchReason(input) {
   const provider = typeof input?.provider === 'string' ? input.provider.trim() : '';
@@ -103,10 +121,10 @@ function settingsMismatchReason(input) {
     const [profile] = matches;
     const field = stated.find((name) => !agrees(profile, name));
     const expected = profile[field];
-    return `create_agent ${field} is ${JSON.stringify(valueOf(field))}, but profile ${role(profile)} (${provider}) sets ${expected === undefined || expected === null ? 'none' : JSON.stringify(expected)}. Omit ${field} to inherit, or edit the profile in config.json if the setting really changed.`;
+    return `create_agent ${field} is ${JSON.stringify(valueOf(field))}, but profile ${role(profile)} (${provider}) sets ${expected === undefined || expected === null ? 'none' : JSON.stringify(expected)}. Use the profile's value, or edit the profile in config.json if the setting really changed.`;
   }
   const candidates = matches.map((profile) => `${role(profile)} (${provider}) sets ${stated.map((field) => `${field} ${profile[field] === undefined || profile[field] === null ? 'none' : JSON.stringify(profile[field])}`).join(', ')}`).join('; ');
-  return `create_agent ${stated.map((field) => `${field} ${JSON.stringify(valueOf(field))}`).join(', ')} matches no profile for ${provider}. Candidates: ${candidates}. Copy one candidate's values, or edit the profile in config.json if the setting really changed.`;
+  return `create_agent ${stated.map((field) => `${field} ${JSON.stringify(valueOf(field))}`).join(', ')} matches no profile for ${provider}. Candidates: ${candidates}. Use one candidate's values, or edit the profile in config.json if the setting really changed.`;
 }
 /** The planner and merge gate find pipeline agents by this label; an unlabelled one is invisible and gets re-dispatched. */
 function pipelineLabelReason(input) {
@@ -205,6 +223,11 @@ async function main() {
     }
     const bare = isObject && name === 'mcp__paseo__create_agent' ? bareProviderReason(updated) : null;
     if (bare) { deny(bare); return; }
+    const filled = isObject && name === 'mcp__paseo__create_agent' ? filledModeId(updated) : null;
+    if (filled) {
+      updated = filled;
+      changed = true;
+    }
     const settingsMismatch = isObject && name === 'mcp__paseo__create_agent' ? settingsMismatchReason(updated) : null;
     if (settingsMismatch) { deny(settingsMismatch); return; }
     const unlabelled = isObject && name === 'mcp__paseo__create_agent' ? pipelineLabelReason(updated) : null;
