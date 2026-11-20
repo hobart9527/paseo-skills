@@ -229,6 +229,50 @@ test('install-hook enables worktree config and points hooksPath at the skill hoo
   assert.match(git(f.cwd, 'config', '--worktree', '--get', 'core.hooksPath'), /paseo-pipeline\/hooks\/git$/);
 });
 
+// SCEN-HOOK-01: installation replaces the whole hooks directory, so an existing setup would be
+// silently displaced. It must refuse, name what it found, leave everything unchanged, and need an
+// explicit --replace-hooks.
+test('SCEN-HOOK-01 install-hook refuses to displace an existing core.hooksPath', () => {
+  const f = fixture();
+  git(f.cwd, 'config', 'core.hooksPath', '.husky');
+  const refused = run(f.cwd, f.localEnv, ['install-hook', f.cwd]);
+  assert.notEqual(refused.status, 0, refused.out);
+  assert.match(refused.out, /\.husky/);
+  assert.match(refused.out, /--replace-hooks/);
+  // Nothing moved: the refusal happens before any write.
+  assert.equal(git(f.cwd, 'config', '--get', 'core.hooksPath'), '.husky');
+  assert.notEqual(spawnSync('git', ['config', '--get', 'extensions.worktreeConfig'], { cwd: f.cwd, env, encoding: 'utf8' }).stdout.trim(), 'true');
+  // The explicit flag is the approval, and then the pipeline hooks win.
+  const replaced = run(f.cwd, f.localEnv, ['install-hook', '--replace-hooks', f.cwd]);
+  assert.equal(replaced.status, 0, replaced.out);
+  assert.match(git(f.cwd, 'config', '--worktree', '--get', 'core.hooksPath'), /paseo-pipeline\/hooks\/git$/);
+});
+
+// A sample file ships with `git init`; replacing the directory would be no loss, so installation
+// must stay non-interactive there (SCEN-HOOK-02).
+test('SCEN-HOOK-02 an empty hooks directory still installs, and a live hook is named', () => {
+  const f = fixture();
+  const hooks = path.join(f.cwd, '.git', 'hooks');
+  assert.ok(fs.existsSync(path.join(hooks, 'commit-msg.sample')));
+  const clean = run(f.cwd, f.localEnv, ['install-hook', f.cwd]);
+  assert.equal(clean.status, 0, clean.out);
+  // Idempotent: the installed path is the pipeline's own, so a second run displaces nothing.
+  assert.equal(run(f.cwd, f.localEnv, ['install-hook', f.cwd]).status, 0);
+
+  const g = fixture();
+  write(g.cwd, '.git/hooks/pre-commit', '#!/bin/sh\nexit 0\n');
+  fs.chmodSync(path.join(g.cwd, '.git/hooks/pre-commit'), 0o755);
+  const refused = run(g.cwd, g.localEnv, ['install-hook', g.cwd]);
+  assert.notEqual(refused.status, 0, refused.out);
+  assert.match(refused.out, /pre-commit/);
+  assert.match(refused.out, /--replace-hooks/);
+  // A non-executable leftover is not a hook git would run; the name alone is not a conflict.
+  const h = fixture();
+  write(h.cwd, '.git/hooks/pre-commit', '#!/bin/sh\nexit 0\n');
+  fs.chmodSync(path.join(h.cwd, '.git/hooks/pre-commit'), 0o644);
+  assert.equal(run(h.cwd, h.localEnv, ['install-hook', h.cwd]).status, 0);
+});
+
 test('plan warns when a change worktree is missing the author hook', () => {
   const f = fixture();
   const changeDir = path.join(f.cwd, 'openspec/changes/chg');

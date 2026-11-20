@@ -99,13 +99,43 @@ if (command === 'acceptance') {
 } else if (command === 'install-hook') {
   // One command per workspace instead of two raw git invocations; idempotent.
   let parsed;
-  try { parsed = parseOptions(rest, {}); } catch (error) { die(error.message); }
+  try { parsed = parseOptions(rest, { 'replace-hooks': 'boolean' }); } catch (error) { die(error.message); }
   const targets = parsed.positional.length ? parsed.positional.map((item) => path.resolve(item)) : [process.cwd()];
   let failed = false;
   for (const target of targets) {
     if (!fs.existsSync(target)) die(`no worktree at ${target}`, 3);
     const probe = runGit(target, ['rev-parse', '--is-inside-work-tree']);
     if (probe.status !== 0) die(`not a git worktree: ${target}`, 3);
+    // Installation replaces the whole hooks directory, so anything already there would be lost
+    // silently. Name it and stop before writing; `--replace-hooks` is the human's approval.
+    const displaced = [];
+    const configured = runGit(target, ['config', '--get', 'core.hooksPath']);
+    const current = configured.status === 0 ? configured.stdout.trim() : '';
+    if (current && path.resolve(target, current) !== path.resolve(HOOKS_DIR)) {
+      displaced.push(`core.hooksPath=${current}`);
+    }
+    // The default hooks directory may hold the repository's own hooks. Samples are inert.
+    // `--git-path hooks` honours `core.hooksPath`, so it would report the pipeline's own hooks
+    // after a first install and make the command refuse itself; the default directory is
+    // `<git-common-dir>/hooks`.
+    const commonDir = runGit(target, ['rev-parse', '--git-common-dir']);
+    if (commonDir.status === 0) {
+      const dir = path.resolve(target, commonDir.stdout.trim(), 'hooks');
+      const entries = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+      for (const name of entries.sort()) {
+        if (name.endsWith('.sample')) continue;
+        const file = path.join(dir, name);
+        // git runs only an executable regular file; a leftover without the bit is inert.
+        try {
+          if (fs.statSync(file).isFile() && (fs.statSync(file).mode & 0o111)) displaced.push(file);
+        } catch {}
+      }
+    }
+    if (displaced.length && !parsed.options['replace-hooks']) {
+      console.error(`[pipeline-run] ${target} already has hooks this install would displace: ${displaced.join(', ')}; re-run with --replace-hooks after confirming replacing them is intended`);
+      failed = true;
+      continue;
+    }
     const enable = runGit(target, ['config', 'extensions.worktreeConfig', 'true']);
     if (enable.status !== 0) { console.error(`[pipeline-run] cannot enable worktreeConfig in ${target}: ${enable.stderr.trim()}`); failed = true; continue; }
     const set = runGit(target, ['config', '--worktree', 'core.hooksPath', HOOKS_DIR]);
