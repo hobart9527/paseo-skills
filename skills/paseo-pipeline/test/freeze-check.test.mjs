@@ -954,10 +954,32 @@ test('SCEN-ACC-01 rework: `||` is failure propagation only when the right side i
   assert.equal(freezeWith('node --test test/a.test.mjs \\|\\| exit').status, 0);
 });
 
-// Rework round 2. Round 1 fixed the keyword-in-argument shape but still accepted three commands that
-// hide a red leg: `|| exit 0` reports success, a bare pipe inside a loop body skipped the pipe check
-// because any `||` was exempted, and `set -o pipefail` was matched anywhere in the text instead of
-// before the pipeline it must cover. Each case below is a reviewer repro.
+// Rework round 3. Rounds 1 and 2 kept teaching the gate to recognize shell shapes, and each round
+// found a new one: a `set` piped into another process, a `{ set +o pipefail; }` group, a nested
+// `bash -c`. A `bash -c` body is a new shell, so proving its exit status means parsing shell
+// semantics in full. The rule no longer tries: only `set -o pipefail; <rest>` with an opaque-free
+// `<rest>`, or a single command with no operator, is accepted; anything else must become a script.
+test('SCEN-ACC-01 rework 3: an unparsable `bash -c` body is rejected, not guessed', () => {
+  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
+  const freezeWith = (verify) => run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | ${verify} | yes | PENDING | pending |`) }));
+  const blocked = (verify, pattern) => {
+    const result = freezeWith(verify);
+    assert.equal(result.status, 1, `${verify}\n${result.stdout}`);
+    const report = JSON.parse(result.stdout);
+    assert.ok(report.blocking.some((item) => item.startsWith('BAD_ACCEPTANCE_VERIFY SCEN-1')), `${verify}: ${result.stdout}`);
+    assert.match(report.blocking.join('\n'), pattern, verify);
+  };
+  // Reviewer round-3 repros: pipefail in a pipeline child, a group that turns it off, a nested shell.
+  blocked("bash -c 'set -o pipefail \\| cat; node --test test/a.test.mjs \\| tail -n 20'", /new shell/);
+  blocked("bash -c 'set -o pipefail; { set +o pipefail; }; node --test test/a.test.mjs \\| tail -n 20'", /new shell/);
+  blocked('bash -c "bash -c \'node --test test/a.test.mjs \\| tail -n 20\'"', /new shell/);
+  // The two accepted bodies: pipefail covering a rest with no other `set`/subshell/group, or one
+  // bare command judged like any other command.
+  assert.equal(freezeWith("bash -c 'set -o pipefail; node --test test/a.test.mjs \\| tail -n 20'").status, 0);
+  assert.equal(freezeWith("bash -c 'node --test test/a.test.mjs'").status, 0);
+  assert.equal(freezeWith("bash -c 'node --test test/a.test.mjs \\| tail -n 20'").status, 1);
+  assert.equal(freezeWith('bash scripts/test-a.sh').status, 0);
+});
 test('SCEN-ACC-01 rework 2: a masked failure is rejected in every wrapper shape', () => {
   const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
   const freezeWith = (verify) => run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | ${verify} | yes | PENDING | pending |`) }));
@@ -972,10 +994,11 @@ test('SCEN-ACC-01 rework 2: a masked failure is rejected in every wrapper shape'
   blocked('node --test test/a.test.mjs \\|\\| exit 0', /non-zero/);
   assert.equal(freezeWith('node --test test/a.test.mjs \\|\\| exit 0').status, 1);
   // An allowed `|| exit 1` must not switch the pipe check off for the other legs in the same row.
-  blocked('bash -c \'for f in test/a.test.mjs; do node --test "$f" \\| tail -n 20 \\|\\| exit 1; done\'', /unquoted/);
-  // pipefail must be set before the pipeline and never turned off.
-  blocked("bash -c 'node --test test/a.test.mjs \\| tail -n 20; set -o pipefail'", /unquoted/);
-  blocked("bash -c 'set -o pipefail; set +o pipefail; node --test test/a.test.mjs \\| tail -n 20'", /unquoted/);
+  blocked('bash -c \'for f in test/a.test.mjs; do node --test "$f" \\| tail -n 20 \\|\\| exit 1; done\'', /new shell/);
+  // pipefail must be set before the pipeline and never turned off. Both bodies are now rejected
+  // outright by the round-3 rule rather than judged statement by statement.
+  blocked("bash -c 'node --test test/a.test.mjs \\| tail -n 20; set -o pipefail'", /new shell/);
+  blocked("bash -c 'set -o pipefail; set +o pipefail; node --test test/a.test.mjs \\| tail -n 20'", /new shell/);
   // Still accepted: pipefail first, and a propagated failure status.
   assert.equal(freezeWith("bash -c 'set -o pipefail; node --test test/a.test.mjs \\| tail -n 20'").status, 0);
   assert.equal(freezeWith('node --test test/a.test.mjs \\|\\| exit 1').status, 0);

@@ -730,22 +730,32 @@ else {
       // quotes is an argument, not a pipeline, so it is masked before both judgements.
       const command = row.verify.replace(/^`+|`+$/g, '').trim();
       const maskQuoted = (text) => text.replace(/'[^']*'|"[^"]*"/g, (segment) => segment.replace(/\|/g, ' '));
-      // A `bash -c` body runs in a NEW shell: the executor's own `pipefail` is a shell option and is
-      // not inherited, so the body must enable it itself. Being enabled means set BEFORE the first
-      // pipeline and never turned off again — `node --test x | tail; set -o pipefail` mentions the
-      // option but leaves the pipeline uncovered, and `set +o pipefail` disables it mid-body.
-      const wrapper = /^(?:bash|sh)\s+-[a-z]*c\s+(['"])(.*)\1$/is.exec(command);
-      const wrapped = wrapper ? wrapper[2].trim() : null;
-      // Split the body into statements so "enabled" means the FIRST statement turns it on and no
-      // later one turns it off; a `set` after the pipeline arrives too late to cover it.
-      const statements = wrapped === null ? [] : wrapped.split(/\|\||&&|;|(?<!\|)\|(?!\|)/).map((part) => part.trim()).filter(Boolean);
-      const setsPipefail = (part, sign) => new RegExp(`^set\\s+(?:-[A-Za-z]+\\s+)*\\${sign}o\\s+pipefail\\b`).test(part);
-      const pipefail = statements.length > 0
-        && setsPipefail(statements[0], '-')
-        && !statements.some((part) => setsPipefail(part, '+'));
-      // What the pipe and construct rules read: the wrapper body when there is one, else the command,
-      // with quoted arguments masked (a `|` inside quotes is an argument, not a pipeline).
-      const judged = maskQuoted(wrapped ?? command);
+      // A `bash -c`/`sh -c` body runs in a NEW shell: the executor's `pipefail` is a shell option and
+      // is not inherited, so the gate would have to parse shell semantics to know what the exit code
+      // means. Rather than recognize shape after shape (a piped `set`, a `{ set +o pipefail; }`
+      // group, a nested `bash -c` all read as "pipefail present" while leaving the pipeline red),
+      // only two bodies are accepted:
+      //   1. `set -o pipefail; <rest>` where `<rest>` runs no other `set`, no subshell `(`, no group
+      //      `{`, no backtick/`$(` and no nested shell. pipefail then covers every leg of `<rest>`
+      //      and cannot be turned off behind the gate's back.
+      //   2. a body with no operator at all: one command, judged exactly like a bare command.
+      // Everything else is rejected and told to become a script, which returns its own status.
+      const wrapper = /^(?:bash|sh)\s+-[a-z]*c\s+(['"])([\s\S]*)\1$/i.exec(command);
+      let pipefail = false;
+      let judged = maskQuoted(command);
+      if (wrapper) {
+        const body = wrapper[2].trim();
+        const canonical = /^set\s+-[A-Za-z]*o\s+pipefail\s*;\s*([\s\S]+)$/.exec(body);
+        const rest = canonical ? canonical[1] : null;
+        const opaque = /[(){}`]|\$\(/.test(body) || /(?:^|[;&|]\s*|\s)set\s/.test(rest ?? ' ') || /^(?:bash|sh)\s/.test(body);
+        const plain = !/[|;&]/.test(body) && !opaque;
+        if (rest !== null && !opaque) { pipefail = true; judged = maskQuoted(rest); }
+        else if (plain) judged = maskQuoted(body);
+        else {
+          blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: the \`bash -c\`/\`sh -c\` body runs in a new shell, so the gate cannot prove its exit status; put the check in a script whose name starts with \`test\` (e.g. \`bash scripts/test-<name>.sh\`) or that lives under a test path, and run that — the script returns its own status`);
+          continue;
+        }
+      }
       // The pipe judgements run on every Required=yes command, before any shell-construct
       // exemption: a construct may only excuse the "proves nothing" leg check, never a masked pipe.
       const words = new Set(judged.split(/\s+/));
