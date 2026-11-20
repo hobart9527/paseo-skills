@@ -451,6 +451,43 @@ test('R0 sign-off: a stale LAST line is STALE_R0_SIGNOFF even when an earlier on
   assert.match(run(dir).stdout, /STALE_R0_SIGNOFF.*deadbee.*does not exist/);
 });
 
+// ---- R0 self-review: the contract author cannot sign for itself (F-4) ----
+// `hooks/git/commit-msg` stamps Pipeline-Author on contract commits, so the signer's identity can
+// be compared with the authors of the commits the sign-off covers. An author who wrote the
+// contract and then recorded its own `R0: pass` had the only gate that reads it review itself.
+const AUTHOR = '9b2f4c1e-aaaa-4a2b-8c3d-000000000042';
+function authoredRepo({ author = AUTHOR, signer = 'hanlin-uuid' } = {}) {
+  const dir = change({ 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n' });
+  const sh = (...a) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8' }).trim();
+  sh('init', '-q', '-b', 'main'); sh('config', 'user.email', 't@t'); sh('config', 'user.name', 't');
+  sh('add', '.'); sh('commit', '-qm', `contract\n\nPipeline-Role: hanlin\nPipeline-Author: ${author}`);
+  const sha = sh('rev-parse', '--short', 'HEAD');
+  fs.writeFileSync(path.join(dir, 'review.md'), `R0: pass(${signer}@${sha})\n`);
+  return { dir, sha };
+}
+
+test('SCEN-R0-01 the contract author signing its own contract blocks as R0_SELF_REVIEW', () => {
+  const { dir, sha } = authoredRepo({ signer: AUTHOR });
+  const result = run(dir);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(JSON.parse(result.stdout).blocking.join('\n'), /R0_SELF_REVIEW/);
+  // The same holds when the signer is a short form of the author's uuid, and under
+  // --skip-signer-check (that flag skips the Paseo lookup, not this git-only check).
+  fs.writeFileSync(path.join(dir, 'review.md'), `R0: pass(${AUTHOR.slice(0, 8)}@${sha})\n`);
+  assert.match(JSON.parse(run(dir).stdout).blocking.join('\n'), /R0_SELF_REVIEW/);
+  fs.writeFileSync(path.join(dir, 'review.md'), `R0: pass(${AUTHOR}@${sha})\n`);
+  assert.match(JSON.parse(run(dir, ['--skip-signer-check']).stdout).blocking.join('\n'), /R0_SELF_REVIEW/);
+});
+
+test('SCEN-R0-02 an independent signer passes', () => {
+  const { dir } = authoredRepo({ signer: '9b2f4c1e-aaaa-4a2b-8c3d-000000000099' });
+  const report = JSON.parse(run(dir).stdout);
+  assert.ok(!report.blocking.some((item) => /R0_SELF_REVIEW/.test(item)), report.blocking.join('\n'));
+  // An empty or trailer-less history cannot convict anyone: the check never blocks on absence.
+  const { dir: plain } = signedRepo((sha) => `R0: pass(${AUTHOR}@${sha})\n`);
+  assert.ok(!JSON.parse(run(plain).stdout).blocking.some((item) => /R0_SELF_REVIEW/.test(item)));
+});
+
 // ---- R0 closure: a recorded human exception instead of a forged pass ----
 const report = (dir) => {
   const result = spawnSync('node', [path.join(root, 'freeze-check.mjs'), dir, '--json', '--skip-signer-check'], { encoding: 'utf8' });

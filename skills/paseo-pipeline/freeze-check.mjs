@@ -893,6 +893,24 @@ if (!structural) {
       if (!rulings || !/^R0-\d+-/m.test(rulings)) advisories.push('R0_HUMAN_EXCEPTION_UNRULED: rulings.md has no `R0-<round>-<n>` entries; record each open item and why it was accepted');
     }
   } else {
+    // A pass minted by the contract's own author is not a review. Every commit that wrote this
+    // change directory up to the signed sha carries `Pipeline-Author` (see hooks/git/commit-msg);
+    // if the signer is one of them the R0 gate has reviewed itself. Git-only, so it also runs
+    // under --skip-signer-check, which skips the Paseo identity lookup, not this.
+    if (gitIn(changeDir, ['rev-parse', '--is-inside-work-tree']).status === 0
+      && gitIn(changeDir, ['rev-parse', '--verify', '--quiet', `${r0Match.sha}^{commit}`]).status === 0) {
+      const signed = gitIn(changeDir, ['log', '--format=%H%x00%(trailers:key=Pipeline-Author,valueonly,separator=%x2C)', r0Match.sha, '--', '.']);
+      const signer = r0Match.signer.trim().toLowerCase();
+      const sameAgent = (author) => {
+        const candidate = author.trim().toLowerCase();
+        return !!candidate && (candidate === signer
+          || (candidate.length >= 7 && signer.startsWith(candidate)) || (signer.length >= 7 && candidate.startsWith(signer)));
+      };
+      const authors = (signed.stdout || '').split('\n').filter(Boolean).flatMap((line) => line.split('\0')[1]?.split(',') ?? []).filter(Boolean);
+      if (signed.status === 0 && authors.some(sameAgent)) {
+        blocking.push(`R0_SELF_REVIEW: signer ${r0Match.signer} is a Pipeline-Author of a contract commit reachable at ${r0Match.sha}; the contract author cannot mint its own R0 pass — dispatch an independent hanlin R0 review`);
+      }
+    }
     // The signer must be a real Paseo agent, so a made-up uuid cannot satisfy the gate. Role is not
     // exposed by `paseo ls`; a name without `hanlin` is only an advisory — the merge gate no longer
     // inspects reviewer identity, so this is the only heterogeneous-R0 check.

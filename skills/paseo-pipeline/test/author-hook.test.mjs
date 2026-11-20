@@ -71,6 +71,19 @@ test('mechanical and plain commits are untouched, even without PASEO_AGENT_ID', 
   assert.equal(r.commit('plain', { PASEO_AGENT_ID: '' }).status, 0);
 });
 
+// SCEN-R0-01: the R0 self-review check reads Pipeline-Author on contract commits, so a hanlin
+// author commit must carry one. Without this, the author's own contract commits are anonymous and
+// a self-minted `R0: pass` has nothing to be compared against.
+test('hanlin author commits are stamped like writer commits', (t) => {
+  const r = repo(t);
+  assert.equal(r.commit(`contract\n\nPipeline-Role: hanlin\nPipeline-Author: ${UUIDGEN}`).status, 0);
+  assert.equal(r.trailer('Pipeline-Author'), ME);
+  assert.equal(r.commit('contract 2\n\nPipeline-Role: hanlin').status, 0);
+  assert.equal(r.trailer('Pipeline-Author'), ME);
+  // The identity still comes from PASEO_AGENT_ID, so an agent-launched commit cannot fake it.
+  assert.notEqual(r.commit('contract 3\n\nPipeline-Role: hanlin', { PASEO_AGENT_ID: '' }).status, 0);
+});
+
 test('mixed writer and non-writer roles are left to merge-task, not rewritten', (t) => {
   const r = repo(t);
   assert.equal(r.commit(`x\n\nPipeline-Role: ceshi\nPipeline-Role: anchasi\nPipeline-Author: ${OTHER}`).status, 0);
