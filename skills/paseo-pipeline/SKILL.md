@@ -40,19 +40,19 @@ Daily: 调研, 架构, 开发, 攻坚, 审查, not serial stages; 测试, 界面
 
 ## Tools
 
-All under `$PIPELINE_HOME` (set by `install.sh`). Each prints usage on bad arguments.
+All under `$PIPELINE_HOME` (set by `install.sh`); bad args print usage.
 
 | Script | When |
 |---|---|
-| `profiles-check.mjs [--skill F] [--config F]` | Read-only lint: role mapping, notes fields, default family pairs, antigravity `diff-check`; not independence/sandbox proof. |
-| `preflight.mjs <repo>` | Before authoring: read-only capability probe (test env, lockfiles). |
+| `profiles-check.mjs [--skill F] [--config F] [--json]` | Read-only lint: role mapping, notes, families, antigravity `diff-check`; not independence/sandbox proof. `--json`: one object (`roles`, `findings`, `advisories`, `ok`). |
+| `preflight.mjs <repo>` | Before authoring: read-only probe (test env, lockfiles). |
 | `namespace.mjs <change-dir>` | Author, before specs: SCEN prefixes and requirement headings already in use. |
-| `freeze-check.mjs <change-dir> --structural` | Author and main session: structural gate and route; without `--structural` also checks R0 sign-off. |
+| `freeze-check.mjs <change-dir> --structural` | Author and main session: structural gate and route; without the flag also checks R0 sign-off. |
 | `pipeline-run.mjs plan\|status <change-dir>` | After CP-1: next dispatches and merges; current state. |
 | `pipeline-run.mjs merge <change-dir> <T-id>` | From the integration worktree after a worker reports. |
 | `pipeline-run.mjs install-hook <worktree>...` | Start step 2. |
-| `pipeline-run.mjs scenarios <change-dir>` | When SCEN claims and acceptance rows may disagree (read-only). |
-| `pipeline-run.mjs acceptance run\|check <change-dir> --evidence <file>` | FINAL step 1; operator rules in `templates/approvals.md`. |
+| `pipeline-run.mjs scenarios <change-dir>` | When SCEN claims and acceptance rows disagree (read-only). |
+| `pipeline-run.mjs acceptance run\|check <change-dir> --evidence <file>` | FINAL step 1; rules in `templates/approvals.md`. |
 | `pipeline-run.mjs cleanup <change-dir>` | After CP-2: lists objects and commands; executes nothing. |
 | `r0-hotspots.mjs <change-dir>` | Optional reviewer metadata; never a verdict. |
 

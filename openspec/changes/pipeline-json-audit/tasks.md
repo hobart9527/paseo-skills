@@ -22,7 +22,8 @@
 
 ## 2. Documentation (wave 1)
 
-- [ ] 2.1 T-03 SKILL.md Tools row shows `profiles-check.mjs --json` and its four keys, within the 10000-char budget (`test/docs.test.mjs:27`); test asserts the row
+- [x] 2.1 T-03 SKILL.md Tools row shows `profiles-check.mjs --json` and its four keys, within the 10000-char budget (`test/docs.test.mjs:27`); test asserts the row
+  - Done: source=5da7b5b review=worker
   - Depends on: T-01
   - Write scope: skills/paseo-pipeline/SKILL.md, skills/paseo-pipeline/test/profiles-check.test.mjs
   - Reads: skills/paseo-pipeline/test/docs.test.mjs
