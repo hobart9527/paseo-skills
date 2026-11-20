@@ -751,9 +751,11 @@ else {
         for (const ch of text) {
           if (quote === "'") { if (ch === "'") { quote = null; out += ch; } else out += ch === '\n' ? ch : 'x'; }
           else if (quote === '"') {
-            // `$(` runs a command even inside double quotes, so the character right after a kept
-            // `$` is kept too; otherwise a lone `(` is a literal and is blanked.
-            if ('$`\\'.includes(ch) || out.endsWith('$')) out += ch;
+            // Only `$(` and `${` start a command or a parameter expansion inside double quotes,
+            // and a backtick and a backslash keep their meaning. `$"` is locale quoting, so the
+            // `"` still closes; keeping it would make the rest of the line read as quoted text.
+            if (ch === '`' || ch === '\\') out += ch;
+            else if (ch === '$' || (out.endsWith('$') && (ch === '(' || ch === '{'))) out += ch;
             else if (ch === '"') { quote = null; out += ch; }
             else out += ch === '\n' ? ch : 'x';
           } else if (ch === "'" || ch === '"') { quote = ch; out += ch; }
@@ -853,11 +855,12 @@ else {
           headShell = headShell.slice(0, cutAt);
           head = head.slice(0, cutAt);
         }
-        // `;`, a bare `|`, `&`, a subshell, a group, a command substitution, a backtick or a control
-        // keyword each allows the command to exit 0 after a leg failed. `headShell` keeps `$(`,
-        // backtick and backslash visible inside double quotes, where they still run.
-        if (/[;|&`\\]|[(){}]|\$\(/.test(headShell) || CONTROL_WORD.test(headMasked)) {
-          return 'only one command or commands joined by `&&` can have a provable exit status; `;`, `|`, a loop, a condition, a subshell or a nested shell can exit 0 after a leg failed';
+        // `;`, a bare `|`, `&`, `!`, a subshell, a group, a command substitution, a backtick or a
+        // control keyword each allows the command to exit 0 after a leg failed. `!` inverts the
+        // leg's status, so a red test reads as success and the trailing `|| exit` never runs.
+        // `headShell` keeps `$(` and a backtick visible inside double quotes, where they still run.
+        if (/[;|&!`\\]|[(){}]|\$\(/.test(headShell) || CONTROL_WORD.test(headMasked)) {
+          return 'only one command or commands joined by `&&` can have a provable exit status; `;`, `|`, `!`, a loop, a condition, a subshell or a nested shell can exit 0 after a leg failed';
         }
         // The leg splitter in lib/tasks.mjs splits on `|` too and does not mask quotes, so the text
         // it reads has quoted pipes blanked: `"a | b"` is an argument, not a pipeline.

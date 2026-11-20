@@ -1054,6 +1054,28 @@ test('SCEN-ACC-01 rework 5: the prover cannot be fooled by masking or shell arit
   assert.equal(freezeWith('for f in scripts/specs/*.mjs; do node "$f" \\|\\| exit 1; done').status, 0);
 });
 
+// Rework round 6. Two more ways the prover read the text wrong: `$"` is locale quoting, not an
+// open quote, so the rest of the line was blanked while its `; true` still ran; and `!` inverts a
+// leg, so a red test reads as success and a trailing `|| exit` never fires.
+test('SCEN-ACC-01 rework 6: a reversed or misquoted leg is not a passed check', () => {
+  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
+  const freezeWith = (verify) => run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | ${verify} | yes | PENDING | pending |`) }));
+  const blocked = (verify, pattern) => {
+    const result = freezeWith(verify);
+    assert.equal(result.status, 1, `${verify}\n${result.stdout}`);
+    const report = JSON.parse(result.stdout);
+    assert.ok(report.blocking.some((item) => item.startsWith('BAD_ACCEPTANCE_VERIFY SCEN-1')), `${verify}: ${result.stdout}`);
+    assert.match(report.blocking.join('\n'), pattern, verify);
+  };
+  // The `$"` no longer opens a quote, so the live `; true` is seen; the escaped `"` is rejected
+  // first, one layer earlier, which is the same answer.
+  blocked('node --test test/a.test.mjs \\"$\\"; true test/a.test.mjs # \\"', /escaped character|only one command/);
+  blocked('for f in test/a.test.mjs; do ! node --test "$f" \\|\\| exit 1; done', /only one command/);
+  // Still accepted: the real sink loop and a plain command.
+  assert.equal(freezeWith('for f in scripts/specs/*.mjs; do node "$f" \\|\\| exit 1; done').status, 0);
+  assert.equal(freezeWith('node --test test/a.test.mjs').status, 0);
+});
+
 test('SCEN-ACC-01 rework: the rejection message names a route the gate accepts', () => {  const files = { 'tasks.md': contract, 'proposal.md': 'x', 'design.md': design, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'review.md': REVIEW };
   const freezeWith = (verify) => run(change({ ...files, 'acceptance.md': table(`| SCEN-1 | CLI | T-01,T-02,T-03,T-04 | ${verify} | yes | PENDING | pending |`) }));
   const piped = freezeWith('node --test test/a.test.mjs \\| tail -n 20');
