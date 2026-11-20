@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Read-only check: Paseo agent profile notes vs the SKILL.md `## Roles` table.
 // Checks only what is deterministic: role has a profile, notes carry the template
-// fields, brief paths exist, default implementation-pair families differ, antigravity
-// declares diff-check, no profile claims a read-only guarantee the harness cannot give.
+// fields, brief paths exist and match the role's `use:` boundary, default implementation-pair
+// families differ, antigravity declares diff-check, no profile claims a read-only guarantee the
+// harness cannot give.
 // Self-declared metadata only: not backend, target-independence or sandbox proof.
 //
 // Notes template (one `key: value` per line):
@@ -24,6 +25,17 @@ const FALSE_READONLY = /纯只读|只读无写权限/;
 // actual target contributors must be reconciled at dispatch, not inferred here.
 const WRITERS = ['gongbu', 'gaogong', 'jiangzuo'];
 
+// Roles whose live profile id is not `agent_profile_<role>`. A Paseo profile id is opaque, so
+// the mapping has to be declared: this one is 契约审查（Neon）, the independent R0 reviewer.
+// Every role not named here resolves through the `agent_profile_<role>` default.
+export const ROLE_PROFILE_IDS = { neon: 'agent_profile_mvvzv70y_bweu1x85oc9' };
+
+// The contract-author brief states a boundary only the contract author owns. A role whose scope
+// excludes authoring must not be handed it; 调研（中书）researches and drafts Proposal text, it does
+// not write the contract.
+const AUTHOR_BRIEF = 'templates/author.md';
+const AUTHOR_ROLES = ['hanlin'];
+
 function arg(name, fallback) {
   const i = process.argv.indexOf(name);
   return i > 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
@@ -39,12 +51,17 @@ export function field(notes, key) {
   return m ? m[1] : null;
 }
 
+export function profileIdOf(role) {
+  return ROLE_PROFILE_IDS[role] ?? `agent_profile_${role}`;
+}
+
 export function check(roles, profiles, root = null) {
   const findings = [];
+  const advisories = [];
   const byRole = new Map();
   for (const role of roles) {
-    const p = profiles.find((x) => x?.id === `agent_profile_${role}`);
-    if (!p) { findings.push(`MISSING_PROFILE ${role}`); continue; }
+    const p = profiles.find((x) => x?.id === profileIdOf(role));
+    if (!p) { findings.push(`MISSING_PROFILE ${role} (${profileIdOf(role)})`); continue; }
     byRole.set(role, p);
     for (const f of FIELDS) if (!field(p.notes, f)) findings.push(`MISSING_FIELD ${role} ${f}`);
     if (FALSE_READONLY.test(p.notes ?? '')) findings.push(`FALSE_READONLY ${role}`);
@@ -55,6 +72,14 @@ export function check(roles, profiles, root = null) {
         if (!fs.existsSync(path.resolve(root, part))) findings.push(`MISSING_BRIEF ${role} ${part}`);
       }
     }
+    // Brief and `use:` must agree on the boundary: the contract-author brief belongs to the role
+    // that writes the contract, and no other. Advisory, not a block: the live 调研（中书）profile
+    // still carries it and the live config is outside this repository (its edit is in the delivery
+    // report); a blocking rule here would make the required live run exit 1 forever.
+    if (brief && brief !== 'none' && !AUTHOR_ROLES.includes(role)
+      && brief.split(';').some((part) => part.trim().replace(/^Tier\s+\d+\s+/, '').endsWith(AUTHOR_BRIEF))) {
+      advisories.push(`ADVISORY_BRIEF_OUT_OF_SCOPE ${role}: brief ${AUTHOR_BRIEF} belongs to ${AUTHOR_ROLES.join('/')}, and ${role} does not write the contract; point it at a brief matching its use: boundary`);
+    }
     if (p.provider === 'antigravity' && !/diff-check/i.test(field(p.notes, 'write') ?? '')) {
       findings.push(`UNENFORCED_WRITE ${role}`);
     }
@@ -63,7 +88,7 @@ export function check(roles, profiles, root = null) {
   const clash = (a, b) => fam(a) && fam(a) === fam(b) && findings.push(`FAMILY_CLASH ${a} ${b} (${fam(a)})`);
   for (const w of WRITERS) clash('anchasi', w);
   clash('ceshi', 'gongbu');
-  return findings;
+  return { findings, advisories };
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
@@ -87,7 +112,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
     console.error(`Usage: profiles-check.mjs [--skill SKILL.md] [--config ~/.paseo/config.json] [--root repo]\n${error.message}`);
     process.exit(2);
   }
-  const findings = check(roles, profiles, arg('--root', path.resolve(here, '..', '..')));
+  const { findings, advisories } = check(roles, profiles, arg('--root', path.resolve(here, '..', '..')));
+  for (const item of advisories) console.log(`ADVISE ${item}`);
   console.log(findings.length ? findings.join('\n') : `profiles ok (${roles.length} roles)`);
   process.exit(findings.length ? 1 : 0);
 }

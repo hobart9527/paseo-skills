@@ -31,6 +31,7 @@ Resolve provider/model/modeId/thinking via `list_profiles` at dispatch.
 | 攻坚（高工） `gaogong` | Complex implementation and bounded rework, not architecture replanning. |
 | 界面（将作） `jiangzuo` | Optional UI specialization plus UI skill; not a mandatory handoff. |
 | 审查（按察司） `anchasi` | Independent code audit; review intent is not a read-only permission guarantee. |
+| 契约审查（Neon） `neon` | Independent read-only R0; stage title stays `[Pipeline] hanlin R0`. |
 | 协调（尚书） `shangshu` | Optional thin Tier 3 dispatch and reconciliation; main session is default. |
 
 Daily: 调研, 架构, 开发, 攻坚, 审查, not serial stages; 测试, 界面, 协调 on demand. Notes (`family/harness/write/use/not/brief`) guide selection only: paste the `brief:` file. `plan` sets the stage; dispatcher picks `gongbu`/`gaogong`.
@@ -62,7 +63,7 @@ Contract work is serial.
 1. Run `preflight.mjs` and create an OpenSpec change with schema `paseo-pipeline`. Dispatch one `hanlin` author with one author workspace, baseline SHA, `PIPELINE_HOME`, preflight/structural commands, project constants, confirmed decisions and the rough DAG.
 2. Author follows `templates/author.md` and returns a pinned structural result. The author stops at minute 25; if no report arrives by minute 30, reconcile Paseo status with the author branch `git log` once instead of polling.
 3. Route `handoff` qualifies only with author `COMPLETE`, structural exit 0 with no blocks, and matching checked/reported SHA; then `/tier2-handoff` (tasks become `Slices` unchanged) and `/paseo-handoff`. A route is never R0 or CP-1.
-4. Resolve material human choices. Dispatch independent 契约审查 (proposal: Neon high), not the author, for read-only R0 via `templates/reviewer.md` in a separate workspace. Keep stage title `[Pipeline] hanlin R0`; record actual author/reviewer profiles, declared families and SHA. No self-review, including Proposal contributions. For unenforced read-only, reconcile before/after HEAD, tracked diff and untracked files; not a sandbox. Maximum two package rounds (second delta); unresolved blockers go to human risk acceptance or one directed fix with delta check.
+4. Resolve material human choices. Dispatch independent `neon` (never the author) for read-only R0 via `templates/reviewer.md` in a separate workspace. Keep stage title `[Pipeline] hanlin R0`; record actual author/reviewer profiles, declared families and SHA. No self-review, including Proposal contributions. For unenforced read-only, reconcile before/after HEAD, tracked diff and untracked files; not a sandbox. Maximum two package rounds (second delta); unresolved blockers go to human risk acceptance or one directed fix with delta check.
 5. Present contract, findings, DAG/scopes/Verify/acceptance and route. Human confirms CP-1 for the exact contract commit; freeze only after that. CP-1 approves the contract and its commit to the default branch (Start step 1), nothing later. R0 sign-off is `R0: pass(<reviewer-uuid>@<sha>)` or recorded `R0: human-accept(@<sha>)`; human-accept is never a reviewer pass.
 
 ## Start and execute after CP-1

@@ -510,6 +510,16 @@ test('next-actions: the SKILL.md role table and the code role patterns name the 
   // Worker roles are a closed list; only the non-worker list may track SKILL.md.
   assert.equal(worker, 'gongbu|gaogong|jiangzuo|ceshi', 'worker roles changed');
   const coded = new Set([...worker.split('|'), ...nonWorker.split('|')]);
-  assert.deepEqual([...coded].sort(), [...listed].sort(), `SKILL.md roles: ${[...listed].sort().join(', ')}; code roles: ${[...coded].sort().join(', ')}`);
+  // A dispatched role may be absent from the title parser only when SKILL.md says its stage title
+  // belongs to another role. 契约审查 (`neon`) reviews R0 while the title stays `[Pipeline] hanlin R0`,
+  // so the parser must NOT accept `neon` as a title — the exemption is spelled out, not skipped.
+  const TITLE_FREE = { neon: 'hanlin R0' };
+  const missing = [...listed].filter((role) => !coded.has(role));
+  assert.deepEqual(missing.sort(), Object.keys(TITLE_FREE).sort(), `roles in SKILL.md but not in the title parser: ${missing.join(', ')}`);
+  for (const [role, title] of Object.entries(TITLE_FREE)) {
+    assert.ok(!coded.has(role), `${role} must not be a title role: its stage title is ${title}`);
+    assert.ok(new RegExp(`\`${role}\`.*${title}`).test(roles), `SKILL.md must say ${role}'s stage title stays ${title}`);
+  }
+  assert.deepEqual([...listed].filter((role) => !(role in TITLE_FREE)).sort(), [...coded].sort(), `SKILL.md roles: ${[...listed].sort().join(', ')}; code roles: ${[...coded].sort().join(', ')}`);
 });
 
