@@ -183,3 +183,34 @@ test('deleting a source file still triggers content-based risk detection (B1 reg
   assert.ok(deleted.classes.includes('auth'));
   assert.ok(deleted.hits.some((h) => h.file === 'src/handler.ts' && h.class === 'auth'));
 });
+
+test('detects removal of safety or prohibition caveats from docs and prompts (T-03 regression)', () => {
+  const dropped = scanChanges({
+    entries: [{ status: 'M', file: 'skills/paseo-pipeline/SKILL.md' }],
+    diffText: [
+      'diff --git a/skills/paseo-pipeline/SKILL.md b/skills/paseo-pipeline/SKILL.md',
+      '--- a/skills/paseo-pipeline/SKILL.md',
+      '+++ b/skills/paseo-pipeline/SKILL.md',
+      '@@ -45 +45 @@',
+      '-| `profiles-check.mjs` | Read-only lint; not independence/sandbox proof. |',
+      '+| `profiles-check.mjs` | Read-only lint. |',
+    ].join('\n'),
+  });
+  assert.equal(dropped.reviewRequired, true);
+  assert.equal(dropped.caveatRemovals.length, 1);
+  assert.match(dropped.caveatRemovals[0].reason, /safety\/prohibition qualifier removed/);
+
+  const preserved = scanChanges({
+    entries: [{ status: 'M', file: 'skills/paseo-pipeline/SKILL.md' }],
+    diffText: [
+      'diff --git a/skills/paseo-pipeline/SKILL.md b/skills/paseo-pipeline/SKILL.md',
+      '--- a/skills/paseo-pipeline/SKILL.md',
+      '+++ b/skills/paseo-pipeline/SKILL.md',
+      '@@ -45 +45 @@',
+      '-| `profiles-check.mjs` | Read-only lint; not independence proof. |',
+      '+| `profiles-check.mjs` | Read-only check; not independence proof. |',
+    ].join('\n'),
+  });
+  assert.equal(preserved.reviewRequired, false);
+  assert.equal(preserved.caveatRemovals.length, 0);
+});

@@ -267,6 +267,7 @@ if (['reviewer', 'final', 'tier2-review'].includes(role) && !task) {
         if (scan.classes.length) lines.push(`- Classes: ${scan.classes.join(', ')}`);
         for (const hit of scan.hits) lines.push(`- [${hit.class}] ${hit.file}: ${hit.reason}`);
         for (const mut of scan.testMutations) lines.push(`- [test-oracle] ${mut.file}: ${mut.reason}`);
+        for (const cav of scan.caveatRemovals || []) lines.push(`- [doc-caveat] ${cav.file}: ${cav.reason}`);
         prompt = `${prompt.trimEnd()}\n${lines.join('\n')}\n`;
       }
     } catch {
@@ -283,7 +284,7 @@ if (role === 'tier2' && parsed.tasks.length) {
   prompt = `${prompt.trimEnd()}\n${lines.join('\n')}\n`;
 }
 
-if (/\b(?:claude|gpt|codex|anthropic|openai|gemini|opus|sonnet|haiku)[-/](?!CLAUDE\.md\b)[\w.-]+/i.test(prompt)) {
+if (/(?<!\.)\b(?:claude|gpt|codex|anthropic|openai|gemini|opus|sonnet|haiku)[-/][\w.-]+/i.test(prompt)) {
   console.error('[brief] refusing to emit a concrete model id; resolve profiles with list_profiles');
   process.exit(1);
 }

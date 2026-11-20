@@ -65,25 +65,54 @@ async function main() {
   const committedMatrix = runGit(root, ['show', `HEAD:${relative}`]);
   if (committedMatrix.status !== 0 || committedMatrix.stdout !== text) fail('matrix differs from HEAD');
   const rows = rowsOf(text);
-  const branch = `integration/${path.basename(dir)}`;
+  const changeName = path.basename(dir).replace(/^\d{4}-\d{2}-\d{2}-/, '');
+  const branch = `integration/${changeName}`;
+  const currentBranch = git(root, ['symbolic-ref', '--short', 'HEAD']);
   const sha = git(root, ['rev-parse', 'HEAD']);
   if (action === 'run' && (!/^[a-f0-9]{40,64}$/.test(options.source) || options.source !== sha)) fail('source must equal full current HEAD SHA');
-  snapshot(root, sha, branch);
+  if (action === 'run') snapshot(root, sha, branch);
   const evidence = path.resolve(options.evidence);
   const parent = fs.realpathSync(path.dirname(evidence));
   const target = path.join(parent, path.basename(evidence));
   const trees = git(root, ['worktree', 'list', '--porcelain']).split('\n').filter((line) => line.startsWith('worktree ')).map((line) => fs.realpathSync(line.slice(9)));
   const gitDir = fs.realpathSync(path.resolve(root, git(root, ['rev-parse', '--git-common-dir'])));
-  if ([...trees, gitDir].some((tree) => inside(tree, target))) fail('evidence must be outside all repository worktrees and git directory');
+  const changeEvidenceDir = path.join(dir, 'evidence');
+  const archivedEvidenceDir = path.join(root, 'openspec', 'changes', 'archive');
+  const allowedInRepoCheck = action === 'check' && (
+    inside(changeEvidenceDir, target) || inside(archivedEvidenceDir, target)
+  );
+  if (!allowedInRepoCheck && [...trees, gitDir].some((tree) => inside(tree, target))) {
+    fail('evidence must be outside all repository worktrees and git directory');
+  }
   if (action === 'check') {
     if (!fs.lstatSync(target).isFile()) fail('evidence must be a regular file');
     const record = JSON.parse(fs.readFileSync(target, 'utf8'));
-    if (record.version !== 1 || record.sourceSha !== sha || record.branch !== branch || record.matrixPath !== relative || record.matrix !== text || record.valid !== true || !Array.isArray(record.rows) || record.rows.length !== rows.length) fail('record does not match clean source');
+    if (record.version !== 1 || record.branch !== branch || record.valid !== true || !Array.isArray(record.rows) || record.rows.length !== rows.length) {
+      fail('record does not match clean source');
+    }
+    const cleanTree = git(root, ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none']) === '';
+    if (!cleanTree) fail('worktree is dirty');
+    let sourceValid = record.sourceSha === sha && currentBranch === branch && record.matrixPath === relative && record.matrix === text;
+    if (!sourceValid && /^[a-f0-9]{40,64}$/.test(record.sourceSha)) {
+      const ancestor = runGit(root, ['merge-base', '--is-ancestor', record.sourceSha, sha]);
+      if (ancestor.status === 0) {
+        const histMatrix = runGit(root, ['show', `${record.sourceSha}:${record.matrixPath}`]);
+        if (histMatrix.status === 0 && histMatrix.stdout === record.matrix) {
+          if (currentBranch === branch) {
+            const diffFiles = git(root, ['diff', '--name-only', record.sourceSha, sha]).split(/\r?\n/).filter(Boolean);
+            const signoffOnly = new RegExp(`^openspec/changes/(?:archive/\\d{4}-\\d{2}-\\d{2}-)?${changeName}/(?:review\\.md|run-log\\.md|evidence/.*)$`);
+            if (diffFiles.length > 0 && diffFiles.every((f) => signoffOnly.test(f))) sourceValid = true;
+          } else if (currentBranch === 'main' || currentBranch === 'master') {
+            sourceValid = record.matrix === text;
+          }
+        }
+      }
+    }
+    if (!sourceValid) fail('record does not match clean source');
     for (let i = 0; i < rows.length; i++) {
       const r = record.rows[i], expected = rows[i];
       if (!r || r.line !== expected.line || r.scenario !== expected.scenario || r.command !== expected.command || r.result !== 'PASS' || r.status !== 0 || r.signal !== null || r.timedOut !== false || r.overflow !== false || r.error !== null || typeof r.stdout !== 'string' || typeof r.stderr !== 'string') fail('record contains incomplete or failed rows');
     }
-    snapshot(root, sha, branch);
     console.log('Record matches current source and reports passing rows; this does not establish trust or authorize CP-2.');
     return;
   }

@@ -1318,8 +1318,25 @@ if (graphValid) {
     advisories.push(`ADVISORY_READS_ONLY_EDGE ${rendered.join('; ')}: the pair shares only a read-only fixture and Write scopes do not overlap; merge-task replays it after either side merges. Record in design.md whether the edge is still needed before CP-1.`);
   }
 }
+const NON_SUBSTANTIVE_SCOPE = /^(?:openspec\/.*|docs\/.*|[^/]*\.md|run-log\.md)$/i;
+function isSubstantiveTask(task) {
+  const scopes = Array.isArray(task?.scope) ? task.scope : [];
+  return scopes.some((s) => !NON_SUBSTANTIVE_SCOPE.test(String(s).trim()));
+}
+const substantiveIds = new Set(tasks.filter(isSubstantiveTask).map((t) => t.id));
+let substantiveMaxWidth = 0;
+if (graphValid) {
+  for (const wave of waveList) {
+    const count = wave.ids.filter((id) => substantiveIds.has(id)).length;
+    if (count > substantiveMaxWidth) substantiveMaxWidth = count;
+  }
+}
+const pseudoTier3 = graphValid && maxWidth >= 2 && tasks.length >= 4 && (substantiveIds.size < 4 || substantiveMaxWidth < 2);
+if (pseudoTier3) {
+  advisories.push(`ADVISORY_PSEUDO_TIER3_PADDING: only ${substantiveIds.size} substantive code/test tasks (substantiveMaxWidth=${substantiveMaxWidth}) after excluding doc/run-log-only tasks; routing to Tier 2 handoff`);
+}
 const openHardDecisionBlock = blocking.some((item) => item.startsWith('UNDECIDED_HARD_DECISION '));
-const route = graphValid ? (openHardDecisionBlock ? null : (maxWidth >= 2 && tasks.length >= 4 ? 'pipeline' : 'handoff')) : null;
+const route = graphValid ? (openHardDecisionBlock ? null : (substantiveMaxWidth >= 2 && substantiveIds.size >= 4 ? 'pipeline' : 'handoff')) : null;
 const summaryBlocking = (items) => [...new Set(items)].map((item) => {
   const match = item.match(/^([A-Z][A-Z0-9_]*)\b(?:\s+[^:]*)?:\s*(.*)$/);
   const code = match?.[1] ?? item;

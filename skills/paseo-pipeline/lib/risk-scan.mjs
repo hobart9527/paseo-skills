@@ -66,6 +66,8 @@ const HUNK_RULES = [
 
 const TEST_REMOVED_ASSERTION = /\b(?:assert|expect|should|rejects|throws|doesNotThrow|deepEqual|strictEqual|equal|match|toBe|toEqual|toThrow|toMatch)\b|\.(?:skip|todo|only)\b/;
 const TEST_SKIP_ADDED = /\b(?:test|it|describe)\.(?:skip|todo|only)\b/;
+const DOC_OR_PROMPT_PATH = /(?:^|\/)(?:SKILL\.md|README\.md|CLAUDE\.md|task-routing\.md|(?:docs|templates)\/.*\.md)$/i;
+const DOC_CAVEAT_TERM = /\b(?:never|must not|do not|cannot|not\s+(?:an?|only|independence|sandbox|self)|read-only|refuse|block(?:ed)?|unverified|forbidden|prohibited|caveat)\b/gi;
 
 export function isTestFile(rel) {
   const normalized = String(rel || '').replace(/\\/g, '/');
@@ -147,6 +149,7 @@ export function scanChanges({ entries = [], diffText = '', untrackedContents = n
   const hunks = parseUnifiedDiff(diffText);
   const hits = [];
   const testMutations = [];
+  const caveatRemovals = [];
   const sourceFiles = [];
   const seenHits = new Set();
 
@@ -180,6 +183,31 @@ export function scanChanges({ entries = [], diffText = '', untrackedContents = n
       continue;
     }
 
+    if (DOC_OR_PROMPT_PATH.test(file) && entry.status !== 'A' && entry.status !== '?') {
+      const fileHunk = hunks.get(file);
+      if (fileHunk && fileHunk.removed.length) {
+        const countTerms = (lines) => {
+          const map = new Map();
+          for (const line of lines) {
+            for (const m of line.matchAll(DOC_CAVEAT_TERM)) {
+              const token = m[0].toLowerCase().replace(/\s+/g, ' ');
+              map.set(token, (map.get(token) || 0) + 1);
+            }
+          }
+          return map;
+        };
+        const removedTerms = countTerms(fileHunk.removed);
+        const addedTerms = countTerms(fileHunk.added);
+        const dropped = [];
+        for (const [term, count] of removedTerms) {
+          if (count > (addedTerms.get(term) || 0)) dropped.push(term);
+        }
+        if (dropped.length) {
+          caveatRemovals.push({ file, terms: dropped.sort(), reason: `safety/prohibition qualifier removed (${dropped.sort().join(', ')})` });
+        }
+      }
+    }
+
     if (UNCOUNTED(file) || file === 'openspec' || file.startsWith('openspec/') || file === '.superpowers' || file.startsWith('.superpowers/')) {
       continue;
     }
@@ -202,7 +230,7 @@ export function scanChanges({ entries = [], diffText = '', untrackedContents = n
   const uniqueSources = [...new Set(sourceFiles)].sort();
   const scopes = [...new Set(uniqueSources.map(scopeKey))].sort();
   const classes = [...new Set(hits.map((h) => h.class))].sort();
-  const reviewRequired = classes.length > 0 || testMutations.length > 0;
+  const reviewRequired = classes.length > 0 || testMutations.length > 0 || caveatRemovals.length > 0;
   const tierRequired = uniqueSources.length > DEFAULT_LIMIT || scopes.length >= 2 ? 2 : 1;
 
   return {
@@ -211,6 +239,7 @@ export function scanChanges({ entries = [], diffText = '', untrackedContents = n
     classes,
     hits,
     testMutations,
+    caveatRemovals,
     sourceFiles: uniqueSources,
     scopes,
   };

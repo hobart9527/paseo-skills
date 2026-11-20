@@ -49,6 +49,7 @@ if (parsed.options.json) {
   if (report.classes.length) console.log(`classes: ${report.classes.join(', ')}`);
   for (const hit of report.hits) console.log(`RISK [${hit.class}] ${hit.file}: ${hit.reason}`);
   for (const mut of report.testMutations) console.log(`ORACLE ${mut.file}: ${mut.reason}`);
+  for (const cav of report.caveatRemovals || []) console.log(`CAVEAT ${cav.file}: ${cav.reason}`);
   if (!report.reviewRequired) console.log('RESULT risk-scan clean');
   else console.log('RESULT review-required');
 }

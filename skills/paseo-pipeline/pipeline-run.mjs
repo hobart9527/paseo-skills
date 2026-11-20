@@ -11,9 +11,11 @@
 //   pipeline-run.mjs cleanup <change-dir> [--json] [--change <name>]
 //   pipeline-run.mjs scenarios <change-dir> [--json]
 //   pipeline-run.mjs acceptance run|check|sync <change-dir> ...
+//   pipeline-run.mjs prepare-task <change-dir> <task-id> [--worktree-root <dir>] [--json]
+//   pipeline-run.mjs cp2-merge <change-dir> [--base main] [--json]
 //   pipeline-run.mjs brief <role> --change <name> --repo <path> ...
 //   pipeline-run.mjs worker-check <change-dir> <task-id> [--timeout ms] [--allow-test-infra]
-//   pipeline-run.mjs tier2-verify <base> [--change-dir <dir>] [--verify <cmd>]... [--cwd <dir>] [--json]
+//   pipeline-run.mjs tier2-verify <base> [--change-dir <dir>] [--verify <cmd>]... [--auto-verify] [--cwd <dir>] [--json]
 //   pipeline-run.mjs risk-scan <base> [<head>] [--cwd <dir>] [--working-tree] [--json] [--require-clean]
 //   pipeline-run.mjs install-hook <worktree> [<worktree>...]
 //
@@ -30,6 +32,7 @@ import { readTasksMarkdown } from './lib/tasks-source.mjs';
 import { runGit } from './lib/git.mjs';
 import { parseOptions, planOptions } from './lib/cli.mjs';
 import { runCleanup } from './lib/cleanup.mjs';
+import { recommendedWorkerRole } from './lib/roles.mjs';
 
 const HOME = path.dirname(fileURLToPath(import.meta.url));
 const [command, ...rest] = process.argv.slice(2);
@@ -201,6 +204,137 @@ if (command === 'acceptance') {
 } else if (command === 'risk-scan') {
   const result = spawnSync(process.execPath, [path.join(HOME, 'risk-scan.mjs'), ...rest], { stdio: 'inherit' });
   process.exit(result.status ?? 1);
+} else if (command === 'prepare-task') {
+  let parsed;
+  try { parsed = parseOptions(rest, { 'worktree-root': 'value', json: 'boolean', 'replace-hooks': 'boolean' }); } catch (error) { die(error.message); }
+  if (parsed.positional.length !== 2) die('prepare-task needs <change-dir> <task-id>');
+  const dir = changeDirOf(parsed.positional[0]);
+  const taskId = parsed.positional[1];
+  const change = path.basename(dir);
+  const { markdown } = readTasksMarkdown(dir, change);
+  const parsedTasks = parseTasks(markdown);
+  const task = parsedTasks.tasks.find((item) => item.id === taskId);
+  if (!task) die(`unknown task ${taskId} in ${dir}`, 3);
+  const repoTop = runGit(dir, ['rev-parse', '--show-toplevel']);
+  if (repoTop.status !== 0) die('prepare-task must run inside a git repository', 3);
+  const root = fs.realpathSync(repoTop.stdout.trim());
+  const integrationRef = `integration/${change}`;
+  const baseCheck = runGit(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${integrationRef}`]);
+  const baseBranch = baseCheck.status === 0 ? integrationRef : 'HEAD';
+
+  const refs = runGit(root, ['for-each-ref', '--format=%(refname:short)', `refs/heads/task/${change}/`]).stdout
+    .split('\n').map((line) => line.trim()).filter(Boolean)
+    .filter((ref) => ref === `task/${change}/${taskId}` || ref.startsWith(`task/${change}/${taskId}-a`))
+    .sort((a, b) => Number(a.match(/-a(\d+)$/)?.[1] ?? 1) - Number(b.match(/-a(\d+)$/)?.[1] ?? 1));
+  const branch = refs.at(-1) ?? `task/${change}/${taskId}`;
+  if (!refs.length) {
+    const mkBranch = runGit(root, ['branch', branch, baseBranch]);
+    if (mkBranch.status !== 0) die(`cannot create branch ${branch}: ${mkBranch.stderr.trim()}`, 1);
+  }
+
+  const wtList = runGit(root, ['worktree', 'list', '--porcelain']).stdout.split(/\r?\n\r?\n/);
+  let worktreePath = null;
+  for (const block of wtList) {
+    const lines = block.split(/\r?\n/);
+    if (lines.find((l) => l === `branch refs/heads/${branch}`)) {
+      const wtLine = lines.find((l) => l.startsWith('worktree '));
+      if (wtLine) { worktreePath = wtLine.slice('worktree '.length); break; }
+    }
+  }
+  if (!worktreePath) {
+    const wtRoot = parsed.options['worktree-root']
+      ? path.resolve(parsed.options['worktree-root'])
+      : path.join(root, '.claude', 'worktrees');
+    fs.mkdirSync(wtRoot, { recursive: true });
+    worktreePath = path.join(wtRoot, `task-${change}-${taskId}`);
+    const addWt = runGit(root, ['worktree', 'add', worktreePath, branch]);
+    if (addWt.status !== 0) die(`cannot create worktree ${worktreePath}: ${addWt.stderr.trim()}`, 1);
+  }
+
+  const hookArgs = [path.join(HOME, 'pipeline-run.mjs'), 'install-hook', worktreePath];
+  if (parsed.options['replace-hooks']) hookArgs.push('--replace-hooks');
+  const hookRes = spawnSync(process.execPath, hookArgs, { cwd: root, encoding: 'utf8' });
+  if (hookRes.status !== 0) die(`install-hook failed:\n${hookRes.stderr}${hookRes.stdout}`, hookRes.status ?? 1);
+
+  const commits = runGit(worktreePath, ['log', '--format=%(trailers:key=Pipeline-Role,valueonly)', '--no-merges', `${baseBranch}..${branch}`]);
+  const hasCeshiCommit = commits.status === 0 && commits.stdout.split(/\r?\n/).some((r) => r.trim().toLowerCase() === 'ceshi');
+  const briefKind = task.review === 'strict' && !hasCeshiCommit ? 'tester' : 'worker';
+  const role = briefKind === 'tester' ? 'ceshi' : recommendedWorkerRole(task);
+  const briefRes = spawnSync(process.execPath, [path.join(HOME, 'brief.mjs'), briefKind, '--change', change, '--repo', root, '--task', taskId, '--json'], { cwd: root, encoding: 'utf8' });
+  if (briefRes.status !== 0) die(`brief failed:\n${briefRes.stderr}${briefRes.stdout}`, briefRes.status ?? 1);
+  const briefData = JSON.parse(briefRes.stdout);
+  const titleFull = `[Pipeline] ${role} ${branch.slice(`task/${change}/`.length)} ${change}`;
+  const out = {
+    change,
+    task: taskId,
+    branch,
+    base: baseBranch,
+    worktree: worktreePath,
+    role,
+    briefKind,
+    title: titleFull.length <= 60 ? titleFull : `[Pipeline] ${role} ${branch.slice(`task/${change}/`.length)}`,
+    labels: { 'pipeline.change': change },
+    prompt: briefData.prompt,
+  };
+  if (parsed.options.json) console.log(JSON.stringify(out, null, 2));
+  else {
+    console.log(`prepared ${taskId}: branch=${branch} worktree=${worktreePath} role=${role} briefKind=${briefKind}`);
+    console.log(`title="${out.title}" label=pipeline.change=${change}`);
+  }
+} else if (command === 'cp2-merge') {
+  let parsed;
+  try { parsed = parseOptions(rest, { base: 'value', json: 'boolean' }); } catch (error) { die(error.message); }
+  if (parsed.positional.length !== 1) die('cp2-merge needs <change-dir>');
+  const dir = changeDirOf(parsed.positional[0]);
+  const change = path.basename(dir);
+  const baseBranch = parsed.options.base || 'main';
+  const rootRes = runGit(dir, ['rev-parse', '--show-toplevel']);
+  if (rootRes.status !== 0) die('not a git repository', 3);
+  const root = fs.realpathSync(rootRes.stdout.trim());
+  const curBranch = runGit(root, ['symbolic-ref', '--short', 'HEAD']).stdout.trim();
+  const dirtyPrimary = runGit(root, ['status', '--porcelain=v1', '--untracked-files=all']).stdout.trim();
+  if (dirtyPrimary) die(`working tree is not clean (${dirtyPrimary.split('\n').length} entries); commit/stash other session work first`, 3);
+  const integrationBranch = `integration/${change}`;
+  if (runGit(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${integrationBranch}`]).status !== 0) {
+    die(`missing branch ${integrationBranch}`, 3);
+  }
+  const wtList = runGit(root, ['worktree', 'list', '--porcelain']).stdout.split(/\r?\n\r?\n/);
+  let intWorktree = null;
+  let baseWorktree = null;
+  for (const block of wtList) {
+    const lines = block.split(/\r?\n/);
+    const bLine = lines.find((l) => l.startsWith('branch '));
+    const wLine = lines.find((l) => l.startsWith('worktree '));
+    if (!bLine || !wLine) continue;
+    if (bLine === `branch refs/heads/${integrationBranch}`) intWorktree = wLine.slice('worktree '.length);
+    if (bLine === `branch refs/heads/${baseBranch}`) baseWorktree = wLine.slice('worktree '.length);
+  }
+  const targetBaseWt = baseWorktree || (curBranch === baseBranch ? root : null);
+  if (!targetBaseWt) die(`checkout ${baseBranch} in a clean worktree before cp2-merge`, 3);
+  if (runGit(targetBaseWt, ['status', '--porcelain=v1', '--untracked-files=all']).stdout.trim()) {
+    die(`${baseBranch} worktree ${targetBaseWt} has uncommitted changes; aborting merge`, 3);
+  }
+  const baseShaBefore = runGit(targetBaseWt, ['rev-parse', baseBranch]).stdout.trim();
+  const drifted = runGit(targetBaseWt, ['merge-base', '--is-ancestor', baseShaBefore, integrationBranch]).status !== 0;
+  let driftedSynced = false;
+  if (drifted) {
+    if (!intWorktree) die(`${baseBranch} advanced past integration base and ${integrationBranch} has no checked-out worktree to sync`, 3);
+    if (runGit(intWorktree, ['status', '--porcelain=v1', '--untracked-files=all']).stdout.trim()) {
+      die(`integration worktree ${intWorktree} is dirty`, 3);
+    }
+    const syncMerge = runGit(intWorktree, ['merge', '--no-ff', '--no-edit', baseBranch]);
+    if (syncMerge.status !== 0) {
+      runGit(intWorktree, ['merge', '--abort']);
+      die(`${baseBranch} drifted and conflicts with ${integrationBranch}; resolve manually in ${intWorktree} and re-run Verify`, 10);
+    }
+    driftedSynced = true;
+  }
+  const ff = runGit(targetBaseWt, ['merge', '--ff-only', integrationBranch]);
+  if (ff.status !== 0) die(`fast-forward merge into ${baseBranch} failed: ${ff.stderr}`, 1);
+  const mergedSha = runGit(targetBaseWt, ['rev-parse', 'HEAD']).stdout.trim();
+  const payload = { change, base: baseBranch, rollbackSha: baseShaBefore, mergedSha, driftedSynced };
+  if (parsed.options.json) console.log(JSON.stringify(payload, null, 2));
+  else console.log(`cp2-merge ok: ${integrationBranch} -> ${baseBranch} @ ${mergedSha.slice(0, 7)} (rollback=${baseShaBefore.slice(0, 7)}${driftedSynced ? ', synced main drift — rerun full Verify now' : ''})`);
 } else if (command === 'status') {
   let parsed;
   try { parsed = parseOptions(rest, { json: 'boolean' }); } catch (error) { die(error.message); }
@@ -234,5 +368,5 @@ if (command === 'acceptance') {
     for (const item of doneVerification(change, tasks, dir)) console.log(`ATTENTION ${item.task}: ${item.kind} — ${item.reason}`);
   }
 } else {
-  die('usage: pipeline-run.mjs plan|merge|status|cleanup|scenarios|acceptance|risk-scan|install-hook ...', 2);
+  die('usage: pipeline-run.mjs plan|prepare-task|merge|cp2-merge|status|cleanup|scenarios|acceptance|worker-check|tier2-verify|brief|risk-scan|install-hook ...', 2);
 }

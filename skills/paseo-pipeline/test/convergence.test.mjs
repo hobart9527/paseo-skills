@@ -291,3 +291,98 @@ test('brief.mjs renders recon, r0, final, tier2, tier2-review prompts (and allow
     assert.ok(res.stdout.length > 100, `${kind} output without --change unexpectedly short`);
   }
 });
+
+test('pipeline-run prepare-task sets up branch, worktree, hook, and brief idempotently; cp2-merge syncs main drift', () => {
+  const root = makePipelineRepo();
+  const PIPELINE_RUN = path.join(PIPELINE_DIR, 'pipeline-run.mjs');
+  const prep = runNode(PIPELINE_RUN, root, ['prepare-task', 'openspec/changes/c1', 'T-01', '--json']);
+  assert.equal(prep.status, 0, prep.stderr + prep.stdout);
+  const p = JSON.parse(prep.stdout);
+  assert.equal(p.branch, 'task/c1/T-01');
+  assert.equal(p.role, 'gaogong');
+  assert.ok(fs.existsSync(p.worktree));
+  assert.ok(p.prompt.includes('T-01'));
+  // Idempotent second call reuses same worktree
+  const prep2 = runNode(PIPELINE_RUN, root, ['prepare-task', 'openspec/changes/c1', 'T-01', '--json']);
+  assert.equal(prep2.status, 0, prep2.stderr + prep2.stdout);
+  assert.equal(JSON.parse(prep2.stdout).worktree, p.worktree);
+  git(root, 'worktree', 'remove', '--force', p.worktree);
+
+  // cp2-merge handles drifted main cleanly using an integration worktree
+  const intWt = `${root}-int`;
+  git(root, 'worktree', 'add', '-q', intWt, 'integration/c1');
+  fs.writeFileSync(path.join(intWt, 'src/a.js'), 'export const a = () => 7;\n');
+  git(intWt, 'add', 'src/a.js');
+  git(intWt, 'commit', '-q', '-m', 'integration work');
+
+  fs.writeFileSync(path.join(root, 'README.md'), '# Drifted main\n');
+  git(root, 'add', 'README.md');
+  git(root, 'commit', '-q', '-m', 'main moved');
+
+  const cp2 = runNode(PIPELINE_RUN, root, ['cp2-merge', 'openspec/changes/c1', '--json']);
+  assert.equal(cp2.status, 0, cp2.stderr + cp2.stdout);
+  const m = JSON.parse(cp2.stdout);
+  assert.equal(m.driftedSynced, true);
+  assert.equal(fs.readFileSync(path.join(root, 'src/a.js'), 'utf8'), 'export const a = () => 7;\n');
+});
+
+test('tier2-verify --auto-verify discovers package.json test scripts for Contract: none changes', () => {
+  const root = makePipelineRepo();
+  const pkgPath = path.join(root, 'package.json');
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  pkg.scripts = { test: 'node --test test/a.test.js' };
+  fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+  git(root, 'add', 'package.json');
+  git(root, 'commit', '-q', '-m', 'add test script');
+
+  const wt = `${root}-auto`;
+  git(root, 'worktree', 'add', '-q', '-b', 'feat/auto', wt);
+  fs.writeFileSync(path.join(wt, 'src/a.js'), 'export const a = () => 8;\n');
+  git(wt, 'add', 'src/a.js');
+  git(wt, 'commit', '-q', '-m', 'edit a.js');
+
+  const res = runNode(TIER2_VERIFY, wt, ['main', '--auto-verify', '--json']);
+  assert.equal(res.status, 0, res.stderr + res.stdout);
+  const report = JSON.parse(res.stdout);
+  assert.equal(report.verdict, 'PASS');
+  assert.deepEqual(report.autoDiscoveredVerify, ['npm test']);
+});
+
+test('freeze-check routes doc-padded pseudo Tier 3 (only 3 substantive code/test tasks) to handoff', () => {
+  const tasksMd = [
+    '# Tasks',
+    '',
+    '- [ ] 1.1 T-01 Mod A',
+    '  - Scen: SCEN-001',
+    '  - Write scope: src/a.js,test/a.test.js',
+    '  - Verify with: node --test test/a.test.js',
+    '- [ ] 1.2 T-02 Mod B',
+    '  - Scen: SCEN-001',
+    '  - Write scope: ui/view.js,test/view.test.js',
+    '  - Verify with: node --test test/view.test.js',
+    '- [ ] 1.3 T-03 Mod C',
+    '  - Depends on: T-01, T-02',
+    '  - Scen: SCEN-001',
+    '  - Write scope: src/c.js,test/c.test.js',
+    '  - Verify with: node --test test/c.test.js',
+    '- [ ] 1.4 T-04 Record sink verification only',
+    '  - Depends on: T-03',
+    '  - Scen: SCEN-001',
+    '  - Write scope: openspec/changes/c1/run-log.md',
+    '  - Reads: test/a.test.js',
+    '  - Verify with: node --test test/a.test.js',
+    '',
+  ].join('\n');
+  const root = makePipelineRepo({ tasksMd });
+  fs.writeFileSync(
+    path.join(root, 'openspec/changes/c1/acceptance.md'),
+    '| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |\n| --- | --- | --- | --- | --- | --- | --- |\n| SCEN-001 | CLI | T-01,T-02,T-03,T-04 | node --test test/a.test.js | yes | PENDING | pending |\n',
+  );
+  const env = fakePaseoBin([{ id: '00000000-0000-4000-8000-000000000010', shortId: '0000000', name: '[Pipeline] neon R0', provider: 'claude/cc' }]);
+  const res = runNode(FREEZE_CHECK, root, ['openspec/changes/c1', '--structural', '--json'], env);
+  assert.equal(res.status, 0, res.stderr + res.stdout);
+  const report = JSON.parse(res.stdout);
+  assert.equal(report.tasks, 4);
+  assert.equal(report.route, 'handoff');
+  assert.ok(report.advisories.some((a) => a.startsWith('ADVISORY_PSEUDO_TIER3_PADDING:')));
+});

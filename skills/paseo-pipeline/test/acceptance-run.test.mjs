@@ -219,3 +219,27 @@ test('runner rejects nonstandard acceptance headers and accepts case and backtic
     assert.equal(result.status === 0, expected, `${header}: ${result.stderr}`);
   }
 });
+
+test('acceptance check allows post-signoff review/evidence commits on integration and ancestor commits on main', () => {
+  const f = fixture('printf ok');
+  const extEvidence = path.join(f.base, 'ext.json');
+  assert.equal(execute(f, extEvidence).status, 0);
+
+  // Copy record inside change evidence/ and append review.md FINAL signoff on integration/demo
+  const evDir = path.join(f.dir, 'evidence');
+  fs.mkdirSync(evDir, { recursive: true });
+  const inRepoEv = path.join(evDir, 'acceptance-signoff.json');
+  fs.copyFileSync(extEvidence, inRepoEv);
+  fs.writeFileSync(path.join(f.dir, 'review.md'), 'FINAL: pass(agent@sha)\n');
+  f.git('add', '.');
+  f.git('commit', '-qm', 'docs(openspec): record FINAL signoff and persisted evidence');
+
+  const checkIntegration = invoke(f, 'check', inRepoEv);
+  assert.equal(checkIntegration.status, 0, checkIntegration.stderr + checkIntegration.stdout);
+
+  // Also works after CP-2 merge onto main
+  f.git('checkout', '-q', '-b', 'main', f.sha);
+  f.git('merge', '-q', '--no-ff', 'integration/demo', '-m', 'merge demo');
+  const checkMain = invoke(f, 'check', inRepoEv);
+  assert.equal(checkMain.status, 0, checkMain.stderr + checkMain.stdout);
+});

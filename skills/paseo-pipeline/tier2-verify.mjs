@@ -12,13 +12,14 @@ import { loadSpecTree, scanScenVerify } from './lib/spec-scan.mjs';
 import { runVerifyCommand } from './lib/verify-runner.mjs';
 import { scanRepo } from './lib/risk-scan.mjs';
 
-const usage = 'Usage: tier2-verify.mjs <base> [--change-dir <dir>] [--verify <cmd>]... [--cwd <dir>] [--timeout ms] [--json]';
+const usage = 'Usage: tier2-verify.mjs <base> [--change-dir <dir>] [--verify <cmd>]... [--auto-verify] [--cwd <dir>] [--timeout ms] [--json]';
 
 let parsed;
 try {
   parsed = parseOptions(process.argv.slice(2), {
     'change-dir': 'value',
     verify: 'repeat',
+    'auto-verify': 'boolean',
     cwd: 'value',
     timeout: 'value',
     json: 'boolean',
@@ -55,6 +56,36 @@ const missingVerify = [];
 let contractChecked = false;
 let openSpecStrictExit = null;
 let openSpecStrictError = null;
+let autoDiscoveredVerify = [];
+
+function discoverPackageVerifyCommands(rootDir, baseRef) {
+  const diffRes = runGit(rootDir, ['diff', '--name-only', `${baseRef}...HEAD`]);
+  const changed = diffRes.status === 0 ? diffRes.stdout.split(/\r?\n/).filter(Boolean) : [];
+  if (!changed.length) return [];
+  const pkgDirs = new Set();
+  for (const rel of changed) {
+    let dir = path.dirname(path.resolve(rootDir, rel));
+    while (dir.startsWith(rootDir)) {
+      const pkg = path.join(dir, 'package.json');
+      if (fs.existsSync(pkg)) { pkgDirs.add(dir); break; }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  const cmds = [];
+  for (const dir of [...pkgDirs].sort()) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+      const testScript = pkg?.scripts?.test;
+      if (typeof testScript === 'string' && testScript.trim() && !/no test specified/i.test(testScript)) {
+        const relDir = path.relative(rootDir, dir) || '.';
+        cmds.push(relDir === '.' ? 'npm test' : `npm --prefix ${JSON.stringify(relDir)} test`);
+      }
+    } catch {}
+  }
+  return cmds;
+}
 
 const changeDir = parsed.options['change-dir'] ? path.resolve(cwd, parsed.options['change-dir']) : null;
 if (changeDir) {
@@ -81,6 +112,9 @@ if (changeDir) {
     openSpecStrictExit = osCheck.status;
     if (osCheck.status !== 0 && osCheck.stderr) openSpecStrictError = osCheck.stderr.trim();
   }
+} else if (!verifyCommands.length && parsed.options['auto-verify']) {
+  autoDiscoveredVerify = discoverPackageVerifyCommands(ctx.root, base);
+  for (const cmd of autoDiscoveredVerify) verifyCommands.push(cmd);
 }
 
 const verifyResults = [];
@@ -115,6 +149,7 @@ const report = {
   contractChecked,
   openSpecStrictExit,
   openSpecStrictError,
+  autoDiscoveredVerify,
   missingVerify,
   verifyResults,
   risk,
@@ -131,7 +166,9 @@ if (parsed.options.json) {
     console.error(`FAIL: openspec validate --strict failed (exit=${openSpecStrictExit ?? 'unavailable'}${openSpecStrictError ? `: ${openSpecStrictError}` : ''})`);
   }
   if (missingVerify.length) console.error(`FAIL: scenarios missing **Verify:**: ${missingVerify.join(', ')}`);
-  if (!verifyCommands.length) console.error('FAIL: no Verify commands supplied or extracted from specs');
+  if (!verifyCommands.length) {
+    console.error(`FAIL: no Verify commands supplied or extracted from specs.\nHINT: for Contract: none, pass \`--verify "<cmd>"\` or \`--auto-verify\` (e.g. pipeline-run.mjs tier2-verify ${base} --verify "<cmd>")`);
+  }
   for (const r of verifyResults) console.log(`${r.ok ? 'PASS' : 'FAIL'} verify (${r.durationMs}ms): ${r.command}`);
   if (risk.reviewRequired) {
     console.log(`REVIEW_REQUIRED: classes=[${risk.classes.join(', ')}] testMutations=${risk.testMutations.length} -> run 1+1 independent reviewer (docs/tier2-reviewer-brief.md)`);
