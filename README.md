@@ -59,6 +59,7 @@ npm install -g @accesslint/cli @accesslint/chrome playwright @playwright/cli
 - **Paseo-native orchestration**: Paseo owns agents, workspaces, labels, and finish notifications; git owns durable state. No lease ledger or polling loop.
 - **Frontier concurrency**: Tasks dispatch as soon as dependencies are Done and scopes are disjoint; vertical slices keep behavior, wiring, fixtures, and tests together.
 - **Deterministic Merge (`merge-task.mjs`)**: Enforces provenance trailers, dependency completion, Write scope, drift checks, frozen Verify and regression replay before `--no-ff` integration; quality is judged once by the independent FINAL review.
+- **Architecture Decisions**: See [`docs/adr/README.md`](docs/adr/README.md) for the Enabling Harness architecture principles, decision history, and 5-question fitness gate.
 
 ### 2. `paseo-ui` (Paseo UI 2.0)
 - **Dual-Mode Execution**:
