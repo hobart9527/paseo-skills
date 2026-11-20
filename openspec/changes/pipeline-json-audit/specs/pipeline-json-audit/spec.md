@@ -60,5 +60,5 @@ The `## Tools` table in `skills/paseo-pipeline/SKILL.md` SHALL show the `--json`
 
 #### Scenario: SCEN-PJ-08 Tools row names --json and its keys
 - **WHEN** the `## Tools` section of `skills/paseo-pipeline/SKILL.md` is read
-- **THEN** the row whose first cell starts with `` `profiles-check.mjs `` contains `--json` and each of `roles`, `findings`, `advisories`, `ok`
-- **Verify:** node --test skills/paseo-pipeline/test/profiles-check.test.mjs
+- **THEN** the row whose first cell starts with `` `profiles-check.mjs `` contains `--json` and each of `roles`, `findings`, `advisories`, `ok`, and SKILL.md stays under the 10000-char budget
+- **Verify:** node --test skills/paseo-pipeline/test/profiles-check.test.mjs skills/paseo-pipeline/test/docs.test.mjs
