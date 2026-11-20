@@ -879,9 +879,14 @@ else {
         // a shell running a `test*` script with no options. A spliced word (`e""val`) is not any of
         // them, whatever the shell later makes of it.
         const ENTRY = /^(?:node|npm|pnpm|yarn|bun|bunx|npx|deno|go|cargo|python[0-9.]*|pytest|uv|poetry|make|dotnet|mvn|gradle|tsc|eslint|biome|swc|babel|jest|vitest|mocha|playwright|cypress|phpunit|rspec|ruby|php|swift|xcodebuild)\b/;
+        // A whitelisted entry can still be told to evaluate a string instead of running a suite:
+        // `node --eval 'process.exit(0)' test/a.test.mjs` exits 0 without running the test, and the
+        // path argument makes it look proven. The code-loading flags are named here by option only.
+        const INLINE_CODE = /^(?:node|bun|deno)\b.*(?:^|\s)(?:-e|--eval|--print|-p)(?:\s|=|$)/;
         const entryOf = (leg) => leg.command.replace(/^\s*(?:[A-Za-z_]\w*=\S*\s+)+/, '').trim()
           .replace(/^(?:[\w.-]*\/)+([\w.-]+)/, '$1');
         const entryOk = (leg) => {
+          if (INLINE_CODE.test(entryOf(leg))) return false;
           if (ENTRY.test(entryOf(leg)) || testScript(leg.command)) return true;
           // `bash <script>` runs a named script in a new shell — but only with no options, and only
           // when the script is one under a test path. `bash -c …` carries an option and is excluded.

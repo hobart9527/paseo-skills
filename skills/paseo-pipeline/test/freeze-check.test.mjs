@@ -1120,6 +1120,10 @@ test('SCEN-ACC-01 rework 8: the entry word must be a known test, not a spelling 
   blocked("busybox sh -c 'node --test test/a.test.mjs \\|\\| true'");
   blocked("nohup bash -c 'node --test test/a.test.mjs \\|\\| true'");
   blocked("\\\\eval 'node --test test/a.test.mjs \\|\\| true'");
+  // A whitelisted entry can be told to evaluate a string, then exit 0 with the test status
+  // discarded; the test path satisfies proof, so only the option is the tell.
+  blocked('node -e \'require("node:child_process").spawnSync(process.execPath,["--test",process.argv[1]],{stdio:"inherit"})\' test/a.test.mjs');
+  blocked("node --eval 'process.exit(0)' test/a.test.mjs");
   // The route still has to name commands the gate accepts.
   assert.equal(freezeWith('node --test test/a.test.mjs').status, 0);
   assert.equal(freezeWith('npm test').status, 0);
