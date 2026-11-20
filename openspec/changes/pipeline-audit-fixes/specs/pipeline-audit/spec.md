@@ -64,18 +64,18 @@ Contract for `pipeline-audit-fixes`: seven deterministic gates/refusals closing 
 - **THEN** the recorded row is `FAIL` and the run is not valid
 - **Verify:** `node --test test/acceptance-run.test.mjs`
 
-### Requirement: Role rules, routing and the profile lint agree on every dispatched role
-`SKILL.md` `## Roles`, the `~/.paseo/task-routing.md` role table and `profiles-check.mjs` SHALL name the same role set, including the independent R0 reviewer profile (契约审查 Neon), and the lint SHALL check it. Repository briefs SHALL match each profile's declared `use:` boundary. Live profile edits stay out of this change; a migration note records them.
+### Requirement: Role rules and the profile lint agree on every dispatched role
+`SKILL.md` `## Roles` SHALL name every role the pipeline dispatches, including the independent R0 reviewer (契约审查 Neon), and `profiles-check.mjs` SHALL check that role too. Because a profile id is not always `agent_profile_<role>`, the lint SHALL resolve a role through an explicit role-to-profile-id mapping and keep the `agent_profile_<role>` default for the rest; a role that resolves to no profile SHALL be `MISSING_PROFILE`. Repository briefs pointed to by `brief:` notes SHALL exist and match the profile's declared `use:` boundary: the research profile does not carry the author brief. Live Paseo profiles and `~/.paseo/task-routing.md` are outside the repository; this change records their required edits in the delivery report instead of writing them.
 
-#### Scenario: SCEN-PROF-01 a role table that omits a dispatched R0 reviewer fails the lint
-- **WHEN** the checked role set is compared against the roles the pipeline actually dispatches, including the R0 reviewer
-- **THEN** `profiles-check.mjs` exits 1 and reports the missing role
+#### Scenario: SCEN-PROF-01 a dispatched role missing from the lint set fails
+- **WHEN** `SKILL.md` names an R0 reviewer role that has no entry in the lint's role set and no `agent_profile_<role>` profile
+- **THEN** `profiles-check.mjs` exits 1 and reports `MISSING_PROFILE` for that role
 - **Verify:** `node --test test/profiles-check.test.mjs`
 
-#### Scenario: SCEN-PROF-02 the checked-in role set is complete and consistent
-- **WHEN** `profiles-check.mjs` runs against the live config with the repo root
-- **THEN** it exits 0 and prints the full role count
-- **Verify:** `node skills/paseo-pipeline/profiles-check.mjs --root .`
+#### Scenario: SCEN-PROF-02 every declared role resolves to a profile
+- **WHEN** the lint runs with the repository root against the live config, where the R0 reviewer profile id is not `agent_profile_<role>`
+- **THEN** the R0 reviewer role resolves through the mapping, every brief path exists, and the run exits 0
+- **Verify:** `node --test test/profiles-check.test.mjs`
 
 ### Requirement: The hook installer refuses to displace an existing hooks directory
 `pipeline-run.mjs install-hook` SHALL, before writing, detect an existing `core.hooksPath` that is not the pipeline hooks directory and any non-sample executable file in the default hooks directory. If either is present it SHALL exit non-zero, list what would be displaced, and require an explicit `--replace-hooks` flag plus human approval.
