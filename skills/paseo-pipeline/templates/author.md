@@ -22,12 +22,12 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output: `openspec/changes/<change>/`.
 
 ## Deliverables and decisions
 
-- Return assumptions with a concrete verification method. Separate material product choices from ordinary assumptions: state options and consequences and leave the choice to the human. Record unresolved material choices as `OPEN-DECISION`; continue only on an authorized safe default.
+- Return assumptions with verification methods. For material product choices give human options/consequences; record unresolved choices as `OPEN-DECISION`. Continue only on an authorized safe default.
 - Keep behavior requirements observable. Freeze cross-task interfaces and decisions in a worker-reachable contract. Avoid invented behavior, ownership or dependencies.
 
 ## Three checks before the structural check
 
-Read baseline only to resolve a rule you listed. Use `rg` and narrow line windows; put each fact beside its rule as `path:line`.
+Read baseline only for listed rules. Use `rg`, narrow windows and `path:line` beside each rule.
 
 1. **Reach** — every SCEN names its entry, the file that owns it, and a Verify that exercises that entry through a real path. A Verify on an isolated helper passes while the user path stays dead. Each Verify leg runs in a fresh worktree, or states its dependency gap.
 2. **Shape** — every field, route, enum and payload the spec claims is cited from the baseline with its real shape and storage constraint (enum/`CHECK`/migration). A field the baseline does not carry is a new task or an `OPEN-DECISION`, never a value the test invents.
@@ -35,9 +35,11 @@ Read baseline only to resolve a rule you listed. Use `rg` and narrow line window
 
 ## DAG draft and route checks
 
-Claim source is `Scenarios:` in `tasks.md`; acceptance `Tasks` is its projection. Use `pipeline-run.mjs scenarios` when the two may disagree (read-only, not validation). Baseline IDs are reused only under MODIFIED/REMOVED; an active change re-declaring one with different content is a conflict.
+Claim source: `tasks.md` `Scenarios:`; acceptance `Tasks` is its projection. Compare with read-only `pipeline-run.mjs scenarios`. Reuse baseline IDs only under MODIFIED/REMOVED; conflicting active declarations are errors.
 
-List every task's ID, one-line behavior goal, dependencies, Write scope and Verify, enough for `freeze-check` to judge real parallelism. Keep vertical slices: behavior, wiring, affected fixtures and tests travel together. Use Wave 0 only for a genuinely shared contract with actual consumers; when components share one assembly file, let the assembly task claim the user-visible SCEN, or add a Wave 0 `Kind: skeleton` the components `Uses`. Parallel tasks get disjoint Write scopes; dependencies follow consumer readiness.
+List task ID, behavior goal, dependencies, Write scope and Verify for `freeze-check`. Keep vertical slices: behavior, wiring, fixtures and tests together. Wave 0 needs a shared contract and real consumers. For a shared assembly file, its task owns the SCEN, or components `Uses` a Wave 0 `Kind: skeleton`. Parallel Write scopes are disjoint; dependencies follow consumer readiness.
+
+Ordinary workers own tests and implementation. `Review: strict` selects independent Red: state why, exact test paths, available real interface and runnable Verify. Risk alone adds no tester. Make interface dependencies ready first; never invent future APIs. If structural rules require strict, disclose its tester stage, not a bypass.
 
 Apply the schema's full task format once the route is known; the structural check enforces the shape, so spend your attention on ownership, scope and Verify.
 

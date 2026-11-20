@@ -61,7 +61,7 @@ BLOCKED_ATTEMPTS 已有 3 个尝试分支（与 lead.md 熔断一致）
 {
   "change": "…", "integrationHead": "<sha>",
   "capacity": { "writers": {"used": 2, "cap": 4}, "auditors": {"used": 0, "cap": 2} },
-  "dispatch": [ { "task": "T-03", "action": "create-branch+dispatch-ceshi", "reason": "deps T-01 done; scope disjoint" } ],
+  "dispatch": [ { "task": "T-03", "action": "create-branch+dispatch-tester", "reason": "deps T-01 done; scope disjoint" } ],
   "merge": [],
   "attention": [ { "task": "T-02", "agent": "7be27a1", "kind": "PENDING_PERMISSION" } ],
   "waiting": [ { "task": "T-04", "on": "T-02,T-03" } ],

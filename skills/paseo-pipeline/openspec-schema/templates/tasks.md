@@ -12,7 +12,7 @@
   - Depends on: none
   - Write scope: path/to/file.mjs, path/to/file.test.mjs
   - Est: M
-  - Review: strict
+  - Review: standard
   - Verify with: node --test path/to/file.test.mjs
   - Scenarios: SCEN-CAP-01
 
@@ -27,7 +27,7 @@
 
   可选字段，只在影响 Verify、调度、共享接口或风险时写；格式与报错码见 lib/tasks.mjs：
   `Review` (strict|standard|mechanical|deferred)、`Est` (S|M|L)、`Reads`、`Uses`、`Interface`、`Kind: skeleton`、
-  `Implements`（仅有 design.md 时）、`Risk-surface`。`Review` 只选 ceshi 是否先写 Red 测试，不选审查流程。
+  `Implements`（仅有 design.md 时）、`Risk-surface`。`Review` 只选 ceshi 是否先写 Red 测试，不选审查流程；默认 standard，只有明确要独立 Red 时才写 strict。
 
   Done 行由 merge gate 写入；worker 标记执行，不是审查结论。
 -->

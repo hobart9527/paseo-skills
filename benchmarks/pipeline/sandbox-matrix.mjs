@@ -174,7 +174,21 @@ async function runScenario(scenario, policy) {
       }
 
       const started = process.hrtime.bigint();
-      if (item.action === 'create-branch+dispatch-worker' || item.action === 'dispatch-worker') {
+      if (item.action === 'create-branch+dispatch-tester' || item.action === 'dispatch-tester') {
+        // Review: strict. Independent Red first: a failing assertion commit by ceshi, then the plan hands the same branch to a worker.
+        if (item.action === 'create-branch+dispatch-tester') {
+          const base = s.git('rev-parse', 'HEAD');
+          bases.set(task.id, base);
+          const name = `task/${s.change}/${task.id}`;
+          branchOf.set(task.id, name);
+          s.git('switch', '-q', '-c', name, base);
+        } else {
+          s.git('switch', '-q', branchOf.get(task.id));
+        }
+        s.write(testFile, `import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('behavior', () => { assert.equal(globalThis.__red_${task.id.replace(/\W/g, '_')}, true, 'behaviour not implemented yet'); });\n`);
+        s.git('add', '-A');
+        s.git('commit', '-qm', `red(${task.id})\n\nPipeline-Role: ceshi\nPipeline-Author: ${AGENTS.ceshi.id}`);
+      } else if (item.action === 'create-branch+dispatch-worker' || item.action === 'dispatch-worker') {
         if (item.action === 'create-branch+dispatch-worker') {
           const base = s.git('rev-parse', 'HEAD');
           bases.set(task.id, base);

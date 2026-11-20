@@ -124,11 +124,13 @@ for (const ref of refs) {
   const commits = git(['log', '--format=%H%x00%(trailers:key=Pipeline-Role,valueonly)', '--no-merges', range])
     .split('\n').filter(Boolean);
   let workerCommits = 0;
+  let testCommits = 0;
   for (const line of commits) {
     const [, role = ''] = line.split('\0');
     // A `ceshi` Red commit is not worker output; a branch holding only that still
     // needs a worker dispatch.
-    if (role.trim() && role.trim() !== 'ceshi') workerCommits += 1;
+    if (role.trim() === 'ceshi') testCommits += 1;
+    else if (role.trim()) workerCommits += 1;
   }
   const tip = git(['rev-parse', '--verify', `refs/heads/${ref}^{commit}`]).trim();
   branches[id] = {
@@ -137,6 +139,7 @@ for (const ref of refs) {
     attempts: entry.attempts,
     implementationCommits: attemptNumber > (entry.latestAttempt || 0) ? workerCommits : entry.implementationCommits,
     ownCommits: attemptNumber > (entry.latestAttempt || 0) ? workerCommits : entry.ownCommits,
+    testCommits: attemptNumber > (entry.latestAttempt || 0) ? testCommits : entry.testCommits,
     ref: attemptNumber > (entry.latestAttempt || 0) ? ref : entry.ref,
   };
 }
@@ -297,11 +300,13 @@ for (const item of result.dispatch) {
   if (item.action === 'merge') continue;
   const branch = branches[item.task]?.ref ?? `task/${change}/${item.task}`;
   const attempt = branch.slice(`task/${change}/`.length);
-  const full = `[Pipeline] gongbu ${attempt} ${change}`;
+  const role = item.action.endsWith('dispatch-tester') ? 'ceshi' : 'gongbu';
+  const full = `[Pipeline] ${role} ${attempt} ${change}`;
   Object.assign(item, {
     branch,
     base: `integration/${change}`,
-    title: full.length <= TITLE_MAX ? full : `[Pipeline] gongbu ${attempt}`,
+    ...(role === 'ceshi' ? { role, brief: 'templates/tester.md' } : {}),
+    title: full.length <= TITLE_MAX ? full : `[Pipeline] ${role} ${attempt}`,
     labels: { 'pipeline.change': change },
   });
 }
@@ -317,7 +322,7 @@ else {
   }
   for (const item of report.dispatch) {
     console.log(`DISPATCH ${item.task}: ${item.action} — ${item.reason}`);
-    if (item.branch) console.log(`  branch ${item.branch} (from ${item.base}); title "${item.title}" (role gongbu|gaogong|jiangzuo); labels pipeline.change=${change}`);
+    if (item.branch) console.log(`  branch ${item.branch} (from ${item.base}); title "${item.title}" (role ${item.role || 'gongbu|gaogong|jiangzuo'}); labels pipeline.change=${change}${item.brief ? `; brief ${item.brief}` : ''}`);
   }
   for (const item of report.waiting) {
     const paths = [];

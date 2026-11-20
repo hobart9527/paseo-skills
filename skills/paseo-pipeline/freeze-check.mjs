@@ -362,8 +362,8 @@ for (const task of tasks) {
       fixes.set('DEFERRED_NOT_STANDARD', 'use Review: standard or strict on the sink; only non-sink standard tasks may defer');
     }
     if (task.riskSurface.some((risk) => risk === 'persistence' || risk === 'security')) {
-      blocking.push(`DEFERRED_NOT_STANDARD ${task.id}: Risk-surface ${task.riskSurface.join(', ')} cannot use Review: deferred; mark this risk Review: strict for FINAL attention`);
-      fixes.set('DEFERRED_NOT_STANDARD', 'set Review: strict for persistence/security surfaces; deferred is only for standard tasks');
+      blocking.push(`DEFERRED_NOT_STANDARD ${task.id}: Risk-surface ${task.riskSurface.join(', ')} cannot use Review: deferred; use Review: standard (strict only when an independent Red is wanted)`);
+      fixes.set('DEFERRED_NOT_STANDARD', 'use Review: standard for persistence/security surfaces (strict only for an independent Red); deferred is only for standard tasks');
     }
   }
 }

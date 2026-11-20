@@ -8,6 +8,8 @@ Tier 2 only. Dispatcher fills fields and pastes this brief. See [`tier2-handoff-
 - **Delivery evidence:** `<evidence per R; test command/output; known gaps>`
 - **Entry points:** `<files / functions>`
 - **Risk class:** `<the handoff brief's Risk: class + path:line>`; no class, no reviewer.
+- **Independence:** `<actual target contributors + reviewer profile ids / declared families>`; 审查（按察司）must not review its own contribution. Resolve live profiles; aliases alone do not prove family diversity. Notes do not grant read-only permissions. Reconcile HEAD, tracked diff and untracked files before/after when writes are not prevented; this detects changes, not a sandbox.
+- **Testing:** `<owner tests | independent Red packet>`; if Red was requested, inspect actual command/assertion failure and whether implementation weakened the oracle. A test-author trailer alone is not proof.
 
 ## Review
 Read-only: do not edit files, commit, or change workspace state. Report any write; it never voids verdict. One reviewer; one verdict and at most one recheck, limited to earlier blockers and regressions in fix diff. Do not redo supplied machine checks without concrete suspicion. Rechecks count per reviewer across all increments; a new increment does not reset the one allowed recheck.

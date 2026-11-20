@@ -3,9 +3,9 @@
 // stay the only state (SKILL.md "Start and execute").
 //
 // One track: a ready task gets a worker; a branch with commits merges as soon as its
-// merge dependencies are Done. No per-task reviewer. A `ceshi` Red-test author is
-// dispatched by the main session, not planned here; while it runs it holds the task
-// like a worker, and its commit alone never counts as worker output.
+// merge dependencies are Done. No per-task reviewer. Explicit strict tasks get a
+// `ceshi` Red-test author first; its commit hands off to a worker on the same branch.
+// A stopped tester without a commit needs reconciliation, never automatic redispatch.
 import { dispatchDeps, mergeDeps, readyIds, pathWithin, LIVE_MODEL } from './schedule.mjs';
 import { normalizeScope } from './tasks.mjs';
 
@@ -154,6 +154,11 @@ export function frontier(tasks, state = {}, options = {}) {
       blocked.push({ task: task.id, kind: 'BLOCKED_WORKER_RESULT', reason: 'inspect existing worker result; resume it or explicitly merge after completion' });
       continue;
     }
+    const needsTester = task.review === 'strict' && !ownCommits && !(branch.testCommits > 0);
+    if (needsTester && allAgents.some((agent) => agent.role === 'ceshi' && agent.task === task.id && (agent.attempt || 1) === attempt)) {
+      blocked.push({ task: task.id, kind: 'BLOCKED_TESTER_RESULT', reason: 'inspect existing tester result and Red evidence; resume it, do not duplicate dispatch' });
+      continue;
+    }
     // Callers that only pass {attempts, implementationCommits} keep the old meaning: a branch
     // with attempts already carries one of its own commits.
     if (!branch.attempts) {
@@ -162,7 +167,7 @@ export function frontier(tasks, state = {}, options = {}) {
         scopeWaiting.push({ task: task.id, on: [scopeHolder.id] });
         continue;
       }
-      workerItems.push({ task: task.id, action: 'create-branch+dispatch-worker', reason: 'deps Done; scope disjoint' });
+      workerItems.push({ task: task.id, action: needsTester ? 'create-branch+dispatch-tester' : 'create-branch+dispatch-worker', reason: needsTester ? 'strict task; Red tests before implementation' : 'deps Done; scope disjoint' });
       dispatchedWorkerScopes.push(task);
     } else if (!ownCommits) {
       // The branch exists but carries no commit yet: dispatch onto it, do not create a
@@ -172,7 +177,7 @@ export function frontier(tasks, state = {}, options = {}) {
         scopeWaiting.push({ task: task.id, on: [scopeHolder.id] });
         continue;
       }
-      workerItems.push({ task: task.id, action: 'dispatch-worker', reason: 'branch present; no commit yet' });
+      workerItems.push({ task: task.id, action: needsTester ? 'dispatch-tester' : 'dispatch-worker', reason: needsTester ? 'strict task; Red tests before implementation' : 'branch present; no commit yet' });
       dispatchedWorkerScopes.push(task);
     } else {
       // `Uses` is a merge edge: the consumer may implement as soon as the interface

@@ -11,7 +11,8 @@ user-invocable: true
 1. Read `docs/tier2-handoff-brief.md` from this skills checkout (`~/Codex/paseo-skills/docs/tier2-handoff-brief.md`). It is the only template; do not restate it.
 2. Fill every Assignment field. `Slices` is serial, one line per slice, no DAG. A Tier 3 `freeze-check` that routed `handoff` supplies its tasks as `Slices` unchanged.
 3. Run the brief's `Pre-dispatch check`. Do not dispatch while any item fails:
-   - `Authorization:`, `Pending decisions`, `Slices`, `Risk:` or `Contract:` is missing (`none — <reason>` counts), or a named contract fails `openspec validate <name> --strict`.
+   - `Delegate:`, `Testing:`, `Authorization:`, `Pending decisions`, `Slices`, `Risk:` or `Contract:` is missing (`none — <reason>` counts), or a named contract fails `openspec validate <name> --strict`.
+   - Independent Red was requested but test paths, available real interface, Verify or the tester brief are missing. Default owner testing adds no extra dispatch. Check the Red evidence packet before handing the same branch to the named Delegate; never choose a different model merely from its display name.
    - A must-pass test asserts a defect being fixed. Move it into its slice as "change to …".
    - A pending decision touches a risky operation, or auth or money semantics, and has no user answer. Ask the user once, giving the exact reply sentence, and end the turn.
 4. Tell the user the size estimate (files, lines, minutes) and the slice count.

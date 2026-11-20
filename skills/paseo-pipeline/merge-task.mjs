@@ -15,7 +15,7 @@ import { writeMergeState, clearMergeState } from './lib/merge-state.mjs';
 import { patchIdOf as patchIdFor, samePatchCommits as samePatchCommitsFor } from './lib/provenance.mjs';
 import { missingDependency, dependencyMessage } from './lib/toolchain.mjs';
 
-// `ceshi` writes Red tests first on hard-risk or `Review: strict` tasks; its commits are
+// `ceshi` writes Red tests first only on `Review: strict` tasks (risk alone adds no tester); its commits are
 // valid provenance alongside the worker's.
 const WRITER_ROLES = new Set(['gongbu', 'gaogong', 'jiangzuo', 'ceshi']);
 const usage = 'Usage: merge-task.mjs <branch> <task-id> [<legacy-review-tag>] [--timeout ms] [--allow-test-infra]';

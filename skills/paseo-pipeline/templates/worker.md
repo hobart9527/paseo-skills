@@ -7,7 +7,7 @@ Role trailer value: `gongbu` (or the profile the main session selected).
 
 You own the task: write tests and implementation, then leave frozen Verify green.
 Either order is allowed. Test the behavior that could go wrong, not mere code contact.
-If a `ceshi` Red commit is already on the branch, those tests are the oracle: make them pass and keep their assertions intact.
+If a `ceshi` Red commit is already on the branch, receive its Red commit SHA, actual command, assertion failure and allowed test paths from `templates/tester.md`. Those tests are the oracle: make them pass and keep their assertions intact. A missing module or unfinished interface is not Red evidence. If assertions contradict the contract, report the precise conflict to the dispatcher; do not silently weaken assertions or rewrite the interface. The dispatcher checks the Red packet before starting you; Git trailers alone do not prove independent test quality.
 
 ## Rules
 - Follow `SKILL.md` dispatch/merge flow and this task's frozen contract; this brief adds task-local constraints only.

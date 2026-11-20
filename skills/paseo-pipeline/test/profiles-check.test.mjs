@@ -15,7 +15,7 @@ const FAMILY = { chanpin: 'gemini', hanlin: 'claude', ceshi: 'gemini', gongbu: '
 function profile(role, over = {}) {
   const family = over.family ?? FAMILY[role];
   const write = over.write ?? 'read-only';
-  const lines = [`family: ${family}`, `harness: claude`, `write: ${write}`];
+  const lines = [`family: ${family}`, `harness: claude`, `write: ${write}`, 'use: u', 'not: n', 'brief: none'];
   return {
     id: `agent_profile_${role}`, name: role, provider: over.provider ?? 'claude', model: 'm',
     notes: (over.notes ?? lines.join('\n')),
@@ -47,7 +47,7 @@ test('role without a profile is MISSING_PROFILE', () => {
 test('notes without family/harness/write are MISSING_FIELD', () => {
   const r = run(all({ gongbu: { notes: '只写职责' } }));
   assert.equal(r.status, 1);
-  for (const f of ['family', 'harness', 'write']) assert.match(r.out, new RegExp(`MISSING_FIELD gongbu ${f}`));
+  for (const f of ['family', 'harness', 'write', 'use', 'not', 'brief']) assert.match(r.out, new RegExp(`MISSING_FIELD gongbu ${f}`));
 });
 
 test('auditor sharing a family with a writer is FAMILY_CLASH', () => {
@@ -60,6 +60,19 @@ test('tester sharing a family with the implementer is FAMILY_CLASH', () => {
   const r = run(all({ ceshi: { family: 'glm' } }));
   assert.equal(r.status, 1);
   assert.match(r.out, /FAMILY_CLASH ceshi gongbu/);
+});
+
+test('tester and auditor may share OpenAI family; lint does not prove target independence', () => {
+  const r = run(all({ ceshi: { family: 'openai' }, anchasi: { family: 'openai' } }));
+  assert.equal(r.status, 0, r.out);
+});
+
+test('bad or incomplete arguments exit 2', () => {
+  for (const args of [['--config'], ['--unknown', 'x'], ['--skill', '--config'], ['--config', 'x', '--config', 'y']]) {
+    const r = spawnSync('node', [script, ...args], { encoding: 'utf8' });
+    assert.equal(r.status, 2, `${args}: ${r.stdout}${r.stderr}`);
+    assert.match(r.stderr, /Usage:/);
+  }
 });
 
 test('antigravity profile without diff-check is UNENFORCED_WRITE', () => {
@@ -76,4 +89,17 @@ test('antigravity profile declaring diff-check passes', () => {
 test('unreadable config exits 2', () => {
   const r = spawnSync('node', [script, '--skill', '/nonexistent', '--config', '/nonexistent'], { encoding: 'utf8' });
   assert.equal(r.status, 2);
+});
+
+test('brief path must exist under --root and notes must not claim read-only', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'profiles-root-'));
+  const skillFile = path.join(dir, 'SKILL.md');
+  const configFile = path.join(dir, 'config.json');
+  fs.writeFileSync(skillFile, skillText);
+  const ps = all({ gongbu: { notes: 'family: glm\nharness: claude\nwrite: w\nuse: u\nnot: n\nbrief: nope/missing.md' }, anchasi: { notes: 'family: gpt\nharness: claude\nwrite: 只读无写权限\nuse: u\nnot: n\nbrief: none' } });
+  fs.writeFileSync(configFile, JSON.stringify({ daemon: { agentProfiles: ps } }));
+  const r = spawnSync('node', [script, '--skill', skillFile, '--config', configFile, '--root', dir], { encoding: 'utf8' });
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /MISSING_BRIEF gongbu nope\/missing.md/);
+  assert.match(r.stdout, /FALSE_READONLY anchasi/);
 });

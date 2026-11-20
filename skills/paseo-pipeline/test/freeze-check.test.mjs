@@ -684,7 +684,7 @@ test('DEFERRED_NOT_STANDARD blocks the sink and persistence/security surfaces, b
   const persistence = scheduleContract.replace('  - Review: deferred\n  - Verify with: node --test test/alpha.test.mjs', '  - Review: deferred\n  - Risk-surface: [persistence]\n  - Verify with: node --test test/alpha.test.mjs');
   const persistenceResult = freezeStructural(persistence);
   assert.match(persistenceResult.stdout, /DEFERRED_NOT_STANDARD T-01/);
-  assert.match(persistenceResult.stdout, /FINAL attention/);
+  assert.match(persistenceResult.stdout, /use Review: standard/);
   assert.doesNotMatch(persistenceResult.stdout, /reviewed inline/);
 
   const security = scheduleContract.replace('  - Review: deferred\n  - Verify with: node --test test/alpha.test.mjs', '  - Review: deferred\n  - Risk-surface: security\n  - Verify with: node --test test/alpha.test.mjs');

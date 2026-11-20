@@ -6,9 +6,9 @@ user-invocable: true
 
 # Paseo Pipeline
 
-Enter from the main session's rough DAG (task IDs, dependencies, one-line goal) with `tasks >= 4` and `maxWidth >= 2` (thresholds: `~/.claude/CLAUDE.md`); never split a graph to qualify. `maxWidth` is the largest dispatch-dependency wave, a routing heuristic. The `hanlin` author refines that DAG; after authoring, `freeze-check` is authoritative: route `handoff` goes to Tier 2, route `pipeline` continues here, an invalid DAG has no route until its graph errors are fixed.
+Enter with main session's rough DAG (task IDs, dependencies, goal): `tasks >= 4`, `maxWidth >= 2` (`~/.claude/CLAUDE.md`); never split to qualify. `maxWidth` is largest dispatch wave. `hanlin` refines it; `freeze-check` owns routing: `handoff` means Tier 2, `pipeline` continues; invalid graphs have no route.
 
-Every SHA-bound record (structural check, R0, FINAL, acceptance evidence, approval) is **pinned**: it holds for that exact commit only, and a new SHA needs a fresh check or a delta review.
+Structural check, R0, FINAL, acceptance and approval are **pinned** to exact commits; a new SHA needs a fresh check or delta review.
 
 ## Principles
 
@@ -24,18 +24,18 @@ Resolve provider/model/modeId/thinking with `list_profiles` at dispatch; model I
 
 | Profile | Scope |
 |---|---|
-| 中书 `chanpin` | Read-only research and Proposal. |
-| 翰林 `hanlin` | Contract author (whole package, writes only `openspec/changes/<change>/`); R0 reviewer and arbiter in a separate read-only session. |
-| 测试 `ceshi` | Red tests first on hard-risk or `Review: strict` tasks; writes test files inside the task's Write scope only. |
-| 工部 `gongbu` | Core implementation within assigned Write scope. |
-| 高工 `gaogong` | Complex, cross-module, concurrency, or rework after reviewer pushback. |
-| 将作 `jiangzuo` | UI/UX. |
-| 按察司 `anchasi` | Independent read-only audit; heterogeneity per profile notes. |
-| 尚书 `shangshu` | Tier 3 orchestration and reconciliation, read-only; main session may orchestrate instead. |
+| 调研（中书） `chanpin` | Optional bounded research and Proposal, no product writes. |
+| 架构（翰林） `hanlin` | Architecture, requirements, contract author (writes only `openspec/changes/<change>/`) and arbiter; not its own R0. |
+| 测试 `ceshi` | Independent Red only for explicit `Review: strict`; task-scoped test paths, not a fixed directory. |
+| 开发（工部） `gongbu` | Default owner of tests and implementation within assigned Write scope. |
+| 攻坚（高工） `gaogong` | Complex implementation and bounded rework, not architecture replanning. |
+| 界面（将作） `jiangzuo` | Optional UI specialization plus UI skill; not a mandatory handoff. |
+| 审查（按察司） `anchasi` | Independent code audit; review intent is not a read-only permission guarantee. |
+| 协调（尚书） `shangshu` | Optional thin Tier 3 dispatch and reconciliation; main session is default. |
 
-Daily set, also the delegates for Tier 2: 中书 research and proposals; 翰林 architecture, requirements and contract; 工部 default execution; 高工 hard or reworked tasks; 按察司 audit of risky code. 测试, 将作 and 尚书 are Tier 3 or UI only; keep their ids, gates match them by name. Each profile's notes carry `family:`, `harness:` and `write:` lines; `profiles-check.mjs` checks them.
+Daily choices: 调研, 架构, 开发, 攻坚, 审查—not serial stages. 测试, 界面, 协调 are on-demand. Keep ids/tokens; names are no slash commands. Notes (`family/harness/write/use/not/brief`) guide selection only: paste the `brief:` file. `plan` sets the stage; dispatcher picks `gongbu`/`gaogong` (no `Owner:`). `docs/agent-team.md`, `docs/agent-profiles.json`: unapplied proposal, not live.
 
-`Review:` is risk metadata; it selects `ceshi` for strict tasks and nothing else. Stage rules: `templates/author.md`, `templates/worker.md`, `templates/reviewer.md`.
+`Review: strict` selects independent Red tests; risk alone adds no tester. Risk evidence/review follow tier rules. Stage briefs: `templates/{author,tester,worker,reviewer}.md`.
 
 ## Tools
 
@@ -43,7 +43,7 @@ All under `$PIPELINE_HOME` (set by `install.sh`). Each prints usage on bad argum
 
 | Script | When |
 |---|---|
-| `profiles-check.mjs [--skill F] [--config F]` | After editing profiles in Paseo: role has a profile, notes fields, auditor/writer family differ, antigravity declares `diff-check`. Read-only. |
+| `profiles-check.mjs [--skill F] [--config F]` | Read-only lint: role mapping, notes fields, default family pairs, antigravity `diff-check`; not independence/sandbox proof. |
 | `preflight.mjs <repo>` | Before authoring: read-only capability probe (test env, lockfiles). |
 | `namespace.mjs <change-dir>` | Author, before specs: SCEN prefixes and requirement headings already in use. |
 | `freeze-check.mjs <change-dir> --structural` | Author and main session: structural gate and route; without `--structural` also checks R0 sign-off. |
@@ -62,14 +62,14 @@ Contract work is serial.
 1. Run `preflight.mjs` and create an OpenSpec change with schema `paseo-pipeline`. Dispatch one `hanlin` author with one author workspace, baseline SHA, `PIPELINE_HOME`, preflight/structural commands, project constants, confirmed decisions and the rough DAG.
 2. Author follows `templates/author.md` and returns a pinned structural result. The author stops at minute 25; if no report arrives by minute 30, reconcile Paseo status with the author branch `git log` once instead of polling.
 3. Route `handoff` qualifies only with author `COMPLETE`, structural exit 0 with no blocks, and matching checked/reported SHA; then `/tier2-handoff` (tasks become `Slices` unchanged) and `/paseo-handoff`. A route is never R0 or CP-1.
-4. Resolve material human choices, then dispatch `hanlin` read-only R0 using `templates/reviewer.md` on the whole package. Maximum two package rounds (second is delta). After unresolved blockers, human accepts recorded risk or directs one fix with a delta check.
+4. Resolve material human choices. Dispatch independent 契约审查 (proposal: Neon high), not the author, for read-only R0 via `templates/reviewer.md` in a separate workspace. Keep stage title `[Pipeline] hanlin R0`; record actual author/reviewer profiles, declared families and SHA. No self-review, including Proposal contributions. For unenforced read-only, reconcile before/after HEAD, tracked diff and untracked files; not a sandbox. Maximum two package rounds (second delta); unresolved blockers go to human risk acceptance or one directed fix with delta check.
 5. Present contract, findings, DAG/scopes/Verify/acceptance and route. Human confirms CP-1 for the exact contract commit; freeze only after that. CP-1 approves the contract and its commit to the default branch (Start step 1), nothing later. R0 sign-off is `R0: pass(<reviewer-uuid>@<sha>)` or recorded `R0: human-accept(@<sha>)`; human-accept is never a reviewer pass.
 
 ## Start and execute after CP-1
 
 1. Commit the frozen contract on the default branch. Create the integration worktree from it and one task worktree/branch per ready task.
 2. In every worktree, including integration, install lockfile dependencies and the author hook (`pipeline-run.mjs install-hook <worktree>...`) before Verify. The hook stamps `Pipeline-Author` from `PASEO_AGENT_ID`. Installation enables `extensions.worktreeConfig` in shared repository config and points the worktree's `core.hooksPath` at the skill hooks, replacing the whole hooks directory: first inspect the effective `core.hooksPath` and existing hooks (default directory included); if any would be displaced, ask the human.
-3. Run `plan` and dispatch exactly the listed workers, one per task, on the branch, title and `pipeline.change` label its DISPATCH line prints (the gates find agents by these), with workspace, frozen Write scope, SCENs, Verify and upstream interfaces. Author and reviewers are `[Pipeline] hanlin FULL|R0` and `[Pipeline] anchasi FINAL`, same label. For a hard-risk or `Review: strict` task, dispatch `ceshi` first on the same branch as `[Pipeline] ceshi <T-id> <change>`: it commits Red tests inside the task's Write scope, holds the task while it runs, and the next `plan` lists the worker. Worker follows `templates/worker.md`, commits required trailers and reports branch tip.
+3. Run `plan`; dispatch exactly its stages, one owner per task, using branch, title and `pipeline.change` label its DISPATCH line prints. Supply workspace, frozen scope, SCENs, Verify and available interfaces. Author/reviewer stage titles: `[Pipeline] hanlin FULL|R0`, `[Pipeline] anchasi FINAL` (same label), not profile identities. `dispatch-tester` uses `ceshi` + `templates/tester.md`; running tester holds task. Check Red SHA, actual command and assertion failure before same-branch worker handoff. `BLOCKED_TESTER_RESULT`: inspect/resume tester, never duplicate/skip. Worker uses `templates/worker.md`, trailers and tip report. Trailers prove neither Red quality nor immutable assertions.
 4. On completion, verify the tip, run `merge` from integration, then rerun `plan`. The gate checks dependencies, scope, provenance, drift, Verify and regression, then records Done. A failed worker may retry twice; a fourth branch needs human approval.
 5. At each dispatch, record agent id, branch and expected first artifact, and arm one `create_heartbeat` as the lost-notification backstop; delete it when the finish notification arrives. On lost notification or resume, reread integration Done lines, first-parent log and labeled Paseo agents, and reconcile Paseo state, Git tip and Done lines before re-arming; never duplicate dispatch.
 6. Contract amendments after CP-1 need human confirmation or an applicable recorded pre-authorization before planning; a new interface or security boundary needs delta R0.

@@ -19,8 +19,8 @@ Keep Paseo agent profile notes consistent with the pipeline role table, and make
 
 **Verify:** `node --test skills/paseo-pipeline/test/profiles-check.test.mjs`
 
-### Requirement: Auditor and writers must differ in model family
-The script SHALL report `FAMILY_CLASH` when `anchasi` shares a `family:` value with any of `ceshi`, `gongbu`, `gaogong`, `jiangzuo`, or when `ceshi` shares one with `gongbu`.
+### Requirement: Default implementation pairings have declared family diversity
+The script SHALL report `FAMILY_CLASH` when `anchasi` shares a `family:` value with any of `gongbu`, `gaogong`, `jiangzuo`, or when `ceshi` shares one with `gongbu`. It SHALL NOT reject `ceshi` and `anchasi` merely for sharing a family. This is a configuration lint of default pairings, not proof of actual contributor independence, backend identity or sandbox permissions; dispatch SHALL reconcile the chosen reviewers against contributors to the concrete target.
 
 #### Scenario: Auditor same family as writer
 - **WHEN** `anchasi` and `gongbu` both declare `family: gemini`

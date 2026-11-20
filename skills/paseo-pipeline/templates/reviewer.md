@@ -2,11 +2,11 @@
 
 Mode: `R0 | FINAL`. Change: `<id>`. Evidence: `<paths / base / tip>`.
 
-Read-only: do not edit files, create commits or change workspace state. Any write voids verdict. Use only stated contract/evidence; cite `path:line` or reproducible reasoning. No broad refactor requests. Profile heterogeneity and current settings follow `list_profiles` notes; resolve at dispatch, never infer from model IDs in docs.
+Read-only: no edits, commits or state changes. Report writes; reconcile snapshot before using verdict, without another review loop. Cite `path:line` or reproducible reasoning from supplied evidence; no broad refactors. Record target SHA, contributor/reviewer profiles and declared families via `list_profiles`; no self-review. Aliases/notes prove neither family diversity nor permissions. Before/after HEAD, tracked diff and untracked checks detect changes, not a sandbox.
 
 ## Requirement conformance first
 
-Build bidirectional traceability: every confirmed requirement has a SCEN, and every SCEN traces to a requirement or decision. For R0, check shared boundaries and whether each Verify oracle detects a wrong implementation. For FINAL, use one matrix row per SCEN, acceptance row and named standard. Raise blockers only for covered behavior with a concrete counterexample; uncovered expectations are `ENHANCEMENT`.
+Build bidirectional traceability: every confirmed requirement has a SCEN, and every SCEN traces to a requirement or decision. R0 checks shared boundaries and whether Verify detects wrong implementation; strict needs available real interfaces, test paths and Verify. FINAL checks Red assertion evidence and oracle weakening, not just `ceshi` trailers; use one matrix row per SCEN, acceptance row and named standard. Raise blockers only for covered behavior with a concrete counterexample; uncovered expectations are `ENHANCEMENT`.
 
 ## R0 — frozen contract
 
@@ -44,16 +44,16 @@ FINAL: pass(<reviewer-uuid>@<full-sha>)
 
 ## Review depth
 
-Depth checks are subordinate to matrix coverage, not independent scope expansion:
+Depth follows matrix coverage, never expands scope:
 
 - Specs: each frozen SCEN implemented and exercised; cross-task interactions and whether Verify catches wrong behavior.
-- Standards: check named standards; lint/typecheck do not replace standards review.
+- Named standards: lint/typecheck do not replace review.
 - UI: keyboard/focus, accessibility and responsive layout only where a SCEN, acceptance row or named standard covers them; otherwise `ENHANCEMENT`.
 - Backend, persistence, concurrency, security, public interfaces: trace failure paths/boundaries only where a SCEN, acceptance row or named standard covers them; otherwise `ENHANCEMENT`.
-- Report inspected/exercised evidence, limitations, and covered risks. Do not infer safety from `mechanical` or missing risk labels.
+- Report evidence, limits and risks; `mechanical` or absent risk labels do not prove safety.
 
 ## Bounded rounds and disposition
 
 Round 1 is full verdict; round 2 checks fix diff, affected behavior and open ledger items only. Maximum two FINAL rounds, plus one reopen delta review if human reopens at contract level. After unresolved `NOT_MET`/`UNVERIFIABLE`, the human chooses per `templates/approvals.md`. CP-2 belongs to the human.
 
-Optional `r0-hotspots.mjs` output is metadata only, not validation or verdict. Verify its source SHA; inspect contract and integrated diff directly. Record evidence and limitations. Never run repository-controlled acceptance commands without operator review; acceptance check validates record consistency, not authenticity or CP-2 authorization.
+`r0-hotspots.mjs` is metadata, not verdict. Check source SHA; inspect contract/diff and report limits. Operator review precedes repository acceptance commands. Acceptance check proves record consistency, not authenticity or CP-2.

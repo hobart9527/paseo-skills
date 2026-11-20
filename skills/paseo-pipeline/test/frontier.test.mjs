@@ -19,6 +19,30 @@ const dag = [
   task({ id: 'T-04', depends: ['T-03'], scope: ['src/d.ts'], est: 'M' }),
 ];
 
+test('strict task plans its tester first; ordinary risk metadata does not add a stage', () => {
+  assert.equal(frontier([task({ review: 'strict' })]).dispatch[0].action, 'create-branch+dispatch-tester');
+  assert.equal(frontier([task({ review: 'strict' })], { branches: { 'T-01': { attempts: 1, ownCommits: 0 } } }).dispatch[0].action, 'dispatch-tester');
+  assert.equal(frontier([task({ riskSurface: ['security'] })]).dispatch[0].action, 'create-branch+dispatch-worker');
+});
+
+test('strict Red-only branch hands off; stopped tester without commit needs reconciliation', () => {
+  const tasks = [task({ review: 'strict' })];
+  const branches = { 'T-01': { attempts: 1, latestAttempt: 1, ownCommits: 0, testCommits: 1 } };
+  assert.equal(frontier(tasks, { branches }).dispatch[0].action, 'dispatch-worker');
+  const agents = [{ id: 'red', role: 'ceshi', task: 'T-01', attempt: 1, status: 'idle' }];
+  const missing = { 'T-01': { attempts: 1, latestAttempt: 1, ownCommits: 0 } };
+  const interrupted = frontier(tasks, { branches: missing, agents });
+  assert.deepEqual(interrupted.dispatch, []);
+  assert.equal(interrupted.blocked[0].kind, 'BLOCKED_TESTER_RESULT');
+  assert.deepEqual(frontier(tasks, { branches: missing, agents: [{ ...agents[0], status: 'running' }] }).dispatch, []);
+  const retry = { 'T-01': { attempts: 2, latestAttempt: 2, ownCommits: 0 } };
+  assert.equal(frontier(tasks, { branches: retry, agents }).dispatch[0].action, 'dispatch-tester');
+});
+
+test('strict implemented branch keeps merge path instead of adding a retroactive tester', () => {
+  assert.equal(frontier([task({ review: 'strict' })], { branches: { 'T-01': { attempts: 1, ownCommits: 1 } } }).dispatch[0].action, 'merge');
+});
+
 test('fresh DAG dispatches the ready frontier in critical-path order and waits on deps', () => {
   const report = frontier(dag, { done: [] });
   assert.deepEqual(report.dispatch.map((item) => item.task), ['T-00']);
@@ -170,6 +194,33 @@ test('CLI prints the ready task and waits on the dependent', () => {
   assert.deepEqual(report.dispatch.map((item) => item.task), ['T-01']);
   assert.deepEqual(report.dispatch.map((item) => item.action), ['create-branch+dispatch-worker']);
   assert.deepEqual(report.waiting, [{ task: 'T-02', on: ['T-01'] }]);
+});
+
+test('CLI strict task prints tester identity, then hands Red commit to worker on the same branch', () => {
+  const { dir, git } = repo(cliTasks.replace('  - Write scope: src/a.ts', '  - Review: strict\n  - Write scope: src/a.ts'));
+  git('branch', 'integration/chg');
+  const env = fakePaseo([]);
+  const args = [path.join(root, 'next-actions.mjs'), path.join(dir, 'openspec/changes/chg'), '--json'];
+  const plan = () => {
+    const result = spawnSync('node', args, { encoding: 'utf8', env });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  const first = plan().dispatch[0];
+  assert.equal(first.action, 'create-branch+dispatch-tester');
+  assert.equal(first.title, '[Pipeline] ceshi T-01 chg');
+  assert.equal(first.role, 'ceshi');
+  assert.equal(first.brief, 'templates/tester.md');
+  git('checkout', '-q', '-b', first.branch);
+  assert.equal(plan().dispatch[0].action, 'dispatch-tester');
+  fs.writeFileSync(path.join(dir, 'red.txt'), 'assert expected behavior');
+  git('add', '.'); git('commit', '-qm', 'test(T-01): red\n\nPipeline-Role: ceshi\nPipeline-Author: 00000000-0000-4000-8000-000000000001');
+  const next = plan().dispatch[0];
+  assert.equal(next.action, 'dispatch-worker');
+  assert.equal(next.branch, first.branch);
+  assert.equal(next.title, '[Pipeline] gongbu T-01 chg');
+  git('checkout', '-q', '-b', 'task/chg/T-01-a2', 'integration/chg');
+  assert.equal(plan().dispatch[0].action, 'dispatch-tester');
 });
 
 test('CLI treats a legacy Red-only branch as needing a worker, not a merge', () => {

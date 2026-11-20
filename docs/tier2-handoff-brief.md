@@ -6,7 +6,8 @@ Filled by `/tier2-handoff` before `/paseo-handoff` dispatches. Use only when the
 - **Workspace:** `<absolute path>`
 - **Branch:** `<branch>`
 - **Base SHA:** `<full commit SHA>`
-- **Delegate:** `<gongbu | gaogong>`; default `gongbu`, `gaogong` for cross-module, concurrency, state-machine or reworked slices. Read-only research goes to `chanpin`, not here.
+- **Delegate:** `<gongbu | gaogong>`; 开发（工部）`gongbu` by default, 攻坚（高工）`gaogong` for cross-module, concurrency, state-machine or reworked slices. Read-only 调研（中书）goes to `chanpin`, not here.
+- **Testing:** `<owner | independent Red requested>`; default owner writes tests and implementation. For requested independent Red, supply exact test paths, real available entry/interface, Verify and `skills/paseo-pipeline/templates/tester.md`; receive Red SHA, actual command, exit code and assertion failure before the selected Delegate continues on the same branch. Missing imports/dependencies are not Red. Risk alone adds no tester.
 - **Requirements:** `<R1..Rn in user's words> + files/scope`
 - **Authorization:** `<quote user's words and scope for any stop point this work covers (merge, push, deploy, migration); "none" if it covers none>`. Commits on this non-default branch are pre-authorized and need no quote.
 - **Pending decisions:** `<open choices, each with a default>`; dispatcher resolves any without a default before dispatch. A choice touching a risky operation, or changing auth or money semantics, needs the user's words, not a dispatcher default.
@@ -16,7 +17,7 @@ Filled by `/tier2-handoff` before `/paseo-handoff` dispatches. Use only when the
 - **Contract:** `openspec/changes/<name>/`, two files written per [`tier2-contract.md`](tier2-contract.md) before the first source edit; `openspec validate <name> --strict` exits 0. Mechanical change with no new observable behaviour: `Contract: none — <reason>`.
 
 ## Pre-dispatch check
-- The brief has `Delegate:`, `Authorization:`, `Pending decisions`, `Slices`, `Risk:` and `Contract:`; missing any one, do not dispatch.
+- The brief has `Delegate:`, `Testing:`, `Authorization:`, `Pending decisions`, `Slices`, `Risk:` and `Contract:`; missing any one, do not dispatch.
 - Read every test the brief requires to pass. An assertion that locks in a defect being fixed is listed in its slice as "change to …", never left under "must pass".
 - Questions while running: hard-risk questions (risky operation, auth or money semantics) go to the user verbatim; the dispatcher never answers them. Other questions: the delegate applies the default, records it in the report, and keeps going.
 
