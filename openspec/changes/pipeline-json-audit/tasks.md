@@ -34,7 +34,8 @@
 
 ## 3. Integration (sink, verification-only)
 
-- [ ] 3.1 T-04 run the full suite and every acceptance row at the integrated tip; record commands, exit codes and tip SHA in the change's run-log, no product edits
+- [x] 3.1 T-04 run the full suite and every acceptance row at the integrated tip; record commands, exit codes and tip SHA in the change's run-log, no product edits
+  - Done: source=b959978 review=worker
   - Depends on: T-01, T-02, T-03
   - Write scope: openspec/changes/pipeline-json-audit/run-log.md
   - Est: S
