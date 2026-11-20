@@ -48,7 +48,11 @@ test('the author writes the rule list before the baseline research, and the revi
   has(author, ['within 2 minutes', '**Reach**', '**Shape**', '**Removal**', 'exit code', '$PASEO_AGENT_ID'], 'author.md');
   const at = (token) => { const index = author.indexOf(token); assert.ok(index > -1, token); return index; };
   assert.ok(at('Write the rule list now') < at('the baseline is fair game'));
-  has(reviewer, ['minute 20', 'minute 25', 'baseline pass'], 'reviewer.md');
+  has(reviewer, ['minute 20', 'minute 25'], 'reviewer.md');
+  // The baseline belongs to the author (one run, recorded in `## Baseline`); the reviewer reads it.
+  has(author, ['## Baseline', 'once'], 'author.md');
+  has(reviewer, ["author's `## Baseline`", 'does not rerun'], 'reviewer.md');
+  assert.ok(!/baseline pass/i.test(reviewer), 'reviewer.md still asks for its own baseline pass');
 });
 
 // D9: R0 found a live 越权 read path (F7) that design.md D-03 had already named as affected, with
@@ -58,4 +62,33 @@ test('design.md declares affected modules and freeze-check holds a writer for ea
   const schema = read('openspec-schema/templates/design.md');
   has(schema, ['影响模块/路径'], 'design template');
   has(read('freeze-check.mjs'), ['影响模块/路径', 'ADVISORY_DECISION_UNOWNED'], 'freeze-check.mjs');
+});
+
+
+test('open hard decisions stop authoring rather than defaulting', () => {
+  const proposal = read('openspec-schema/templates/proposal.md');
+  const schema = read('openspec-schema/schema.yaml');
+  has(author, ['open hard decision', 'BLOCKED (decision)'], 'author.md');
+  has(proposal, ['OD-<n>', 'Class: money | auth | external-write | product', 'Status: open', 'Decided: <user words, date>'], 'proposal template');
+  has(schema, ['proposal.md `OPEN-DECISION` entry', 'BLOCKED (decision)'], 'schema proposal instruction');
+  for (const [name, text] of [['author', author], ['proposal template', proposal], ['schema proposal instruction', schema]]) {
+    assert.doesNotMatch(text, /Continue on the recommended default/i, name);
+  }
+});
+
+test('scenario templates require Verify and handoff marks acceptance historical', () => {
+  const specTemplate = read('openspec-schema/templates/spec.md');
+  const schema = read('openspec-schema/schema.yaml');
+  has(specTemplate, ['**Verify:**'], 'spec template');
+  assert.equal((specTemplate.match(/- \*\*WHEN\*\*/g) || []).length, (specTemplate.match(/- \*\*Verify:\*\*/g) || []).length, 'spec template scenario Verify count');
+  has(schema, ['one `**Verify:**` line per scenario'], 'schema specs instruction');
+  has(author, ['existing `acceptance.md` is historical', 'superseded by Tier 2 Evidence recheck'], 'author.md handoff step');
+});
+
+test('handoff Red commits are replayable and heartbeat timing is one-shot', () => {
+  const repoRoot = path.resolve(dir, '../..');
+  const brief = fs.readFileSync(path.join(repoRoot, 'docs/tier2-handoff-brief.md'), 'utf8');
+  has(brief, ['test files only, red on the base', 'implementation second', 'Red command at the test commit'], 'Tier 2 brief');
+  assert.ok(!brief.includes('One commit per slice.'), 'Tier 2 brief stale one-commit rule');
+  has(skill, ['absolute one-shot cron', 'dispatch time plus the backstop window', 'timezone', 'maxRuns: 1', 'never `*/30`'], 'SKILL.md');
 });

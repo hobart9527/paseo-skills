@@ -8,7 +8,7 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output: `openspec/changes/<change>/`.
 2. Write the rule list now: `proposal.md` with `## What Changes` (one line per rule this change makes), `## OPEN-DECISION` for the choices the brief supplies, and an empty `## Baseline`. Commit it within 2 minutes and read no baseline code before that commit.
 3. Draft a compact DAG next: task IDs, dependencies, `maxWidth`, and one-line goal per task. Refine the dispatcher's rough DAG rather than redrawing it: the graph reflects real work, so Tier 3 means `tasks >= 4` and `maxWidth >= 2`, never a split or padded graph.
 4. After the rule-list commit, the baseline is fair game: research only what a listed rule needs, and commit each finding small.
-5. Run the supplied structural `freeze-check` on the committed package; it is authoritative for route. If route is `handoff`, stop and return checked SHA and evidence for Tier 2, without expanding full artifacts. Handoff `COMPLETE` needs structural exit 0 with no blocks and matching checked/reported SHA.
+5. Run the supplied structural `freeze-check` on the committed package; it is authoritative for route. On handoff, existing `acceptance.md` is historical, superseded by Tier 2 Evidence recheck; return SHA/evidence. Handoff `COMPLETE` needs structural exit 0 with no blocks and matching checked/reported SHA.
 6. If route is `pipeline`, finish the package: proposal, SCEN-numbered spec deltas, tasks, acceptance, and the R0 review artifact. Create `design.md` only when schema criteria apply, using the exact template files the schema names.
 
 ## Assignment and boundaries
@@ -22,7 +22,7 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output: `openspec/changes/<change>/`.
 
 ## Deliverables and decisions
 
-- Return assumptions with verification methods. For material product choices give human options/consequences; record unresolved choices as `OPEN-DECISION`. Continue only on an authorized safe default.
+- Return assumptions with verification methods. Separate material product choices from ordinary ones: state options/consequences and leave choice to the human. Record unresolved choices as `OPEN-DECISION`; open hard decision: commit and return `BLOCKED (decision)` with options before specs/tasks.
 - Keep behavior requirements observable. Freeze cross-task interfaces and decisions in a worker-reachable contract. Avoid invented behavior, ownership or dependencies.
 
 ## Three checks before the structural check
@@ -39,7 +39,7 @@ Claim source: `tasks.md` `Scenarios:`; acceptance `Tasks` is its projection. Com
 
 List task ID, behavior goal, dependencies, Write scope and Verify for `freeze-check`. Keep vertical slices: behavior, wiring, fixtures and tests together. Wave 0 needs a shared contract and real consumers. For a shared assembly file, its task owns the SCEN, or components `Uses` a Wave 0 `Kind: skeleton`. Parallel Write scopes are disjoint; dependencies follow consumer readiness.
 
-Ordinary workers own tests and implementation. `Review: strict` selects independent Red: state why, exact test paths, available real interface and runnable Verify. Risk alone adds no tester. Make interface dependencies ready first; never invent future APIs. If structural rules require strict, disclose its tester stage, not a bypass.
+Workers own tests and implementation. `Review: strict` selects independent Red: state why, test paths, real interface and runnable Verify. Risk alone adds no tester. Never invent future APIs; if rules force strict, disclose its tester stage.
 
 Apply the schema's full task format once the route is known; the structural check enforces the shape, so spend your attention on ownership, scope and Verify.
 

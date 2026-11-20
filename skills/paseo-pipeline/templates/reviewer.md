@@ -16,9 +16,9 @@ Review Proposal, Specs, Design (when present), Tasks and Acceptance as one packa
 2. **Shape**: each field, route, enum and payload the spec claims is cited from the baseline with its real shape, and agrees with the confirmed decisions supplied to the author. A shared concurrent surface has one frozen contract workers can reach.
 3. **Removal**: a removal that drops a gate (submit blocking, validation, lease, ledger) names where that gate goes.
 
-Review the pinned commit and approved external snapshots only. Verify snapshot hashes before and after; stop on missing, inconsistent or changed inputs. Do not run the full suite: run at most one narrow command per package, plus one baseline pass that runs the sink's Verify commands on the pinned commit and records each exit code, so a script already red on the baseline reads as pre-existing. Source-text assertions prove text, not runtime behavior.
+Review the pinned commit and approved external snapshots only. Verify snapshot hashes before and after; stop on missing, inconsistent or changed inputs. Do not run the full suite: run at most one narrow command per package. The baseline — the sink's Verify commands on the pinned commit, one exit code each — comes from the author's `## Baseline`; the reviewer reads that record and does not rerun it, so a script already red on the baseline reads as pre-existing. Source-text assertions prove text, not runtime behavior.
 
-At most two whole-package rounds: round 1 reports all supported blockers; round 2 checks fixes only. After round 2 blockers, the human accepts recorded residual risk or directs a fix, which gets one same-reviewer delta check. Findings are `BLOCKER` (a falsifiable wrong outcome the current tasks/Verify cannot prevent) or `NIT`; pure anchor-drift with the same symbol is a non-blocking NIT; proofread every `path:line`.
+Round 1 reports all supported blockers; delta checks fixes only. Round limits and unresolved-blocker disposition: `SKILL.md` § Entry and CP-1. Findings are `BLOCKER` (a falsifiable wrong outcome the current tasks/Verify cannot prevent) or `NIT`; pure anchor-drift with the same symbol is a non-blocking NIT; proofread every `path:line`.
 
 Time budget: record the start time, deliver the conclusion by minute 20, stop reading at minute 25. The hard stop returns the findings so far plus the items not checked; an exhausted budget is a partial verdict, never a pass.
 
@@ -54,6 +54,6 @@ Depth follows matrix coverage, never expands scope:
 
 ## Bounded rounds and disposition
 
-Round 1 is full verdict; round 2 checks fix diff, affected behavior and open ledger items only. Maximum two FINAL rounds, plus one reopen delta review if human reopens at contract level. After unresolved `NOT_MET`/`UNVERIFIABLE`, the human chooses per `templates/approvals.md`. CP-2 belongs to the human.
+Delta review checks fix diff, affected behavior and open ledger items only. Round limits: `SKILL.md` § FINAL and CP-2. Unresolved `NOT_MET`/`UNVERIFIABLE` and contract reopen: `templates/approvals.md` § FINAL after round 2.
 
 `r0-hotspots.mjs` is metadata, not verdict. Check source SHA; inspect contract/diff and report limits. Operator review precedes repository acceptance commands. Acceptance check proves record consistency, not authenticity or CP-2.

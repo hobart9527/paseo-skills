@@ -108,6 +108,29 @@ export function scanScenarios(markdown) {
   }
   return found;
 }
+// Every `#### Scenario:` heading and the `**Verify:**` command under it, up to the next visible
+// heading. `verify` is null when the scenario carries none; the caller decides that it blocks.
+// Same visibility rule as `scanScenarios`: a fenced example or a comment is not a declaration.
+const SCEN_VERIFY = /^\s*[-*]\s*\*\*Verify:\*\*\s*(\S.*?)\s*$/i;
+export function scanScenVerify(markdown) {
+  const found = [];
+  let current = null;
+  for (const { text } of visibleLines(markdown)) {
+    if (/^#{1,6}\s/.test(text)) {
+      if (current) found.push(current);
+      current = null;
+      const match = text.match(/^#{3,6}\s+Scenario\s*:\s*(SCEN-[A-Za-z0-9-]+)(.*)$/i);
+      if (match) current = { id: match[1].toUpperCase(), verify: null };
+      continue;
+    }
+    if (current && !current.verify) {
+      const verify = text.match(SCEN_VERIFY);
+      if (verify) current.verify = verify[1];
+    }
+  }
+  if (current) found.push(current);
+  return found;
+}
 // `### Requirement:` headings grouped by the delta section they sit under. Fenced examples and
 // comments are not declarations, same as scenarios. Used by the staged specs check to find the
 // requirements two active changes both touch.

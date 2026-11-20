@@ -20,7 +20,7 @@ Structural check, R0, FINAL, acceptance and approval are **pinned** to exact com
 
 ## Roles
 
-Resolve provider/model/modeId/thinking with `list_profiles` at dispatch; model IDs live only there.
+Resolve provider/model/modeId/thinking via `list_profiles` at dispatch.
 
 | Profile | Scope |
 |---|---|
@@ -33,9 +33,9 @@ Resolve provider/model/modeId/thinking with `list_profiles` at dispatch; model I
 | 审查（按察司） `anchasi` | Independent code audit; review intent is not a read-only permission guarantee. |
 | 协调（尚书） `shangshu` | Optional thin Tier 3 dispatch and reconciliation; main session is default. |
 
-Daily choices: 调研, 架构, 开发, 攻坚, 审查—not serial stages. 测试, 界面, 协调 are on-demand. Keep ids/tokens; names are no slash commands. Notes (`family/harness/write/use/not/brief`) guide selection only: paste the `brief:` file. `plan` sets the stage; dispatcher picks `gongbu`/`gaogong` (no `Owner:`). `docs/agent-team.md`, `docs/agent-profiles.json`: unapplied proposal, not live.
+Daily: 调研, 架构, 开发, 攻坚, 审查, not serial stages; 测试, 界面, 协调 on demand. Notes (`family/harness/write/use/not/brief`) guide selection only: paste the `brief:` file. `plan` sets the stage; dispatcher picks `gongbu`/`gaogong`. `docs/agent-team.md`: team map; `docs/agent-profiles.json`: unapplied.
 
-`Review: strict` selects independent Red tests; risk alone adds no tester. Risk evidence/review follow tier rules. Stage briefs: `templates/{author,tester,worker,reviewer}.md`.
+`Review: strict` selects independent Red tests; risk alone adds no tester. Briefs: `templates/{author,tester,worker,reviewer}.md`.
 
 ## Tools
 
@@ -69,9 +69,9 @@ Contract work is serial.
 
 1. Commit the frozen contract on the default branch. Create the integration worktree from it and one task worktree/branch per ready task.
 2. In every worktree, including integration, install lockfile dependencies and the author hook (`pipeline-run.mjs install-hook <worktree>...`) before Verify. The hook stamps `Pipeline-Author` from `PASEO_AGENT_ID`. Installation enables `extensions.worktreeConfig` in shared repository config and points the worktree's `core.hooksPath` at the skill hooks, replacing the whole hooks directory: first inspect the effective `core.hooksPath` and existing hooks (default directory included); if any would be displaced, ask the human.
-3. Run `plan`; dispatch exactly its stages, one owner per task, using branch, title and `pipeline.change` label its DISPATCH line prints. Supply workspace, frozen scope, SCENs, Verify and available interfaces. Author/reviewer stage titles: `[Pipeline] hanlin FULL|R0`, `[Pipeline] anchasi FINAL` (same label), not profile identities. `dispatch-tester` uses `ceshi` + `templates/tester.md`; running tester holds task. Check Red SHA, actual command and assertion failure before same-branch worker handoff. `BLOCKED_TESTER_RESULT`: inspect/resume tester, never duplicate/skip. Worker uses `templates/worker.md`, trailers and tip report. Trailers prove neither Red quality nor immutable assertions.
+3. Run `plan`; dispatch exactly its stages, one owner per task, using branch, title and `pipeline.change` label its DISPATCH line prints. Supply workspace, frozen scope, SCENs, Verify and available interfaces. Author/reviewer stage titles: `[Pipeline] hanlin FULL|R0`, `[Pipeline] anchasi FINAL` (same label), not profile identities. `dispatch-tester` uses `ceshi` + `templates/tester.md`; running tester holds task. Check Red SHA, command and assertion failure, then hand to a same-branch worker. `BLOCKED_TESTER_RESULT`: inspect/resume tester, never duplicate/skip. Worker uses `templates/worker.md`, trailers and tip report. Trailers prove neither Red quality nor immutable assertions.
 4. On completion, verify the tip, run `merge` from integration, then rerun `plan`. The gate checks dependencies, scope, provenance, drift, Verify and regression, then records Done. A failed worker may retry twice; a fourth branch needs human approval.
-5. At each dispatch, record agent id, branch and expected first artifact, and arm one `create_heartbeat` as the lost-notification backstop; delete it when the finish notification arrives. On lost notification or resume, reread integration Done lines, first-parent log and labeled Paseo agents, and reconcile Paseo state, Git tip and Done lines before re-arming; never duplicate dispatch.
+5. At each dispatch, record agent id, branch and expected first artifact, and arm one `create_heartbeat` as the lost-notification backstop: an absolute one-shot cron from dispatch time plus the backstop window (example `25 18 19 11 *`), with explicit `timezone` and `maxRuns: 1`; never `*/30`. Delete it when the finish notification arrives. On lost notification or resume, reread integration Done lines, first-parent log and labeled Paseo agents, and reconcile Paseo state, Git tip and Done lines before re-arming; never duplicate dispatch.
 6. Contract amendments after CP-1 need human confirmation or an applicable recorded pre-authorization before planning; a new interface or security boundary needs delta R0.
 
 Gate failures, exit codes and interrupted merges: `templates/approvals.md` § Operator reference.

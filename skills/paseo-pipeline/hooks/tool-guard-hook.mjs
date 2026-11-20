@@ -58,17 +58,55 @@ function sanitizedCreateAgent(input) {
   return changed ? next : null;
 }
 /** A bare provider ("claude") is ambiguous across profiles, so it cannot be rewritten; name the valid pairs. */
+function loadProfiles() {
+  try {
+    const home = process.env.PASEO_HOME || path.join(os.homedir(), '.paseo');
+    const profiles = JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8'))?.daemon?.agentProfiles;
+    return Array.isArray(profiles) ? profiles : [];
+  } catch { return []; }
+}
+const profilePair = (profile) => (profile?.provider && profile?.model ? `${profile.provider}/${profile.model}` : null);
 function bareProviderReason(input) {
   const provider = typeof input?.provider === 'string' ? input.provider.trim() : '';
   if (!provider || provider.includes('/')) return null;
-  let pairs = [];
-  try {
-    const home = process.env.PASEO_HOME || path.join(os.homedir(), '.paseo');
-    const profiles = JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8'))?.daemon?.agentProfiles ?? [];
-    pairs = profiles.filter((p) => p?.provider && p?.model).map((p) => `${String(p.name ?? p.id).split(/\s/)[0]}=${p.provider}/${p.model}`);
-  } catch { /* profiles unreadable: still explain the format */ }
+  const pairs = loadProfiles().map((p) => profilePair(p) && `${String(p.name ?? p.id).split(/\s/)[0]}=${profilePair(p)}`).filter(Boolean);
   return `create_agent provider must be "<profile.provider>/<profile.model>", not "${provider}". Join the two list_profiles fields with "/".`
     + (pairs.length ? ` Current profiles: ${pairs.join(', ')}.` : '');
+}
+// Runtime settings are launch configuration copied from `list_profiles`, so a stale mode or
+// thinking option silently runs the agent under the wrong configuration. They travel nested under
+// `settings` (the shape every dispatch uses); the flat fields are only a compatibility fallback.
+// Check only what the call states: an omitted field inherits the profile. Several profiles may
+// share one provider/model pair (claude/flash is both 尚书 and 工部), so the pair selects a set:
+// the call passes when it agrees with at least one of them, and the role is never guessed from the
+// title. With no profile for the pair there is nothing to compare against — profiles are not a
+// whitelist — so the call is left alone. `features` is `undefined`/`null` in every current
+// profile, which means "no feature requirement".
+const SETTINGS = ['modeId', 'thinkingOptionId', 'features'];
+const sameValue = (left, right) => canonical(left) === canonical(right);
+function settingsMismatchReason(input) {
+  const provider = typeof input?.provider === 'string' ? input.provider.trim() : '';
+  if (!provider.includes('/')) return null;
+  const matches = loadProfiles().filter((profile) => profilePair(profile) === provider);
+  if (!matches.length) return null;
+  const nested = input?.settings && typeof input.settings === 'object' && !Array.isArray(input.settings) ? input.settings : {};
+  const valueOf = (field) => (field in nested ? nested[field] : input?.[field]);
+  // Omitted = inherit. An explicit `null` on an optional profile field is also inherit.
+  const stated = SETTINGS.filter((field) => valueOf(field) !== undefined);
+  if (!stated.length) return null;
+  const agrees = (profile, field) => profile[field] === undefined || profile[field] === null
+    ? valueOf(field) === profile[field]
+    : sameValue(profile[field], valueOf(field));
+  if (matches.some((profile) => stated.every((field) => agrees(profile, field)))) return null;
+  const role = (profile) => String(profile.name ?? profile.id ?? provider).split(/\s/)[0];
+  if (matches.length === 1) {
+    const [profile] = matches;
+    const field = stated.find((name) => !agrees(profile, name));
+    const expected = profile[field];
+    return `create_agent ${field} is ${JSON.stringify(valueOf(field))}, but profile ${role(profile)} (${provider}) sets ${expected === undefined || expected === null ? 'none' : JSON.stringify(expected)}. Omit ${field} to inherit, or edit the profile in config.json if the setting really changed.`;
+  }
+  const candidates = matches.map((profile) => `${role(profile)} (${provider}) sets ${stated.map((field) => `${field} ${profile[field] === undefined || profile[field] === null ? 'none' : JSON.stringify(profile[field])}`).join(', ')}`).join('; ');
+  return `create_agent ${stated.map((field) => `${field} ${JSON.stringify(valueOf(field))}`).join(', ')} matches no profile for ${provider}. Candidates: ${candidates}. Copy one candidate's values, or edit the profile in config.json if the setting really changed.`;
 }
 /** The planner and merge gate find pipeline agents by this label; an unlabelled one is invisible and gets re-dispatched. */
 function pipelineLabelReason(input) {
@@ -167,6 +205,8 @@ async function main() {
     }
     const bare = isObject && name === 'mcp__paseo__create_agent' ? bareProviderReason(updated) : null;
     if (bare) { deny(bare); return; }
+    const settingsMismatch = isObject && name === 'mcp__paseo__create_agent' ? settingsMismatchReason(updated) : null;
+    if (settingsMismatch) { deny(settingsMismatch); return; }
     const unlabelled = isObject && name === 'mcp__paseo__create_agent' ? pipelineLabelReason(updated) : null;
     if (unlabelled) { deny(unlabelled); return; }
     const agent = isObject && name === 'mcp__paseo__create_agent' ? sanitizedCreateAgent(updated) : null;

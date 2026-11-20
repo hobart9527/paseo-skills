@@ -244,7 +244,7 @@ for (const agent of listedAgents) {
   const parts = agent.name.match(/^\[Pipeline\]\s+(\S+)\s+(\S+)(?:\s+.*)?$/);
   const match = parts && /^(gongbu|gaogong|jiangzuo|ceshi)$/.test(parts[1]) && /^[A-Za-z][A-Za-z0-9]*-\d+(?:-a[1-9]\d*)?$/.test(parts[2]) ? parts : null;
   // A round suffix (`R0-r2`, `FINAL-r2`) is display only; it never changes the role.
-  const nonWorker = parts && /^(hanlin|anchasi|gongbu|gaogong)$/.test(parts[1]) && /^(R0|FINAL|FULL)(?:-r[1-9]\d*)?$/.test(parts[2]);
+  const nonWorker = parts && /^(hanlin|anchasi|gongbu|gaogong|shangshu|chanpin)$/.test(parts[1]) && /^(R0|FINAL|FULL)(?:-r[1-9]\d*)?$/.test(parts[2]);
   if (agent.status === 'closed' && !match) continue;
   const agentRepo = commonDir(agent.cwd);
   if (agentRepo && agentRepo !== repository) continue;
