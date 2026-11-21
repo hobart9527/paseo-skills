@@ -10,19 +10,19 @@ openspec/changes/<name>/
   tasks.md
 ```
 
-`proposal.md` and `acceptance.md` are omitted in Tier 2: the user's words live in the handoff/task `Requirements:`, and `tier2-verify` executes every scenario's `**Verify:**` directly.
+`proposal.md` and `acceptance.md` are omitted in Tier 2: the user's words live in the handoff/task `Requirements:`, and `tier2-verify` executes every scenario's `Verify with:` directly from `tasks.md` (legacy `- **Verify:**` lines in `specs/` remain supported).
 
 ## spec.md
 - `## Purpose` for a new capability (50+ chars); `## ADDED | MODIFIED | REMOVED Requirements` for the delta.
 - Each `### Requirement:` states SHALL behaviour a user or caller can observe.
-- Each scenario uses `#### Scenario: SCEN-<CAP>-NN <title>`, `WHEN`/`THEN`, and one line `- **Verify:** <single command that runs the real entry>`.
+- Each scenario uses `#### Scenario: SCEN-<CAP>-NN <title>` and `WHEN`/`THEN` (pure observable behavior; `Verify with:` lives in `tasks.md`, or optionally legacy `- **Verify:** <cmd>`).
 - Facts the rule rests on: `path:line` beside the rule.
 
 ## tasks.md
-- Standard task blocks (`- [ ] 1.1 T-01 <goal>`, `Write scope:`, `Verify with:`, `Scenarios: SCEN-...`), serial by default (omit `Depends on:`).
+- Standard task blocks (`- [ ] 1.1 T-01 <goal>`, `Write scope:`, `Entry:`, `Verify with:`, `Scenarios: SCEN-...`), serial by default (omit `Depends on:`).
 
 ## Check & Delivery
 1. `openspec validate <name> --strict` must exit 0 before coding.
-2. Before merge (whether delegated or main-session-in-worktree), run `node "$PIPELINE_HOME"/tier2-verify.mjs <base> --change-dir openspec/changes/<name>`, which validates every `**Verify:**`, reruns them at tip SHA, and runs `risk-scan.mjs`.
+2. Before merge (whether delegated or main-session-in-worktree), run `node "$PIPELINE_HOME"/tier2-verify.mjs <base> --change-dir openspec/changes/<name>`, which resolves each scenario's Verify from `tasks.md` (or `**Verify:**` in `specs/`), reruns them at tip SHA, and runs `risk-scan.mjs`.
 
-Work grows into concurrent DAG (`tasks >= 4` and `maxWidth >= 2`): keep the exact same `specs/` and `tasks.md`, add `Depends on:` + `proposal.md`, and run `pipeline-run.mjs acceptance sync` + `/paseo-pipeline`.
+Work grows into high-ROI concurrent DAG (`tasks >= 4` and `maxWidth >= 3`, or `maxWidth >= 2` with `weightedSpeedup >= 1.8`): keep the exact same `specs/` and `tasks.md`, add `Depends on:` + `proposal.md`, and run `pipeline-run.mjs acceptance sync` + `/paseo-pipeline`.

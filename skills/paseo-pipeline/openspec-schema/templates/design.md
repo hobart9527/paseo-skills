@@ -14,6 +14,8 @@
 
 <!-- Record only choices that constrain multiple tasks or need agreement before work.
      Keep task-local implementation choices with the worker; omit unused sections.
+     Cross-layer shared concurrent types belong in a Wave 0 `Kind: skeleton` typed
+     stub task checked by the compiler rather than hand-copied Markdown interfaces.
 
      每条决策写成 `- **D-01 <标题>**`，并写明 `影响模块/路径`。这里只写决策和受影响
      模块，绝不写任务 ID（T-01 之类）：design.md 在 tasks.md 之前写，任务归属由

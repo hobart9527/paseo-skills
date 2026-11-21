@@ -15,7 +15,7 @@ import { runGit } from './lib/git.mjs';
 import { readMergeState } from './lib/merge-state.mjs';
 import { readTasksMarkdown } from './lib/tasks-source.mjs';
 import { parseOptions, planOptions } from './lib/cli.mjs';
-import { ROLE_NAMES, NON_WORKER_STAGE_ROLES, WRITER_ROLES, recommendedWorkerRole } from './lib/roles.mjs';
+import { ROLE_NAMES, RECOGNIZED_NON_WORKER_STAGE_ROLES, WRITER_ROLES, recommendedWorkerRole } from './lib/roles.mjs';
 import { listPaseoAgents, inspectPaseoAgent } from './lib/paseo.mjs';
 
 let parsedArgs;
@@ -213,7 +213,7 @@ function labelledFor(other, id) {
 }
 const LEGACY_PREFIX_RE = new RegExp(`^(${ROLE_NAMES.join('|')})-`);
 const WORKER_ROLE_RE = new RegExp(`^(${[...WRITER_ROLES].join('|')})$`);
-const NON_WORKER_ROLE_RE = new RegExp(`^(${NON_WORKER_STAGE_ROLES.join('|')})$`);
+const NON_WORKER_ROLE_RE = new RegExp(`^(${RECOGNIZED_NON_WORKER_STAGE_ROLES.join('|')})$`);
 // A `[Pipeline]` agent whose worktree was deleted (or that belongs to another repository) cannot
 // be attributed to any change of this one. A non-running one is a diagnostic, not a deadlock:
 // nothing can dispatch a duplicate worker through it, and a deleted worktree can never be

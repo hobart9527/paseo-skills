@@ -98,7 +98,7 @@ function extraFields(markdown) {
     const key = field[1].trim().toLowerCase();
     const value = field[2].trim();
     const entry = out.get(current);
-    if (['depends on', 'write scope', 'verify with', 'scen', 'scenarios', 'review', 'done'].includes(key)) continue;
+    if (['depends on', 'write scope', 'verify with', 'scen', 'scenarios', 'review', 'done', 'entry', 'required'].includes(key)) continue;
     entry[key] = value;
   }
   return out;
@@ -265,6 +265,26 @@ function substitute(text) {
   });
 }
 let prompt = substitute(template);
+
+if (['author', 'revise'].includes(role)) {
+  const factsPath = path.join(changeDir, 'baseline-facts.md');
+  if (fs.existsSync(factsPath)) {
+    try {
+      let facts = fs.readFileSync(factsPath, 'utf8');
+      const MAX_FACTS_BYTES = 15 * 1024;
+      if (Buffer.byteLength(facts, 'utf8') > MAX_FACTS_BYTES) {
+        const marker = '\n... [truncated at 15KB budget]\n';
+        const budget = MAX_FACTS_BYTES - Buffer.byteLength(marker, 'utf8');
+        let sliceLen = Math.min(facts.length, budget);
+        while (sliceLen > 0 && Buffer.byteLength(facts.slice(0, sliceLen), 'utf8') > budget) {
+          sliceLen -= Math.max(1, Math.floor((Buffer.byteLength(facts.slice(0, sliceLen), 'utf8') - budget) / 2));
+        }
+        facts = `${facts.slice(0, sliceLen)}${marker}`;
+      }
+      prompt = `${prompt.trimEnd()}\n\n## Baseline Facts (Stage 0/1 — JIT inlined)\n${facts.trimEnd()}\n`;
+    } catch {}
+  }
+}
 
 if (task && ['worker', 'tester'].includes(role)) {
   const extrasForTask = extras.get(task.id) || {};

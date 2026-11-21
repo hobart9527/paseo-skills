@@ -96,6 +96,10 @@ export function parseTasks(markdown) {
         implements: [],
         riskSurface: [],
         verify: '',
+        entry: '',
+        entryByScen: {},
+        required: 'yes',
+        requiredExplicit: false,
         scenarios: [],
         review: 'standard',
         done: null,
@@ -154,6 +158,22 @@ export function parseTasks(markdown) {
     } else if (key === 'risk-surface' || key === 'risk surface') {
       current.riskSurface.push(...splitList(value.replace(/[\[\]]/g, '')).map((item) => item.toLowerCase()));
     } else if (key === 'verify with') current.verify = (current.verify ? `${current.verify} ${normalizeCommand(value)}` : normalizeCommand(value)).trim();
+    else if (key === 'entry') {
+      const rawEntry = value.trim();
+      current.entry = rawEntry;
+      for (const part of rawEntry.split(';').map((s) => s.trim()).filter(Boolean)) {
+        const mapped = part.match(/^(SCEN-[A-Za-z0-9-]+)\s*=\s*(.+)$/i);
+        if (mapped) current.entryByScen[mapped[1].toUpperCase()] = mapped[2].trim();
+      }
+    } else if (key === 'required') {
+      const req = value.trim().replace(/^`+|`+$/g, '').toLowerCase();
+      if (req && req !== 'yes' && req !== 'no') {
+        errors.push({ code: 'BAD_REQUIRED', task: current.id, message: `Required must be yes or no: ${value}` });
+      } else if (req) {
+        current.required = req;
+        current.requiredExplicit = true;
+      }
+    }
     else if (key === 'scen' || key === 'scenarios') current.scenarios.push(...splitList(value));
     else if (key === 'review') current.review = value.trim().toLowerCase() || 'standard';
     else if (key === 'done') {
@@ -307,6 +327,18 @@ export function verifyLegs(value) {
     const paths = [...new Set(legPaths(scoped).map((path) => resolveLegPath(cwd, path)))];
     return { command, paths, broad: paths.length === 0 && FULL_SUITE_LEG.test(scoped) };
   });
+}
+
+export function entryForScenario(task, scenId) {
+  const key = String(scenId || '').toUpperCase();
+  if (task?.entryByScen && Object.hasOwn(task.entryByScen, key)) return task.entryByScen[key];
+  const raw = String(task?.entry || '').trim();
+  if (!raw || /(?:^|;)\s*SCEN-[A-Za-z0-9-]+\s*=/i.test(raw)) return '';
+  return raw;
+}
+
+export function requiredForScenario(task) {
+  return task?.requiredExplicit ? task.required : null;
 }
 
 export function computeWaves(tasks) {

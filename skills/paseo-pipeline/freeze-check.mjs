@@ -8,7 +8,7 @@ import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo.mjs';
 import { parseTaskLine, parseTasks, graphErrors, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, isTaskId, legPaths, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
 import { dispatchDeps, weightedSpeedup, weightedCriticalPath, verifyScope, readsOnlyEdges, pathWithin, resolveModel, LIVE_MODEL } from './lib/schedule.mjs';
 import { runGit } from './lib/git.mjs';
-import { loadSpecTree, visibleLines, scanScenarios, scanScenVerify, scanRequirements, classifyScenCollisions } from './lib/spec-scan.mjs';
+import { loadSpecTree, visibleLines, scanScenarios, scanRequirements, classifyScenCollisions } from './lib/spec-scan.mjs';
 import { parseAcceptanceTable } from './lib/acceptance.mjs';
 import { R0_ROLES } from './lib/roles.mjs';
 import { FIXTURE_DIR, NON_SUBSTANTIVE_SCOPE } from './lib/paths.mjs';
@@ -69,6 +69,7 @@ const RULE_FIXES = {
   MALFORMED_ACCEPTANCE_ROW: 'escape a literal pipe inside a cell as `\\|`, or keep one cell free of `|`; the row must have the header column count',
   VERIFY_JUNK_LEG: 'put shell setup inside the leg it belongs to: `bash -c \'set -e; <command>\'`, or use `&&` between real commands',
   BAD_EST: 'use Est: S, M or L',
+  BAD_REQUIRED: 'set Required to yes or no (case-insensitive)',
   BAD_INTERFACE: 'use Interface: <repo-path>[#<symbol>]',
   BAD_IMPLEMENTS: 'use Implements: D-<number>[, D-<number>] (decision ids from design.md)',
   BAD_KIND: 'use Kind: skeleton (or omit it)',
@@ -192,17 +193,6 @@ for (const problem of specTree.problems) {
   }
 }
 
-// Every declared scenario needs one `- **Verify:**` line. A scenario with no command under it
-// cannot be proven, and `openspec-schema` already requires the line. Judged on the same visible
-// text the declaration scan uses. Computed once, before the stage dispatch, so the staged specs
-// run and the full run apply the same rule instead of only the former.
-const scenVerifyFindings = [];
-for (const { file, text } of specTree.current) {
-  for (const scen of scanScenVerify(text)) {
-    if (!scen.verify) scenVerifyFindings.push(`MISSING_SCEN_VERIFY ${scen.id} ${path.relative(changeDir, file)}`);
-  }
-}
-
 // Requirement overlap: another active change already adds, modifies or removes a requirement
 // this change modifies or removes. Structural misses it because each side is a valid delta alone;
 // the merge gives the capability two intentions for one requirement. Shared by both run modes.
@@ -253,9 +243,6 @@ if (stage === 'specs') {
   });
   for (const message of stageDecision.blocking) specBlocking.push(message);
   for (const message of stageDecision.advisories) advisories.push(message);
-  // A scenario with no command under it cannot be proven, and `openspec-schema` already requires
-  // the line; until now no script read it. Judged on the same visible text the declaration scan uses.
-  for (const message of scenVerifyFindings) specBlocking.push(message);
   // A specs-only change that declares scenarios is fine; one that declares none is not. The name
   // says what is wrong without borrowing the task-level NO_SCEN rule.
   if (declared.size === 0) specBlocking.push('NO_SPEC_SCEN: specs/ declares no SCEN scenario; every capability delta needs at least one');
@@ -275,12 +262,6 @@ if (stage === 'specs') {
   process.exit(summary.blocking.length ? 1 : 0);
 }
 
-// The full run enforces the same two spec rules the staged run does; `--structural` is a mode of
-// this same run, so it does not skip them either.
-for (const message of scenVerifyFindings) {
-  blocking.push(message);
-  fixes.set('MISSING_SCEN_VERIFY', RULE_FIXES.MISSING_SCEN_VERIFY);
-}
 for (const message of reqOverlapAdvisories) advisories.push(message);
 
 // Dispatch-dependency wave width is a planning heuristic, not exact maximum concurrency.
@@ -941,12 +922,10 @@ if (!structural) {
       // Working tree (staged, unstaged, untracked) vs the reviewed commit; review.md is written after the review.
       const diff = gitIn(changeDir, ['diff', '--no-renames', '--name-only', '-z', sha, '--', '.']);
       const untracked = gitIn(changeDir, ['ls-files', '--others', '--exclude-standard', '--full-name', '-z', '--', '.']);
-      // review.md is written after the review; rulings.md records accepted non-obvious
-      // decisions made during it; run-log.md records approvals and merge timings. None of
-      // them changes the contract, so none is drift.
+      // baseline-facts.md, review.md, rulings.md and run-log.md are non-contract reference/sign-off records.
       const repositoryRoot = fs.realpathSync(gitIn(changeDir, ['rev-parse', '--show-toplevel']).stdout.trim());
       const changeRoot = path.relative(repositoryRoot, fs.realpathSync(changeDir));
-      const exemptRecords = new Set(['review.md', 'rulings.md', 'run-log.md'].map((file) => path.join(changeRoot, file)));
+      const exemptRecords = new Set(['baseline-facts.md', 'review.md', 'rulings.md', 'run-log.md'].map((file) => path.join(changeRoot, file)));
       const drift = [...new Set([...nulList(diff), ...nulList(untracked)])]
         .filter((file) => !exemptRecords.has(file));
       if (diff.status !== 0) blocking.push(`STALE_R0_SIGNOFF: cannot diff contract against reviewed commit ${sha}`);
@@ -1055,7 +1034,29 @@ if (pseudoTier3) {
   advisories.push(`ADVISORY_PSEUDO_TIER3_PADDING: only ${substantiveIds.size} substantive code/test tasks (substantiveMaxWidth=${substantiveMaxWidth}) after excluding doc/run-log-only tasks; routing to Tier 2 handoff`);
 }
 const openHardDecisionBlock = blocking.some((item) => item.startsWith('UNDECIDED_HARD_DECISION '));
-const route = graphValid ? (openHardDecisionBlock ? null : (substantiveMaxWidth >= 2 && substantiveIds.size >= 4 ? 'pipeline' : 'handoff')) : null;
+const roiMet = substantiveIds.size >= 4
+  && (substantiveMaxWidth >= 3 || (substantiveMaxWidth >= 2 && (weighted ?? 0) >= policy.minSpeedup));
+if (graphValid && !openHardDecisionBlock && substantiveIds.size >= 4 && substantiveMaxWidth === 2 && (weighted ?? 0) < policy.minSpeedup) {
+  advisories.push(`ADVISORY_LOW_ROI_HANDOFF: substantiveMaxWidth=2 with weightedSpeedup=${weighted} (< ${policy.minSpeedup}); routing to Tier 2 handoff (split into serial Tier 2 slices or widen parallelism to >=3 / >=${policy.minSpeedup}x)`);
+}
+const specsDirRoot = path.join(changeDir, 'specs');
+const capabilityCount = new Set(
+  specTree.current
+    .map((entry) => path.relative(specsDirRoot, entry.file).split(path.sep)[0])
+    .filter(Boolean),
+).size;
+const distinctSourceScopes = new Set(
+  tasks.flatMap((task) => task.scope).filter((scope) => !isTestPath(scope) && !NON_SUBSTANTIVE_SCOPE.test(String(scope).trim())),
+).size;
+const ruleCount = (() => {
+  if (!proposalMarkdown) return 0;
+  const whatSection = proposalMarkdown.split(/^##\s+What Changes\s*$/m)[1]?.split(/^##\s+/m)[0] ?? '';
+  return (whatSection.match(/^\s*[-*]\s+R\d+\b/gm) || []).length;
+})();
+if (capabilityCount > 2 || ruleCount > 10 || distinctSourceScopes > 12 || tasks.length > 8) {
+  advisories.push(`ADVISORY_ENTROPY_SPLIT: change exceeds single-package entropy budget (capabilities=${capabilityCount}/2, rules=${ruleCount}/10, sourceScopes=${distinctSourceScopes}/12, tasks=${tasks.length}/8); split into smaller vertical changes unless explicitly overridden by human`);
+}
+const route = graphValid ? (openHardDecisionBlock ? null : (roiMet ? 'pipeline' : 'handoff')) : null;
 const summaryBlocking = (items) => [...new Set(items)].map((item) => {
   const match = item.match(/^([A-Z][A-Z0-9_]*)\b(?:\s+[^:]*)?:\s*(.*)$/);
   const code = match?.[1] ?? item;

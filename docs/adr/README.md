@@ -39,6 +39,8 @@ flowchart TB
 | [ADR-0003](0003-bounded-sdd-review-and-oracle-fidelity.md) | Bounded SDD Review (1+1 Budget), Oracle Fidelity & Caveat Guard | Accepted | Landed (plus Tier 1 Stop risk sentinel & Tier 2/3 matrix sync) |
 | [ADR-0004](0004-enabling-harness-environment-and-context.md) | Enabling Harness: Warm Worktrees, JIT Context & Self-Healing ACI | Accepted | Landed (worktree `--hydrate`/`--workspace-dir`, JIT `brief.mjs`, O(1) `tool-guard`) |
 | [ADR-0005](0005-harness-telemetry-and-self-pruning.md) | Lightweight Local Telemetry & 30-Day Self-Pruning Governance | Accepted | Landed (`lib/telemetry.mjs`, `pipeline-run.mjs report`) |
+| [ADR-0006](0006-contract-authoring-isolation-and-single-source.md) | Contract Authoring Isolation, Single-Source Verification & Unified Review | Accepted | Landed (`prepare-author`, `baseline-facts.md`, `tasks.md` `Verify/Entry`, unified `anchasi`) |
+| [ADR-0007](0007-change-entropy-tier3-roi-and-anti-thrashing.md) | Change Entropy Budget, Tier 3 ROI Routing & Anti-Thrashing Controls | Accepted | Landed (Tier 3 ROI gate, entropy split gate, `lib/author-guard.mjs`, `hanlin` `medium`) |
 
 ## 5-Question Fitness Gate (Before Any New Rule, Hook, or Script)
 

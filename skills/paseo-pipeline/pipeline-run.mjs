@@ -13,6 +13,7 @@
 //   pipeline-run.mjs profiles [--skill F] [--config F] [--root R] [--json]
 //   pipeline-run.mjs preflight <repo> [--json] [--strict]
 //   pipeline-run.mjs acceptance run|check|sync <change-dir> ...
+//   pipeline-run.mjs prepare-author <change-dir> [--repo <path>] [--hydrate] [--base main] [--json]
 //   pipeline-run.mjs prepare-task <change-dir> <task-id> [--worktree-root <dir>] [--workspace-dir <dir>] [--hydrate] [--json]
 //   pipeline-run.mjs cp2-merge <change-dir> [--base main] [--json]
 //   pipeline-run.mjs brief <role> --change <name> --repo <path> ...
@@ -192,6 +193,9 @@ if (command === 'acceptance') {
     console.log(`- tier2_verify: total=${summary.verify.total} pass=${summary.verify.pass} review_required=${summary.verify.reviewRequired} fail=${summary.verify.fail} unprovable=${summary.verify.unprovableRejections}`);
     console.log(`- worker_check: total=${summary.workerCheck.total} pass=${summary.workerCheck.pass} fail=${summary.workerCheck.fail}`);
     console.log(`- tier_stop blocks: total=${summary.stopBlocks.total}`);
+    if (summary.authorGuard && (summary.authorGuard.warn || summary.authorGuard.stop || summary.authorGuard.compactEmptySpecs)) {
+      console.log(`- author_guard: warn=${summary.authorGuard.warn} stop=${summary.authorGuard.stop} compact_empty_specs=${summary.authorGuard.compactEmptySpecs}`);
+    }
     if (summary.topReasonCodes.length) {
       console.log(`- top reasons: ${summary.topReasonCodes.slice(0, 8).map((r) => `${r.code}=${r.count}`).join(', ')}`);
     }
@@ -266,6 +270,172 @@ if (command === 'acceptance') {
   forward('merge-task.mjs', [branch, taskId, ...mergeOptions]);
 } else if (command === 'cleanup') {
   process.exit(runCleanup(rest));
+} else if (command === 'prepare-author') {
+  let parsed;
+  try {
+    parsed = parseOptions(rest, {
+      repo: 'value',
+      hydrate: 'boolean',
+      base: 'value',
+      json: 'boolean',
+    });
+  } catch (error) { die(error.message); }
+  if (parsed.positional.length !== 1) die('prepare-author needs <change-dir>');
+  const dir = path.resolve(parsed.positional[0]);
+  const change = path.basename(dir);
+  const existingAncestor = (target) => {
+    let cur = path.resolve(target);
+    while (!fs.existsSync(cur)) {
+      const parent = path.dirname(cur);
+      if (parent === cur) break;
+      cur = parent;
+    }
+    return fs.existsSync(cur) ? cur : process.cwd();
+  };
+  const repoProbe = parsed.options.repo ? path.resolve(parsed.options.repo) : existingAncestor(dir);
+  const repoTop = runGit(repoProbe, ['rev-parse', '--show-toplevel']);
+  if (repoTop.status !== 0) die('prepare-author must run inside a git repository', 3);
+  const root = fs.realpathSync(repoTop.stdout.trim());
+
+  fs.mkdirSync(dir, { recursive: true });
+  const openspecYaml = path.join(dir, '.openspec.yaml');
+  if (!fs.existsSync(openspecYaml)) {
+    fs.writeFileSync(openspecYaml, `schema: paseo-pipeline\ncreated: ${new Date().toISOString().slice(0, 10)}\n`);
+  }
+
+  const head = runGit(root, ['rev-parse', 'HEAD']).stdout.trim();
+  const branch = runGit(root, ['symbolic-ref', '--short', '-q', 'HEAD']).stdout.trim() || 'DETACHED';
+  const dirtyLines = runGit(root, ['status', '--porcelain=v1', '--untracked-files=all']).stdout.split('\n').filter(Boolean);
+  const dirtyCount = dirtyLines.length;
+  const baseCandidate = parsed.options.base
+    || ['main', 'master'].find((name) => runGit(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`]).status === 0)
+    || null;
+  const revCounts = (left, right) => {
+    const r = runGit(root, ['rev-list', '--left-right', '--count', `${left}...${right}`]);
+    if (r.status !== 0) return null;
+    const [a, b] = r.stdout.trim().split(/\s+/).map((n) => Number.parseInt(n, 10));
+    return Number.isInteger(a) && Number.isInteger(b) ? { behind: a, ahead: b } : null;
+  };
+  const drift = {
+    base: baseCandidate,
+    headVsBase: baseCandidate ? revCounts(baseCandidate, 'HEAD') : null,
+    originVsBase: baseCandidate && runGit(root, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${baseCandidate}`]).status === 0
+      ? revCounts(baseCandidate, `origin/${baseCandidate}`)
+      : null,
+  };
+
+  const hydration = parsed.options.hydrate ? hydrateWorktree(root) : null;
+  if (hydration?.attempted && !hydration.ok) {
+    console.error(`[pipeline-run] WARN hydration via ${hydration.tool} failed (exit=${hydration.status}): ${hydration.error || 'unknown error'}`);
+  }
+
+  const runJson = (scriptName, scriptArgs) => {
+    const res = spawnSync(process.execPath, [path.join(HOME, scriptName), ...scriptArgs], { cwd: root, encoding: 'utf8' });
+    let data = null;
+    try { data = JSON.parse(res.stdout); } catch { data = null; }
+    return { status: res.status ?? 1, data, stdout: res.stdout.trim(), stderr: res.stderr.trim() };
+  };
+  const preflightRes = runJson('preflight.mjs', [root, '--json']);
+  const namespaceRes = runJson('namespace.mjs', [dir, '--json']);
+
+  const proposalPath = path.join(dir, 'proposal.md');
+  let ruleCount = 0;
+  let capabilityCount = 0;
+  if (fs.existsSync(proposalPath)) {
+    const prop = fs.readFileSync(proposalPath, 'utf8');
+    const what = prop.split(/^##\s+What Changes\s*$/m)[1]?.split(/^##\s+/m)[0] ?? '';
+    ruleCount = (what.match(/^\s*[-*]\s+R\d+\b/gm) || []).length;
+    const caps = prop.split(/^##\s+Capabilities\s*$/m)[1]?.split(/^##\s+/m)[0] ?? '';
+    capabilityCount = (caps.match(/^\s*[-*]\s+`/gm) || []).length;
+  }
+  const specsDir = path.join(dir, 'specs');
+  if (fs.existsSync(specsDir)) {
+    const capDirs = new Set();
+    const walk = (p) => {
+      for (const e of fs.readdirSync(p, { withFileTypes: true })) {
+        const full = path.join(p, e.name);
+        if (e.isDirectory()) walk(full);
+        else if (e.name === 'spec.md') {
+          const top = path.relative(specsDir, full).split(path.sep)[0];
+          if (top && top !== 'spec.md') capDirs.add(top);
+        }
+      }
+    };
+    walk(specsDir);
+    capabilityCount = Math.max(capabilityCount, capDirs.size);
+  }
+  const splitReasons = [];
+  if (ruleCount > 10) splitReasons.push(`rules=${ruleCount}>10`);
+  if (capabilityCount > 2) splitReasons.push(`capabilities=${capabilityCount}>2`);
+  const splitRecommended = splitReasons.length > 0;
+
+  const driftLine = (() => {
+    const parts = [];
+    if (drift.headVsBase) parts.push(`HEAD vs ${drift.base}: ahead=${drift.headVsBase.ahead}, behind=${drift.headVsBase.behind}`);
+    if (drift.originVsBase) parts.push(`${drift.base} vs origin/${drift.base}: local_only=${drift.originVsBase.behind}, origin_ahead=${drift.originVsBase.ahead}`);
+    return parts.join('; ') || 'none';
+  })();
+  const preflightSummary = preflightRes.data
+    ? `ok=${preflightRes.status === 0} findings=${preflightRes.data.findings?.length ?? 0}`
+    : `exit=${preflightRes.status}`;
+  const nsSummary = namespaceRes.data?.scenarios?.length
+    ? namespaceRes.data.scenarios.slice(0, 12).map((s) => `SCEN-${s.prefix}(next=${s.next})`).join(', ')
+    : 'none';
+  const stage0Block = [
+    '<!-- STAGE0:START -->',
+    `- Generated: ${new Date().toISOString()} | Change: \`${change}\` | Branch: \`${branch}\` | HEAD: \`${head.slice(0, 12)}\` | Dirty: ${dirtyCount}`,
+    `- Drift: ${driftLine}`,
+    `- Preflight: ${preflightSummary}${hydration ? ` | Hydration: ${hydration.ok ? 'ok' : hydration.skippedReason || `exit=${hydration.status}`}` : ''}`,
+    `- Namespace prefixes: ${nsSummary}`,
+    `- Entropy check: rules=${ruleCount}/10, capabilities=${capabilityCount}/2 (${splitRecommended ? `SPLIT_RECOMMENDED: ${splitReasons.join(', ')}` : 'ok'})`,
+    '<!-- STAGE0:END -->',
+  ].join('\n');
+
+  const factsPath = path.join(dir, 'baseline-facts.md');
+  let preservedBody = [
+    '## Verified Code Facts (Stage 1 — chanpin)',
+    '',
+    '<!-- Append objective path:line facts, real shapes/constraints, and capability gaps only. Keep total file <= 15KB. -->',
+    '',
+    '## Affected Existing Tests',
+    '',
+    '## Capability Gaps & Open Decisions',
+  ].join('\n');
+  if (fs.existsSync(factsPath)) {
+    const existing = fs.readFileSync(factsPath, 'utf8');
+    const endMarker = '<!-- STAGE0:END -->';
+    const endIdx = existing.indexOf(endMarker);
+    if (endIdx !== -1) {
+      const tail = existing.slice(endIdx + endMarker.length).trim();
+      if (tail) preservedBody = tail;
+    }
+  }
+  const fullFacts = `# Baseline Facts\n\n${stage0Block}\n\n${preservedBody}\n`;
+  fs.writeFileSync(factsPath, fullFacts);
+
+  const payload = {
+    change,
+    changeDir: dir,
+    repo: root,
+    head,
+    branch,
+    dirtyCount,
+    drift,
+    ...(hydration ? { hydration } : {}),
+    preflight: { exit: preflightRes.status, ...(preflightRes.data ? { findings: preflightRes.data.findings?.length ?? 0 } : {}) },
+    namespace: { exit: namespaceRes.status, prefixes: namespaceRes.data?.scenarios?.length ?? 0 },
+    baselineFactsPath: factsPath,
+    splitRecommended,
+    splitReasons,
+  };
+  if (parsed.options.json) console.log(JSON.stringify(payload, null, 2));
+  else {
+    console.log(`[prepare-author] ${change} @ ${head.slice(0, 7)} (${branch}, dirty=${dirtyCount})`);
+    console.log(`- baseline-facts: ${factsPath}`);
+    console.log(`- drift: ${driftLine}`);
+    console.log(`- preflight: ${preflightSummary} | namespace prefixes: ${nsSummary}`);
+    if (splitRecommended) console.log(`SPLIT_RECOMMENDED: ${splitReasons.join(', ')}`);
+  }
 } else if (command === 'prepare-task') {
   let parsed;
   try {
@@ -448,5 +618,5 @@ if (command === 'acceptance') {
     for (const item of doneVerification(change, tasks, dir)) console.log(`ATTENTION ${item.task}: ${item.kind} — ${item.reason}`);
   }
 } else {
-  die('usage: pipeline-run.mjs plan|prepare-task|merge|cp2-merge|status|cleanup|inspect|freeze|profiles|preflight|scenarios|acceptance|worker-check|tier2-verify|brief|risk-scan|install-hook|report ...', 2);
+  die('usage: pipeline-run.mjs plan|prepare-author|prepare-task|merge|cp2-merge|status|cleanup|inspect|freeze|profiles|preflight|scenarios|acceptance|worker-check|tier2-verify|brief|risk-scan|install-hook|report ...', 2);
 }

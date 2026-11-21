@@ -1,6 +1,6 @@
 # ADR-0002: Recon-First Tier Routing & Progressive Unified OpenSpec Contract
 
-- **Status:** Accepted (landed in `aba7238` / `e373d11`)
+- **Status:** Accepted (landed in `aba7238` / `e373d11`; extended by [ADR-0006](0006-contract-authoring-isolation-and-single-source.md) & [ADR-0007](0007-change-entropy-tier3-roi-and-anti-thrashing.md))
 - **Date:** 2026-11-21
 - **Scope:** `~/.claude/CLAUDE.md`, `skills/paseo-pipeline/lib/tier-gate.mjs`, `hooks/tier-*.mjs`, `docs/tier2-contract.md`, `skills/paseo-pipeline/freeze-check.mjs`, `skills/paseo-pipeline/tier2-verify.mjs`
 

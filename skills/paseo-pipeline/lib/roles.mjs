@@ -15,6 +15,7 @@ export const ROLES = {
   },
   neon: {
     kind: 'reviewer',
+    legacy: true,
     profileId: 'agent_profile_mvvzv70y_bweu1x85oc9',
     brief: 'skills/paseo-pipeline/templates/reviewer.md',
     stageTitles: ['R0', 'FINAL'],
@@ -67,7 +68,8 @@ export const AUTHOR_ROLES = ROLE_NAMES.filter((id) => ROLES[id].kind === 'author
 export const IMPLEMENTER_ROLES = ROLE_NAMES.filter((id) => ROLES[id].isImplementer);
 export const WRITER_ROLES = new Set(ROLE_NAMES.filter((id) => ROLES[id].isWriter));
 export const R0_ROLES = ROLE_NAMES.filter((id) => ROLES[id].canSignR0);
-export const NON_WORKER_STAGE_ROLES = ROLE_NAMES.filter((id) => Array.isArray(ROLES[id].stageTitles));
+export const NON_WORKER_STAGE_ROLES = ROLE_NAMES.filter((id) => !ROLES[id].legacy && Array.isArray(ROLES[id].stageTitles));
+export const RECOGNIZED_NON_WORKER_STAGE_ROLES = ROLE_NAMES.filter((id) => Array.isArray(ROLES[id].stageTitles));
 export const AUTHORING_COMMIT_ROLES = new Set([...WRITER_ROLES, ...AUTHOR_ROLES]);
 
 export function profileIdOf(role) {

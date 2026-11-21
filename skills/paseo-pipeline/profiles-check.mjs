@@ -70,7 +70,7 @@ export function check(roles, profiles, root = null) {
   const clash = (a, b) => fam(a) && fam(a) === fam(b) && findings.push(`FAMILY_CLASH ${a} ${b} (${fam(a)})`);
   for (const w of IMPLEMENTER_ROLES) clash('anchasi', w);
   clash('ceshi', 'gongbu');
-  if (fam('chanpin') && fam('chanpin') === fam('neon')) {
+  if (roles.includes('neon') && fam('chanpin') && fam('chanpin') === fam('neon')) {
     advisories.push(`ADVISORY_FAMILY_PAIR chanpin neon (${fam('chanpin')}): if chanpin drafts Proposal content, neon must not review its R0`);
   }
   return { findings, advisories };

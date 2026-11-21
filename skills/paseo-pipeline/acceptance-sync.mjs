@@ -1,9 +1,11 @@
 #!/usr/bin/env node
-// Derive or update acceptance.md directly from specs/ (SCEN-*, **Verify:**, optional **Entry:**)
-// and tasks.md (Scenarios claimants). Preserves existing non-placeholder Entry and Required columns.
+// Derive or update acceptance.md directly from specs/ (SCEN-*) and tasks.md
+// (Scenarios claimants, Verify with:, Entry:, Required:).
+// Preserves existing non-placeholder Entry/Required when tasks.md omits them, and falls back
+// to legacy spec-level **Verify:** when tasks.md has none.
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseTasks } from './lib/tasks.mjs';
+import { parseTasks, entryForScenario, requiredForScenario } from './lib/tasks.mjs';
 import { loadSpecTree, scanScenVerify } from './lib/spec-scan.mjs';
 import { parseAcceptanceTable } from './lib/acceptance.mjs';
 
@@ -28,12 +30,12 @@ if (errors.length) {
   process.exit(1);
 }
 
-const claimantsByScen = new Map();
+const tasksByScen = new Map();
 for (const task of tasks) {
   for (const scen of task.scenarios) {
     const key = scen.toUpperCase();
-    if (!claimantsByScen.has(key)) claimantsByScen.set(key, []);
-    claimantsByScen.get(key).push(task.id);
+    if (!tasksByScen.has(key)) tasksByScen.set(key, []);
+    tasksByScen.get(key).push(task);
   }
 }
 
@@ -54,14 +56,30 @@ if (fs.existsSync(acceptancePath)) {
   }
 }
 
+function resolveVerify(claimantTasks, scenVerify, prevVerify) {
+  const taskVerifies = [...new Set(claimantTasks.map((t) => t.verify.trim()).filter(Boolean))];
+  if (taskVerifies.length === 1) return taskVerifies[0];
+  if (taskVerifies.length > 1) {
+    const plain = taskVerifies.filter((cmd) => !/^(?:for|while|if|case|until)\s/.test(cmd));
+    const list = plain.length ? plain : [taskVerifies[0]];
+    return list.length === 1 ? list[0] : list.join(' && ');
+  }
+  return scenVerify || prevVerify || '<Verify command>';
+}
+
 const header = '| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |\n| --- | --- | --- | --- | --- | --- | --- |';
 const rows = specsScenarios.map((scen) => {
   const key = scen.id.toUpperCase();
   const prev = existingByScen.get(key);
-  const entry = prev?.entry && !/^<.*>$/.test(prev.entry) ? prev.entry : '<真实入口：route / UI / CLI>';
-  const claimants = (claimantsByScen.get(key) ?? []).join(',') || '<unclaimed>';
-  const verify = scen.verify || prev?.verify || '<Verify command>';
-  const required = prev?.required && /^(yes|no)$/i.test(prev.required) ? prev.required.toLowerCase() : 'yes';
+  const claimantTasks = tasksByScen.get(key) ?? [];
+  const taskEntry = claimantTasks.map((t) => entryForScenario(t, key)).find(Boolean);
+  const entry = taskEntry || (prev?.entry && !/^<.*>$/.test(prev.entry) ? prev.entry : '<真实入口：route / UI / CLI>');
+  const claimants = claimantTasks.map((t) => t.id).join(',') || '<unclaimed>';
+  const verify = resolveVerify(claimantTasks, scen.verify, prev?.verify);
+  const explicitReqs = claimantTasks.map((t) => requiredForScenario(t)).filter(Boolean);
+  const required = explicitReqs.length
+    ? (explicitReqs.includes('yes') ? 'yes' : 'no')
+    : (prev?.required && /^(yes|no)$/i.test(prev.required) ? prev.required.toLowerCase() : 'yes');
   return `| ${scen.id} | ${entry} | ${claimants} | ${verify} | ${required} | PENDING | pending |`;
 });
 

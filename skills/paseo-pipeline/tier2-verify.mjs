@@ -9,6 +9,7 @@ import { parseOptions } from './lib/cli.mjs';
 import { runGit } from './lib/git.mjs';
 import { repoContext } from './lib/tier-gate.mjs';
 import { loadSpecTree, scanScenVerify } from './lib/spec-scan.mjs';
+import { parseTasks } from './lib/tasks.mjs';
 import { runVerifyCommand } from './lib/verify-runner.mjs';
 import { proveVerifyCommand } from './lib/verify-policy.mjs';
 import { scanRepo } from './lib/risk-scan.mjs';
@@ -97,13 +98,33 @@ if (changeDir) {
     process.exit(2);
   }
   contractChecked = true;
+  const tasksFile = path.join(changeDir, 'tasks.md');
+  const taskVerifyByScen = new Map();
+  if (fs.existsSync(tasksFile)) {
+    const parsedTasks = parseTasks(fs.readFileSync(tasksFile, 'utf8'));
+    for (const task of parsedTasks.tasks) {
+      const cmd = String(task.verify || '').replace(/^`(.+)`$/, '$1').trim();
+      if (!cmd) continue;
+      for (const scen of task.scenarios) {
+        const key = scen.toUpperCase();
+        if (!taskVerifyByScen.has(key)) taskVerifyByScen.set(key, []);
+        if (!taskVerifyByScen.get(key).includes(cmd)) taskVerifyByScen.get(key).push(cmd);
+      }
+    }
+  }
   const specTree = loadSpecTree({ repoRoot: ctx.root, changeDir });
   for (const { file, text } of specTree.current) {
     for (const scen of scanScenVerify(text)) {
-      if (!scen.verify) missingVerify.push(`${scen.id} (${path.relative(changeDir, file)})`);
-      else {
+      const fromTask = taskVerifyByScen.get(scen.id.toUpperCase()) ?? [];
+      if (fromTask.length > 0) {
+        for (const cmd of fromTask) {
+          if (!verifyCommands.includes(cmd)) verifyCommands.push(cmd);
+        }
+      } else if (scen.verify) {
         const cleanVerify = scen.verify.replace(/^`(.+)`$/, '$1').trim();
         if (!verifyCommands.includes(cleanVerify)) verifyCommands.push(cleanVerify);
+      } else {
+        missingVerify.push(`${scen.id} (${path.relative(changeDir, file)})`);
       }
     }
   }
