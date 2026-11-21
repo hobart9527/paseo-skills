@@ -140,9 +140,8 @@ function readTailHash(fd, offset) {
   return crypto.createHash('sha1').update(buf.subarray(0, bytes)).digest('hex').slice(0, 16);
 }
 
-function applyLines(lines, state) {
-  const pending = new Map(state.pending || []);
-  const calls = [...(state.calls || [])];
+function applyLines(lines, prevCalls = []) {
+  const calls = [...prevCalls];
   for (const line of lines) {
     if (!line.trim()) continue;
     let entry;
@@ -151,18 +150,19 @@ function applyLines(lines, state) {
     if (!Array.isArray(content)) continue;
     for (const item of content) {
       if (item.type === 'tool_use') {
-        const call = { name: item.name, input: canonical(item.input), result: undefined };
-        calls.push(call);
-        if (item.id) pending.set(item.id, call);
-      } else if (item.type === 'tool_result' && item.tool_use_id && pending.has(item.tool_use_id)) {
-        pending.get(item.tool_use_id).result = item.is_error === true;
-        pending.delete(item.tool_use_id);
+        calls.push({ id: item.id || null, name: item.name, input: canonical(item.input), result: undefined });
+      } else if (item.type === 'tool_result' && item.tool_use_id) {
+        // Reconcile against calls by tool_use_id instead of object reference so JSON cache reload preserves identity.
+        for (let i = calls.length - 1; i >= 0; i -= 1) {
+          if (calls[i].id === item.tool_use_id) {
+            calls[i] = { ...calls[i], result: item.is_error === true };
+            break;
+          }
+        }
       }
     }
   }
-  const nextPending = [...pending.entries()].slice(-64);
-  const nextCalls = calls.slice(-16);
-  return { pending: nextPending, calls: nextCalls };
+  return calls.slice(-32);
 }
 
 function loadTranscriptCalls(file) {
@@ -183,12 +183,12 @@ function loadTranscriptCalls(file) {
       return cached.calls || [];
     }
 
-    let state = { pending: [], calls: [] };
+    let prevCalls = [];
     let readFrom = Math.max(0, size - LIMIT);
     let dropFirstPartial = readFrom > 0;
 
     if (sameInode && size > cached.offset && size - cached.offset <= LIMIT && readTailHash(fd, cached.offset) === cached.tailHash) {
-      state = { pending: cached.pending || [], calls: cached.calls || [] };
+      prevCalls = cached.calls || [];
       readFrom = cached.offset;
       dropFirstPartial = false;
     }
@@ -210,7 +210,7 @@ function loadTranscriptCalls(file) {
         consumedBytes = Math.max(0, bytes - Buffer.byteLength(incomplete, 'utf8'));
       }
     }
-    const nextState = applyLines(rawLines, state);
+    const nextCalls = applyLines(rawLines, prevCalls);
     const newOffset = readFrom + consumedBytes;
     const tailHash = readTailHash(fd, newOffset);
     try {
@@ -219,11 +219,10 @@ function loadTranscriptCalls(file) {
         ino: stat.ino,
         offset: newOffset,
         tailHash,
-        pending: nextState.pending,
-        calls: nextState.calls,
+        calls: nextCalls,
       }));
     } catch {}
-    return nextState.calls;
+    return nextCalls;
   } finally {
     fs.closeSync(fd);
   }

@@ -230,6 +230,19 @@ test('tool-guard-hook incremental cache stays exact across appends/rewrites and 
   // Rewriting transcript with success at the start clears denial even when cached earlier.
   fs.writeFileSync(transcript, pair('4', false).join('\n'));
   assert.deepEqual(guard({ tool_name: 'mcp__example__x', tool_input: { k: 1 }, transcript_path: transcript }), {});
+
+  // Boundary case: cache snapshot lands between tool_use and its tool_result across reloads.
+  const splitTranscript = path.join(stateDir, 'split-transcript.jsonl');
+  const useLine = (id) => JSON.stringify({ message: { content: [{ type: 'tool_use', id, name: 'mcp__example__split', input: { k: 9 } }] } });
+  const resLine = (id, isError) => JSON.stringify({ message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: isError }] } });
+  fs.writeFileSync(splitTranscript, `${useLine('s1')}\n`);
+  assert.deepEqual(guard({ tool_name: 'mcp__example__split', tool_input: { k: 9 }, transcript_path: splitTranscript }), {});
+  fs.appendFileSync(splitTranscript, `${resLine('s1', true)}\n${useLine('s2')}\n`);
+  assert.deepEqual(guard({ tool_name: 'mcp__example__split', tool_input: { k: 9 }, transcript_path: splitTranscript }), {});
+  fs.appendFileSync(splitTranscript, `${resLine('s2', true)}\n${useLine('s3')}\n`);
+  assert.deepEqual(guard({ tool_name: 'mcp__example__split', tool_input: { k: 9 }, transcript_path: splitTranscript }), {});
+  fs.appendFileSync(splitTranscript, `${resLine('s3', true)}\n`);
+  assert.equal(guard({ tool_name: 'mcp__example__split', tool_input: { k: 9 }, transcript_path: splitTranscript }).permissionDecision, 'deny');
 });
 
 test('lib/verify-policy + tier2-verify reject spoofed Verify commands without executing them', (t) => {
