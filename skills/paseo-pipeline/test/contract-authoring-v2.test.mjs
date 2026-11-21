@@ -446,23 +446,25 @@ test('acceptance-sync preserves multi-claimant shell-loop Verify commands, passe
   const fc1 = spawnSync(process.execPath, [script('freeze-check.mjs'), dir, '--structural', '--skip-signer-check', '--json'], { encoding: 'utf8' });
   assert.equal(fc1.status, 0, fc1.stderr + fc1.stdout);
 
-  // Two fail-fast loops claiming same SCEN -> both preserved
+  // Two fail-fast loops claiming same SCEN -> both preserved (Review: mechanical on both sinks satisfies task-level broad/narrow gate while acceptance-check validates composed loops)
   fs.writeFileSync(path.join(dir, 'tasks.md'), [
     '- [ ] 1.1 T-01 alpha',
     '  - Write scope: src/a.mjs,test/a.test.mjs',
     '  - Entry: CLI',
-    '  - Verify with: for f in test/a.test.mjs; do node --test $f || exit 1; done',
+    '  - Review: mechanical',
+    '  - Verify with: for f in test/a.test.mjs; do node "$f" || exit 1; done',
     '  - Scenarios: SCEN-LOOP-01',
     '- [ ] 1.2 T-02 beta',
     '  - Write scope: src/b.mjs,test/b.test.mjs',
     '  - Entry: CLI',
-    '  - Verify with: for f in test/b.test.mjs; do node --test $f || exit 1; done',
+    '  - Review: mechanical',
+    '  - Verify with: for f in test/b.test.mjs; do node "$f" || exit 1; done',
     '  - Scenarios: SCEN-LOOP-01',
   ].join('\n'));
   const res2 = spawnSync(process.execPath, [script('acceptance-sync.mjs'), dir], { encoding: 'utf8' });
   assert.equal(res2.status, 0, res2.stderr + res2.stdout);
   const parsed2 = parseAcceptanceTable(fs.readFileSync(path.join(dir, 'acceptance.md'), 'utf8'));
-  assert.equal(parsed2.rows[0].verify, 'for f in test/a.test.mjs; do node --test $f || exit 1; done && for f in test/b.test.mjs; do node --test $f || exit 1; done');
+  assert.equal(parsed2.rows[0].verify, 'for f in test/a.test.mjs; do node "$f" || exit 1; done && for f in test/b.test.mjs; do node "$f" || exit 1; done');
   const fc2 = spawnSync(process.execPath, [script('freeze-check.mjs'), dir, '--structural', '--skip-signer-check', '--json'], { encoding: 'utf8' });
   assert.equal(fc2.status, 0, fc2.stderr + fc2.stdout);
 
