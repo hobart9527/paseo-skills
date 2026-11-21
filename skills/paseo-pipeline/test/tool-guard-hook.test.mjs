@@ -242,6 +242,11 @@ test('create_agent: an explicit null optional setting is allowed where the profi
   const PASEO_HOME = profileHome(t);
   assert.deepEqual(createAgent({ provider: 'antigravity/gemini', title: 't', settings: { modeId: 'full-access', thinkingOptionId: null } }, PASEO_HOME), {});
   assert.deepEqual(createAgent({ provider: 'antigravity/gemini', title: 't', settings: { modeId: 'full-access', features: null } }, PASEO_HOME), {});
+  // Empty `{}` feature map is semantically equivalent to unset when the profile sets none,
+  // while an empty object on a scalar field like modeId must still be denied.
+  assert.deepEqual(createAgent({ provider: 'codex/gpt', title: 't', settings: { modeId: 'auto-review', thinkingOptionId: 'high', features: {} } }, PASEO_HOME), {});
+  const emptyScalar = createAgent({ provider: 'codex/gpt', title: 't', settings: { modeId: {} } }, PASEO_HOME);
+  assert.equal(emptyScalar.permissionDecision, 'deny');
   // A real profile that does set features is matched against: null is inherit only where the
   // profile has no value, so a profile that sets one still denies a null that contradicts it.
   const withFeatures = fs.mkdtempSync(path.join(os.tmpdir(), 'paseo-home-'));
@@ -255,11 +260,14 @@ test('create_agent: an explicit null optional setting is allowed where the profi
   const inherited = createAgent({ provider: 'claude/cc', title: 't', settings: { thinkingOptionId: null, features: { effort: 'max' } } }, withFeatures);
   assert.equal(inherited.permissionDecision, 'allow');
   assert.equal(inherited.updatedInput.settings.modeId, 'auto');
-  // Null inherits only where the profile sets nothing: a profile that does set the value still
-  // catches a null that contradicts it.
+  // Null or `{}` inherits only where the profile sets nothing: a profile that does set the value
+  // still catches a null or `{}` that contradicts it.
   const contradicted = createAgent({ provider: 'claude/cc', title: 't', settings: { thinkingOptionId: 'high', features: null } }, withFeatures);
   assert.equal(contradicted.permissionDecision, 'deny');
   assert.match(contradicted.permissionDecisionReason, /features/);
+  const emptyFeatures = createAgent({ provider: 'claude/cc', title: 't', settings: { thinkingOptionId: 'high', features: {} } }, withFeatures);
+  assert.equal(emptyFeatures.permissionDecision, 'deny');
+  assert.match(emptyFeatures.permissionDecisionReason, /features/);
   const stale = createAgent({ provider: 'claude/cc', title: 't', settings: { thinkingOptionId: 'high', features: { effort: 'low' } } }, withFeatures);
   assert.equal(stale.permissionDecision, 'deny');
   assert.match(stale.permissionDecisionReason, /features/);

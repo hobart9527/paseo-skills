@@ -86,6 +86,9 @@ function filledModeId(input) {
 const canonical = (value) => JSON.stringify(value, (_, v) => v && typeof v === 'object' && !Array.isArray(v)
   ? Object.fromEntries(Object.keys(v).sort().map((key) => [key, v[key]])) : v);
 const sameValue = (left, right) => canonical(left) === canonical(right);
+// Empty `features` map `{}` carries zero flag overrides, semantically identical to null/undefined.
+const isUnset = (field, value) => value === undefined || value === null
+  || (field === 'features' && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0);
 function settingsMismatchReason(input) {
   const provider = typeof input?.provider === 'string' ? input.provider.trim() : '';
   if (!provider.includes('/')) return null;
@@ -95,18 +98,18 @@ function settingsMismatchReason(input) {
   const valueOf = (field) => (field in nested ? nested[field] : input?.[field]);
   const stated = SETTINGS.filter((field) => valueOf(field) !== undefined);
   if (!stated.length) return null;
-  const agrees = (profile, field) => profile[field] === undefined || profile[field] === null
-    ? valueOf(field) === null || valueOf(field) === undefined
-    : sameValue(profile[field], valueOf(field));
+  const agrees = (profile, field) => (isUnset(field, profile[field])
+    ? isUnset(field, valueOf(field))
+    : sameValue(profile[field], valueOf(field)));
   if (matches.some((profile) => stated.every((field) => agrees(profile, field)))) return null;
   const role = (profile) => String(profile.name ?? profile.id ?? provider).split(/\s/)[0];
   if (matches.length === 1) {
     const [profile] = matches;
     const field = stated.find((name) => !agrees(profile, name));
     const expected = profile[field];
-    return `create_agent ${field} is ${JSON.stringify(valueOf(field))}, but profile ${role(profile)} (${provider}) sets ${expected === undefined || expected === null ? 'none' : JSON.stringify(expected)}. Use the profile's value, or edit the profile in config.json if the setting really changed.`;
+    return `create_agent ${field} is ${JSON.stringify(valueOf(field))}, but profile ${role(profile)} (${provider}) sets ${isUnset(field, expected) ? 'none' : JSON.stringify(expected)}. Use the profile's value, or edit the profile in config.json if the setting really changed.`;
   }
-  const candidates = matches.map((profile) => `${role(profile)} (${provider}) sets ${stated.map((field) => `${field} ${profile[field] === undefined || profile[field] === null ? 'none' : JSON.stringify(profile[field])}`).join(', ')}`).join('; ');
+  const candidates = matches.map((profile) => `${role(profile)} (${provider}) sets ${stated.map((field) => `${field} ${isUnset(field, profile[field]) ? 'none' : JSON.stringify(profile[field])}`).join(', ')}`).join('; ');
   return `create_agent ${stated.map((field) => `${field} ${JSON.stringify(valueOf(field))}`).join(', ')} matches no profile for ${provider}. Candidates: ${candidates}. Use one candidate's values, or edit the profile in config.json if the setting really changed.`;
 }
 /** The planner and merge gate find pipeline agents by this label; an unlabelled one is invisible and gets re-dispatched. */
