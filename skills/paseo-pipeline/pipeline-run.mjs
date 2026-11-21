@@ -29,7 +29,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseTasks } from './lib/tasks.mjs';
 import { readTasksMarkdown } from './lib/tasks-source.mjs';
-import { runGit, listWorktreesMaybe, worktreeForBranch } from './lib/git.mjs';
+import { runGit, listWorktreesMaybe, worktreeForBranch, primaryWorktree } from './lib/git.mjs';
 import { parseOptions, planOptions } from './lib/cli.mjs';
 import { runCleanup } from './lib/cleanup.mjs';
 import { recommendedWorkerRole } from './lib/roles.mjs';
@@ -427,6 +427,7 @@ if (command === 'acceptance') {
     baselineFactsPath: factsPath,
     splitRecommended,
     splitReasons,
+    ...(!branch.startsWith('author/') ? { worktreeNote: 'If dispatching hanlin in a separate branch-off worktree, pass/sync baseline-facts.md and remove untracked Stage 0 seeds from the default branch before CP-1 --ff-only merge.' } : {}),
   };
   if (parsed.options.json) console.log(JSON.stringify(payload, null, 2));
   else {
@@ -435,6 +436,7 @@ if (command === 'acceptance') {
     console.log(`- drift: ${driftLine}`);
     console.log(`- preflight: ${preflightSummary} | namespace prefixes: ${nsSummary}`);
     if (splitRecommended) console.log(`SPLIT_RECOMMENDED: ${splitReasons.join(', ')}`);
+    if (payload.worktreeNote) console.log(`- note: ${payload.worktreeNote}`);
   }
 } else if (command === 'prepare-task') {
   let parsed;
@@ -494,9 +496,10 @@ if (command === 'acceptance') {
   } else {
     worktreePath = worktreeForBranch(root, branch);
     if (!worktreePath) {
+      const defaultWtRoot = path.join(primaryWorktree(root) || root, '.claude', 'worktrees');
       const wtRoot = parsed.options['worktree-root']
         ? path.resolve(parsed.options['worktree-root'])
-        : path.join(root, '.claude', 'worktrees');
+        : defaultWtRoot;
       fs.mkdirSync(wtRoot, { recursive: true });
       worktreePath = path.join(wtRoot, `task-${change}-${taskId}`);
       const addWt = runGit(root, ['worktree', 'add', worktreePath, branch]);

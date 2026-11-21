@@ -638,3 +638,16 @@ test('a nested repository is a different repository, not a directory inside this
   assert.equal(nestedRun.status, 0, `${nestedRun.stdout}${nestedRun.stderr}`);
   assert.equal(JSON.parse(nestedRun.stdout).change, CHANGE);
 });
+
+test('cleanup discovers stage branches and worktrees (author, r0, final) owned by the change', () => {
+  const f = fixture();
+  const stageBranches = [`author/${CHANGE}`, `r0/${CHANGE}`, `final/${CHANGE}`];
+  const r0Dir = path.join(f.root, '..', `${path.basename(f.root)}-r0`);
+  git(f.root, 'branch', `author/${CHANGE}`, 'HEAD');
+  git(f.root, 'worktree', 'add', '-q', '-b', `r0/${CHANGE}`, r0Dir, 'HEAD');
+  git(f.root, 'branch', `final/${CHANGE}`, 'HEAD');
+  const report = discover(f);
+  const discoveredBranches = new Set(report.objects.filter((o) => o.kind === 'branch').map((o) => o.branch));
+  for (const branch of stageBranches) assert.ok(discoveredBranches.has(branch), `missing branch ${branch}`);
+  assert.ok(report.objects.some((o) => o.kind === 'git-worktree' && o.branch === `r0/${CHANGE}`));
+});

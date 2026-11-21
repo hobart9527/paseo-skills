@@ -74,14 +74,17 @@ function repoIdentity(dir) {
   return realOrResolved(path.isAbsolute(value) ? value : path.join(dir, value));
 }
 
+const STAGE_PREFIXES = ['integration', 'author', 'r0', 'final'];
+
 function ownedBranch(branch, change) {
   if (!branch) return false;
-  if (branch === `integration/${change}`) return true;
+  if (STAGE_PREFIXES.some((prefix) => branch === `${prefix}/${change}`)) return true;
   return new RegExp(`^task/${escapeRe(change)}/${TASK_ID}(?:-a\\d+)?$`).test(branch);
 }
 
 function listBranches(cwd, change) {
-  const result = runGit(cwd, ['for-each-ref', '--format=%(refname:short)', `refs/heads/integration/${change}`, `refs/heads/task/${change}/`]);
+  const stageRefs = STAGE_PREFIXES.map((prefix) => `refs/heads/${prefix}/${change}`);
+  const result = runGit(cwd, ['for-each-ref', '--format=%(refname:short)', ...stageRefs, `refs/heads/task/${change}/`]);
   if (result.error || result.status !== 0) throw new Error(`git for-each-ref failed: ${(result.stderr || result.error?.message || '').trim()}`);
   return result.stdout.split('\n').map((line) => line.trim()).filter(Boolean).filter((branch) => ownedBranch(branch, change));
 }

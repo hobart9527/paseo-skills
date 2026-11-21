@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseTasks, isTestPath } from './lib/tasks.mjs';
 import { checklistForSurfaces } from './lib/adversarial.mjs';
-import { gitMaybe, worktreeForBranch } from './lib/git.mjs';
+import { gitMaybe, worktreeForBranch, primaryWorktree } from './lib/git.mjs';
 import { argValue, positionalArgs } from './lib/cli.mjs';
 import { scanRepo } from './lib/risk-scan.mjs';
 import { loadSpecTree, scanScenarios } from './lib/spec-scan.mjs';
@@ -149,6 +149,9 @@ function contractPaths() {
 
 const testPaths = task ? task.scope.filter(isTestPath) : [];
 const scopeList = task ? task.scope : [];
+const realEntrySummary = task
+  ? ([task.entry, ...(task.interface || [])].filter(Boolean).join('; ') || scopeList.join(', '))
+  : '';
 const dependencyStates = task
   ? task.depends.map((dep) => {
     const parent = parsed.tasks.find((item) => item.id === dep);
@@ -248,6 +251,7 @@ const values = {
   'full commit SHA': base || '',
   'exact frozen scope': scopeList.length ? scopeList.join(', ') : '',
   'explicit test file paths within frozen Write scope': testPaths.join(', '),
+  ...(realEntrySummary ? { 'path:symbol and baseline evidence': realEntrySummary } : {}),
   'tasks.md + spec paths': contractPaths()?.filter((file) => /(?:tasks|spec)\.md$/.test(file)).join(', ') || '',
   'spec/tasks paths': contractPaths()?.filter((file) => /(?:tasks|spec)\.md$/.test(file)).join(', ') || '',
   'task + spec sections': contractPaths()?.filter((file) => /(?:tasks|spec)\.md$/.test(file)).join(', ') || '',
@@ -267,7 +271,14 @@ function substitute(text) {
 let prompt = substitute(template);
 
 if (['author', 'revise'].includes(role)) {
-  const factsPath = path.join(changeDir, 'baseline-facts.md');
+  const primaryRoot = isGit ? primaryWorktree(repo) : null;
+  const localFacts = path.join(changeDir, 'baseline-facts.md');
+  const primaryFacts = primaryRoot && path.resolve(primaryRoot) !== path.resolve(repo)
+    ? path.join(primaryRoot, 'openspec', 'changes', effectiveChange, 'baseline-facts.md')
+    : null;
+  const factsPath = fs.existsSync(localFacts)
+    ? localFacts
+    : (primaryFacts && fs.existsSync(primaryFacts) ? primaryFacts : localFacts);
   if (fs.existsSync(factsPath)) {
     try {
       let facts = fs.readFileSync(factsPath, 'utf8');
@@ -315,7 +326,11 @@ if (task && ['worker', 'tester'].includes(role)) {
   if (!forbidden.length) lines.push('- None outside your Write scope.');
   for (const file of forbidden) lines.push(`- ${file}`);
   lines.push('', '## Toolchain');
-  lines.push('- Linked worktree: install dependencies per lockfile if Verify fails with a missing package. Run `pipeline-run.mjs worker-check` before reporting.');
+  if (role === 'tester') {
+    lines.push('- Linked worktree / Red handoff: install dependencies per lockfile if baseline fails with a missing package. Do NOT run `worker-check` on failing Red tests. If a linked-worktree sandbox blocks `.git/worktrees` commit writes, leave Red files cleanly `git add`-staged and report paths, Red output, and `$PASEO_AGENT_ID`.');
+  } else {
+    lines.push(`- Linked worktree: install dependencies per lockfile if Verify fails with a missing package. Run \`node "\${PIPELINE_HOME:-\$HOME/.claude/skills/paseo-pipeline}/pipeline-run.mjs" worker-check ${path.relative(repo, changeDir)} ${task.id}\` before reporting.`);
+  }
   lines.push('- Resolve runtime settings via `list_profiles`; never guess model IDs.');
   const jit = compileTaskJitContext();
   if (jit) lines.push('', jit.trimEnd());

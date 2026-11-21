@@ -167,3 +167,32 @@ test('brief: a change with no merged task adds no merged-tasks section', () => {
   assert.equal(result.status, 0, result.out);
   assert.doesNotMatch(JSON.parse(result.stdout).prompt, /Merged tasks/);
 });
+
+test('brief: tester brief resolves entry placeholder and omits worker-check instruction', () => {
+  const { cwd, change } = fixture();
+  const tasksFile = path.join(cwd, `openspec/changes/${change}/tasks.md`);
+  fs.writeFileSync(
+    tasksFile,
+    fs.readFileSync(tasksFile, 'utf8').replace('  - Review: strict', '  - Entry: module export `src/b.mjs#runB`\n  - Review: strict'),
+  );
+  const result = run(['tester', '--change', change, '--repo', cwd, '--task', 'T-02', '--base', 'HEAD', '--json']);
+  assert.equal(result.status, 0, result.out);
+  const { prompt, missing } = JSON.parse(result.stdout);
+  assert.deepEqual(missing, []);
+  assert.doesNotMatch(prompt, /<path:symbol and baseline evidence>/);
+  assert.match(prompt, /module export `src\/b\.mjs#runB`/);
+  assert.match(prompt, /Do NOT run `worker-check` on failing Red tests/);
+  assert.match(prompt, /PASEO_AGENT_ID=<ceshi-uuid>/);
+});
+
+test('brief: author in linked worktree falls back to primary checkout baseline-facts.md', () => {
+  const { cwd, change } = fixture();
+  write(cwd, `openspec/changes/${change}/baseline-facts.md`, '# Baseline Facts\n- Fact: primary checkout verified\n');
+  const authorWt = path.join(path.dirname(cwd), `${path.basename(cwd)}-author`);
+  git(cwd, ['worktree', 'add', '-q', '-b', `author/${change}`, authorWt, 'HEAD']);
+  const result = run(['author', '--change', change, '--repo', authorWt, '--base', 'HEAD', '--json']);
+  assert.equal(result.status, 0, result.out);
+  const { prompt } = JSON.parse(result.stdout);
+  assert.match(prompt, /## Baseline Facts \(Stage 0\/1 — JIT inlined\)/);
+  assert.match(prompt, /Fact: primary checkout verified/);
+});

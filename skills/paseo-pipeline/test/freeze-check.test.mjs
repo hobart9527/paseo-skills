@@ -2725,3 +2725,13 @@ test('stage specs passes when every scenario carries one Verify line', () => {
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.doesNotMatch(stageReport(result).blocking.join('\n'), /MISSING_SCEN_VERIFY/);
 });
+
+test('R0 human-accept: bulleted R0-<round>-<n> entries in rulings.md satisfy R0_HUMAN_EXCEPTION_UNRULED', () => {
+  const { dir, sha } = signedRepo((s) => `R0: human-accept(@${s})\n`);
+  fs.writeFileSync(path.join(dir, 'run-log.md'), `Approval: R0 residual risk accepted for ${sha.slice(0, 7)} — benchmark CP-1\n`);
+  fs.writeFileSync(path.join(dir, 'rulings.md'), '- R0-2-1: Accepted pure policy ordering residual.\n');
+  const out = report(dir);
+  assert.deepEqual(out.blocking, []);
+  assert.match(out.advisories.join('\n'), /R0_HUMAN_EXCEPTION/);
+  assert.doesNotMatch(out.advisories.join('\n'), /R0_HUMAN_EXCEPTION_UNRULED/);
+});

@@ -47,3 +47,8 @@ export function listWorktreesMaybe(cwd) {
 export function worktreeForBranch(cwd, branch) {
   return listWorktreesMaybe(cwd).find((tree) => tree.branch === branch)?.path ?? null;
 }
+
+/** Primary repository checkout (first `git worktree list` entry), or `null` outside Git. */
+export function primaryWorktree(cwd) {
+  return listWorktreesMaybe(cwd)[0]?.path ?? null;
+}

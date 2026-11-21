@@ -64,7 +64,7 @@ All under `$PIPELINE_HOME` (set by `install.sh`). Each prints usage on bad args.
 
 Use 3 isolated stages (Stage 0 script → Stage 1 read-only facts → Stage 2 clean-context author).
 
-1. Run `pipeline-run.mjs prepare-author openspec/changes/<change>` (Stage 0: `preflight.mjs`, `--hydrate`, `namespace.mjs`, drift, `baseline-facts.md`). For non-trivial changes, run read-only `chanpin` (`brief.mjs recon`) for `baseline-facts.md` (≤15KB, no specs). If entropy budget exceeded (`>2` capabilities, `>10` rules, `>12` scopes, or `>8` tasks), get human split confirmation before Stage 2.
+1. Run `pipeline-run.mjs prepare-author openspec/changes/<change>` (if using a separate `author/<change>` worktree, sync/clear main's untracked seed before CP-1 merge). Dispatch read-only `chanpin` (`brief.mjs recon`) for `baseline-facts.md` (≤15KB); on entropy overflow (`>2` capabilities, `>10` rules, `>12` scopes, `>8` tasks), confirm split before Stage 2.
 2. Dispatch `hanlin` (`brief.mjs author`) with workspace, baseline SHA, `PIPELINE_HOME`, structural commands, constants, confirmed decisions, rough DAG, and a one-shot 20–25m `create_heartbeat` backstop (delete on return). Author commits `proposal.md` rule-list first, pure-behavior `specs/` + `--stage specs` (no full suite pre-spec), then `tasks.md` (`Verify with:`, `Entry:`, `Required:`) + `acceptance sync` + full `--structural`. Stop exhausted authors cleanly on stall and reconcile author branch `git log` once instead of polling.
 3. Route `handoff` qualifies with author `COMPLETE`, structural exit 0, and matching SHA; run `/tier2-handoff` and `/paseo-handoff`.
 4. Resolve material human choices. Dispatch independent `anchasi` (`brief.mjs r0`, never the author or Proposal contributor) for read-only R0 (`[Pipeline] anchasi R0`; legacy `neon R0`/`hanlin R0` signers remain valid); reconcile HEAD, tracked diff and untracked files. Maximum two package rounds (full then delta); unresolved blockers go to human risk acceptance or termination.
@@ -73,7 +73,7 @@ Use 3 isolated stages (Stage 0 script → Stage 1 read-only facts → Stage 2 cl
 ## Start and execute after CP-1
 
 1. Commit frozen contract on default branch. Create integration worktree; run `prepare-task` (runs `install-hook`) per ready task. Foreign `core.hooksPath` or executable hooks refuse until `--replace-hooks` is approved.
-2. Run `plan`; dispatch printed stages (`ceshi` via `brief.mjs tester` for `dispatch-tester`; inspect Red SHA/failure before same-branch worker via `brief.mjs worker`). `BLOCKED_TESTER_RESULT`: inspect/resume tester. Workers run `worker-check`; `merge-task` rejects edits to `ceshi` Red paths without `--allow-test-infra`.
+2. Run `plan`; dispatch `ceshi` (`brief.mjs tester`) or worker (`brief.mjs worker`). If sandbox blocks `ceshi` commit, commit its staged Red files via `PASEO_AGENT_ID=<ceshi-uuid>`. Workers run `worker-check`; `merge-task` blocks `ceshi` Red edits without `--allow-test-infra`.
 3. Run `merge` from integration, then rerun `plan`. Worker retries twice; fourth branch needs human approval; steer or `/paseo-advisor` early.
 4. Keep at most one fixed `*/15 * * * *` `create_heartbeat` per active `pipeline.change` (never `*/30`, never per wave or child agent); delete once `plan` shows no open work. On resume, reread integration Done lines and `plan`; never duplicate dispatch.
 5. Post-CP-1 amendments need confirmation; new interface or security boundary needs delta R0.

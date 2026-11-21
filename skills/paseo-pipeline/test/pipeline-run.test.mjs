@@ -612,9 +612,22 @@ test('plan and status accept valid historical Uses references', () => {
   fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('  - Depends on: T-01', '  - Uses: T-01'));
   git(f.cwd, 'add', 'openspec/changes/chg/tasks.md');
   git(f.cwd, 'commit', '-qm', 'historical Uses');
-  for (const command of ['plan', 'status']) {
-    const r = run(f.cwd, f.localEnv, [command, dir, '--json']);
-    assert.equal(r.status, 0, `${command}: ${r.out}`);
-    assert.doesNotThrow(() => JSON.parse(r.stdout));
-  }
+    for (const command of ['plan', 'status']) {
+      const r = run(f.cwd, f.localEnv, [command, dir, '--json']);
+      assert.equal(r.status, 0, `${command}: ${r.out}`);
+      assert.doesNotThrow(() => JSON.parse(r.stdout));
+    }
+});
+
+test('prepare-task invoked from integration worktree defaults .claude/worktrees under primary checkout', () => {
+  const f = fixture({ done: true });
+  git(f.cwd, 'switch', '-q', 'main');
+  const intWt = path.join(path.dirname(f.cwd), `${path.basename(f.cwd)}-int`);
+  git(f.cwd, 'worktree', 'add', '-q', intWt, 'integration/chg');
+  const intChangeDir = path.join(intWt, 'openspec/changes/chg');
+  const r = run(intWt, f.localEnv, ['prepare-task', intChangeDir, 'T-02', '--json']);
+  assert.equal(r.status, 0, r.out);
+  const out = JSON.parse(r.stdout);
+  assert.ok(out.worktree.startsWith(fs.realpathSync(f.cwd)), `expected primary checkout root, got ${out.worktree}`);
+  assert.equal(fs.existsSync(path.join(intWt, '.claude')), false);
 });

@@ -874,7 +874,7 @@ if (!structural) {
     } else {
       advisories.push(`R0_HUMAN_EXCEPTION: freeze relies on a human risk acceptance at ${r0Match.sha}, not an independent hanlin pass; the open items and reasons must be recorded in rulings.md`);
       const rulings = read(path.join(changeDir, 'rulings.md'));
-      if (!rulings || !/^R0-\d+-/m.test(rulings)) advisories.push('R0_HUMAN_EXCEPTION_UNRULED: rulings.md has no `R0-<round>-<n>` entries; record each open item and why it was accepted');
+      if (!rulings || !/^(?:[-*]\s+)?R0-\d+-/m.test(rulings)) advisories.push('R0_HUMAN_EXCEPTION_UNRULED: rulings.md has no `R0-<round>-<n>` entries; record each open item and why it was accepted');
     }
   } else {
     // A pass minted by the contract's own author is not a review. Every commit that wrote this
