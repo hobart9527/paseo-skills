@@ -297,8 +297,8 @@ function inside(parent, child) {
   return rel === '' || (!rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel));
 }
 
-function primaryCheckoutWarning(cwd, command) {
-  if (typeof cwd !== 'string' || !cwd || !/\bcd\b/.test(command)) return null;
+function primaryRootForWorktree(cwd) {
+  if (typeof cwd !== 'string' || !cwd) return null;
   const ctx = repoContext(cwd);
   if (!ctx || ctx.isPrimary) return null;
   const common = runGit(ctx.root, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
@@ -309,16 +309,32 @@ function primaryCheckoutWarning(cwd, command) {
   const commonAbs = realOrResolved(path.isAbsolute(commonRaw) ? commonRaw : path.resolve(ctx.root, commonRaw));
   if (path.basename(commonAbs) !== '.git') return null;
   const primaryRoot = path.dirname(commonAbs);
-  if (primaryRoot === ctx.root) return null;
+  return primaryRoot === ctx.root ? null : { ctx, primaryRoot };
+}
 
-  const cdRegex = /(?:^|[;&|(\s])cd\s+(?:-P\s+|-L\s+)?(?:"([^"\n]+)"|'([^'\n]+)'|([^\s;&|()]+))/g;
-  for (const match of command.matchAll(cdRegex)) {
+function targetsPrimary(cwd, ctx, primaryRoot, command, regex, skipDash = false) {
+  for (const match of command.matchAll(regex)) {
     const rawTarget = (match[1] ?? match[2] ?? match[3] ?? '').trim();
-    if (!rawTarget || rawTarget.startsWith('$') || rawTarget.startsWith('~') || rawTarget === '-') continue;
+    if (!rawTarget || rawTarget.startsWith('$') || rawTarget.startsWith('~') || (skipDash && rawTarget === '-')) continue;
     const resolved = realOrResolved(path.isAbsolute(rawTarget) ? rawTarget : path.resolve(cwd, rawTarget));
-    if (inside(primaryRoot, resolved) && !inside(ctx.root, resolved)) {
-      return `You are in a linked worktree (${ctx.root}); avoid \`cd\` into the shared primary checkout (${primaryRoot}). Use \`git -C <abs-path>\` or absolute paths instead.`;
-    }
+    if (inside(primaryRoot, resolved) && !inside(ctx.root, resolved)) return true;
+  }
+  return false;
+}
+
+function primaryCheckoutWarning(cwd, command) {
+  const hasCd = /\bcd\b/.test(command);
+  const hasGitC = /\bgit\b[^;&|\n]*\s-C\s/.test(command);
+  if (!hasCd && !hasGitC) return null;
+  const info = primaryRootForWorktree(cwd);
+  if (!info) return null;
+  const { ctx, primaryRoot } = info;
+
+  if (hasCd && targetsPrimary(cwd, ctx, primaryRoot, command, /(?:^|[;&|(\s])cd\s+(?:-P\s+|-L\s+)?(?:"([^"\n]+)"|'([^'\n]+)'|([^\s;&|()]+))/g, true)) {
+    return `You are in a linked worktree (${ctx.root}); avoid \`cd\` into the shared primary checkout (${primaryRoot}). Use absolute paths for reads, or call \`ExitWorktree\` (\`action: "keep"\`) before running git in the primary checkout (worktree-isolated sessions block \`git -C\` to another checkout).`;
+  }
+  if (hasGitC && targetsPrimary(cwd, ctx, primaryRoot, command, /(?:^|[;&|(\s])git\s+(?:[^\n;&|]*?\s)?-C\s+(?:"([^"\n]+)"|'([^'\n]+)'|([^\s;&|()]+))/g)) {
+    return `Worktree-isolated sessions block \`git -C\` targeting the primary checkout (${primaryRoot}). Call \`ExitWorktree\` (\`action: "keep"\`) first to return to ${primaryRoot}, or delegate the primary-checkout git operation to a Paseo agent rooted there.`;
   }
   return null;
 }

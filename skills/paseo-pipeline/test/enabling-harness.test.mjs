@@ -206,13 +206,22 @@ test('tool-guard-hook incremental cache stays exact across appends/rewrites and 
     return out.stdout ? JSON.parse(out.stdout).hookSpecificOutput : {};
   };
 
-  // Worktree Bash cd to primary checkout triggers advisory without denying; cd inside worktree does not.
+  // Worktree Bash cd / git -C to primary checkout triggers ExitWorktree advisory without denying; inside worktree does not.
   const warn = guard({ cwd: wtReal, tool_name: 'Bash', tool_input: { command: `cd ${JSON.stringify(root)} && git status` } });
   assert.match(warn.additionalContext, /avoid `cd` into the shared primary checkout/);
+  assert.match(warn.additionalContext, /ExitWorktree/);
+  assert.doesNotMatch(warn.additionalContext, /Use `git -C <abs-path>`/);
   assert.equal(warn.permissionDecision, undefined);
+
+  const gitCWarn = guard({ cwd: wtReal, tool_name: 'Bash', tool_input: { command: `git -C ${JSON.stringify(root)} status --short` } });
+  assert.match(gitCWarn.additionalContext, /ExitWorktree/);
+  assert.equal(gitCWarn.permissionDecision, undefined);
 
   const safeInside = guard({ cwd: wtReal, tool_name: 'Bash', tool_input: { command: `cd ${JSON.stringify(path.join(wtReal, 'src'))} && pwd` } });
   assert.deepEqual(safeInside, {});
+
+  const safeOwnGitC = guard({ cwd: wtReal, tool_name: 'Bash', tool_input: { command: `git -C ${JSON.stringify(wtReal)} status --short` } });
+  assert.deepEqual(safeOwnGitC, {});
 
   // Incremental cache correctness on append and rewrite.
   const transcript = path.join(stateDir, 'transcript.jsonl');

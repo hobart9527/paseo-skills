@@ -186,3 +186,11 @@ test('tier2-handoff wraps paseo-handoff with the brief and pre-dispatch check', 
   for (const token of ['name: tier2-handoff', 'docs/tier2-handoff-brief.md', 'Pre-dispatch check', 'Slices', '/paseo-handoff', 'size estimate']) assert.ok(wrapper.includes(token), token);
   assert.ok(wrapper.length < 3000, `tier2-handoff is ${wrapper.length} chars`);
 });
+
+test('ship skill exits EnterWorktree before main-dir ops, handles 403 local fallback, and respects accepted BLOCKED', () => {
+  const ship = fs.readFileSync(path.join(dir, '..', 'ship', 'SKILL.md'), 'utf8');
+  for (const token of ['ExitWorktree', 'action: "keep"', 'HTTP 403', 'unaccepted', 'do NOT push or deploy an unmerged']) {
+    assert.ok(ship.includes(token), `ship missing ${token}`);
+  }
+  assert.doesNotMatch(ship, /Run every merge step as `git -C <main-dir>`; stay in the current checkout/);
+});
