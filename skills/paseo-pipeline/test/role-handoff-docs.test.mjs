@@ -10,9 +10,9 @@ const read = (p) => fs.readFileSync(new URL(p, root), 'utf8');
 test('SKILL Roles table names every role token with a display name and no copy of the team map remains', () => {
   const skill = read('skills/paseo-pipeline/SKILL.md');
   const roles = rolesOf(skill);
-  // `neon` is 契约审查, the independent R0 reviewer; it is dispatched as a profile while the stage
-  // title stays `[Pipeline] hanlin R0`. It gates CP-1, so it is a role, not an implementation detail.
-  assert.deepEqual(roles, ['chanpin', 'hanlin', 'ceshi', 'gongbu', 'gaogong', 'jiangzuo', 'anchasi', 'neon', 'shangshu']);
+  // `anchasi` is the unified independent reviewer (R0, Tier 2, FINAL); `neon` remains recognized
+  // only for historical compatibility in lib/roles.mjs and freeze-check signer validation.
+  assert.deepEqual(roles, ['chanpin', 'hanlin', 'ceshi', 'gongbu', 'gaogong', 'jiangzuo', 'anchasi', 'shangshu']);
   for (const gone of ['docs/agent-team.md', 'docs/agent-profiles.json']) {
     assert.ok(!fs.existsSync(fileURLToPath(new URL(gone, root))), `${gone} must stay deleted: live profiles are the single source`);
     assert.ok(!skill.includes(gone), `SKILL.md must not point at ${gone}`);

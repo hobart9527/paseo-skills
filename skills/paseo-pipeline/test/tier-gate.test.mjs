@@ -368,13 +368,16 @@ test('阈值不发散：TIER_RULES、SKILL、author 模板与正本的 Tier 1 �
   if (fs.existsSync(canon)) copies['~/.claude/CLAUDE.md'] = fs.readFileSync(canon, 'utf8');
   const routing = path.join(os.homedir(), '.paseo', 'task-routing.md');
   if (fs.existsSync(routing)) copies['~/.paseo/task-routing.md'] = fs.readFileSync(routing, 'utf8');
-  const tier3 = /(?:≥\s*|>=\s*|at least |tasks >= )(\d+)[^\n]{0,24}?(?:任务|tasks)?[^\n]{0,24}?maxWidth\s*(?:≥|>=)\s*(\d+)|maxWidth >= (\d+)` and `tasks >= (\d+)/g;
+  const tier3 = /(?:≥\s*|>=\s*|at least |tasks >= )(\d+)[^\n]{0,40}?(?:实质?任务|substantive tasks|tasks)?[^\n]{0,40}?maxWidth\s*(?:≥|>=)\s*(\d+)/g;
   for (const [name, text] of Object.entries(copies)) {
     for (const m of text.matchAll(/Tier 1[^\n]{0,8}?(?:≤|<=)\s*(\d+)/g)) assert.equal(Number(m[1]), DEFAULT_LIMIT, `${name}: Tier 1 上限 ${m[0]}`);
     for (const m of text.matchAll(tier3)) {
-      const tasks = Number(m[1] ?? m[4]);
-      const width = Number(m[2] ?? m[3]);
-      assert.deepEqual([tasks, width], [4, 2], `${name}: Tier 3 门槛 ${m[0]}`);
+      const tasks = Number(m[1]);
+      const width = Number(m[2]);
+      assert.deepEqual([tasks, width], [4, 3], `${name}: Tier 3 门槛 ${m[0]}`);
+    }
+    if (name !== '~/.paseo/task-routing.md') {
+      assert.match(text, /maxWidth\s*(?:≥|>=)\s*2[^\n]{0,36}1\.8/, `${name}: maxWidth>=2 ROI fallback`);
     }
   }
   assert.ok(fs.existsSync(path.join(repo, 'docs', 'tier2-handoff-brief.md')));

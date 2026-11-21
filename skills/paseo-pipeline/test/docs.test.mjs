@@ -23,7 +23,7 @@ test('pipeline prompt files and required headings exist', () => {
 test('skill preserves route, human gates and all dispatch profiles', () => {
   const skill = read('SKILL.md');
   for (const token of ['maxWidth >= 2', 'tasks >= 4', 'never split', 'freeze-check', 'handoff', 'CP-1', 'CP-2', 'pipeline-run.mjs', 'preflight.mjs', 'namespace.mjs', 'brief.mjs', 'worker-check', 'tier2-verify', 'acceptance sync', 'pinned']) assert.ok(skill.includes(token), token);
-  for (const role of ['chanpin', 'hanlin', 'ceshi', 'gongbu', 'gaogong', 'jiangzuo', 'anchasi', 'neon', 'shangshu']) assert.ok(skill.includes(role), role);
+  for (const role of ['chanpin', 'hanlin', 'ceshi', 'gongbu', 'gaogong', 'jiangzuo', 'anchasi', 'shangshu']) assert.ok(skill.includes(role), role);
   for (const token of ['list_profiles', 'Red tests', 'read-only', 'install-hook', 'Dispatch `hanlin`']) assert.ok(skill.includes(token), token);
   assert.ok(skill.length < 10000, `SKILL.md is ${skill.length} chars`);
 });

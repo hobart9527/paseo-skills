@@ -27,12 +27,12 @@ const PROTECTED_BRANCHES = new Set(['main', 'master']);
 
 // 规则正本是 ~/.claude/CLAUDE.md；这里只放必须看到的精简摘要，阈值与正本一致。
 export const TIER_RULES = [
-  `先只读探查（rg/调研）再定档：Tier 1 ≤${DEFAULT_LIMIT} 个源文件、单一作用域 → 主 checkout 做；Tier 2 >${DEFAULT_LIMIT} 个源文件或跨作用域 → 进 linked worktree（收口必跑 tier2-verify）；Tier 3 ≥4 任务且 maxWidth≥2 → /paseo-pipeline。`,
+  `先只读探查（rg/调研）再定档：Tier 1 ≤${DEFAULT_LIMIT} 个源文件、单一作用域 → 主 checkout 做；Tier 2 >${DEFAULT_LIMIT} 个源文件或跨作用域 → 进 linked worktree（收口必跑 tier2-verify）；Tier 3 ≥4 实质任务且 maxWidth≥3（或 maxWidth≥2 且加速比≥1.8）→ /paseo-pipeline。`,
   '风险：风险操作（部署、生产写入、迁移、push）要用户原话授权与回滚方案；风险代码（鉴权、并发幂等、schema、资金、外部写入或改弱既有测试）须过 risk-scan + 1 个独立 reviewer（1+1 上限），不升档、不需授权。其余见 ~/.claude/CLAUDE.md。',
 ].join('\n');
 
 const TIER_2_DEFINITION = `Tier 2：>${DEFAULT_LIMIT} 个源文件或跨作用域 → 先隔离到 linked worktree，主会话自己进去做；整体可独立完成或需要并行时才委派（brief.mjs tier2 / /tier2-handoff → /paseo-handoff），收口必跑 tier2-verify。`;
-const TIER_3_DEFINITION = 'Tier 3：主会话粗画 DAG 有 ≥4 个任务且 maxWidth≥2 → /paseo-pipeline。';
+const TIER_3_DEFINITION = 'Tier 3：主会话粗画 DAG 有 ≥4 个实质任务且 maxWidth≥3（或 maxWidth≥2 且加权加速比≥1.8）→ /paseo-pipeline。';
 
 function stateDir() {
   return process.env.PIPELINE_TIER_GATE_STATE || path.join(os.tmpdir(), 'paseo-tier-gate');

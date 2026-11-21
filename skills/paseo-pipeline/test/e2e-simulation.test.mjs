@@ -24,6 +24,7 @@ const GONGBU_1 = '11111111-0002-4000-8000-000000000002';
 const GONGBU_2 = '22222222-0002-4000-8000-000000000002';
 const GONGBU_3 = '33333333-0002-4000-8000-000000000002';
 const GONGBU_4 = '44444444-0002-4000-8000-000000000002';
+const GONGBU_5 = '55555555-0002-4000-8000-000000000002';
 // Independent R0 package reviewer; must differ from the author.
 const HANLIN_1 = '11111111-0004-4000-8000-000000000004';
 
@@ -32,7 +33,8 @@ const AGENTS = [
   { id: GONGBU_2, shortId: '2222002', provider: 'claude/haiku' },
   { id: GONGBU_3, shortId: '3333002', provider: 'claude/sonnet' },
   { id: GONGBU_4, shortId: '4444002', provider: 'claude/haiku' },
-  { id: HANLIN_1, shortId: '1111004', name: '[Pipeline] hanlin R0', provider: 'claude/cc' },
+  { id: GONGBU_5, shortId: '5555002', provider: 'claude/sonnet' },
+  { id: HANLIN_1, shortId: '1111004', name: '[Pipeline] anchasi R0', provider: 'codex/gpt' },
 ];
 
 function setupSandbox() {
@@ -119,6 +121,8 @@ Add numbers.
 ### Scenario: SCEN-MUL multiplication
 Multiply numbers.
 - **Verify:** node --test test/mul.test.mjs
+### Scenario: SCEN-SUB subtraction
+Subtract numbers.
 ### Scenario: SCEN-INTEGRATION calculator facade
 Composite arithmetic expressions.
 - **Verify:** npm test
@@ -131,6 +135,7 @@ Composite arithmetic expressions.
 - **D-02 add** affects src/add.mjs
 - **D-03 mul** affects src/mul.mjs
 - **D-04 calculator facade** affects src/calc.mjs
+- **D-05 sub** affects src/sub.mjs
 `);
 
   write(`openspec/changes/${change}/acceptance.md`, `# Acceptance Matrix
@@ -139,6 +144,7 @@ Composite arithmetic expressions.
 | SCEN-CORE | CLI | T-01 | node --test test/core.test.mjs | yes | PENDING | pending |
 | SCEN-ADD | CLI | T-02 | node --test test/add.test.mjs | yes | PENDING | pending |
 | SCEN-MUL | CLI | T-03 | node --test test/mul.test.mjs | yes | PENDING | pending |
+| SCEN-SUB | CLI | T-05 | node --test test/sub.test.mjs | yes | PENDING | pending |
 | SCEN-INTEGRATION | CLI | T-04 | npm test | yes | PENDING | pending |
 `);
 
@@ -159,8 +165,14 @@ Composite arithmetic expressions.
   - Write scope: src/mul.mjs,test/mul.test.mjs
   - Verify with: node --test test/mul.test.mjs
   - Scen: SCEN-MUL
+- [ ] 2.3 T-05 sub
+  - Depends on: T-01
+  - Write scope: src/sub.mjs,test/sub.test.mjs
+  - Entry: CLI
+  - Verify with: node --test test/sub.test.mjs
+  - Scen: SCEN-SUB
 - [ ] 3.1 T-04 facade
-  - Depends on: T-02,T-03
+  - Depends on: T-02,T-03,T-05
   - Write scope: src/calc.mjs,test/calc.test.mjs
   - Verify with: node --test test/calc.test.mjs && npm test
   - Scen: SCEN-INTEGRATION
@@ -208,8 +220,8 @@ Findings: none. Contract package is coherent; scopes disjoint; Verify narrow.
   const fcValid = runFreezeCheck(changeDir, ['--json']);
   assert.equal(fcValid.status, 0, fcValid.stdout);
   const contractSummary = JSON.parse(fcValid.stdout);
-  assert.equal(contractSummary.tasks, 4);
-  assert.equal(contractSummary.maxWidth, 2);
+  assert.equal(contractSummary.tasks, 5);
+  assert.equal(contractSummary.maxWidth, 3);
   assert.equal(contractSummary.route, 'pipeline');
   assert.deepEqual(contractSummary.blocking, []);
 
@@ -374,6 +386,25 @@ test('multiply numbers', () => {
   assert.equal(rMergeT3.status, 0, rMergeT3.stdout + rMergeT3.stderr);
   assert.match(rMergeT3.stdout, /merged T-03/);
 
+  // 5.4 Wave 2 task T-05 (Sub)
+  git('switch', '-qc', `task/${change}/T-05`, t1MergedHead);
+  workerCommit(cwd, git, 'feat(T-05): clean subtraction', GONGBU_5, {
+    'test/sub.test.mjs': `import test from 'node:test';
+import assert from 'node:assert/strict';
+import { sub } from '../src/sub.mjs';
+
+test('subtract numbers', () => {
+  assert.equal(typeof sub, 'function');
+  assert.equal(sub(9, 4), 5);
+});
+`,
+    'src/sub.mjs': 'export function sub(a, b) { return a - b; }\n',
+  });
+  git('switch', '-q', `integration/${change}`);
+  const rMergeT5 = runMergeTask([`task/${change}/T-05`, 'T-05']);
+  assert.equal(rMergeT5.status, 0, rMergeT5.stdout + rMergeT5.stderr);
+  assert.match(rMergeT5.stdout, /merged T-05/);
+
   // ------------------------------------------------------------------------
   // 6. Sink Task T-04: Calculator Facade & Full Suite Integration (Wave 3)
   // ------------------------------------------------------------------------
@@ -419,19 +450,21 @@ export function calculate(op, a, b) {
   assert.match(finalTasks, /\[x\] 1\.1 T-01 core/);
   assert.match(finalTasks, /\[x\] 2\.1 T-02 add/);
   assert.match(finalTasks, /\[x\] 2\.2 T-03 mul/);
+  assert.match(finalTasks, /\[x\] 2\.3 T-05 sub/);
   assert.match(finalTasks, /\[x\] 3\.1 T-04 facade/);
-  assert.equal((finalTasks.match(/Done: source=/g) || []).length, 4);
-  assert.equal((finalTasks.match(/review=worker/g) || []).length, 4);
+  assert.equal((finalTasks.match(/Done: source=/g) || []).length, 5);
+  assert.equal((finalTasks.match(/review=worker/g) || []).length, 5);
 
   // 7.2 run-log.md records all merges
   const finalRunLog = fs.readFileSync(path.join(cwd, `openspec/changes/${change}/run-log.md`), 'utf8');
   assert.match(finalRunLog, /merge task=T-01/);
   assert.match(finalRunLog, /merge task=T-02/);
   assert.match(finalRunLog, /merge task=T-03/);
+  assert.match(finalRunLog, /merge task=T-05/);
   assert.match(finalRunLog, /merge task=T-04/);
   // Every merge records phase timings; Verify and regression always run.
   const timings = [...finalRunLog.matchAll(/timing_ms=(\{[^}]*\})/g)].map((m) => JSON.parse(m[1]));
-  assert.equal(timings.length, 4);
+  assert.equal(timings.length, 5);
   for (const t of timings) assert.ok(t.total >= 0 && t.regression >= 0 && Number.isInteger(t.replayed), JSON.stringify(t));
 
   // 7.3 Full suite passes completely on integration HEAD
@@ -442,6 +475,7 @@ export function calculate(op, a, b) {
   // 7.4 Git integration log is clean and linear-ordered merge commits
   const mergeCommits = git('log', '--oneline', '--merges');
   assert.match(mergeCommits, /merge\(T-04\)/);
+  assert.match(mergeCommits, /merge\(T-05\)/);
   assert.match(mergeCommits, /merge\(T-03\)/);
   assert.match(mergeCommits, /merge\(T-02\)/);
   assert.match(mergeCommits, /merge\(T-01\)/);

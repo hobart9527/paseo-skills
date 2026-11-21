@@ -166,19 +166,18 @@ test('role without a profile is MISSING_PROFILE', () => {
   assert.match(r.out, /MISSING_PROFILE gongbu/);
 });
 
-// SCEN-PROF-01: the R0 reviewer is a dispatched role, not a nesting detail of `hanlin`.
+// SCEN-PROF-01: the R0 reviewer (`anchasi`) is a dispatched role, not a nesting detail of `hanlin`.
 // The real SKILL.md must name it — a role the table omits is never linted at all — and when its
 // mapped profile is absent the lint fails instead of silently skipping the role that gates CP-1.
 test('SCEN-PROF-01 the R0 reviewer role without its mapped profile is MISSING_PROFILE', () => {
   const skillFile = fileURLToPath(new URL('../SKILL.md', import.meta.url));
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'profiles-real-'));
   const configFile = path.join(dir, 'config.json');
-  fs.writeFileSync(configFile, JSON.stringify({ daemon: { agentProfiles: all().filter((p) => p.id !== PROFILE_IDS.neon) } }));
+  fs.writeFileSync(configFile, JSON.stringify({ daemon: { agentProfiles: all().filter((p) => p.id !== 'agent_profile_anchasi') } }));
   const real = spawnSync('node', [script, '--skill', skillFile, '--config', configFile], { encoding: 'utf8' });
   assert.equal(real.status, 1, real.stdout);
-  // The finding names the id it resolved, so a table row with no mapping is distinguishable from
-  // a wrong id: `agent_profile_neon` was never going to exist.
-  assert.match(real.stdout, new RegExp(`MISSING_PROFILE neon \\(${PROFILE_IDS.neon}\\)`));
+  assert.match(real.stdout, /MISSING_PROFILE anchasi \(agent_profile_anchasi\)/);
+  // Legacy `neon` id resolution remains verified via synthetic 9-role SKILL fixture.
   const r = run(all().filter((p) => p.id !== PROFILE_IDS.neon));
   assert.equal(r.status, 1, r.out);
   assert.match(r.out, /MISSING_PROFILE neon/);

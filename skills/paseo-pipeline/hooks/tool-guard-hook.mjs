@@ -7,6 +7,7 @@ import { logHookError, repoContext } from '../lib/tier-gate.mjs';
 import { paseoHome, loadProfiles, profilePair } from '../lib/paseo.mjs';
 import { runGit } from '../lib/git.mjs';
 import { recordEvent } from '../lib/telemetry.mjs';
+import { recordAuthorRead } from '../lib/author-guard.mjs';
 
 const LIMIT = 2 * 1024 * 1024;
 const TAIL_ANCHOR = 256;
@@ -337,6 +338,8 @@ async function main() {
       recordEvent('tool_guard', { action: 'advise', reasonCode: 'worktree_cd_primary' });
       contexts.push(cdWarn);
     }
+    const authorGuard = recordAuthorRead({ cwd: payload?.cwd, sessionId: payload?.session_id, command });
+    if (authorGuard?.message) contexts.push(authorGuard.message);
     if (contexts.length) output({ additionalContext: contexts.join('\n') });
   }
   if (typeof name !== 'string' || !name.startsWith('mcp__')) return;

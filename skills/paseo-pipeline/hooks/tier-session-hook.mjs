@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { TIER_RULES, skipInjection, logHookError } from '../lib/tier-gate.mjs';
+import { assessAuthorCompact } from '../lib/author-guard.mjs';
 
 export const SESSION_CONTEXT = [
   '[分级规则·会话级] 按以下红线选择通道：',
@@ -20,9 +21,15 @@ async function main() {
   let payload;
   try { payload = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { payload = undefined; }
   if (shouldSkipSource(payload?.source)) return;
-  if (skipInjection(payload?.cwd)) return;
+  const compactNotice = payload?.source === 'compact'
+    ? assessAuthorCompact({ cwd: payload?.cwd, sessionId: payload?.session_id })
+    : null;
+  const contexts = [];
+  if (compactNotice) contexts.push(compactNotice);
+  if (!skipInjection(payload?.cwd)) contexts.push(SESSION_CONTEXT);
+  if (!contexts.length) return;
   fs.writeSync(1, `${JSON.stringify({
-    hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: SESSION_CONTEXT },
+    hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: contexts.join('\n\n') },
   })}\n`);
 }
 

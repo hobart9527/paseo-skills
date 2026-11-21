@@ -1231,7 +1231,9 @@ test('rejects a concurrent Read of a generated path', () => {
 test('no digest artifact is required and none is checked', () => {
   const files = { 'proposal.md': 'x', 'acceptance.md': acceptance, 'specs/a/spec.md': '### Scenario: SCEN-1\n- **Verify:** node --test test/shared.test.mjs\n', 'tasks.md': contract, 'review.md': REVIEW };
   const report = JSON.parse(execFileSync('node', [path.join(root, 'freeze-check.mjs'), change(files), '--json', '--skip-signer-check'], { encoding: 'utf8' }));
-  assert.equal(report.route, 'pipeline');
+  // `contract` is a narrow 4-task diamond (maxWidth=2, weightedSpeedup=1.33 < 1.8), so ROI routes handoff.
+  assert.equal(report.route, 'handoff');
+  assert.ok(report.advisories.some((item) => item.startsWith('ADVISORY_LOW_ROI_HANDOFF:')));
   assert.ok(!report.advisories.some((item) => item.startsWith('ADVISORY_BASELINE_ALIGNMENT')));
 });
 
@@ -1244,9 +1246,23 @@ test('routing wave width follows runtime Uses skeleton dependencies', () => {
   assert.equal(report.route, 'handoff');
   assert.match(report.maxWidthMeaning, /heuristic/);
   assert.match(report.weightedSpeedupMeaning, /unmeasured/);
-  const parallel = JSON.parse(freezeStructural(scheduleContract).stdout);
-  assert.equal(parallel.maxWidth, 2);
-  assert.equal(parallel.route, 'pipeline');
+  // maxWidth=2 with weightedSpeedup=1.38 < 1.8 routes handoff; maxWidth=3 qualifies for pipeline.
+  const narrowParallel = JSON.parse(freezeStructural(scheduleContract).stdout);
+  assert.equal(narrowParallel.maxWidth, 2);
+  assert.equal(narrowParallel.route, 'handoff');
+  assert.ok(narrowParallel.advisories.some((item) => item.startsWith('ADVISORY_LOW_ROI_HANDOFF:')));
+  const wideContract = scheduleContract
+    .replace('- [ ] 1.4 T-03 sink\n  - Depends on: T-00,T-01,T-02', `- [ ] 1.3.1 T-04 gamma
+  - Uses: T-00
+  - Write scope: src/gamma,test/gamma.test.mjs
+  - Review: deferred
+  - Verify with: node --test test/gamma.test.mjs
+  - Scen: SCEN-1
+- [ ] 1.4 T-03 sink
+  - Depends on: T-00,T-01,T-02,T-04`);
+  const wideParallel = JSON.parse(freezeStructural(wideContract).stdout);
+  assert.equal(wideParallel.maxWidth, 3);
+  assert.equal(wideParallel.route, 'pipeline');
 });
 
 test('freeze rejects mixed Uses and Depends on deadlock', () => {
@@ -1297,7 +1313,7 @@ test('non-graph blocks retain advisory route needed before R0', () => {
   assert.equal(result.status, 1);
   const report = JSON.parse(result.stdout);
   assert.ok(report.blocking.some((item) => item.startsWith('MISSING_R0_SIGNOFF')));
-  assert.equal(report.route, 'pipeline');
+  assert.equal(report.route, 'handoff');
   assert.equal(typeof report.weightedSpeedup, 'number');
 });
 
@@ -2254,16 +2270,15 @@ function fullRepo({ scen = 'SCEN-CAP-01', verify = true, ...overrides } = {}) {
   return dir;
 }
 
-test('SCEN-FULL-01 a full run with a Verify-less scenario blocks like the staged run', () => {
+test('SCEN-FULL-01 pure-behavior specs without Verify pass both staged and full runs (ADR-0006)', () => {
   const dir = fullRepo({ verify: false });
   const full = run(dir, ['--structural', '--skip-signer-check']);
-  assert.equal(full.status, 1, full.stdout + full.stderr);
-  assert.match(stageReport(full).blocking.join('\n'), /^MISSING_SCEN_VERIFY SCEN-CAP-01 specs\/cap\/spec\.md$/m);
-  // Same package, same code, staged: the two modes agree instead of the full run passing.
+  assert.equal(full.status, 0, full.stdout + full.stderr);
+  assert.doesNotMatch(stageReport(full).blocking.join('\n'), /MISSING_SCEN_VERIFY/);
   const stage = runStage(dir);
-  assert.equal(stage.status, 1);
-  assert.match(stageReport(stage).blocking.join('\n'), /^MISSING_SCEN_VERIFY SCEN-CAP-01 specs\/cap\/spec\.md$/m);
-  // A declaration with its Verify line stays green in both modes.
+  assert.equal(stage.status, 0, stage.stdout + stage.stderr);
+  assert.doesNotMatch(stageReport(stage).blocking.join('\n'), /MISSING_SCEN_VERIFY/);
+  // Legacy specs with inline - **Verify:** also remain green in both modes.
   for (const flags of [['--structural', '--skip-signer-check'], ['--structural', '--skip-signer-check', '--stage', 'specs']]) {
     const ok = run(fullRepo(), flags);
     assert.equal(ok.status, 0, `${flags.join(' ')}: ${ok.stdout}${ok.stderr}`);
@@ -2619,7 +2634,7 @@ test('decided, unreferenced and product decisions do not lose the graph route', 
     const result = run(dir, ['--structural', '--skip-signer-check']);
     assert.equal(result.status, 0, `${name}: ${result.stdout}`);
     const report = JSON.parse(result.stdout);
-    assert.equal(report.route, 'pipeline', name);
+    assert.equal(report.route, 'handoff', name);
     assert.doesNotMatch(report.blocking.join('\n'), /UNDECIDED_HARD_DECISION/, name);
     if (name === 'decided hard') assert.doesNotMatch(report.advisories.join('\n'), /ADVISORY_OPEN_DECISION OD-1/, name);
     else assert.match(report.advisories.join('\n'), /ADVISORY_OPEN_DECISION OD-1/, name);
@@ -2691,20 +2706,17 @@ test('stage specs: a decided, unreferenced or product-class decision does not bl
   }
 });
 
-// ---- staged specs check: every scenario needs a Verify command ----
-test('stage specs blocks a scenario with no Verify line, in both run modes', () => {
+// ---- staged specs check: pure observable specs without inline Verify pass --stage specs ----
+test('stage specs allows pure-behavior scenarios without Verify lines (ADR-0006)', () => {
   const without = '## ADDED Requirements\n### Requirement: r\n#### Scenario: SCEN-CAP-01 own\nWHEN a\nTHEN b\n';
   const dir = change({ 'proposal.md': 'x', 'specs/cap/spec.md': without });
   const result = runStage(dir);
-  assert.equal(result.status, 1, result.stdout + result.stderr);
-  assert.match(stageReport(result).blocking.join('\n'), /^MISSING_SCEN_VERIFY SCEN-CAP-01 specs\/cap\/spec\.md$/m);
-  // A scenario whose Verify sits after the next heading does not carry one.
-  const after = '## ADDED Requirements\n### Requirement: r\n#### Scenario: SCEN-CAP-01 own\nWHEN a\nTHEN b\n### Requirement: r2\n#### Scenario: SCEN-CAP-02 two\nWHEN c\nTHEN d\n- **Verify:** node --test test/cap.test.mjs\n';
-  const misplaced = runStage(change({ 'proposal.md': 'x', 'specs/cap/spec.md': after }));
-  assert.equal(misplaced.status, 1, misplaced.stdout);
-  const blocking = stageReport(misplaced).blocking.join('\n');
-  assert.match(blocking, /^MISSING_SCEN_VERIFY SCEN-CAP-01 specs\/cap\/spec\.md$/m);
-  assert.doesNotMatch(blocking, /MISSING_SCEN_VERIFY SCEN-CAP-02/);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(stageReport(result).blocking.join('\n'), /MISSING_SCEN_VERIFY/);
+  const multi = '## ADDED Requirements\n### Requirement: r\n#### Scenario: SCEN-CAP-01 own\nWHEN a\nTHEN b\n### Requirement: r2\n#### Scenario: SCEN-CAP-02 two\nWHEN c\nTHEN d\n';
+  const okMulti = runStage(change({ 'proposal.md': 'x', 'specs/cap/spec.md': multi }));
+  assert.equal(okMulti.status, 0, okMulti.stdout);
+  assert.doesNotMatch(stageReport(okMulti).blocking.join('\n'), /MISSING_SCEN_VERIFY/);
 });
 
 test('stage specs passes when every scenario carries one Verify line', () => {

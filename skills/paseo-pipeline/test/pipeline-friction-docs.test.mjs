@@ -76,12 +76,14 @@ test('open hard decisions stop authoring rather than defaulting', () => {
   }
 });
 
-test('scenario templates require Verify and handoff marks acceptance historical', () => {
+test('scenario templates keep specs pure-behavior while tasks own Entry and Verify', () => {
   const specTemplate = read('openspec-schema/templates/spec.md');
+  const tasksTemplate = read('openspec-schema/templates/tasks.md');
   const schema = read('openspec-schema/schema.yaml');
-  has(specTemplate, ['**Verify:**'], 'spec template');
-  assert.equal((specTemplate.match(/- \*\*WHEN\*\*/g) || []).length, (specTemplate.match(/- \*\*Verify:\*\*/g) || []).length, 'spec template scenario Verify count');
-  has(schema, ['one `**Verify:**` line per scenario'], 'schema specs instruction');
+  assert.ok(specTemplate.includes('- **WHEN**'), 'spec template WHEN');
+  assert.ok(!specTemplate.includes('- **Verify:**'), 'spec template stays pure observable behavior');
+  has(tasksTemplate, ['Entry:', 'Verify with:', 'Required:'], 'tasks template');
+  has(schema, ['pure observable behavior', 'Verify with:` lives ONLY in `tasks.md`', 'Entry:`'], 'schema specs/tasks single source');
   has(author, ['existing `acceptance.md` is historical', 'superseded by `tier2-verify`'], 'author.md handoff step');
 });
 
