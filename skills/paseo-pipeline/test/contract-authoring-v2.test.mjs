@@ -6,7 +6,8 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseTasks, entryForScenario, requiredForScenario } from '../lib/tasks.mjs';
-import { isReadOnlyBash } from '../lib/author-guard.mjs';
+import { isReadOnlyBash, recordAuthorRead } from '../lib/author-guard.mjs';
+import { parseAcceptanceTable } from '../lib/acceptance.mjs';
 import { summarizeTelemetry } from '../lib/telemetry.mjs';
 
 const skillRoot = path.resolve(import.meta.dirname, '..');
@@ -407,5 +408,130 @@ test('author-guard hooks: read thrashing warn/stop, git -C allowance, write rese
     assert.match(rep.stdout, /- author_guard: warn=1 stop=1 compact_empty_specs=1/);
   } finally {
     fs.rmSync(wt, { recursive: true, force: true });
+  }
+});
+
+test('acceptance-sync preserves multi-claimant shell-loop Verify commands, passes freeze-check, and fails closed on unsupported loops', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acc-sync-loop-'));
+  fs.mkdirSync(path.join(dir, 'specs', 'loopcap'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'proposal.md'), '## What Changes\n- R1: loop compose\n');
+  fs.writeFileSync(path.join(dir, 'specs', 'loopcap', 'spec.md'), [
+    '## ADDED Requirements',
+    '### Requirement: multi claimant verify',
+    '#### Scenario: SCEN-LOOP-01 runs all claimants',
+    'WHEN triggered',
+    'THEN all checks run',
+  ].join('\n'));
+
+  // Plain Verify + fail-fast for-loop claiming same SCEN -> BOTH preserved & escaped cleanly
+  fs.writeFileSync(path.join(dir, 'tasks.md'), [
+    '- [ ] 1.1 T-01 alpha',
+    '  - Write scope: src/a.mjs,test/a.test.mjs',
+    '  - Entry: CLI',
+    '  - Verify with: node --test test/a.test.mjs',
+    '  - Scenarios: SCEN-LOOP-01',
+    '- [ ] 1.2 T-02 beta',
+    '  - Write scope: src/b.mjs,test/b.test.mjs',
+    '  - Entry: CLI',
+    '  - Verify with: for f in test/b.test.mjs; do node --test $f || exit 1; done',
+    '  - Scenarios: SCEN-LOOP-01',
+  ].join('\n'));
+  const res1 = spawnSync(process.execPath, [script('acceptance-sync.mjs'), dir], { encoding: 'utf8' });
+  assert.equal(res1.status, 0, res1.stderr + res1.stdout);
+  const accText1 = fs.readFileSync(path.join(dir, 'acceptance.md'), 'utf8');
+  assert.match(accText1, /node --test test\/a\.test\.mjs && for f in test\/b\.test\.mjs; do node --test \$f \\\|\\\| exit 1; done/);
+  const parsed1 = parseAcceptanceTable(accText1);
+  assert.equal(parsed1.malformed.length, 0);
+  assert.equal(parsed1.rows[0].verify, 'node --test test/a.test.mjs && for f in test/b.test.mjs; do node --test $f || exit 1; done');
+  const fc1 = spawnSync(process.execPath, [script('freeze-check.mjs'), dir, '--structural', '--skip-signer-check', '--json'], { encoding: 'utf8' });
+  assert.equal(fc1.status, 0, fc1.stderr + fc1.stdout);
+
+  // Two fail-fast loops claiming same SCEN -> both preserved
+  fs.writeFileSync(path.join(dir, 'tasks.md'), [
+    '- [ ] 1.1 T-01 alpha',
+    '  - Write scope: src/a.mjs,test/a.test.mjs',
+    '  - Entry: CLI',
+    '  - Verify with: for f in test/a.test.mjs; do node --test $f || exit 1; done',
+    '  - Scenarios: SCEN-LOOP-01',
+    '- [ ] 1.2 T-02 beta',
+    '  - Write scope: src/b.mjs,test/b.test.mjs',
+    '  - Entry: CLI',
+    '  - Verify with: for f in test/b.test.mjs; do node --test $f || exit 1; done',
+    '  - Scenarios: SCEN-LOOP-01',
+  ].join('\n'));
+  const res2 = spawnSync(process.execPath, [script('acceptance-sync.mjs'), dir], { encoding: 'utf8' });
+  assert.equal(res2.status, 0, res2.stderr + res2.stdout);
+  const parsed2 = parseAcceptanceTable(fs.readFileSync(path.join(dir, 'acceptance.md'), 'utf8'));
+  assert.equal(parsed2.rows[0].verify, 'for f in test/a.test.mjs; do node --test $f || exit 1; done && for f in test/b.test.mjs; do node --test $f || exit 1; done');
+  const fc2 = spawnSync(process.execPath, [script('freeze-check.mjs'), dir, '--structural', '--skip-signer-check', '--json'], { encoding: 'utf8' });
+  assert.equal(fc2.status, 0, fc2.stderr + fc2.stdout);
+
+  // Unsupported control structure fails explicitly instead of omitting claimant
+  fs.writeFileSync(path.join(dir, 'tasks.md'), [
+    '- [ ] 1.1 T-01 alpha',
+    '  - Write scope: src/a.mjs,test/a.test.mjs',
+    '  - Entry: CLI',
+    '  - Verify with: node --test test/a.test.mjs',
+    '  - Scenarios: SCEN-LOOP-01',
+    '- [ ] 1.2 T-02 bad',
+    '  - Write scope: src/b.mjs,test/b.test.mjs',
+    '  - Entry: CLI',
+    '  - Verify with: if true; then node --test test/b.test.mjs; fi',
+    '  - Scenarios: SCEN-LOOP-01',
+  ].join('\n'));
+  const res3 = spawnSync(process.execPath, [script('acceptance-sync.mjs'), dir], { encoding: 'utf8' });
+  assert.equal(res3.status, 1);
+  assert.match(res3.stderr, /cannot compose Verify for SCEN-LOOP-01/);
+});
+
+test('author-guard recordAuthorRead uses O(1) session state cache with negative TTL and tasks.md invalidation', () => {
+  const prevState = process.env.PIPELINE_TIER_GATE_STATE;
+  const prevTel = process.env.PIPELINE_TELEMETRY_FILE;
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cache-'));
+  process.env.PIPELINE_TIER_GATE_STATE = stateDir;
+  process.env.PIPELINE_TELEMETRY_FILE = path.join(stateDir, 'metrics.jsonl');
+  try {
+    // 1) Repo with no active authoring change -> Read 1 misses, Read 2 hits negative cache
+    const cleanRepo = initRepo();
+    const neg1 = recordAuthorRead({ cwd: cleanRepo, sessionId: 's-neg', command: 'rg foo src/', now: 1000 });
+    assert.equal(neg1.action, 'none');
+    assert.equal(neg1.cacheHit, false);
+    const neg2 = recordAuthorRead({ cwd: cleanRepo, sessionId: 's-neg', command: 'rg foo src/', now: 2000 });
+    assert.equal(neg2.action, 'none');
+    assert.equal(neg2.cacheHit, true);
+    const negExpired = recordAuthorRead({ cwd: cleanRepo, sessionId: 's-neg', command: 'rg foo src/', now: 65_000 });
+    assert.equal(negExpired.cacheHit, false);
+
+    // 2) Active authoring repo with 50 sibling changes -> Read 1 populates cache, Reads 2+ stay cacheHit=true
+    const repo = initRepo();
+    for (let i = 0; i < 50; i += 1) {
+      const sibling = path.join(repo, 'openspec', 'changes', `done-${i}`);
+      fs.mkdirSync(sibling, { recursive: true });
+      fs.writeFileSync(path.join(sibling, 'proposal.md'), '# Done\n');
+      fs.writeFileSync(path.join(sibling, 'tasks.md'), '- [x] 1.1 T-01 d\n');
+    }
+    const activeDir = path.join(repo, 'openspec', 'changes', 'zzz-active');
+    fs.mkdirSync(activeDir, { recursive: true });
+    fs.writeFileSync(path.join(activeDir, 'proposal.md'), '# Active\n');
+
+    const r1 = recordAuthorRead({ cwd: repo, sessionId: 's-act', command: 'rg foo src/', now: 1000 });
+    assert.equal(r1.cacheHit, false);
+    assert.equal(r1.readCount, 1);
+
+    const r2 = recordAuthorRead({ cwd: repo, sessionId: 's-act', command: 'cat README.md', now: 2000 });
+    assert.equal(r2.cacheHit, true);
+    assert.equal(r2.readCount, 2);
+
+    // Creating tasks.md invalidates active cache immediately on next read
+    fs.writeFileSync(path.join(activeDir, 'tasks.md'), '- [ ] 1.1 T-01 x\n');
+    const rAfterTasks = recordAuthorRead({ cwd: repo, sessionId: 's-act', command: 'cat README.md', now: 3000 });
+    assert.equal(rAfterTasks.action, 'none');
+    assert.equal(rAfterTasks.cacheHit, false);
+    assert.equal(rAfterTasks.readCount, undefined);
+  } finally {
+    if (prevState === undefined) delete process.env.PIPELINE_TIER_GATE_STATE;
+    else process.env.PIPELINE_TIER_GATE_STATE = prevState;
+    if (prevTel === undefined) delete process.env.PIPELINE_TELEMETRY_FILE;
+    else process.env.PIPELINE_TELEMETRY_FILE = prevTel;
   }
 });

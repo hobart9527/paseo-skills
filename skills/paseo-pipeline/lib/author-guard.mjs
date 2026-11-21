@@ -11,6 +11,15 @@ export const DEFAULT_WARN_READS = 15;
 export const DEFAULT_STOP_READS = 25;
 export const DEFAULT_WARN_MIN = 10;
 export const DEFAULT_STOP_MIN = 18;
+const NEGATIVE_CACHE_TTL_MS = 60_000;
+
+function dirMtimeMs(dir) {
+  try { return fs.statSync(dir).mtimeMs; } catch { return null; }
+}
+
+function realOrResolved(p) {
+  try { return fs.realpathSync(p); } catch { return path.resolve(p); }
+}
 
 function stateDir() {
   return process.env.PIPELINE_TIER_GATE_STATE || path.join(os.tmpdir(), 'paseo-tier-gate');
@@ -135,25 +144,92 @@ function writeState(file, state) {
   fs.writeFileSync(file, JSON.stringify(state));
 }
 
+function resolveCachedActiveChange({ cwd, existing, now }) {
+  const cwdKey = realOrResolved(cwd);
+  const sameCwd = existing
+    && (existing.cwd === cwdKey || (existing.root && existing.cwd === existing.root && cwdKey === existing.root));
+
+  if (sameCwd) {
+    if (existing.change && existing.root && existing.changeDir) {
+      const hasProposal = fs.existsSync(path.join(existing.changeDir, 'proposal.md'));
+      const hasTasks = fs.existsSync(path.join(existing.changeDir, 'tasks.md'));
+      const changesMtimeMs = dirMtimeMs(path.join(existing.root, 'openspec', 'changes'));
+      if (hasProposal && !hasTasks && changesMtimeMs === existing.changesMtimeMs) {
+        return {
+          active: { root: existing.root, change: existing.change, changeDir: existing.changeDir },
+          cacheHit: true,
+          cwdKey,
+          root: existing.root,
+          changesMtimeMs,
+        };
+      }
+    } else if (existing.change === null) {
+      const changesMtimeMs = existing.root ? dirMtimeMs(path.join(existing.root, 'openspec', 'changes')) : null;
+      const fresh = now - (existing.detectedAt ?? 0) < NEGATIVE_CACHE_TTL_MS;
+      if (changesMtimeMs === existing.changesMtimeMs && fresh) {
+        return {
+          active: null,
+          cacheHit: true,
+          cwdKey,
+          root: existing.root ?? null,
+          changesMtimeMs,
+        };
+      }
+    }
+  }
+
+  const active = detectActiveAuthorChange(cwd);
+  const root = active?.root ?? repoContext(cwd)?.root ?? null;
+  const changesMtimeMs = root ? dirMtimeMs(path.join(root, 'openspec', 'changes')) : null;
+  return { active, cacheHit: false, cwdKey, root, changesMtimeMs };
+}
+
 export function recordAuthorRead({ cwd, sessionId, command, now = Date.now() } = {}) {
   try {
     if (process.env.PIPELINE_TIER_GATE === 'off' || process.env.PIPELINE_AUTHOR_GUARD === 'off') {
       return { action: 'none' };
     }
     if (typeof sessionId !== 'string' || !sessionId) return { action: 'none' };
+    if (typeof cwd !== 'string' || !cwd.trim()) return { action: 'none' };
     if (!isReadOnlyBash(command)) return { action: 'none' };
-    const active = detectActiveAuthorChange(cwd);
-    if (!active) return { action: 'none' };
 
     const file = guardStateFile(sessionId);
     const existing = readState(file);
+    const { active, cacheHit, cwdKey, root, changesMtimeMs } = resolveCachedActiveChange({ cwd, existing, now });
+    if (!active) {
+      if (!cacheHit) {
+        writeState(file, {
+          cwd: cwdKey,
+          root,
+          change: null,
+          changeDir: null,
+          changesMtimeMs,
+          detectedAt: now,
+          startedAt: now,
+          readCount: 0,
+          warnSent: false,
+          stopSent: false,
+        });
+      }
+      return { action: 'none', cacheHit };
+    }
+
     const sameChange = existing && existing.root === active.root && existing.change === active.change;
-    const state = sameChange
-      ? { ...existing }
-      : { root: active.root, change: active.change, startedAt: now, readCount: 0, warnSent: false, stopSent: false };
+    const state = {
+      cwd: cwdKey,
+      root: active.root,
+      change: active.change,
+      changeDir: active.changeDir,
+      changesMtimeMs,
+      detectedAt: cacheHit ? (existing?.detectedAt ?? now) : now,
+      startedAt: sameChange && typeof existing.startedAt === 'number' ? existing.startedAt : now,
+      readCount: sameChange && Number.isInteger(existing.readCount) ? existing.readCount : 0,
+      warnSent: sameChange ? Boolean(existing.warnSent) : false,
+      stopSent: sameChange ? Boolean(existing.stopSent) : false,
+    };
 
     state.readCount += 1;
-    const elapsedMs = Math.max(0, now - (typeof state.startedAt === 'number' ? state.startedAt : now));
+    const elapsedMs = Math.max(0, now - state.startedAt);
     const elapsedMin = elapsedMs / 60_000;
     const { warnReads, stopReads, warnMin, stopMin } = guardThresholds();
 
@@ -172,6 +248,7 @@ export function recordAuthorRead({ cwd, sessionId, command, now = Date.now() } =
         reasonCode: 'author_thrash_stop',
         readCount: state.readCount,
         elapsedMin,
+        cacheHit,
         message: `[author-guard] Thrashing limit reached (${state.readCount} read-only commands, ${Math.floor(elapsedMin)}m) on "${active.change}" without completing tasks.md. Stop reading source files and return INCOMPLETE with verified findings, missing facts, and remaining contract artifacts.`,
       };
     }
@@ -190,12 +267,13 @@ export function recordAuthorRead({ cwd, sessionId, command, now = Date.now() } =
         reasonCode: 'author_thrash_warn',
         readCount: state.readCount,
         elapsedMin,
+        cacheHit,
         message: `[author-guard] ${state.readCount} read-only commands (${Math.floor(elapsedMin)}m) on "${active.change}" without persisting a contract file. Consult openspec/changes/${active.change}/baseline-facts.md and write openspec/changes/${active.change}/specs/<cap>/spec.md now (or verify with freeze-check --stage specs).`,
       };
     }
 
     writeState(file, state);
-    return { action: 'none', readCount: state.readCount, elapsedMin };
+    return { action: 'none', readCount: state.readCount, elapsedMin, cacheHit };
   } catch (err) {
     logHookError('author-guard:read', err);
     return { action: 'none' };
@@ -213,10 +291,18 @@ export function recordAuthorWrite({ target, sessionId, now = Date.now() } = {}) 
     const ctx = repoContext(target);
     const root = ctx?.root || normalized.slice(0, normalized.indexOf('/openspec/changes/'));
     const change = match[1];
+    const changeDir = path.join(root, 'openspec', 'changes', change);
+    const changesMtimeMs = dirMtimeMs(path.join(root, 'openspec', 'changes'));
     const file = guardStateFile(sessionId);
+    const existing = readState(file);
+    const cwd = existing?.root === root && typeof existing.cwd === 'string' ? existing.cwd : root;
     writeState(file, {
+      cwd,
       root,
       change,
+      changeDir,
+      changesMtimeMs,
+      detectedAt: now,
       startedAt: now,
       readCount: 0,
       warnSent: false,

@@ -115,21 +115,8 @@ export function unprovableVerifyReason(text, loopList = null, rootCommand = text
   if (/[`\\]|\$\(/.test(shell)) {
     return 'a command substitution or an escaped character means a leg of this row is not the command the shell actually runs; run the check in a `test*` script';
   }
-  const LOOP = /^for\s+([A-Za-z_]\w*)\s+in\s+([^;]+);\s*do\s+([\s\S]+?);?\s*done$/i;
-  const loop = LOOP.exec(text);
-  if (loop) {
-    const list = loop[2].trim();
-    if (/[$`'"();&|<>\\]/.test(maskShell(list))) {
-      return 'a loop list with a substitution, quote or redirection is expanded by the shell and can leave the loop with zero iterations and status 0';
-    }
-    const bodyReason = unprovableVerifyReason(loop[3], list.split(/\s+/), rootCommand);
-    if (bodyReason) return bodyReason;
-    return EXIT_NONZERO.test(maskQuotes(loop[3]).trim())
-      ? null
-      : 'a `for` loop without a trailing `|| exit <1-255>` continues after a failed iteration and can finish with status 0';
-  }
-  const loopSpan = /for\s+[A-Za-z_]\w*\s+in\s+[^;]+;\s*do[\s\S]*?\bdone\b/i.exec(masked);
-  const inLoop = (index) => loopSpan !== null && index >= loopSpan.index && index < loopSpan.index + loopSpan[0].length;
+  const loopSpans = [...masked.matchAll(/for\s+[A-Za-z_]\w*\s+in\s+[^;]+;\s*do[\s\S]*?\bdone\b/gi)];
+  const inLoop = (index) => loopSpans.some((m) => index >= m.index && index < m.index + m[0].length);
   const cuts = [];
   for (let i = masked.indexOf('&&'); i !== -1; i = masked.indexOf('&&', i + 2)) if (!inLoop(i)) cuts.push(i);
   if (cuts.length) {
@@ -142,6 +129,19 @@ export function unprovableVerifyReason(text, loopList = null, rootCommand = text
       if (segmentReason) return segmentReason;
     }
     return null;
+  }
+  const LOOP = /^for\s+([A-Za-z_]\w*)\s+in\s+([^;]+);\s*do\s+([\s\S]+?);?\s*done$/i;
+  const loop = LOOP.exec(text);
+  if (loop) {
+    const list = loop[2].trim();
+    if (/[$`'"();&|<>\\]/.test(maskShell(list))) {
+      return 'a loop list with a substitution, quote or redirection is expanded by the shell and can leave the loop with zero iterations and status 0';
+    }
+    const bodyReason = unprovableVerifyReason(loop[3], list.split(/\s+/), rootCommand);
+    if (bodyReason) return bodyReason;
+    return EXIT_NONZERO.test(maskQuotes(loop[3]).trim())
+      ? null
+      : 'a `for` loop without a trailing `|| exit <1-255>` continues after a failed iteration and can finish with status 0';
   }
   let headMasked = masked.trim();
   let head = text.trim();

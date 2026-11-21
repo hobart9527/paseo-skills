@@ -8,6 +8,7 @@ import path from 'node:path';
 import { parseTasks, entryForScenario, requiredForScenario } from './lib/tasks.mjs';
 import { loadSpecTree, scanScenVerify } from './lib/spec-scan.mjs';
 import { parseAcceptanceTable } from './lib/acceptance.mjs';
+import { unprovableVerifyReason } from './lib/verify-policy.mjs';
 
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
@@ -56,13 +57,21 @@ if (fs.existsSync(acceptancePath)) {
   }
 }
 
-function resolveVerify(claimantTasks, scenVerify, prevVerify) {
+function escapeTableCell(text) {
+  return String(text || '').replace(/(?<!\\)\|/g, '\\|');
+}
+
+function resolveVerify(scenId, claimantTasks, scenVerify, prevVerify) {
   const taskVerifies = [...new Set(claimantTasks.map((t) => t.verify.trim()).filter(Boolean))];
   if (taskVerifies.length === 1) return taskVerifies[0];
   if (taskVerifies.length > 1) {
-    const plain = taskVerifies.filter((cmd) => !/^(?:for|while|if|case|until)\s/.test(cmd));
-    const list = plain.length ? plain : [taskVerifies[0]];
-    return list.length === 1 ? list[0] : list.join(' && ');
+    const composed = taskVerifies.join(' && ');
+    const reason = unprovableVerifyReason(composed);
+    if (reason) {
+      console.error(`[acceptance-sync] cannot compose Verify for ${scenId}: ${reason}`);
+      process.exit(1);
+    }
+    return composed;
   }
   return scenVerify || prevVerify || '<Verify command>';
 }
@@ -75,12 +84,12 @@ const rows = specsScenarios.map((scen) => {
   const taskEntry = claimantTasks.map((t) => entryForScenario(t, key)).find(Boolean);
   const entry = taskEntry || (prev?.entry && !/^<.*>$/.test(prev.entry) ? prev.entry : '<真实入口：route / UI / CLI>');
   const claimants = claimantTasks.map((t) => t.id).join(',') || '<unclaimed>';
-  const verify = resolveVerify(claimantTasks, scen.verify, prev?.verify);
+  const verify = resolveVerify(scen.id, claimantTasks, scen.verify, prev?.verify);
   const explicitReqs = claimantTasks.map((t) => requiredForScenario(t)).filter(Boolean);
   const required = explicitReqs.length
     ? (explicitReqs.includes('yes') ? 'yes' : 'no')
     : (prev?.required && /^(yes|no)$/i.test(prev.required) ? prev.required.toLowerCase() : 'yes');
-  return `| ${scen.id} | ${entry} | ${claimants} | ${verify} | ${required} | PENDING | pending |`;
+  return `| ${scen.id} | ${escapeTableCell(entry)} | ${claimants} | ${escapeTableCell(verify)} | ${required} | PENDING | pending |`;
 });
 
 const content = `# Acceptance Matrix\n\n${header}\n${rows.join('\n')}\n`;
