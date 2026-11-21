@@ -109,12 +109,41 @@ function settingsMismatchReason(input) {
   return `create_agent ${stated.map((field) => `${field} ${JSON.stringify(valueOf(field))}`).join(', ')} matches no profile for ${provider}. Candidates: ${candidates}. Use one candidate's values, or edit the profile in config.json if the setting really changed.`;
 }
 /** The planner and merge gate find pipeline agents by this label; an unlabelled one is invisible and gets re-dispatched. */
+const hasChangeLabel = (input) => {
+  const change = input?.labels?.['pipeline.change'];
+  return typeof change === 'string' && !!change.trim();
+};
+function liveChanges(cwd) {
+  const ctx = typeof cwd === 'string' && cwd ? repoContext(cwd) : null;
+  if (!ctx) return [];
+  try {
+    return fs.readdirSync(path.join(ctx.root, 'openspec', 'changes'), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name !== 'archive').map((entry) => entry.name);
+  } catch { return []; }
+}
+/** Fill pipeline.change only when exactly one live change is named by the title (its last token, per DISPATCH) or, failing that, by `openspec/changes/<name>` paths in the prompt. */
+function inferredChange(input, cwd) {
+  const live = liveChanges(cwd);
+  if (!live.length) return null;
+  const tokens = new Set(String(input.title).trim().split(/\s+/));
+  let hits = live.filter((name) => tokens.has(name));
+  if (!hits.length && typeof input.initialPrompt === 'string') {
+    hits = live.filter((name) => input.initialPrompt.includes(`openspec/changes/${name}/`) || input.initialPrompt.includes(`pipeline.change=${name}`));
+  }
+  return hits.length === 1 ? hits[0] : null;
+}
+function withPipelineLabel(input, cwd) {
+  const title = typeof input?.title === 'string' ? input.title.trim() : '';
+  if (!title.startsWith('[Pipeline]') || hasChangeLabel(input)) return null;
+  const change = inferredChange({ ...input, title }, cwd);
+  if (!change) return null;
+  const labels = input.labels && typeof input.labels === 'object' && !Array.isArray(input.labels) ? input.labels : {};
+  return { ...input, labels: { ...labels, 'pipeline.change': change } };
+}
 function pipelineLabelReason(input) {
   const title = typeof input?.title === 'string' ? input.title.trim() : '';
-  if (!title.startsWith('[Pipeline]')) return null;
-  const change = input?.labels?.['pipeline.change'];
-  if (typeof change === 'string' && change.trim()) return null;
-  return 'A "[Pipeline]" agent needs labels: { "pipeline.change": "<change>" } (the openspec change name); without it `pipeline-run.mjs plan` cannot see the agent and dispatches the task again. Copy title and labels from the plan\'s DISPATCH line.';
+  if (!title.startsWith('[Pipeline]') || hasChangeLabel(input)) return null;
+  return 'A "[Pipeline]" agent needs labels: { "pipeline.change": "<change>" } (the openspec change name); without it `pipeline-run.mjs plan` cannot see the agent and dispatches the task again. The hook could not infer one unambiguously. Copy title and labels from the plan\'s DISPATCH line.';
 }
 const output = (fields) => console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', ...fields } }));
 const deny = (reason, reasonCode = 'denied') => {
@@ -334,6 +363,11 @@ async function main() {
     }
     const settingsMismatch = isObject && name === 'mcp__paseo__create_agent' ? settingsMismatchReason(updated) : null;
     if (settingsMismatch) { deny(settingsMismatch, 'settings_mismatch'); return; }
+    const labelled = isObject && name === 'mcp__paseo__create_agent' ? withPipelineLabel(updated, payload?.cwd) : null;
+    if (labelled) {
+      updated = labelled;
+      changed = true;
+    }
     const unlabelled = isObject && name === 'mcp__paseo__create_agent' ? pipelineLabelReason(updated) : null;
     if (unlabelled) { deny(unlabelled, 'missing_pipeline_label'); return; }
     const agent = isObject && name === 'mcp__paseo__create_agent' ? sanitizedCreateAgent(updated) : null;

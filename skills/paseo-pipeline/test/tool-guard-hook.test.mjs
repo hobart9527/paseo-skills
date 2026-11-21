@@ -126,6 +126,26 @@ test('create_agent: a [Pipeline] agent without pipeline.change is denied; labell
   assert.deepEqual(call({ title: '[Handoff] fix login' }), {});
 });
 
+test('create_agent: a [Pipeline] agent missing pipeline.change is auto-labelled when one live change is unambiguous', (t) => {
+  const PASEO_HOME = paseoHome(t);
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-repo-'));
+  t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
+  spawnSync('git', ['init', '-q'], { cwd: repo });
+  for (const name of ['c1', 'c2', 'archive']) fs.mkdirSync(path.join(repo, 'openspec', 'changes', name), { recursive: true });
+  const call = (extra) => guard({ tool_name: 'mcp__paseo__create_agent', cwd: repo, tool_input: { provider: 'claude/cc', initialPrompt: 'p', ...extra } }, { PASEO_HOME });
+  const byTitle = call({ title: '[Pipeline] gongbu T-01 c1' });
+  assert.equal(byTitle.permissionDecision, 'allow');
+  assert.deepEqual(byTitle.updatedInput.labels, { 'pipeline.change': 'c1' });
+  const merged = call({ title: '[Pipeline] gongbu T-01 c2', labels: { 'pipeline.task': 'T-01' } });
+  assert.deepEqual(merged.updatedInput.labels, { 'pipeline.task': 'T-01', 'pipeline.change': 'c2' });
+  const byPrompt = call({ title: '[Pipeline] gongbu T-01', initialPrompt: 'see openspec/changes/c2/tasks.md' });
+  assert.deepEqual(byPrompt.updatedInput.labels, { 'pipeline.change': 'c2' });
+  // Ambiguous or unknown: still denied.
+  assert.equal(call({ title: '[Pipeline] gongbu T-01' }).permissionDecision, 'deny');
+  assert.equal(call({ title: '[Pipeline] gongbu T-01 c1 c2' }).permissionDecision, 'deny');
+  assert.equal(call({ title: '[Pipeline] gongbu T-01 archive' }).permissionDecision, 'deny');
+});
+
 // ---- create_agent runtime settings must match the profile ----
 // A stale modeId/thinkingOptionId/features used to pass silently: the hook checked only the
 // provider string shape. The real call nests them under `settings`, and the live config shares
