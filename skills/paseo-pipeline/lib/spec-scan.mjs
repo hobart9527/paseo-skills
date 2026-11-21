@@ -139,13 +139,13 @@ export function scanRequirements(markdown) {
   const found = [];
   let section = null;
   for (const { text, rawIndex } of visibleLines(markdown)) {
-    const heading = text.match(/^##\s+(.+?)\s*$/);
+    const heading = text.match(/^ {0,3}##\s+(.+?)\s*#*\s*$/);
     if (heading) {
       const match = REQUIREMENT_SECTION.exec(heading[1]);
       section = match ? heading[1].split(/\s+/)[0].toUpperCase() : null;
       continue;
     }
-    const match = text.match(/^###\s+Requirement\s*:\s*(.+?)\s*#*\s*$/i);
+    const match = text.match(/^ {0,3}###\s+Requirement\s*:\s*(.+?)\s*#*\s*$/i);
     if (section && match) found.push({ section, name: match[1], line: rawIndex });
   }
   return found;

@@ -1,6 +1,6 @@
 # ADR-0003: Bounded SDD Review (1+1 Budget), Oracle Fidelity & Caveat Guard
 
-- **Status:** Accepted (landed in `aba7238` / `e373d11`; Tier 1 Stop hook hookup & Tier 2/3 matrix unification in Phase 1)
+- **Status:** Accepted (landed in `aba7238` / `e373d11` + `feat/enabling-harness` Tier 1 Stop risk sentinel & F-1..F-7 `tier2-verify` provability)
 - **Date:** 2026-11-21
 - **Scope:** `~/.claude/CLAUDE.md`, `docs/tier2-reviewer-brief.md`, `skills/paseo-pipeline/templates/{reviewer,approvals,worker}.md`, `skills/paseo-pipeline/lib/risk-scan.mjs`, `worker-check.mjs`, `merge-task.mjs`, `acceptance-run.mjs`
 

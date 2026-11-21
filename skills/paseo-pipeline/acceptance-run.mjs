@@ -2,8 +2,9 @@
 // Operator-invoked execution record, not a sandbox or a CP-2 authorization.
 import fs from 'node:fs';
 import path from 'node:path';
-import { runGit } from './lib/git.mjs';
+import { runGit, listWorktrees } from './lib/git.mjs';
 import { parseOptions } from './lib/cli.mjs';
+import { parseAcceptanceTable } from './lib/acceptance.mjs';
 import { runShell } from './lib/verify-runner.mjs';
 
 function fail(message) { throw new Error(message); }
@@ -22,20 +23,24 @@ function snapshot(root, sha, branch) {
   if (git(root, ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'])) fail('worktree is dirty');
 }
 function rowsOf(text) {
-  const lines = text.split(/\r?\n/);
-  const cells = (line) => line.split(/(?<!\\)\|/).slice(1, -1).map((cell) => cell.trim().replace(/\\\|/g, '|').replace(/^`|`$/g, ''));
-  const header = lines.find((line) => /^\s*\|.*\|\s*$/.test(line) && /\bScenario\b/i.test(line));
-  if (!header || cells(header).join('|').toLowerCase() !== 'scenario|entry|tasks|verify|required|result|evidence') fail('invalid acceptance header');
+  const table = parseAcceptanceTable(text);
+  if (!table.headerOk) fail('invalid acceptance header');
+  const lines = String(text || '').split(/\r?\n/);
+  const byLine = new Map(table.entries.map((entry) => [entry.line, entry]));
   const rows = [];
   for (const [index, line] of lines.entries()) {
     if (!/^\s*\|\s*SCEN-/i.test(line)) continue;
-    const row = cells(line);
-    if (!/^\s*\|.*\|\s*$/.test(line) || row.length !== 7 || !/^SCEN-[A-Za-z0-9-]+$/i.test(row[0])) fail(`malformed acceptance row at line ${index + 1}`);
-    if (!/^(yes|no)$/i.test(row[4])) fail(`invalid Required at line ${index + 1}`);
-    if (/^yes$/i.test(row[4])) {
-      if (row[5] !== 'PENDING') fail(`required result is not frozen at line ${index + 1}`);
-      if (!row[3] || /^(?:!|manual|手工|自然语言)/i.test(row[3])) fail(`invalid Verify at line ${index + 1}`);
-      rows.push({ line: index + 1, scenario: row[0], command: row[3] });
+    const lineNumber = index + 1;
+    const entry = byLine.get(lineNumber);
+    if (!/^\s*\|.*\|\s*$/.test(line) || !entry || entry.malformed || !entry.row || !/^SCEN-[A-Za-z0-9-]+$/i.test(entry.row.scenRaw)) {
+      fail(`malformed acceptance row at line ${lineNumber}`);
+    }
+    const row = entry.row;
+    if (!/^(yes|no)$/i.test(row.required)) fail(`invalid Required at line ${lineNumber}`);
+    if (/^yes$/i.test(row.required)) {
+      if (row.result !== 'PENDING') fail(`required result is not frozen at line ${lineNumber}`);
+      if (!row.verify || /^(?:!|manual|手工|自然语言)/i.test(row.verify)) fail(`invalid Verify at line ${lineNumber}`);
+      rows.push({ line: lineNumber, scenario: row.scenRaw, command: row.verify });
     }
   }
   if (!rows.length) fail('no required acceptance rows');
@@ -74,7 +79,9 @@ async function main() {
   const evidence = path.resolve(options.evidence);
   const parent = fs.realpathSync(path.dirname(evidence));
   const target = path.join(parent, path.basename(evidence));
-  const trees = git(root, ['worktree', 'list', '--porcelain']).split('\n').filter((line) => line.startsWith('worktree ')).map((line) => fs.realpathSync(line.slice(9)));
+  const trees = listWorktrees(root).map((tree) => {
+    try { return fs.realpathSync(tree.path); } catch { return path.resolve(tree.path); }
+  });
   const gitDir = fs.realpathSync(path.resolve(root, git(root, ['rev-parse', '--git-common-dir'])));
   const changeEvidenceDir = path.join(dir, 'evidence');
   const archivedEvidenceDir = path.join(root, 'openspec', 'changes', 'archive');

@@ -18,6 +18,7 @@ if [ -z "$roles" ]; then
   exit 0
 fi
 for r in $roles; do
+  # Sync with skills/paseo-pipeline/lib/roles.mjs#AUTHORING_COMMIT_ROLES (enforced by test/author-hook.test.mjs).
   case "$r" in ceshi|gongbu|gaogong|jiangzuo|hanlin) ;; *) exit 0 ;; esac
 done
 # Conflict-continue cherry-pick: git runs this hook, but the original trailers are the provenance

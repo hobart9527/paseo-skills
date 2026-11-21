@@ -1,10 +1,15 @@
 #!/usr/bin/env node
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { logHookError } from '../lib/tier-gate.mjs';
+import { logHookError, repoContext } from '../lib/tier-gate.mjs';
+import { paseoHome, loadProfiles, profilePair } from '../lib/paseo.mjs';
+import { runGit } from '../lib/git.mjs';
+import { recordEvent } from '../lib/telemetry.mjs';
 
 const LIMIT = 2 * 1024 * 1024;
+const TAIL_ANCHOR = 256;
 // The server rejects `branch`/`prNumber`/`forge` together with `mode: "branch-off"` (and with the
 // omitted default, which is branch-off). Denying only produced the same call again — one window
 // logged 48 identical failures — so rewrite it into the call the server accepts.
@@ -23,8 +28,7 @@ const isPlaceholderServerId = (value) => {
 // is a typo for "this host"; omitting serverId means exactly that. Distant srv_* ids may be real
 // remote hosts and are left to the server.
 function localServerId() {
-  const home = process.env.PASEO_HOME || path.join(os.homedir(), '.paseo');
-  try { return fs.readFileSync(path.join(home, 'server-id'), 'utf8').trim(); } catch { return ''; }
+  try { return fs.readFileSync(path.join(paseoHome(), 'server-id'), 'utf8').trim(); } catch { return ''; }
 }
 function editDistance(a, b) {
   let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
@@ -58,14 +62,6 @@ function sanitizedCreateAgent(input) {
   return changed ? next : null;
 }
 /** A bare provider ("claude") is ambiguous across profiles, so it cannot be rewritten; name the valid pairs. */
-function loadProfiles() {
-  try {
-    const home = process.env.PASEO_HOME || path.join(os.homedir(), '.paseo');
-    const profiles = JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8'))?.daemon?.agentProfiles;
-    return Array.isArray(profiles) ? profiles : [];
-  } catch { return []; }
-}
-const profilePair = (profile) => (profile?.provider && profile?.model ? `${profile.provider}/${profile.model}` : null);
 function bareProviderReason(input) {
   const provider = typeof input?.provider === 'string' ? input.provider.trim() : '';
   if (!provider || provider.includes('/')) return null;
@@ -73,22 +69,7 @@ function bareProviderReason(input) {
   return `create_agent provider must be "<profile.provider>/<profile.model>", not "${provider}". Join the two list_profiles fields with "/".`
     + (pairs.length ? ` Current profiles: ${pairs.join(', ')}.` : '');
 }
-// Runtime settings are launch configuration copied from `list_profiles`, so a stale mode or
-// thinking option silently runs the agent under the wrong configuration. They travel nested under
-// `settings` (the shape every dispatch uses); the flat fields are only a compatibility fallback.
-// Several profiles may share one provider/model pair (claude/flash is both 尚书 and 工部), so the
-// pair selects a set: a stated value passes when it agrees with at least one of them, and the role
-// is never guessed from the title. With no profile for the pair there is nothing to compare
-// against — profiles are not a whitelist — so the call is left alone. `features` is
-// `undefined`/`null` in every current profile, which means "no feature requirement".
 const SETTINGS = ['modeId', 'thinkingOptionId', 'features'];
-// Paseo inherits an omitted `settings.modeId` from the *calling* agent, and only when the new
-// agent uses the caller's provider: a claude session dispatching antigravity fails with
-// "cannot inherit mode 'auto' from caller (provider 'claude') for new agent (provider
-// 'antigravity')", and codex fails the same way although it also has an `auto` mode. So omission
-// is not "inherit the profile" — cross-provider dispatch is the normal pipeline shape, and an
-// omitted mode is a call the server rejects. Fill it from the matching profile when every match
-// agrees; conflicting modes are left to the server, which names the available ones.
 function filledModeId(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
   const provider = typeof input.provider === 'string' ? input.provider.trim() : '';
@@ -101,6 +82,8 @@ function filledModeId(input) {
   if (modes.length !== 1) return null;
   return { ...input, settings: { ...nested, modeId: modes[0] } };
 }
+const canonical = (value) => JSON.stringify(value, (_, v) => v && typeof v === 'object' && !Array.isArray(v)
+  ? Object.fromEntries(Object.keys(v).sort().map((key) => [key, v[key]])) : v);
 const sameValue = (left, right) => canonical(left) === canonical(right);
 function settingsMismatchReason(input) {
   const provider = typeof input?.provider === 'string' ? input.provider.trim() : '';
@@ -109,13 +92,9 @@ function settingsMismatchReason(input) {
   if (!matches.length) return null;
   const nested = input?.settings && typeof input.settings === 'object' && !Array.isArray(input.settings) ? input.settings : {};
   const valueOf = (field) => (field in nested ? nested[field] : input?.[field]);
-  // Omitted = inherit. An explicit `null` on an optional profile field is also inherit.
   const stated = SETTINGS.filter((field) => valueOf(field) !== undefined);
   if (!stated.length) return null;
   const agrees = (profile, field) => profile[field] === undefined || profile[field] === null
-    // Both `undefined` (omitted) and an explicit `null` mean "inherit what the profile says".
-    // Requiring the two spellings to match denied `thinkingOptionId: null` on every profile
-    // that sets no option, which is exactly the call the comment above promises to allow.
     ? valueOf(field) === null || valueOf(field) === undefined
     : sameValue(profile[field], valueOf(field));
   if (matches.some((profile) => stated.every((field) => agrees(profile, field)))) return null;
@@ -137,27 +116,34 @@ function pipelineLabelReason(input) {
   if (typeof change === 'string' && change.trim()) return null;
   return 'A "[Pipeline]" agent needs labels: { "pipeline.change": "<change>" } (the openspec change name); without it `pipeline-run.mjs plan` cannot see the agent and dispatches the task again. Copy title and labels from the plan\'s DISPATCH line.';
 }
-const canonical = (value) => JSON.stringify(value, (_, v) => v && typeof v === 'object' && !Array.isArray(v)
-  ? Object.fromEntries(Object.keys(v).sort().map((key) => [key, v[key]])) : v);
 const output = (fields) => console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', ...fields } }));
-const deny = (reason) => output({ permissionDecision: 'deny', permissionDecisionReason: reason });
+const deny = (reason, reasonCode = 'denied') => {
+  recordEvent('tool_guard', { action: 'deny', reasonCode });
+  output({ permissionDecision: 'deny', permissionDecisionReason: reason });
+};
 
-function repeatedFailures(file, name, input) {
-  if (typeof file !== 'string' || !file) return false;
-  let fd;
-  try { fd = fs.openSync(file, 'r'); } catch { return false; }
-  let text;
-  try {
-    const size = fs.fstatSync(fd).size;
-    const start = Math.max(0, size - LIMIT);
-    const buffer = Buffer.alloc(size - start);
-    const bytes = fs.readSync(fd, buffer, 0, buffer.length, start);
-    text = buffer.subarray(0, bytes).toString('utf8');
-    if (start) text = text.slice(text.indexOf('\n') + 1);
-  } finally { fs.closeSync(fd); }
-  const calls = [];
-  const byId = new Map();
-  for (const line of text.split('\n')) {
+function cacheDir() {
+  return process.env.PIPELINE_TIER_GATE_STATE || path.join(os.tmpdir(), 'paseo-tier-gate');
+}
+
+function cachePathFor(transcriptFile) {
+  const hash = crypto.createHash('sha1').update(transcriptFile).digest('hex').slice(0, 12);
+  return path.join(cacheDir(), `tg-${hash}.json`);
+}
+
+function readTailHash(fd, offset) {
+  if (offset <= 0) return '';
+  const start = Math.max(0, offset - TAIL_ANCHOR);
+  const len = offset - start;
+  const buf = Buffer.alloc(len);
+  const bytes = fs.readSync(fd, buf, 0, len, start);
+  return crypto.createHash('sha1').update(buf.subarray(0, bytes)).digest('hex').slice(0, 16);
+}
+
+function applyLines(lines, state) {
+  const pending = new Map(state.pending || []);
+  const calls = [...(state.calls || [])];
+  for (const line of lines) {
     if (!line.trim()) continue;
     let entry;
     try { entry = JSON.parse(line); } catch { continue; }
@@ -166,12 +152,85 @@ function repeatedFailures(file, name, input) {
     for (const item of content) {
       if (item.type === 'tool_use') {
         const call = { name: item.name, input: canonical(item.input), result: undefined };
-        calls.push(call); byId.set(item.id, call);
-      } else if (item.type === 'tool_result' && byId.has(item.tool_use_id)) {
-        byId.get(item.tool_use_id).result = item.is_error === true;
+        calls.push(call);
+        if (item.id) pending.set(item.id, call);
+      } else if (item.type === 'tool_result' && item.tool_use_id && pending.has(item.tool_use_id)) {
+        pending.get(item.tool_use_id).result = item.is_error === true;
+        pending.delete(item.tool_use_id);
       }
     }
   }
+  const nextPending = [...pending.entries()].slice(-64);
+  const nextCalls = calls.slice(-16);
+  return { pending: nextPending, calls: nextCalls };
+}
+
+function loadTranscriptCalls(file) {
+  if (typeof file !== 'string' || !file) return [];
+  let fd;
+  try { fd = fs.openSync(file, 'r'); } catch { return []; }
+  try {
+    const stat = fs.fstatSync(fd);
+    const size = stat.size;
+    if (size === 0) return [];
+
+    const cPath = cachePathFor(file);
+    let cached = null;
+    try { cached = JSON.parse(fs.readFileSync(cPath, 'utf8')); } catch { cached = null; }
+
+    const sameInode = cached && cached.ino === stat.ino && typeof cached.offset === 'number' && cached.offset >= 0 && cached.offset <= size;
+    if (sameInode && size === cached.offset && readTailHash(fd, cached.offset) === cached.tailHash) {
+      return cached.calls || [];
+    }
+
+    let state = { pending: [], calls: [] };
+    let readFrom = Math.max(0, size - LIMIT);
+    let dropFirstPartial = readFrom > 0;
+
+    if (sameInode && size > cached.offset && size - cached.offset <= LIMIT && readTailHash(fd, cached.offset) === cached.tailHash) {
+      state = { pending: cached.pending || [], calls: cached.calls || [] };
+      readFrom = cached.offset;
+      dropFirstPartial = false;
+    }
+
+    const buffer = Buffer.alloc(size - readFrom);
+    const bytes = fs.readSync(fd, buffer, 0, buffer.length, readFrom);
+    let text = buffer.subarray(0, bytes).toString('utf8');
+    let consumedBytes = bytes;
+    if (dropFirstPartial) {
+      const nl = text.indexOf('\n');
+      text = nl >= 0 ? text.slice(nl + 1) : '';
+    }
+    const rawLines = text.split('\n');
+    if (rawLines.length > 0 && rawLines[rawLines.length - 1].trim() !== '') {
+      try { JSON.parse(rawLines[rawLines.length - 1]); }
+      catch {
+        // Hold back trailing incomplete JSON line so next turn parses it whole.
+        const incomplete = rawLines.pop();
+        consumedBytes = Math.max(0, bytes - Buffer.byteLength(incomplete, 'utf8'));
+      }
+    }
+    const nextState = applyLines(rawLines, state);
+    const newOffset = readFrom + consumedBytes;
+    const tailHash = readTailHash(fd, newOffset);
+    try {
+      fs.mkdirSync(cacheDir(), { recursive: true });
+      fs.writeFileSync(cPath, JSON.stringify({
+        ino: stat.ino,
+        offset: newOffset,
+        tailHash,
+        pending: nextState.pending,
+        calls: nextState.calls,
+      }));
+    } catch {}
+    return nextState.calls;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function repeatedFailures(file, name, input) {
+  const calls = loadTranscriptCalls(file);
   const expected = canonical(input);
   return calls.length >= 3 && calls.slice(-3).every((call) => call.name === name && call.input === expected && call.result === true);
 }
@@ -197,6 +256,41 @@ function sanitizedPaseoInput(name, input) {
   return next;
 }
 
+function realOrResolved(target) {
+  try { return fs.realpathSync(target); } catch { return path.resolve(target); }
+}
+
+function inside(parent, child) {
+  const rel = path.relative(parent, child);
+  return rel === '' || (!rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel));
+}
+
+function primaryCheckoutWarning(cwd, command) {
+  if (typeof cwd !== 'string' || !cwd || !/\bcd\b/.test(command)) return null;
+  const ctx = repoContext(cwd);
+  if (!ctx || ctx.isPrimary) return null;
+  const common = runGit(ctx.root, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  const commonRaw = common.status === 0 && common.stdout.trim()
+    ? common.stdout.trim()
+    : runGit(ctx.root, ['rev-parse', '--git-common-dir']).stdout.trim();
+  if (!commonRaw) return null;
+  const commonAbs = realOrResolved(path.isAbsolute(commonRaw) ? commonRaw : path.resolve(ctx.root, commonRaw));
+  if (path.basename(commonAbs) !== '.git') return null;
+  const primaryRoot = path.dirname(commonAbs);
+  if (primaryRoot === ctx.root) return null;
+
+  const cdRegex = /(?:^|[;&|(\s])cd\s+(?:-P\s+|-L\s+)?(?:"([^"\n]+)"|'([^'\n]+)'|([^\s;&|()]+))/g;
+  for (const match of command.matchAll(cdRegex)) {
+    const rawTarget = (match[1] ?? match[2] ?? match[3] ?? '').trim();
+    if (!rawTarget || rawTarget.startsWith('$') || rawTarget.startsWith('~') || rawTarget === '-') continue;
+    const resolved = realOrResolved(path.isAbsolute(rawTarget) ? rawTarget : path.resolve(cwd, rawTarget));
+    if (inside(primaryRoot, resolved) && !inside(ctx.root, resolved)) {
+      return `You are in a linked worktree (${ctx.root}); avoid \`cd\` into the shared primary checkout (${primaryRoot}). Use \`git -C <abs-path>\` or absolute paths instead.`;
+    }
+  }
+  return null;
+}
+
 async function main() {
   const chunks = []; for await (const chunk of process.stdin) chunks.push(chunk);
   let payload;
@@ -205,9 +299,17 @@ async function main() {
   const input = payload?.tool_input;
   if (name === 'Bash' && typeof input?.command === 'string') {
     const command = input.command;
+    const contexts = [];
     if (/\bpaseo\s+(?:run|send)\b/.test(command) && !/(?:^|\s)--wait(?:\s|=|$)/.test(command) && !/\bpaseo\s+wait\b/.test(command)) {
-      output({ additionalContext: 'CLI dispatch registers no completion callback; ending this turn will not wake the parent. Use MCP create_agent, or immediately start paseo wait <id> --timeout 540 in the background.' });
+      recordEvent('tool_guard', { action: 'advise', reasonCode: 'paseo_cli_wait' });
+      contexts.push('CLI dispatch registers no completion callback; ending this turn will not wake the parent. Use MCP create_agent, or immediately start paseo wait <id> --timeout 540 in the background.');
     }
+    const cdWarn = primaryCheckoutWarning(payload?.cwd, command);
+    if (cdWarn) {
+      recordEvent('tool_guard', { action: 'advise', reasonCode: 'worktree_cd_primary' });
+      contexts.push(cdWarn);
+    }
+    if (contexts.length) output({ additionalContext: contexts.join('\n') });
   }
   if (typeof name !== 'string' || !name.startsWith('mcp__')) return;
   let updated = input;
@@ -225,16 +327,16 @@ async function main() {
       changed = true;
     }
     const bare = isObject && name === 'mcp__paseo__create_agent' ? bareProviderReason(updated) : null;
-    if (bare) { deny(bare); return; }
+    if (bare) { deny(bare, 'bare_provider'); return; }
     const filled = isObject && name === 'mcp__paseo__create_agent' ? filledModeId(updated) : null;
     if (filled) {
       updated = filled;
       changed = true;
     }
     const settingsMismatch = isObject && name === 'mcp__paseo__create_agent' ? settingsMismatchReason(updated) : null;
-    if (settingsMismatch) { deny(settingsMismatch); return; }
+    if (settingsMismatch) { deny(settingsMismatch, 'settings_mismatch'); return; }
     const unlabelled = isObject && name === 'mcp__paseo__create_agent' ? pipelineLabelReason(updated) : null;
-    if (unlabelled) { deny(unlabelled); return; }
+    if (unlabelled) { deny(unlabelled, 'missing_pipeline_label'); return; }
     const agent = isObject && name === 'mcp__paseo__create_agent' ? sanitizedCreateAgent(updated) : null;
     if (agent) {
       updated = agent;
@@ -243,10 +345,11 @@ async function main() {
   }
   // A rewritten call cannot be the same failing call, so it never reaches the deny below.
   if (changed) {
+    recordEvent('tool_guard', { action: 'rewrite', reasonCode: name === 'mcp__paseo__create_workspace' ? 'sanitize_workspace' : 'sanitize_paseo' });
     output({ permissionDecision: 'allow', updatedInput: updated });
     return;
   }
-  if (repeatedFailures(payload.transcript_path, name, input)) deny(repeatedFailureReason(name));
+  if (repeatedFailures(payload.transcript_path, name, input)) deny(repeatedFailureReason(name), 'repeated_failure');
 }
 
 try { await main(); } catch (err) { logHookError('tool-guard-hook', err); }

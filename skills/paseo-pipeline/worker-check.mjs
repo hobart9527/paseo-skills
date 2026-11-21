@@ -9,8 +9,15 @@ import { runGit } from './lib/git.mjs';
 import { WRITER_ROLES } from './lib/roles.mjs';
 import { runVerifyCommand } from './lib/verify-runner.mjs';
 import { parseOptions } from './lib/cli.mjs';
+import { recordEvent } from './lib/telemetry.mjs';
 
 const usage = 'Usage: worker-check.mjs <change-dir> <task-id> [--timeout ms] [--allow-test-infra]';
+
+function fail(message, code = 1, reasonCode = 'check_failed') {
+  console.error(message);
+  recordEvent('worker_check', { ok: false, exit: code, reasonCode });
+  process.exit(code);
+}
 
 let parsedArgs;
 try {
@@ -32,37 +39,21 @@ const change = path.basename(changeDir);
 
 function git(args) {
   const res = runGit(process.cwd(), args);
-  if (res.status !== 0) {
-    console.error(`[worker-check] git ${args.join(' ')} failed: ${res.stderr}`);
-    process.exit(1);
-  }
+  if (res.status !== 0) fail(`[worker-check] git ${args.join(' ')} failed: ${res.stderr}`, 1, 'git_error');
   return res.stdout.trim();
 }
 
 if (git(['status', '--porcelain=v1', '--untracked-files=all'])) {
-  console.error('[worker-check] worktree has uncommitted changes; commit your work first');
-  process.exit(1);
+  fail('[worker-check] worktree has uncommitted changes; commit your work first', 1, 'dirty_worktree');
 }
 
 const tasksFile = path.join(changeDir, 'tasks.md');
-if (!fs.existsSync(tasksFile)) {
-  console.error(`[worker-check] missing ${tasksFile}`);
-  process.exit(1);
-}
+if (!fs.existsSync(tasksFile)) fail(`[worker-check] missing ${tasksFile}`, 1, 'missing_tasks');
 const parsed = parseTasks(fs.readFileSync(tasksFile, 'utf8'));
-if (graphErrors(parsed.errors).length) {
-  console.error('[worker-check] invalid tasks graph');
-  process.exit(1);
-}
+if (graphErrors(parsed.errors).length) fail('[worker-check] invalid tasks graph', 1, 'invalid_graph');
 const task = parsed.tasks.find((item) => item.id === taskId);
-if (!task) {
-  console.error(`[worker-check] unknown task ${taskId}`);
-  process.exit(1);
-}
-if (taskErrorsFor(parsed.errors, taskId).length) {
-  console.error(`[worker-check] invalid task ${taskId}`);
-  process.exit(1);
-}
+if (!task) fail(`[worker-check] unknown task ${taskId}`, 1, 'unknown_task');
+if (taskErrorsFor(parsed.errors, taskId).length) fail(`[worker-check] invalid task ${taskId}`, 1, 'invalid_task');
 
 const integrationRef = `refs/heads/integration/${change}`;
 const hasIntegration = runGit(process.cwd(), ['rev-parse', '--verify', '--quiet', integrationRef]).status === 0;
@@ -75,24 +66,19 @@ const changedRes = runGit(process.cwd(), ['diff', '--name-only', '-z', '--no-ren
 const changedFiles = (changedRes.stdout || '').split('\0').filter(Boolean);
 for (const file of changedFiles) {
   if (!isFileWithinScopes(file, task.scope)) {
-    console.error(`[worker-check] SCOPE_VIOLATION: ${file} is outside ${taskId} Write scope`);
-    process.exit(30);
+    fail(`[worker-check] SCOPE_VIOLATION: ${file} is outside ${taskId} Write scope`, 30, 'scope_violation');
   }
 }
 
 const commits = git(['rev-list', '--reverse', `${base}..${tip}`]).split(/\r?\n/).filter(Boolean);
-if (!commits.length) {
-  console.error('[worker-check] no commits ahead of integration base');
-  process.exit(31);
-}
+if (!commits.length) fail('[worker-check] no commits ahead of integration base', 31, 'no_commits');
 
 const ceshiFiles = new Set();
 for (const commit of commits) {
   const roles = git(['show', '-s', '--format=%(trailers:key=Pipeline-Role,valueonly)', commit]).split(/\r?\n/).map((x) => x.trim().toLowerCase()).filter(Boolean);
   const authors = git(['show', '-s', '--format=%(trailers:key=Pipeline-Author,valueonly)', commit]).split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
   if (!roles.length || roles.some((role) => !WRITER_ROLES.has(role)) || !authors.length) {
-    console.error(`[worker-check] PROVENANCE_ERROR: ${commit.slice(0, 7)} lacks valid Pipeline-Role / Pipeline-Author trailers`);
-    process.exit(31);
+    fail(`[worker-check] PROVENANCE_ERROR: ${commit.slice(0, 7)} lacks valid Pipeline-Role / Pipeline-Author trailers`, 31, 'provenance_error');
   }
   const filesRes = runGit(process.cwd(), ['diff-tree', '--no-commit-id', '--name-only', '-r', '-z', commit]);
   const commitFiles = (filesRes.stdout || '').split('\0').filter(Boolean);
@@ -101,8 +87,7 @@ for (const commit of commits) {
   } else if (!parsedArgs.options['allow-test-infra']) {
     const tampered = commitFiles.filter((f) => ceshiFiles.has(f));
     if (tampered.length) {
-      console.error(`[worker-check] TEST_ORACLE_TAMPERING: ${commit.slice(0, 7)} modified ceshi-authored Red test file(s): ${tampered.join(', ')}`);
-      process.exit(38);
+      fail(`[worker-check] TEST_ORACLE_TAMPERING: ${commit.slice(0, 7)} modified ceshi-authored Red test file(s): ${tampered.join(', ')}`, 38, 'oracle_tampering');
     }
   }
 }
@@ -110,11 +95,10 @@ for (const commit of commits) {
 const verify = await runVerifyCommand(task.verify, { cwd: process.cwd(), timeout, streamToStdout: true });
 if (!verify.ok) {
   if (verify.missingMessage) {
-    console.error(`[worker-check] MISSING_DEPS: ${verify.missingMessage}`);
-    process.exit(36);
+    fail(`[worker-check] MISSING_DEPS: ${verify.missingMessage}`, 36, 'missing_deps');
   }
-  console.error(`[worker-check] VERIFY_FAILED: ${task.verify}${verify.dirtyChanged ? ' (modified worktree)' : ''}`);
-  process.exit(20);
+  fail(`[worker-check] VERIFY_FAILED: ${task.verify}${verify.dirtyChanged ? ' (modified worktree)' : ''}`, 20, 'verify_failed');
 }
 
+recordEvent('worker_check', { ok: true, exit: 0, durationMs: verify.durationMs, count: changedFiles.length });
 console.log(`[worker-check] PASS ${taskId} tip=${tip.slice(0, 7)} files=${changedFiles.length} durationMs=${verify.durationMs}`);

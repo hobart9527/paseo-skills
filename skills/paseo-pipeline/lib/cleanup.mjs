@@ -9,9 +9,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { parseOptions } from './cli.mjs';
-import { runGit } from './git.mjs';
+import { runGit, listWorktrees } from './git.mjs';
+import { listPaseoWorkspaces } from './paseo.mjs';
 import { parseTasks } from './tasks.mjs';
 import { readTasksMarkdown } from './tasks-source.mjs';
 import { readMergeState } from './merge-state.mjs';
@@ -80,22 +80,6 @@ function ownedBranch(branch, change) {
   return new RegExp(`^task/${escapeRe(change)}/${TASK_ID}(?:-a\\d+)?$`).test(branch);
 }
 
-function listWorktrees(cwd) {
-  const result = runGit(cwd, ['worktree', 'list', '--porcelain', '-z']);
-  if (result.error || result.status !== 0) throw new Error(`git worktree list failed: ${(result.stderr || result.error?.message || '').trim()}`);
-  const trees = [];
-  let current = null;
-  // `-z` NUL-terminates each field and separates records with an empty field, so a path that
-  // contains a newline stays one field instead of being truncated at the newline.
-  for (const field of result.stdout.split('\0')) {
-    if (field === '') { current = null; continue; }
-    if (field.startsWith('worktree ')) { current = { path: field.slice('worktree '.length), branch: null, prunable: false }; trees.push(current); }
-    else if (current && field.startsWith('branch ')) current.branch = field.slice('branch '.length).replace(/^refs\/heads\//, '');
-    else if (current && (field === 'prunable' || field.startsWith('prunable '))) current.prunable = true;
-  }
-  return trees;
-}
-
 function listBranches(cwd, change) {
   const result = runGit(cwd, ['for-each-ref', '--format=%(refname:short)', `refs/heads/integration/${change}`, `refs/heads/task/${change}/`]);
   if (result.error || result.status !== 0) throw new Error(`git for-each-ref failed: ${(result.stderr || result.error?.message || '').trim()}`);
@@ -111,21 +95,6 @@ function ownedWorkspace(byPath, target) {
   const direct = byPath.get(path.resolve(target));
   if (direct) return direct;
   try { return byPath.get(fs.realpathSync(target)); } catch { return undefined; }
-}
-
-// `--background` is required: the active list hides background workspaces, and a hidden but
-// owning workspace would make its worktree look manual — then the listing would suggest
-// `git worktree remove` on a Paseo-owned path instead of `paseo workspace archive`.
-function listPaseoWorkspaces() {
-  const result = spawnSync('paseo', ['workspace', 'ls', '--background', '--json'], { encoding: 'utf8', timeout: 10_000 });
-  if (result.error || result.status !== 0) {
-    const detail = result.error?.message || (result.stderr || '').trim();
-    return { error: `cannot read Paseo workspaces (\`paseo workspace ls --background --json\`${detail ? `: ${detail}` : ''})` };
-  }
-  let listed;
-  try { listed = JSON.parse(result.stdout); } catch { return { error: 'invalid JSON from `paseo workspace ls --background --json`' }; }
-  if (!Array.isArray(listed)) { return { error: 'invalid Paseo workspace list' }; }
-  return { workspaces: listed };
 }
 
 /**

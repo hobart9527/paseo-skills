@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { parseTasks } from './lib/tasks.mjs';
+import { scanRequirements } from './lib/spec-scan.mjs';
 
 const args = process.argv.slice(2);
 if (!((args.length === 1 || (args.length === 3 && args[1] === '--final')) && !args[0].startsWith('-'))) {
@@ -64,22 +65,11 @@ try {
   if (!files.length) throw new Error('no specs/**/spec.md found');
   const requirements = [];
   for (const file of files) {
-    const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
-    let section = null;
-    let fence = null;
-    for (let i = 0; i < lines.length; i += 1) {
-      const line = lines[i];
-      const marker = line.match(/^ {0,3}(`{3,}|~{3,})/);
-      if (marker) {
-        if (!fence) fence = marker[1];
-        else if (marker[1][0] === fence[0] && marker[1].length >= fence.length) fence = null;
-        continue;
+    const rel = path.relative(root, file).split(path.sep).join('/');
+    for (const req of scanRequirements(fs.readFileSync(file, 'utf8'))) {
+      if (req.section === 'MODIFIED' || req.section === 'REMOVED') {
+        requirements.push({ file: rel, line: req.line + 1, change: req.section, requirement: req.name });
       }
-      if (fence) continue;
-      const heading = line.match(/^ {0,3}##\s+(.+?)\s*#*\s*$/);
-      if (heading) section = /^(MODIFIED|REMOVED) Requirements$/i.exec(heading[1])?.[1].toUpperCase() ?? null;
-      const requirement = line.match(/^ {0,3}###\s+Requirement:\s*(.+?)\s*#*\s*$/i);
-      if (section && requirement) requirements.push({ file: path.relative(root, file).split(path.sep).join('/'), line: i + 1, change: section, requirement: requirement[1] });
     }
   }
   console.log(JSON.stringify({

@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { runGit } from './git.mjs';
-import { DEFAULT_LIMIT, EXEMPT, UNCOUNTED, scopeKey } from './tier-gate.mjs';
+import { DEFAULT_LIMIT, EXEMPT, UNCOUNTED, FIXTURE_DIR, isTestPath, scopeKey } from './paths.mjs';
 
 export const RISK_CLASSES = ['auth', 'concurrency', 'persistence', 'money', 'external-write'];
 
@@ -65,17 +65,11 @@ const HUNK_RULES = [
 ];
 
 const TEST_REMOVED_ASSERTION = /\b(?:assert|expect|should|rejects|throws|doesNotThrow|deepEqual|strictEqual|equal|match|toBe|toEqual|toThrow|toMatch)\b|\.(?:skip|todo|only)\b/;
-const TEST_SKIP_ADDED = /\b(?:test|it|describe)\.(?:skip|todo|only)\b/;
+const TEST_SKIP_ADDED = /\b(?:test|it|describe)\.(?:skip|todo|only)\b|@?(?:pytest\.mark\.(?:skip|xfail)|unittest\.skip)\b/;
 const DOC_OR_PROMPT_PATH = /(?:^|\/)(?:SKILL\.md|README\.md|CLAUDE\.md|task-routing\.md|(?:docs|templates)\/.*\.md)$/i;
 const DOC_CAVEAT_TERM = /\b(?:never|must not|do not|cannot|not\s+(?:an?|only|independence|sandbox|self)|read-only|refuse|block(?:ed)?|unverified|forbidden|prohibited|caveat)\b/gi;
 
-export function isTestFile(rel) {
-  const normalized = String(rel || '').replace(/\\/g, '/');
-  const parts = normalized.split('/');
-  const base = parts.at(-1) ?? '';
-  return parts.some((part) => ['test', 'tests', '__tests__', 'spec', 'e2e'].includes(part))
-    || /(?:\.test\.|\.spec\.|_test\.)/i.test(base);
-}
+export const isTestFile = isTestPath;
 
 /** Parse `git diff --name-status -z` output into `{ status, file, from? }` entries. */
 export function parseNameStatusZ(raw) {
@@ -174,6 +168,8 @@ export function scanChanges({ entries = [], diffText = '', untrackedContents = n
         if (fileHunk) {
           if (fileHunk.removed.some((line) => TEST_REMOVED_ASSERTION.test(line))) {
             testMutations.push({ file, reason: 'existing test assertion modified or removed' });
+          } else if (FIXTURE_DIR.test(file) && fileHunk.removed.length > 0) {
+            testMutations.push({ file, reason: 'existing snapshot/golden fixture modified' });
           }
           if (fileHunk.added.some((line) => TEST_SKIP_ADDED.test(line))) {
             testMutations.push({ file, reason: 'test skipped or isolated via .skip/.todo/.only' });

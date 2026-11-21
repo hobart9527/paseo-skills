@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Unified Tier 2 delivery gate (applies identically to main-session-in-worktree and /tier2-handoff).
-// Verifies isolation, OpenSpec contract & scenario Verify commands, executes every Verify command
-// at the current tip SHA, and runs risk-scan to decide if an independent reviewer is mandatory.
+// Verifies isolation, OpenSpec contract & scenario Verify commands (plus F-1..F-7 provability),
+// executes every Verify command at the current tip SHA, and runs risk-scan to decide if review is mandatory.
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -10,7 +10,9 @@ import { runGit } from './lib/git.mjs';
 import { repoContext } from './lib/tier-gate.mjs';
 import { loadSpecTree, scanScenVerify } from './lib/spec-scan.mjs';
 import { runVerifyCommand } from './lib/verify-runner.mjs';
+import { proveVerifyCommand } from './lib/verify-policy.mjs';
 import { scanRepo } from './lib/risk-scan.mjs';
+import { recordEvent } from './lib/telemetry.mjs';
 
 const usage = 'Usage: tier2-verify.mjs <base> [--change-dir <dir>] [--verify <cmd>]... [--auto-verify] [--cwd <dir>] [--timeout ms] [--json]';
 
@@ -87,6 +89,7 @@ function discoverPackageVerifyCommands(rootDir, baseRef) {
   return cmds;
 }
 
+const startedAt = Date.now();
 const changeDir = parsed.options['change-dir'] ? path.resolve(cwd, parsed.options['change-dir']) : null;
 if (changeDir) {
   if (!fs.existsSync(changeDir)) {
@@ -117,9 +120,17 @@ if (changeDir) {
   for (const cmd of autoDiscoveredVerify) verifyCommands.push(cmd);
 }
 
-const verifyResults = [];
-let allVerifyPassed = missingVerify.length === 0 && verifyCommands.length > 0;
+const unprovableVerify = [];
+const provableCommands = [];
 for (const cmd of verifyCommands) {
+  const proved = proveVerifyCommand(cmd);
+  if (!proved.ok) unprovableVerify.push({ command: cmd, reason: proved.reason });
+  else provableCommands.push(proved.command);
+}
+
+const verifyResults = [];
+let allVerifyPassed = missingVerify.length === 0 && verifyCommands.length > 0 && unprovableVerify.length === 0;
+for (const cmd of provableCommands) {
   const res = await runVerifyCommand(cmd, { cwd, timeout, streamToStdout: !parsed.options.json });
   verifyResults.push({
     command: cmd,
@@ -138,6 +149,19 @@ const contractOk = !contractChecked || (!openSpecStrictError && openSpecStrictEx
 const ok = isolatedWorktree && !dirty && allVerifyPassed && contractOk;
 const verdict = !ok ? 'FAIL' : (risk.reviewRequired ? 'REVIEW_REQUIRED' : 'PASS');
 
+recordEvent('tier2_verify', {
+  tier: '2',
+  verdict,
+  ok,
+  durationMs: Date.now() - startedAt,
+  riskClasses: risk.classes,
+  unprovableCount: unprovableVerify.length,
+  reasonCode: !isolatedWorktree ? 'not_worktree'
+    : (dirty ? 'dirty_worktree'
+      : (unprovableVerify.length ? 'unprovable_verify'
+        : (!contractOk ? 'openspec_invalid' : (!allVerifyPassed ? 'verify_failed' : undefined)))),
+});
+
 const report = {
   verdict,
   repo: ctx.root,
@@ -151,6 +175,7 @@ const report = {
   openSpecStrictError,
   autoDiscoveredVerify,
   missingVerify,
+  unprovableVerify,
   verifyResults,
   risk,
 };
@@ -166,6 +191,7 @@ if (parsed.options.json) {
     console.error(`FAIL: openspec validate --strict failed (exit=${openSpecStrictExit ?? 'unavailable'}${openSpecStrictError ? `: ${openSpecStrictError}` : ''})`);
   }
   if (missingVerify.length) console.error(`FAIL: scenarios missing **Verify:**: ${missingVerify.join(', ')}`);
+  for (const bad of unprovableVerify) console.error(`FAIL: unprovable Verify command "${bad.command}": ${bad.reason}`);
   if (!verifyCommands.length) {
     console.error(`FAIL: no Verify commands supplied or extracted from specs.\nHINT: for Contract: none, pass \`--verify "<cmd>"\` or \`--auto-verify\` (e.g. pipeline-run.mjs tier2-verify ${base} --verify "<cmd>")`);
   }

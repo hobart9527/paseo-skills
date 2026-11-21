@@ -21,7 +21,7 @@ First line: `PASS` | `BLOCKED` | `INCOMPLETE`.
 Second line exactly: `Advisory evidence for the human's merge decision, not an autonomous loop; an unresolved BLOCKED verdict requires explicit human acceptance or fix before merge.`
 Requirement matrix (primary): one row per R: `MET` | `NOT_MET` | `UNVERIFIABLE` + `path:line` evidence.
 Oracle fidelity: confirm real entry exercised and no silent assertion weakening (`OK` | `NOT_MET` + `path:line`).
-Baseline (fixed 4 rows, do not extend):
+Baseline (fixed 4 rows — with Oracle fidelity above, forms the same 5 fixed standards as `templates/reviewer.md`; do not extend):
 1. Data loss / wrong external write / money semantics error
 2. Security / auth / privacy bypass
 3. Main-path crash or dead end without recovery

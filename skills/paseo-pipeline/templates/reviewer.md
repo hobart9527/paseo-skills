@@ -26,7 +26,7 @@ Return `R0: pass(<reviewer-uuid>@<sha>)` and reviewed SHA as text; main session 
 
 ## FINAL — integrated conformance
 
-Judge `main...<reviewed-full-SHA>` against finite approved inputs: frozen SCENs, `acceptance.md`, `risk-scan` report, and 5 fixed standards (Oracle fidelity / no weakened assertions; data loss / wrong external write / money semantics; security / auth / privacy; main-path crash / deadlock; concurrency / idempotency race). Return full SHA and verdict bound only to that SHA; a new SHA gets delta review with ledger carried across reviewers.
+Judge `main...<reviewed-full-SHA>` against finite approved inputs: frozen SCENs, `acceptance.md`, `risk-scan` report, and the 5 fixed standards (Oracle fidelity / no weakened assertions + 4 fixed baseline rows: data loss / wrong external write / money semantics; security / auth / privacy; main-path crash / deadlock; concurrency / idempotency race — same baseline as `docs/tier2-reviewer-brief.md`). Return full SHA and verdict bound only to that SHA; a new SHA gets delta review with ledger carried across reviewers.
 
 Output matrix: one row per SCEN, acceptance row and fixed standard (`MET | NOT_MET | UNVERIFIABLE` + evidence/counterexample). `UNVERIFIABLE` reports `INCOMPLETE`. Findings outside matrix are `CONTRACT_GAP` only when a realistic wrong outcome on a fixed standard lacks a frozen requirement; never emit `ENHANCEMENT`, `Followups`, or style nits. Human disposition for a contract gap is required before CP-2.
 

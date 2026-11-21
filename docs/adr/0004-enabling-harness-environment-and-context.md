@@ -1,6 +1,6 @@
 # ADR-0004: Enabling Harness — Warm Worktrees, JIT Context & Self-Healing ACI
 
-- **Status:** Proposed (Phase 1–2 implementation target)
+- **Status:** Accepted (core landed in `feat/enabling-harness`: `--workspace-dir`/`--hydrate`, JIT `brief.mjs`, O(1) `tool-guard`, worktree churn Stop)
 - **Date:** 2026-11-21
 - **Scope:** `skills/paseo-pipeline/pipeline-run.mjs`, `brief.mjs`, `preflight.mjs`, `hooks/tool-guard-hook.mjs`, `lib/tier-gate.mjs`
 

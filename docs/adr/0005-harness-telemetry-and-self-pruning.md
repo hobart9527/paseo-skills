@@ -1,6 +1,6 @@
 # ADR-0005: Lightweight Local Telemetry & 30-Day Self-Pruning Governance
 
-- **Status:** Proposed (Phase 3 implementation target)
+- **Status:** Accepted (landed in `feat/enabling-harness`: `lib/telemetry.mjs`, `pipeline-run.mjs report`)
 - **Date:** 2026-11-21
 - **Scope:** `skills/paseo-pipeline/lib/telemetry.mjs` (planned), `pipeline-run.mjs report`, `hooks/*.mjs`
 

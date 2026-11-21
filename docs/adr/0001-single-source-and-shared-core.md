@@ -1,6 +1,6 @@
 # ADR-0001: Single Source of Truth, Shared Execution Core & Unified CLI Facade
 
-- **Status:** Accepted (Partial — core registry/runner landed in `aba7238` / `e373d11`; remaining shared libs & facade consolidation tracked in Phase 1–2)
+- **Status:** Accepted (core consolidated in `feat/enabling-harness` atop `aba7238` / `e373d11`)
 - **Date:** 2026-11-21
 - **Scope:** `skills/paseo-pipeline/lib/*`, `skills/paseo-pipeline/*.mjs`, `hooks/*`, `~/.claude/CLAUDE.md`, `~/.paseo/config.json`
 

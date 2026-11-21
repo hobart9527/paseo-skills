@@ -34,11 +34,11 @@ flowchart TB
 
 | ID | Title | Status | Target / Baseline |
 |---|---|---|---|
-| [ADR-0001](0001-single-source-and-shared-core.md) | Single Source of Truth, Shared Execution Core & Unified CLI Facade | Accepted (Partial) | `aba7238` / `e373d11`; remaining consolidation in Phase 1–2 |
-| [ADR-0002](0002-progressive-contract-and-recon-routing.md) | Recon-First Tier Routing & Progressive Unified OpenSpec Contract | Accepted | `aba7238` / `e373d11` (retired `TIER-PLAN` transcript parsing) |
-| [ADR-0003](0003-bounded-sdd-review-and-oracle-fidelity.md) | Bounded SDD Review (1+1 Budget), Oracle Fidelity & Caveat Guard | Accepted | `aba7238` / `e373d11` |
-| [ADR-0004](0004-enabling-harness-environment-and-context.md) | Enabling Harness: Warm Worktrees, JIT Context & Self-Healing ACI | Proposed | Phase 1–2 |
-| [ADR-0005](0005-harness-telemetry-and-self-pruning.md) | Lightweight Local Telemetry & 30-Day Self-Pruning Governance | Proposed | Phase 3 |
+| [ADR-0001](0001-single-source-and-shared-core.md) | Single Source of Truth, Shared Execution Core & Unified CLI Facade | Accepted | Landed (`lib/paths`, `lib/paseo`, `lib/git`, `lib/verify-policy`, `pipeline-run.mjs`) |
+| [ADR-0002](0002-progressive-contract-and-recon-routing.md) | Recon-First Tier Routing & Progressive Unified OpenSpec Contract | Accepted | Landed (`aba7238` / `e373d11`; retired `TIER-PLAN` transcript parsing) |
+| [ADR-0003](0003-bounded-sdd-review-and-oracle-fidelity.md) | Bounded SDD Review (1+1 Budget), Oracle Fidelity & Caveat Guard | Accepted | Landed (plus Tier 1 Stop risk sentinel & Tier 2/3 matrix sync) |
+| [ADR-0004](0004-enabling-harness-environment-and-context.md) | Enabling Harness: Warm Worktrees, JIT Context & Self-Healing ACI | Accepted | Landed (worktree `--hydrate`/`--workspace-dir`, JIT `brief.mjs`, O(1) `tool-guard`) |
+| [ADR-0005](0005-harness-telemetry-and-self-pruning.md) | Lightweight Local Telemetry & 30-Day Self-Pruning Governance | Accepted | Landed (`lib/telemetry.mjs`, `pipeline-run.mjs report`) |
 
 ## 5-Question Fitness Gate (Before Any New Rule, Hook, or Script)
 

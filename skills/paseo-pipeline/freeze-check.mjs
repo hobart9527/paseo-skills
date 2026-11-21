@@ -4,13 +4,15 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo-agents.mjs';
+import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo.mjs';
 import { parseTaskLine, parseTasks, graphErrors, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, isTaskId, legPaths, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
 import { dispatchDeps, weightedSpeedup, weightedCriticalPath, verifyScope, readsOnlyEdges, pathWithin, resolveModel, LIVE_MODEL } from './lib/schedule.mjs';
 import { runGit } from './lib/git.mjs';
 import { loadSpecTree, visibleLines, scanScenarios, scanScenVerify, scanRequirements, classifyScenCollisions } from './lib/spec-scan.mjs';
 import { parseAcceptanceTable } from './lib/acceptance.mjs';
 import { R0_ROLES } from './lib/roles.mjs';
+import { FIXTURE_DIR, NON_SUBSTANTIVE_SCOPE } from './lib/paths.mjs';
+import { verifyTestPath, testScript, fixtureOnlyLeg, legProves, unprovableVerifyReason } from './lib/verify-policy.mjs';
 
 const args = process.argv.slice(2);
 // One pass over argv. Any token that is `--stage` or starts with it is stage syntax: its value is
@@ -499,29 +501,7 @@ const PIPE = /(?<!\|)\|(?!\|)/;
 // splits them into legs that prove nothing; name the real cause instead of the
 // downstream VERIFY_NOT_NARROW.
 const CONTROL_LEG = /^(?:set(?:\s|$)|exit(?:\s|$)|true$|false$|do(?:\s|$)|done$|fi$|else$|then$|esac$)/;
-// Fixture data is never a test, whatever its file is called: a `foo.test.mjs` under fixtures/ is
-// input for another test, so naming it must not satisfy Verify.
-const FIXTURE_DIR = /(?:^|\/)(?:fixtures?|testdata|__snapshots__)(?:\/|$)/i;
-const verifyTestPath = (p) => isTestPath(p) && !FIXTURE_DIR.test(p);
-const testScript = (command) => /^(?:(?:bash|sh)\s+)?(?:\.\/)?(?:[\w.-]+\/)*test(?:[._-][\w.-]+)?\.(?:sh|bash)(?:\s|$)/i.test(command)
-  && !FIXTURE_DIR.test(command.replace(/^(?:bash|sh)\s+/, '').split(/\s/)[0]);
-// A leg must also prove something: a known test runner, or a test/spec path. `true`,
-// `echo ok` and `node src/a.mjs` pass a path-only check but verify nothing.
-// A runner pointed only at fixture paths runs no real test either.
-// Option arguments (`--config test/fixtures/jest.config.js`) configure the run; they are not what it
-// runs. `--test` and `--` are boolean, so the path after them is a real target.
-// Known limitation: a flag value is skipped wholesale, so `node --test --test-only test/fixtures/foo.test.mjs`
-// sees no target (targets=[]) and the fixture is treated as a real verification target. Not fixed here.
-const fixtureOnlyLeg = (leg) => {
-  const tokens = leg.command.split(/\s+/);
-  const targets = tokens.flatMap((token, i) => {
-    const prev = tokens[i - 1] ?? '';
-    if (/^-/.test(prev) && !/=/.test(prev) && prev !== '--' && prev !== '--test') return [];
-    return legPaths(token);
-  });
-  return targets.length > 0 && targets.every((p) => FIXTURE_DIR.test(p));
-};
-const legProves = (leg) => (FULL_SUITE_LEG.test(leg.command) && !fixtureOnlyLeg(leg)) || testScript(leg.command) || leg.paths.some(verifyTestPath);
+// Provable test helpers (verifyTestPath, testScript, fixtureOnlyLeg, legProves) live in ./lib/verify-policy.mjs.
 for (const task of tasks) {
   const legs = verifyLegs(task.verify);
   const broadLegs = legs.filter((leg) => leg.broad).length;
@@ -730,267 +710,7 @@ else {
       // Verify rules name, and a leg that proves nothing proves nothing here either. A pipe inside
       // quotes is an argument, not a pipeline, so it is masked before both judgements.
       const command = row.verify.replace(/^`+|`+$/g, '').trim();
-      // The executor runs `bash -c 'set -o pipefail; <command>'`, so the row passes only when that
-      // whole command exits 0. A shell sequence's exit status is provable for a few forms and not
-      // for the rest, and four review rounds each found one more unprovable shape (`echo if`,
-      // `a || exit 0`, `set -o pipefail | cat`, `{ set +o pipefail; }`, nested `bash -c`,
-      // `... | tail; true`, `if ...; then ...; fi`). Chasing shapes never converged, so the gate
-      // accepts only what it can prove and names a passing route for the rest:
-      //   - one command, or commands joined by `&&` — a failure in any leg IS the exit status;
-      //   - an optional trailing `|| exit <non-zero>` on the same command;
-      //   - `for VAR in LIST; do <provable>; done` — a failing iteration runs the body's own
-      //     `|| exit`, so the shell leaves non-zero instead of continuing.
-      // The same rules are applied recursively, so a loop cannot hide an unprovable body.
-      // Two masks. `maskQuotes` blanks every quoted word, for judgements where a quoted `|` is an
-      // argument rather than a pipeline. `maskShell` keeps the characters that still act inside
-      // double quotes — `$`, a backtick and a backslash — so a structure check cannot be blinded by
-      // quoting. Single-quoted text is fully literal, so it is blanked by both.
-      const maskQuotes = (text) => text.replace(/'[^']*'|"[^"]*"/g, (segment) => `${segment[0]}${'x'.repeat(Math.max(0, segment.length - 2))}${segment[0]}`);
-      const maskShell = (text) => {
-        let out = '';
-        let quote = null;
-        for (const ch of text) {
-          if (quote === "'") { if (ch === "'") { quote = null; out += ch; } else out += ch === '\n' ? ch : 'x'; }
-          else if (quote === '"') {
-            // Only `$(` and `${` start a command or a parameter expansion inside double quotes,
-            // and a backtick and a backslash keep their meaning. `$"` is locale quoting, so the
-            // `"` still closes; keeping it would make the rest of the line read as quoted text.
-            if (ch === '`' || ch === '\\') out += ch;
-            else if (ch === '$' || (out.endsWith('$') && (ch === '(' || ch === '{'))) out += ch;
-            else if (ch === '"') { quote = null; out += ch; }
-            else out += ch === '\n' ? ch : 'x';
-          } else if (ch === "'" || ch === '"') { quote = ch; out += ch; }
-          else out += ch;
-        }
-        return out;
-      };
-      // A simple `$name`/`${name}` expansion only substitutes a value; anything else `$` can do runs
-      // a command of its own. Blank the simple form with a same-length mask, then treat a surviving
-      // `$` as a substitution. Same length, so indices still line up with the raw text.
-      const SIMPLE_PARAM = /\$\{?[A-Za-z_]\w*\}?/g;
-      const CONTROL_WORD = /(?:^|[\s;&|])(?:for|while|until|select|if|then|elif|else|fi|case|esac|do|done|function|coproc|time)\b/;
-      // `exit N` only propagates a failure when N is 1-255: the shell keeps the low 8 bits, so
-      // `exit 256` is `exit 0`.
-      const EXIT_NONZERO = /\|\|\s*exit(?:\s+(?:[1-9]|[1-9]\d|1\d\d|2[0-4]\d|25[0-5]))?\s*$/;
-      // Returns null when `text`'s exit status is provable, else the reason it is not. `loopList`
-      // carries the files a surrounding `for` iterates, so a body that runs `"$f"` is judged by what
-      // `f` ranges over.
-      const ITERATION_VAR = /^\$\{?([A-Za-z_]\w*)\}?$/;
-      // A loop body must end in `|| exit <non-zero>`, so a red iteration stops the shell. The body's
-      // contents are then judged like a task Verify loop: an advisory, not per-leg proof — the leg
-      // splitter cannot see inside it, and the task rules say the same.
-      const LEG_PROVES = (leg) => {
-        if (leg.broad || legProves(leg)) return true;
-        // A package-manager script (`npm --prefix pkg test`, `npm run build`) and a compiler or
-        // typechecker (`npx tsc --noEmit`) exit non-zero for real reasons; that is proof enough for
-        // an acceptance row even though they are not test runners.
-        const command = leg.command.replace(/^\s*(?:[A-Za-z_]\w*=\S*\s+)+/, '');
-        return /^(?:npm|pnpm|yarn|bun)\s+(?:--?[a-z-]+(?:=\S+)?\s+)*[A-Za-z]/.test(command)
-          || /^(?:npx\s+)?(?:tsc|eslint|biome|swc|babel)\b/.test(command)
-          || /^(?:make|cargo|go|dotnet|mvn|gradle)\s+(?:build|check|test|lint|vet)\b/.test(command);
-      };
-      const unprovable = (text, loopList = null) => {
-        // A newline is a command separator exactly like `;`; a two-line cell would run its second
-        // line and its status would be the row's status.
-        if (/\n/.test(text.trim())) return 'a newline starts another command, so the row\'s status is not the first command\'s status; put the checks in one `&&` chain or in a `test*` script';
-        const masked = maskQuotes(text);
-        const shell = maskShell(text).replace(SIMPLE_PARAM, (m) => 'x'.repeat(m.length));
-        // `bash -c`/`sh -c` starts a new shell: its body's status is not this command's status
-        // unless that body is proven in full, which is the parsing this rule refuses to do. The
-        // binary may be reached by any path (`/bin/bash`, `env bash`, a versioned name), so match
-        // the word anywhere in the command, not only at its start.
-        if (/(?:^|[\s=])(?:[\w.-]*\/)*(?:bash|sh|dash|zsh|ksh|fish)(?:-[\d.]*)?\s+-[a-z]*c\s/.test(masked)) {
-          return 'a `bash -c`/`sh -c` body runs in a new shell, so the gate cannot prove its exit status';
-        }
-        // `eval`, `source` and `.` re-interpret their argument as shell code, so a quoted body is
-        // not an argument: its operators run. No proof is possible without parsing that body.
-        if (/(?:^|[\s;&|(){}])(?:eval|source|command\s+eval|builtin\s+eval)(?:\s|$)|(?:^|[\s;|&])\.\s+\S/.test(masked)) {
-          return '`eval`/`source` re-interpret their argument as shell code, so a quoted body is not an argument; run the check in its own `test*` script';
-        }
-        // `$(`/backtick run a command whose status is thrown away; a backslash escapes the next
-        // character, so a quote scan would read structure that is not there. Both are judged on
-        // `maskShell`, which keeps them visible inside double quotes.
-        if (/[`\\]|\$\(/.test(shell)) {
-          return 'a command substitution or an escaped character means a leg of this row is not the command the shell actually runs; run the check in a `test*` script';
-        }
-        // `for VAR in LIST; do <body>; done`. A failing iteration runs the body's own `|| exit`, so
-        // the shell leaves non-zero; the body is proven recursively with VAR bound to LIST.
-        const LOOP = /^for\s+([A-Za-z_]\w*)\s+in\s+([^;]+);\s*do\s+([\s\S]+?);?\s*done$/i;
-        const loop = LOOP.exec(text);
-        if (loop) {
-          // The list is expanded by the shell before the body runs; a list that is not plain words
-          // or globs can fail on its own and leave the loop running zero times with status 0.
-          const list = loop[2].trim();
-          if (/[$`'"();&|<>\\]/.test(maskShell(list))) {
-            return 'a loop list with a substitution, quote or redirection is expanded by the shell and can leave the loop with zero iterations and status 0';
-          }
-          const bodyReason = unprovable(loop[3], list.split(/\s+/));
-          if (bodyReason) return bodyReason;
-          // The body proves only if each failing iteration exits non-zero; without `|| exit` the loop
-          // continues after a red iteration and can finish with status 0.
-          return EXIT_NONZERO.test(maskQuotes(loop[3]).trim())
-            ? null
-            : 'a `for` loop without a trailing `|| exit <1-255>` continues after a failed iteration and can finish with status 0';
-        }
-        // `cmd && cmd && for … done`: every leg's failure is the exit status, including the last, so
-        // decide each `&&` segment on its own. An `&&` inside a `for … done` body belongs to that body.
-        const loopSpan = /for\s+[A-Za-z_]\w*\s+in\s+[^;]+;\s*do[\s\S]*?\bdone\b/i.exec(masked);
-        const inLoop = (index) => loopSpan !== null && index >= loopSpan.index && index < loopSpan.index + loopSpan[0].length;
-        const cuts = [];
-        for (let i = masked.indexOf('&&'); i !== -1; i = masked.indexOf('&&', i + 2)) if (!inLoop(i)) cuts.push(i);
-        if (cuts.length) {
-          const segments = [];
-          let last = 0;
-          for (const cut of cuts) { segments.push([text.slice(last, cut), masked.slice(last, cut)]); last = cut + 2; }
-          segments.push([text.slice(last), masked.slice(last)]);
-          for (const [rawSegment] of segments) {
-            const segmentReason = unprovable(rawSegment.trim(), loopList);
-            if (segmentReason) return segmentReason;
-          }
-          return null;
-        }
-        // A trailing `|| exit N` converts a red leg into a non-zero status. Any other `||` makes one
-        // of two legs mandatory in an order nobody reads, and `|| exit 0` (or `exit 256`, which the
-        // shell wraps to 0) reports success outright.
-        let headMasked = masked.trim();
-        let head = text.trim();
-        let headShell = shell.trim();
-        if (/\|\|/.test(headMasked)) {
-          const tail = EXIT_NONZERO.exec(headMasked);
-          if (!tail || /\|\|/.test(headMasked.slice(0, tail.index))) return '`||` hides which leg is the check unless it is a single trailing `|| exit <1-255>`';
-          const cutAt = headMasked.length - tail[0].length;
-          headMasked = headMasked.slice(0, cutAt);
-          headShell = headShell.slice(0, cutAt);
-          head = head.slice(0, cutAt);
-        }
-        // `;`, a bare `|`, `&`, `!`, a subshell, a group, a command substitution, a backtick or a
-        // control keyword each allows the command to exit 0 after a leg failed. `!` inverts the
-        // leg's status, so a red test reads as success and the trailing `|| exit` never runs.
-        // `headShell` keeps `$(` and a backtick visible inside double quotes, where they still run.
-        if (/[;|&!`\\]|[(){}]|\$\(/.test(headShell) || CONTROL_WORD.test(headMasked)) {
-          return 'only one command or commands joined by `&&` can have a provable exit status; `;`, `|`, `!`, a loop, a condition, a subshell or a nested shell can exit 0 after a leg failed';
-        }
-        // The leg splitter in lib/tasks.mjs splits on `|` too and does not mask quotes, so the text
-        // it reads has quoted pipes blanked: `"a | b"` is an argument, not a pipeline.
-        const legSource = head.replace(/'[^']*'|"[^"]*"/g, (segment) => segment.replace(/\|/g, ' '));
-        const legs = verifyLegs(legSource);
-        // Positive entry check. Every earlier round found another way to make the row's *word* not
-        // the test: `e""val`, `busybox sh -c`, `bash -o pipefail -c`, `/bin/sh -c`. Enumerating
-        // those spellings never converges, so the entry must instead be a known *test invocation*:
-        // a program together with a subcommand that runs the paths after it. A spliced word
-        // (`e""val`) matches none, and `go run ./cmd/x test/a.test.mjs` is not a test invocation
-        // even though `go` and a test path both appear.
-        const entryOf = (leg) => leg.command.replace(/^\s*(?:[A-Za-z_]\w*=\S*\s+)+/, '').trim()
-          .replace(/^(?:[\w.-]*\/)+([\w.-]+)/, '$1');
-        const wordsOf = (leg) => entryOf(leg).split(/\s+/).filter((word) => word && !/^[A-Za-z_]\w*=/.test(word));
-        // A whitelisted program can be told to evaluate a string instead of running a suite:
-        // `node -e '…' test/a.test.mjs` exits 0 without running the test. Those flags are excluded
-        // for every program that has one.
-        // A program that executes a string instead of a suite: `node -e '…'` exits 0 without
-        // running the test. Only interpreters have these flags; for `tsc`, `-p` names a project.
-        const INLINE_CODE = /^(?:node|bun|deno|python[0-9.]*|ruby|perl|php)\b.*(?:^|\s)(?:-e|--eval|--print|-p)(?:\s|=|$)/;
-        // The arguments must be a known test invocation of that program, leading options included.
-        // Options that take a value are consumed by the pattern where they matter.
-        // Programs whose bare invocation is a check: running them with any arguments proves the
-        // same thing, so their argument shape is not constrained.
-        const ANY_ARGS = new Set(['tsc', 'eslint', 'swc', 'babel', 'jest', 'mocha', 'phpunit', 'rspec', 'php', 'pytest']);
-        const RUNS_TESTS = {          node: /^(?:-\S+\s+)*--test(?:\s|$)/,
-          npm: /^(?:(?:-\S+)\s+)*(?:test|t|run(?:-script)?(?:\s+(?:test|build|lint|check|typecheck))?)(?:\s|$)/,
-          pnpm: /^(?:(?:-\S+)\s+)*(?:test|t|run(?:\s+(?:test|build|lint|check|typecheck))?)(?:\s|$)/,
-          yarn: /^(?:(?:-\S+)\s+)*(?:test|run(?:\s+(?:test|build|lint|check|typecheck))?)(?:\s|$)/,
-          bun: /^(?:(?:-\S+)\s+)*(?:test|run(?:\s+(?:test|build|lint|check|typecheck))?)(?:\s|$)/,
-          deno: /^(?:(?:-\S+)\s+)*test(?:\s|$)/,
-          go: /^(?:(?:-\S+)\s+)*test(?:\s|$)/,
-          cargo: /^(?:(?:-\S+)\s+)*(?:test|nextest)(?:\s|$)/,
-          make: /^(?:(?:-\S+|\S+=\S*)\s+)*(?:test|check|lint)(?:\s|$)/,
-          pytest: /^(?:(?:-\S+)\s+)*\S/,
-          python: /^(?:(?:-\S+)\s+)*-m\s+pytest(?:\s|$)/,
-          python3: /^(?:(?:-\S+)\s+)*-m\s+pytest(?:\s|$)/,
-          uv: /^(?:(?:-\S+)\s+)*(?:run\s+)?pytest(?:\s|$)/,
-          poetry: /^(?:(?:-\S+)\s+)*(?:run\s+)?pytest(?:\s|$)/,
-          dotnet: /^(?:(?:-\S+)\s+)*test(?:\s|$)/,
-          mvn: /^(?:(?:-\S+)\s+)*(?:test|verify)(?:\s|$)/,
-          gradle: /^(?:(?:-\S+)\s+)*(?:test|check)(?:\s|$)/,
-          tsc: /^(?:-\S+\s+)*\S/,
-          eslint: /^(?:-\S+\s+)*\S/,
-          biome: /^(?:(?:-\S+)\s+)*(?:check|ci)(?:\s|$)/,
-          swc: /^(?:-\S+\s+)*\S/,
-          babel: /^(?:-\S+\s+)*\S/,
-          jest: /^(?:-\S+\s+)*\S/,
-          vitest: /^(?:(?:-\S+)\s+)*(?:run)?(?:\s|$)/,
-          mocha: /^(?:-\S+\s+)*\S/,
-          playwright: /^(?:(?:-\S+)\s+)*test(?:\s|$)/,
-          cypress: /^(?:(?:-\S+)\s+)*run(?:\s|$)/,
-          phpunit: /^(?:-\S+\s+)*\S/,
-          rspec: /^(?:-\S+\s+)*\S/,
-          ruby: /^(?:-\S+\s+)*-e(?:\s|$)/,
-          php: /^(?:-\S+\s+)*\S/,
-          swift: /^(?:(?:-\S+)\s+)*test(?:\s|$)/,
-          xcodebuild: /^(?:(?:-\S+)\s+)*test(?:\s|$)/,
-          npx: /^(?:(?:-\S+)\s+)*(?:tsc|eslint|biome|swc|babel|jest|vitest|mocha|playwright|cypress|tsx|ts-node)(?:\s|$)/,
-          bunx: /^(?:(?:-\S+)\s+)*(?:tsc|eslint|biome|swc|babel|jest|vitest|mocha|playwright|cypress|tsx|ts-node)(?:\s|$)/,
-        };
-        const testInvocation = (leg) => {
-          const words = wordsOf(leg);
-          const program = words[0] ?? '';
-          if (INLINE_CODE.test(leg.command)) return false;
-          // A leg that runs the loop variable proves through the loop: `node "$f"` inside
-          // `for f in scripts/specs/*.mjs` runs whatever that list names, and `provesLeg` decides
-          // whether the list is a test target.
-          if (loopList && /^\$/.test((words[words.length - 1] ?? '').replace(/^['"]|['"]$/g, ''))) return true;
-          if (Object.prototype.hasOwnProperty.call(RUNS_TESTS, program)) {
-            // A tool whose whole job is a check (`tsc`, `eslint`, `jest`) is proven by running at
-            // all, however its flags are shaped; only its presence in this table matters.
-            if (ANY_ARGS.has(program)) return words.length > 1;
-            // `node <script under a test path>` runs a check script whose exit status is its own.
-            // `node -e …` is excluded by INLINE_CODE above.
-            if ((program === 'node' || program === 'bun' || program === 'deno')
-              && words.length === 2 && verifyTestPath(words[1].replace(/^['"]|['"]$/g, ''))) return true;
-            // Options that take a value (`--prefix dir`) are skipped with their value, so the
-            // subcommand that follows is what the pattern sees.
-            const args = [];
-            for (let i = 1; i < words.length; i += 1) {
-              if (/^(?:--prefix|-C|--dir|--cwd|--project|-p|-c|--config|--reporter|--filter)$/.test(words[i])) { i += 1; continue; }
-              args.push(words[i]);
-            }
-            return RUNS_TESTS[program].test(args.join(' '));
-          }
-          return testScript(leg.command);
-        };
-        const entryOk = (leg) => {
-          if (testInvocation(leg)) return true;
-          // `bash <script>` runs a named script in a new shell — but only with no options, and only
-          // when the script is one under a test path. `bash -c …` carries an option and is excluded.
-          const words = wordsOf(leg);
-          const head = words[0] ?? '';
-          if (!/^(?:[\w.-]*\/)*(?:bash|sh)$/.test(head)) return false;
-          const target = words[1] ?? '';
-          if (!target || target.startsWith('-') || words.length !== 2) return false;
-          const path = target.replace(/^['"]|['"]$/g, '');
-          return testScript(`bash ${path}`) || verifyTestPath(path);
-        };
-        // A leg that runs the loop variable (`node "$f"`) proves what the loop list proves: the list
-        // must name a test path or a `test*` script.
-        const iterated = (leg) => {
-          if (!loopList) return false;
-          const target = leg.command.split(/\s+/).reverse().find((token) => !token.startsWith('-')) ?? '';
-          return !!ITERATION_VAR.exec(target.replace(/['"]/g, ''));
-        };
-        const provesLeg = (leg) => LEG_PROVES(leg)
-          // A leg the entry table already proved as a real test invocation needs no separate path
-          // proof: `npx tsc --noEmit -p x.json` is a typecheck, and the leg splitter cuts `-p`'s
-          // value into a second leg, so path-based proof would miss it.
-          || testInvocation(leg)
-          || (iterated(leg) && loopList.some((item) => {
-          const path = item.replace(/^['"]|['"]$/g, '');
-          return verifyTestPath(path) || testScript(`bash ${path}`) || legPaths(path).some((p) => verifyTestPath(p));
-        }));
-        if (!(legs.length > 0 && legs.every((leg) => entryOk(leg) && provesLeg(leg)))) {
-          return `${JSON.stringify(command)} proves nothing — run a real entry point or test command whose exit status can fail`;
-        }
-        return null;
-      };
-      const reason = unprovable(command);
+      const reason = unprovableVerifyReason(command);
       if (reason) {
         blocking.push(`BAD_ACCEPTANCE_VERIFY ${row.scen}: ${reason}; put the check in a script whose name starts with \`test\` (e.g. \`bash scripts/test-<name>.sh\`) or that lives under a test path, and run that — the script returns its own status`);
       }
@@ -1318,7 +1038,6 @@ if (graphValid) {
     advisories.push(`ADVISORY_READS_ONLY_EDGE ${rendered.join('; ')}: the pair shares only a read-only fixture and Write scopes do not overlap; merge-task replays it after either side merges. Record in design.md whether the edge is still needed before CP-1.`);
   }
 }
-const NON_SUBSTANTIVE_SCOPE = /^(?:openspec\/.*|docs\/.*|[^/]*\.md|run-log\.md)$/i;
 function isSubstantiveTask(task) {
   const scopes = Array.isArray(task?.scope) ? task.scope : [];
   return scopes.some((s) => !NON_SUBSTANTIVE_SCOPE.test(String(s).trim()));

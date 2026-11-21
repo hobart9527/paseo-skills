@@ -16,7 +16,7 @@ import { readMergeState } from './lib/merge-state.mjs';
 import { readTasksMarkdown } from './lib/tasks-source.mjs';
 import { parseOptions, planOptions } from './lib/cli.mjs';
 import { ROLE_NAMES, NON_WORKER_STAGE_ROLES, WRITER_ROLES, recommendedWorkerRole } from './lib/roles.mjs';
-import { listPaseoAgents, inspectPaseoAgent } from './lib/paseo-state.mjs';
+import { listPaseoAgents, inspectPaseoAgent } from './lib/paseo.mjs';
 
 let parsedArgs;
 try { parsedArgs = parseOptions(process.argv.slice(2), planOptions); }

@@ -61,7 +61,7 @@ artifacts:
     description: R0 contract review sign-off
     template: review.md
     instruction: |
-      Main session records the independent R0 contract review (stage title `[Pipeline] hanlin R0`; reviewer is an independent profile, not the authors). First line is exactly `R0: pass(<reviewer-agent-uuid>@<reviewed-commit-sha>)`, followed by findings and author responses. For human-accepted residual blockers, use `R0: human-accept(@<reviewed-commit-sha>)`, record verbatim approval in run-log.md and open items in rulings.md. Human-accept is never a reviewer pass. Freeze-check rejects missing/unknown signer or any contract change after signed commit. Never prewrite sign-off.
+      Main session records the independent R0 contract review (stage title `[Pipeline] neon R0`; reviewer is an independent profile, not the authors). First line is exactly `R0: pass(<reviewer-agent-uuid>@<reviewed-commit-sha>)`, followed by findings and author responses. For human-accepted residual blockers, use `R0: human-accept(@<reviewed-commit-sha>)`, record verbatim approval in run-log.md and open items in rulings.md. Human-accept is never a reviewer pass. Freeze-check rejects missing/unknown signer or any contract change after signed commit. Never prewrite sign-off.
     requires:
       - tasks
       - acceptance

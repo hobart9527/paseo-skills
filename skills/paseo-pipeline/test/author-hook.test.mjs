@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { AUTHORING_COMMIT_ROLES } from '../lib/roles.mjs';
 
 const hooks = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'hooks', 'git');
 const ME = '9f1492a6-aaaa-bbbb-cccc-000000000001';
@@ -146,4 +147,12 @@ test('Lead committing for a sandbox-blocked child exports the child id; that id 
   // ...so the documented procedure is to export the child's full uuid for that one commit.
   assert.equal(r.commit(`impl2\n\nPipeline-Role: gongbu\nPipeline-Author: ${LEAD}`, { PASEO_AGENT_ID: OTHER }).status, 0);
   assert.equal(r.trailer('Pipeline-Author'), OTHER);
+});
+
+test('hooks/git/commit-msg writer role list matches lib/roles.mjs#AUTHORING_COMMIT_ROLES', () => {
+  const hookScript = fs.readFileSync(path.join(hooks, 'commit-msg'), 'utf8');
+  const match = hookScript.match(/case\s+"\$r"\s+in\s+([a-z|]+)\)/);
+  assert.ok(match, 'commit-msg should have case "$r" in <roles>)');
+  const hookRoles = match[1].split('|').filter(Boolean).sort();
+  assert.deepEqual(hookRoles, [...AUTHORING_COMMIT_ROLES].sort());
 });

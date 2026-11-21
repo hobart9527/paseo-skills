@@ -57,6 +57,7 @@ All under `$PIPELINE_HOME` (set by `install.sh`). Each prints usage on bad argum
 | `pipeline-run.mjs install-hook <worktree>...` | Install author hook (or run via `prepare-task`). |
 | `pipeline-run.mjs risk-scan <base> [<head>]` | Diff scan for 5 risk classes, test-oracle mutations, and doc caveat removals. |
 | `pipeline-run.mjs cleanup <change-dir>` | After CP-2: lists worktrees/branches and commands; executes nothing. |
+| `pipeline-run.mjs freeze\|profiles\|preflight\|inspect\|report` | Unified facade entries (`inspect`: namespace + scenarios + r0-hotspots; `report`: local metrics). |
 
 ## Entry and CP-1
 

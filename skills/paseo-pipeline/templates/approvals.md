@@ -7,7 +7,7 @@ When `SKILL.md` § FINAL and CP-2 exhausts the review budget (full + 1 delta rou
 - **Accept:** record `FINAL: human-accept(@<sha>)` in `review.md`, residual risk in `rulings.md`, and `Approval: FINAL residual risk accepted for <sha> — <reason>` in `run-log.md`.
 - **Terminate:** stop this change (start a fresh change later if needed rather than looping).
 
-Repair scope and contract-gap disposition follow `SKILL.md` § FINAL and CP-2. Keep evidence bound to reviewed SHA. Run acceptance check at that SHA before record-only commits; only `review.md`, `rulings.md`, and `run-log.md` may change afterward. CP-2 remains human.
+Repair scope and contract-gap disposition follow `SKILL.md` § FINAL and CP-2. Keep evidence bound to reviewed SHA. `acceptance check` validates persisted `evidence/` records across integration sign-off commits (`review.md`, `rulings.md`, `run-log.md`, `evidence/`) and post-CP-2 merges on `main`; do not alter other files afterward. CP-2 remains human.
 
 ## Destructive or production action
 

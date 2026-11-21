@@ -9,8 +9,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import {
+  DEFAULT_LIMIT,
+  UNCOUNTED,
+  EXEMPT,
+  CHURN_EXEMPT,
+  scopeKey,
+  resolveScopedPath,
+} from './paths.mjs';
+import { scanRepo } from './risk-scan.mjs';
+import { recordEvent } from './telemetry.mjs';
 
-export const DEFAULT_LIMIT = 3;
+export { DEFAULT_LIMIT, UNCOUNTED, EXEMPT, scopeKey, resolveScopedPath };
 export const DEFAULT_IDLE_MS = 30 * 60 * 1000;
 export const DEFAULT_TURNS = 3;
 const PROTECTED_BRANCHES = new Set(['main', 'master']);
@@ -122,59 +132,7 @@ function turnsFromEnv() {
   return Number.isInteger(raw) && raw >= 1 ? raw : DEFAULT_TURNS;
 }
 
-export const UNCOUNTED = (rel) => {
-  const parts = rel.split('/');
-  const base = parts.at(-1) ?? '';
-  const ext = path.extname(base).toLowerCase();
-  const isTest = parts.some((part) => ['test', 'tests', '__tests__', 'spec', 'e2e', 'fixtures'].includes(part))
-    || /(?:\.test\.|\.spec\.|_test\.)/i.test(base);
-  const isDoc = (parts[0] === 'docs' && parts.length > 1) || ['.md', '.mdx'].includes(ext);
-  return isTest || isDoc;
-};
-export const EXEMPT = (rel) => rel === 'openspec' || rel.startsWith('openspec/')
-  || rel === '.superpowers' || rel.startsWith('.superpowers/') || UNCOUNTED(rel);
-const CHURN_EXEMPT = (rel) => rel === 'openspec' || rel.startsWith('openspec/')
-  || rel === '.superpowers' || rel.startsWith('.superpowers/')
-  || rel === 'docs/prototypes' || rel.startsWith('docs/prototypes/')
-  || rel === 'docs/specs' || rel.startsWith('docs/specs/');
-
-const WORKSPACE_ROOTS = new Set(['packages', 'apps', 'services', 'crates', 'skills']);
-const SOURCE_TEST_ROOTS = new Set(['src', 'test', 'tests', '__tests__', 'spec', 'e2e']);
-const SOURCE_TEST_SCOPE = '(src/test)';
-export function scopeKey(rel) {
-  const parts = String(rel).split('/');
-  if (parts.length > 2 && WORKSPACE_ROOTS.has(parts[0])) return `${parts[0]}/${parts[1]}`;
-  if (parts.length > 1 && SOURCE_TEST_ROOTS.has(parts[0])) return SOURCE_TEST_SCOPE;
-  return parts.length > 1 ? parts[0] : '.';
-}
-
-function workspaceRoots(root) {
-  try {
-    return fs.readdirSync(root, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && WORKSPACE_ROOTS.has(entry.name))
-      .map((entry) => entry.name);
-  } catch {
-    return [];
-  }
-}
-
-export function resolveScopedPath(rel, root) {
-  const value = String(rel);
-  const parts = value.split('/');
-  if (parts.length < 2 || WORKSPACE_ROOTS.has(parts[0])) return value;
-  const candidates = [];
-  for (const top of workspaceRoots(root)) {
-    try {
-      for (const entry of fs.readdirSync(path.join(root, top), { withFileTypes: true })) {
-        if (entry.isDirectory()) candidates.push(`${top}/${entry.name}`);
-      }
-    } catch {}
-  }
-  const hits = candidates.filter((dir) => {
-    try { fs.statSync(path.join(root, dir, value)); return true; } catch { return false; }
-  });
-  return hits.length === 1 ? `${hits[0]}/${value}` : value;
-}
+// Path and scope matchers live in ./paths.mjs (re-exported above).
 
 function declaredScopes(files, root) {
   return [...new Set(files.map((file) => scopeKey(resolveScopedPath(file, root))))].sort();
@@ -195,6 +153,7 @@ function segment(entry, now = Date.now()) {
     reported: fresh ? [] : strings(legacy ? [] : entry?.reported),
     turns: fresh ? 0 : (!legacy && Number.isInteger(entry?.turns) ? entry.turns : 0),
     churnReported: fresh ? false : (!legacy && entry?.churnReported === true),
+    riskReported: fresh ? false : (!legacy && entry?.riskReported === true),
   };
 }
 
@@ -285,7 +244,13 @@ export function assessTierGate({ target, sessionId, declared }) {
   const seg = segment(state[ctx.root], now);
   const counted = seg.files.filter((filePath) => !EXEMPT(filePath));
   const asked = seg.asked.filter((filePath) => !EXEMPT(filePath));
-  const keep = { turns: seg.turns, reported: seg.reported, churnReported: seg.churnReported, stopFiles: seg.stopFiles };
+  const keep = {
+    turns: seg.turns,
+    reported: seg.reported,
+    churnReported: seg.churnReported,
+    riskReported: seg.riskReported,
+    stopFiles: seg.stopFiles,
+  };
   if (counted.includes(rel)) return { verdict: 'allow', note: 'already counted' };
 
   const limit = limitFromEnv();
@@ -338,14 +303,21 @@ export function takeSnapshot({ cwd, sessionId, isHumanTurn = true }) {
   if (process.env.PIPELINE_TIER_GATE === 'off') return;
   if (typeof sessionId !== 'string' || sessionId === '' || typeof cwd !== 'string' || cwd === '') return;
   const ctx = repoContext(cwd);
-  if (ctx === null || !ctx.isPrimary) return;
+  if (ctx === null) return;
   const file = stateFile(sessionId);
   const state = readState(file);
   const prev = state[ctx.root];
   if (isHumanTurn && prev && !Array.isArray(prev)) {
     const inspected = prev.churnReported === true
       || (Number.isInteger(prev.turns) && prev.turns >= turnsFromEnv());
-    if (inspected) writeSegment(file, state, ctx.root, { ...prev, turns: 0, churnReported: false });
+    const resetRisk = prev.riskReported === true;
+    if (inspected || resetRisk) {
+      writeSegment(file, state, ctx.root, {
+        ...prev,
+        ...(inspected ? { turns: 0, churnReported: false } : {}),
+        ...(resetRisk ? { riskReported: false } : {}),
+      });
+    }
   }
   const snap = { root: ctx.root, head: git(ctx.root, ['rev-parse', 'HEAD']), sig: dirtySignatures(ctx.root) };
   fs.mkdirSync(stateDir(), { recursive: true });
@@ -379,11 +351,31 @@ export function otherSessionsClaimedFiles(dir, currentSessionId, root, now = Dat
   return claimed;
 }
 
+function riskStopReason({ hits = [], testMutations = [], caveatRemovals = [] }) {
+  const details = [];
+  if (hits.length) {
+    const classes = [...new Set(hits.map((h) => h.class))].sort();
+    const files = [...new Set(hits.map((h) => h.file))].sort();
+    details.push(`命中的风险类别：${classes.join('、')}（${files.join('、')}）`);
+  }
+  if (testMutations.length) {
+    details.push(`既有测试或快照/断言变更：${testMutations.map((m) => `${m.file} (${m.reason})`).join('；')}`);
+  }
+  if (caveatRemovals.length) {
+    details.push(`文档/提示词安全约束削弱：${caveatRemovals.map((c) => `${c.file} (${c.reason})`).join('；')}`);
+  }
+  return [
+    '[tier-gate] 本轮 Tier 1 改动触发风险/断言扫描哨兵：',
+    ...details,
+    '风险不自动升档也无需用户授权，但收口前必须完成：`pipeline-run.mjs risk-scan HEAD` + 1 次独立异构 reviewer（1+1 上限，可用 `anchasi` / `/paseo-advisor`），并在汇报中列出核验结论。',
+  ].join('\n');
+}
+
 export function assessStop({ cwd, sessionId }) {
   if (process.env.PIPELINE_TIER_GATE === 'off') return { verdict: 'ok' };
   if (typeof sessionId !== 'string' || sessionId === '' || typeof cwd !== 'string' || cwd === '') return { verdict: 'ok' };
   const ctx = repoContext(cwd);
-  if (ctx === null || !ctx.isPrimary) return { verdict: 'ok' };
+  if (ctx === null) return { verdict: 'ok' };
   const snap = readState(snapFile(sessionId));
   if (snap.root !== ctx.root || typeof snap.sig !== 'object' || snap.sig === null) return { verdict: 'ok' };
 
@@ -410,16 +402,34 @@ export function assessStop({ cwd, sessionId }) {
   const limit = limitFromEnv();
   const reportedBefore = new Set(seg.reported);
   const unreported = combined.filter((rel) => !reportedBefore.has(rel));
-  const fileLimitBlock = combined.length > limit && unreported.length > 0;
+  const fileLimitBlock = ctx.isPrimary && combined.length > limit && unreported.length > 0;
   const scopes = [...new Set([...combined, ...seg.asked].map(scopeKey))].sort();
-  const scopeBlock = !fileLimitBlock && combined.length > 0 && scopes.length >= 2 && unreported.length > 0;
+  const scopeBlock = ctx.isPrimary && !fileLimitBlock && combined.length > 0 && scopes.length >= 2 && unreported.length > 0;
   const turnLimit = turnsFromEnv();
   const churnRound = round.filter((rel) => churnTouched.has(rel) && !CHURN_EXEMPT(rel));
   const turnsAfter = churnRound.length > 0 ? seg.turns + 1 : seg.turns;
   const previouslyTouched = new Set([...seg.files, ...seg.stopFiles]);
   const fresh = churnRound.filter((rel) => !previouslyTouched.has(rel));
   const churnBlock = turnsAfter >= turnLimit && churnRound.length > 0 && fresh.length === 0 && !seg.churnReported;
-  const block = fileLimitBlock || scopeBlock || churnBlock;
+
+  let riskFindings = null;
+  let riskBlock = false;
+  if (ctx.isPrimary && !fileLimitBlock && !scopeBlock && !churnBlock && !seg.riskReported && changed.size > 0) {
+    try {
+      const scan = scanRepo({ cwd: ctx.root, base: snap.head, workingTree: true });
+      const hits = scan.hits.filter((item) => changed.has(item.file));
+      const testMutations = scan.testMutations.filter((item) => changed.has(item.file));
+      const caveatRemovals = (scan.caveatRemovals || []).filter((item) => changed.has(item.file));
+      if (hits.length > 0 || testMutations.length > 0 || caveatRemovals.length > 0) {
+        riskFindings = { hits, testMutations, caveatRemovals };
+        riskBlock = true;
+      }
+    } catch {
+      // Fail-open on synthetic or shallow repos
+    }
+  }
+
+  const block = fileLimitBlock || scopeBlock || churnBlock || riskBlock;
 
   if (round.length > 0) {
     writeSegment(file, state, ctx.root, {
@@ -430,11 +440,13 @@ export function assessStop({ cwd, sessionId }) {
       turns: turnsAfter,
       reported: fileLimitBlock || scopeBlock ? combined : seg.reported,
       churnReported: seg.churnReported || churnBlock,
+      riskReported: seg.riskReported || riskBlock,
     });
-  } else if (fileLimitBlock || scopeBlock) {
+  } else if (fileLimitBlock || scopeBlock || riskBlock) {
     writeSegment(file, state, ctx.root, {
       ...seg,
-      reported: combined,
+      reported: fileLimitBlock || scopeBlock ? combined : seg.reported,
+      riskReported: seg.riskReported || riskBlock,
     });
   }
 
@@ -452,7 +464,15 @@ export function assessStop({ cwd, sessionId }) {
     `累计：${combined.join('、')}`,
     '不要再改文件，也不要回滚。先向用户汇报：这次已越出 Tier 1，是否未先探查定界；然后请用户决定由主会话进 worktree（Tier 2）、委派（/tier2-handoff → /paseo-handoff）、走 Tier 3（/paseo-pipeline）或明确放行。',
   ].join('\n');
-  const reason = [fileLimitBlock ? limitReason : '', scopeBlock ? scopeReason : '', churnBlock ? churnReason(turnsAfter) : '']
+  const reason = [
+    fileLimitBlock ? limitReason : '',
+    scopeBlock ? scopeReason : '',
+    churnBlock ? churnReason(turnsAfter) : '',
+    riskBlock ? riskStopReason(riskFindings) : '',
+  ]
     .filter(Boolean).join('\n\n');
-  return { verdict: 'block', files: combined, reason };
+  const reportedFiles = (fileLimitBlock || scopeBlock || churnBlock) ? combined : [...changed].sort();
+  const reasonCode = fileLimitBlock ? 'file_limit' : (scopeBlock ? 'scope_cross' : (churnBlock ? 'churn' : 'risk_sentinel'));
+  recordEvent('tier_stop', { verdict: 'block', reasonCode, tier: ctx.isPrimary ? '1' : '2', count: reportedFiles.length });
+  return { verdict: 'block', files: reportedFiles, reason };
 }

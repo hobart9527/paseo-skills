@@ -1,6 +1,9 @@
 // Minimal tasks.md parser for the converged pipeline.
 // State lives in git; this module only validates the frozen contract.
 import { dispatchDeps, mergeDeps } from './schedule.mjs';
+import { isTestPath } from './paths.mjs';
+
+export { isTestPath };
 
 const TASK_LINE = /^\s*[-*]\s*\[([ xX])\]\s+(?:(?:\d+(?:\.\d+)*)\s+)?([A-Za-z][A-Za-z0-9]*-\d+)(?::\s*|\s+)(.*)$/;
 const FIELD_LINE = /^\s+[-*]\s+([^:]+):\s*(.*)$/;
@@ -205,20 +208,7 @@ export function taskErrorsFor(errors, taskId) {
   return errors.filter((error) => error.task === taskId && !['UNKNOWN_DEP', 'SELF_DEP', 'CYCLE'].includes(error.code));
 }
 
-// Test assets include the common conventions that are not named `*.test.*`:
-// pytest's `test_*.py` / `*_test.py`, Go's `*_test.go`, e2e specs, fixtures,
-// `testdata/` (Go) and `__snapshots__/`. Missing these made `ceshi` commits of
-// legitimate test assets fail the provenance gate (exit 30).
-// Repos may also keep assertion scripts under `scripts/specs/` (plural); match
-// that exact prefix only, so contract files under `openspec/**/specs/*.md`
-// stay outside the test-author allowance.
-export function isTestPath(file) {
-  const value = String(file || '');
-  return /(^|\/)(test|tests|__tests__|spec|e2e|fixtures?|testdata|__snapshots__)(\/|$)/i.test(value)
-    || /(?:^|\/)scripts\/specs\//i.test(value)
-    || /(?:^|\/)test_[^/]*\.py$/i.test(value)
-    || /(?:\.|_)(test|spec|e2e)\.[^.]+$/i.test(value);
-}
+// Test path classification lives in ./paths.mjs (re-exported above).
 
 export function isFileWithinScopes(filePath, scopes) {
   const normalized = normalizeScope(filePath);

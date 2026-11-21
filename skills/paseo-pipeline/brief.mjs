@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Production brief renderer for Tier 2 and Tier 3 roles.
+// Production JIT context compiler & brief renderer for Tier 2 and Tier 3 roles.
 // Renders complete, copy-pasteable prompts from templates + frozen contracts without manual editing.
 // Never selects or emits concrete model IDs: callers resolve profiles via `list_profiles`.
 
@@ -8,13 +8,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseTasks, isTestPath } from './lib/tasks.mjs';
 import { checklistForSurfaces } from './lib/adversarial.mjs';
-import { gitMaybe } from './lib/git.mjs';
+import { gitMaybe, worktreeForBranch } from './lib/git.mjs';
 import { argValue, positionalArgs } from './lib/cli.mjs';
 import { scanRepo } from './lib/risk-scan.mjs';
+import { loadSpecTree, scanScenarios } from './lib/spec-scan.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '..', '..');
 const ROLES = ['recon', 'author', 'revise', 'r0', 'final', 'tester', 'worker', 'reviewer', 'tier2', 'tier2-review'];
+const JIT_BUDGET = 4000;
 const usage = `Usage: brief.mjs <${ROLES.join('|')}> --change <name> --repo <path> [--task <id>] [--base <sha>] [--goal <text>] [--json]`;
 
 const args = process.argv.slice(2);
@@ -110,24 +112,9 @@ if (taskId && !task) {
   process.exit(2);
 }
 
-function worktreeFor(branch) {
-  if (!isGit) return null;
-  const out = git(['worktree', 'list', '--porcelain']);
-  if (!out) return null;
-  for (const block of out.split(/\r?\n\r?\n/)) {
-    const lines = block.split(/\r?\n/);
-    const branchLine = lines.find((line) => line.startsWith('branch '));
-    if (branchLine?.slice('branch '.length) === `refs/heads/${branch}`) {
-      const worktreeLine = lines.find((line) => line.startsWith('worktree '));
-      return worktreeLine ? worktreeLine.slice('worktree '.length) : null;
-    }
-  }
-  return null;
-}
-
-const integrationWorktree = worktreeFor(integrationBranch)
+const integrationWorktree = (isGit ? worktreeForBranch(repo, integrationBranch) : null)
   || (isGit && git(['branch', '--show-current']) === integrationBranch ? repo : repo);
-const taskWorktree = taskBranch ? worktreeFor(taskBranch) : null;
+const taskWorktree = isGit && taskBranch ? worktreeForBranch(repo, taskBranch) : null;
 
 function resolveBase() {
   if (baseArg) return isGit ? git(['rev-parse', '--verify', '--quiet', `${baseArg}^{commit}`]) : null;
@@ -137,8 +124,8 @@ function resolveBase() {
     const refSha = git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
     const integrationSha = git(['rev-parse', '--verify', '--quiet', `refs/heads/${integrationBranch}^{commit}`]);
     if (refSha && integrationSha) {
-      const base = git(['merge-base', refSha, integrationSha]);
-      if (base) return base;
+      const mb = git(['merge-base', refSha, integrationSha]);
+      if (mb) return mb;
     }
   }
   return git(['log', '-1', '--format=%H', '--', path.relative(repo, changeDir)]) || git(['rev-parse', '--verify', '--quiet', 'HEAD']);
@@ -180,6 +167,69 @@ function forbiddenPaths() {
   const out = [...other].sort();
   if (fs.existsSync(changeDir)) out.unshift(`${path.relative(repo, changeDir)}/ (frozen contract: read-only for every child)`);
   return out;
+}
+
+function appendBounded(sections, budget = JIT_BUDGET) {
+  let out = '';
+  for (const block of sections) {
+    if (!block) continue;
+    const candidate = `${out}${block}\n`;
+    if (candidate.length <= budget) {
+      out = candidate;
+    } else {
+      const remaining = budget - out.length - 20;
+      if (remaining > 60) out += `${block.slice(0, remaining)}\n... [truncated]\n`;
+      break;
+    }
+  }
+  return out;
+}
+
+function compileTaskJitContext() {
+  const blocks = [];
+  if (task.scenarios.length && fs.existsSync(changeDir)) {
+    const specTree = loadSpecTree({ changeDir });
+    const byId = new Map();
+    for (const { text } of specTree.current) {
+      for (const scen of scanScenarios(text)) byId.set(scen.id.toUpperCase(), scen);
+    }
+    const scenLines = ['## Claimed scenarios (inlined from specs/)'];
+    let foundAny = false;
+    for (const id of task.scenarios) {
+      const entry = byId.get(id.toUpperCase());
+      if (entry) {
+        foundAny = true;
+        scenLines.push(`#### Scenario: ${entry.id}${entry.title ? ` ${entry.title}` : ''}`);
+        if (entry.body) scenLines.push(entry.body);
+      }
+    }
+    if (foundAny) blocks.push(scenLines.join('\n'));
+  }
+
+  const upstreamIds = [...new Set([...(task.depends || []), ...(task.uses || [])])];
+  if (upstreamIds.length) {
+    const ifaceLines = ['## Upstream interfaces (Depends / Uses)'];
+    let hasUpstream = false;
+    for (const depId of upstreamIds) {
+      const parent = parsed.tasks.find((item) => item.id === depId);
+      if (!parent) continue;
+      if (parent.interface?.length) {
+        hasUpstream = true;
+        ifaceLines.push(`- ${depId} Interface: ${parent.interface.join(', ')}`);
+      }
+      if (isGit && parent.done?.source) {
+        const stat = git(['show', '--stat', '--format=', parent.done.source]);
+        if (stat) {
+          hasUpstream = true;
+          const trimmed = stat.split(/\r?\n/).slice(0, 8).join('\n');
+          ifaceLines.push(`- ${depId} (${parent.done.source.slice(0, 7)}):\n${trimmed}`);
+        }
+      }
+    }
+    if (hasUpstream) blocks.push(ifaceLines.join('\n'));
+  }
+
+  return appendBounded(blocks);
 }
 
 const values = {
@@ -247,12 +297,14 @@ if (task && ['worker', 'tester'].includes(role)) {
   lines.push('', '## Toolchain');
   lines.push('- Linked worktree: install dependencies per lockfile if Verify fails with a missing package. Run `pipeline-run.mjs worker-check` before reporting.');
   lines.push('- Resolve runtime settings via `list_profiles`; never guess model IDs.');
+  const jit = compileTaskJitContext();
+  if (jit) lines.push('', jit.trimEnd());
   prompt = `${prompt.trimEnd()}\n${lines.join('\n')}\n`;
 }
 
-if (['reviewer', 'final', 'tier2-review'].includes(role) && !task) {
+if (['reviewer', 'final', 'tier2-review', 'r0'].includes(role) && !task) {
   const merged = parsed.tasks.filter((item) => item.done);
-  if (merged.length) {
+  if (merged.length && role !== 'r0') {
     const lines = ['', '## Merged tasks (each passed only the mechanical gate)'];
     for (const item of merged) {
       lines.push(`- ${item.id} ${item.title}: source ${item.done.source}; scope ${item.scope.join(', ')}; Verify ${item.verify}; scenarios ${item.scenarios.join(', ') || 'none'}`);
@@ -260,14 +312,20 @@ if (['reviewer', 'final', 'tier2-review'].includes(role) && !task) {
     prompt = `${prompt.trimEnd()}\n${lines.join('\n')}\n`;
   }
   if (isGit && base) {
+    const stat = git(['diff', '--stat', base]);
+    if (stat) {
+      const statLines = stat.split(/\r?\n/).slice(0, 30).join('\n');
+      const capped = statLines.length > 1500 ? `${statLines.slice(0, 1480)}\n... [truncated]` : statLines;
+      prompt = `${prompt.trimEnd()}\n\n## Diff summary (git diff --stat ${base.slice(0, 7)})\n${capped}\n`;
+    }
     try {
       const scan = scanRepo({ cwd: repo, base, workingTree: true });
       if (scan.reviewRequired) {
         const lines = ['', '## Deterministic risk-scan summary'];
         if (scan.classes.length) lines.push(`- Classes: ${scan.classes.join(', ')}`);
-        for (const hit of scan.hits) lines.push(`- [${hit.class}] ${hit.file}: ${hit.reason}`);
-        for (const mut of scan.testMutations) lines.push(`- [test-oracle] ${mut.file}: ${mut.reason}`);
-        for (const cav of scan.caveatRemovals || []) lines.push(`- [doc-caveat] ${cav.file}: ${cav.reason}`);
+        for (const hit of scan.hits.slice(0, 20)) lines.push(`- [${hit.class}] ${hit.file}: ${hit.reason}`);
+        for (const mut of scan.testMutations.slice(0, 20)) lines.push(`- [test-oracle] ${mut.file}: ${mut.reason}`);
+        for (const cav of (scan.caveatRemovals || []).slice(0, 20)) lines.push(`- [doc-caveat] ${cav.file}: ${cav.reason}`);
         prompt = `${prompt.trimEnd()}\n${lines.join('\n')}\n`;
       }
     } catch {
@@ -284,7 +342,7 @@ if (role === 'tier2' && parsed.tasks.length) {
   prompt = `${prompt.trimEnd()}\n${lines.join('\n')}\n`;
 }
 
-if (/(?<!\.)\b(?:claude|gpt|codex|anthropic|openai|gemini|opus|sonnet|haiku)[-/][\w.-]+/i.test(prompt)) {
+if (/(?<!\.)\b(?:claude|gpt|codex|anthropic|openai|gemini|opus|sonnet|haiku)[-/](?!CLAUDE\.md\b)[\w.-]+/i.test(prompt)) {
   console.error('[brief] refusing to emit a concrete model id; resolve profiles with list_profiles');
   process.exit(1);
 }

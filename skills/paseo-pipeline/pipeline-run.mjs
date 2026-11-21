@@ -1,8 +1,6 @@
 #!/usr/bin/env node
-// Deterministic driver for a frozen change. The main session is an event router:
-// it runs `plan`, executes the printed worker/merge actions, and runs `merge` after
-// a worker reports. It never recomputes the frontier by hand and never schedules
-// with an LLM (SKILL.md).
+// Unified CLI facade and deterministic driver for the SDD pipeline (ADR-0001..0005).
+// Exposes all day-to-day commands under one entrypoint while keeping standalone scripts compatible.
 //
 // Usage:
 //   pipeline-run.mjs plan   <change-dir> [--json] [--worker-cap N] [--idle-minutes N]
@@ -10,18 +8,19 @@
 //   pipeline-run.mjs status <change-dir>
 //   pipeline-run.mjs cleanup <change-dir> [--json] [--change <name>]
 //   pipeline-run.mjs scenarios <change-dir> [--json]
+//   pipeline-run.mjs inspect <change-dir> [--json]
+//   pipeline-run.mjs freeze <change-dir> [--json] [--explain] [--structural] [--skip-signer-check] [--strict]
+//   pipeline-run.mjs profiles [--skill F] [--config F] [--root R] [--json]
+//   pipeline-run.mjs preflight <repo> [--json] [--strict]
 //   pipeline-run.mjs acceptance run|check|sync <change-dir> ...
-//   pipeline-run.mjs prepare-task <change-dir> <task-id> [--worktree-root <dir>] [--json]
+//   pipeline-run.mjs prepare-task <change-dir> <task-id> [--worktree-root <dir>] [--workspace-dir <dir>] [--hydrate] [--json]
 //   pipeline-run.mjs cp2-merge <change-dir> [--base main] [--json]
 //   pipeline-run.mjs brief <role> --change <name> --repo <path> ...
 //   pipeline-run.mjs worker-check <change-dir> <task-id> [--timeout ms] [--allow-test-infra]
 //   pipeline-run.mjs tier2-verify <base> [--change-dir <dir>] [--verify <cmd>]... [--auto-verify] [--cwd <dir>] [--json]
 //   pipeline-run.mjs risk-scan <base> [<head>] [--cwd <dir>] [--working-tree] [--json] [--require-clean]
 //   pipeline-run.mjs install-hook <worktree> [<worktree>...]
-//
-// `merge` must run inside the integration worktree (`integration/<change>`).
-// Exit: plan/status 0 ok, 3 invalid or unreadable state; scenarios 0 ok, 1 unparseable input,
-// 2 usage; merge forwards merge-task's exit code.
+//   pipeline-run.mjs report [--days N] [--json]
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -29,10 +28,11 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseTasks } from './lib/tasks.mjs';
 import { readTasksMarkdown } from './lib/tasks-source.mjs';
-import { runGit } from './lib/git.mjs';
+import { runGit, listWorktreesMaybe, worktreeForBranch } from './lib/git.mjs';
 import { parseOptions, planOptions } from './lib/cli.mjs';
 import { runCleanup } from './lib/cleanup.mjs';
 import { recommendedWorkerRole } from './lib/roles.mjs';
+import { summarizeTelemetry } from './lib/telemetry.mjs';
 
 const HOME = path.dirname(fileURLToPath(import.meta.url));
 const [command, ...rest] = process.argv.slice(2);
@@ -50,6 +50,47 @@ function changeDirOf(arg) {
 
 const HOOKS_DIR = path.join(HOME, 'hooks', 'git');
 
+function commonGitDir(dir) {
+  const abs = runGit(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  if (abs.status === 0 && abs.stdout.trim()) {
+    try { return fs.realpathSync(abs.stdout.trim()); } catch { return path.resolve(abs.stdout.trim()); }
+  }
+  const rel = runGit(dir, ['rev-parse', '--git-common-dir']);
+  if (rel.status !== 0 || !rel.stdout.trim()) return null;
+  const target = path.isAbsolute(rel.stdout.trim()) ? rel.stdout.trim() : path.resolve(dir, rel.stdout.trim());
+  try { return fs.realpathSync(target); } catch { return path.resolve(target); }
+}
+
+function hydrateWorktree(worktreePath) {
+  if (!fs.existsSync(path.join(worktreePath, 'package.json'))) {
+    return { attempted: false, skippedReason: 'no-package-json' };
+  }
+  if (fs.existsSync(path.join(worktreePath, 'node_modules'))) {
+    return { attempted: false, skippedReason: 'already-present' };
+  }
+  const candidates = [
+    ['pnpm-lock.yaml', 'pnpm', ['install', '--frozen-lockfile', '--prefer-offline']],
+    ['package-lock.json', 'npm', ['ci', '--prefer-offline']],
+    ['yarn.lock', 'yarn', ['install', '--frozen-lockfile']],
+    ['bun.lock', 'bun', ['install', '--frozen-lockfile']],
+    ['bun.lockb', 'bun', ['install', '--frozen-lockfile']],
+  ];
+  const match = candidates.find(([lock]) => fs.existsSync(path.join(worktreePath, lock)));
+  if (!match) return { attempted: false, skippedReason: 'no-lockfile' };
+  const [, tool, toolArgs] = match;
+  const startedAt = Date.now();
+  const res = spawnSync(tool, toolArgs, { cwd: worktreePath, encoding: 'utf8', timeout: 120_000 });
+  const ok = !res.error && res.status === 0;
+  return {
+    attempted: true,
+    tool,
+    ok,
+    status: res.status ?? 1,
+    durationMs: Date.now() - startedAt,
+    ...(ok ? {} : { error: (res.error?.message || res.stderr || res.stdout || '').trim().slice(0, 240) }),
+  };
+}
+
 function doneVerification(change, tasks, cwd) {
   const head = runGit(cwd, ['rev-parse', '--verify', '--quiet', `refs/heads/integration/${change}`]);
   if (head.status !== 0) return [];
@@ -65,18 +106,9 @@ function doneVerification(change, tasks, cwd) {
     .map((task) => ({ task: task.id, kind: 'DONE_UNVERIFIED', reason: `Done source ${task.done.source} has no matching first-parent merge trailer` }));
 }
 
-// The hook is what stamps Pipeline-Author; without it a worker's commit reaches the merge gate
-// with no trailer and exits 31, long after the mistake. Check every worktree this change owns,
-// including the integration worktree, where merge-task also runs.
 function hookWarnings(change) {
-  const listed = runGit(undefined, ['worktree', 'list', '--porcelain']);
-  if (listed.status !== 0) return [];
-  const worktrees = [];
-  let current = null;
-  for (const line of listed.stdout.split('\n')) {
-    if (line.startsWith('worktree ')) { current = { path: line.slice('worktree '.length) }; worktrees.push(current); }
-    else if (current && line.startsWith('branch ')) current.branch = line.slice('branch '.length).replace('refs/heads/', '');
-  }
+  const worktrees = listWorktreesMaybe(undefined);
+  if (!worktrees.length) return [];
   const warnings = [];
   for (const tree of worktrees) {
     if (!tree.branch) continue;
@@ -89,36 +121,90 @@ function hookWarnings(change) {
   return warnings;
 }
 
+function forward(scriptName, scriptArgs = rest) {
+  const result = spawnSync(process.execPath, [path.join(HOME, scriptName), ...scriptArgs], { stdio: 'inherit' });
+  process.exit(result.status ?? 1);
+}
+
 if (command === 'acceptance') {
   const [sub, ...subRest] = rest;
-  if (sub === 'sync') {
-    const result = spawnSync(process.execPath, [path.join(HOME, 'acceptance-sync.mjs'), ...subRest], { stdio: 'inherit' });
-    process.exit(result.status ?? 1);
-  }
-  const result = spawnSync(process.execPath, [path.join(HOME, 'acceptance-run.mjs'), ...rest], { stdio: 'inherit' });
-  process.exit(result.status ?? 1);
+  if (sub === 'sync') forward('acceptance-sync.mjs', subRest);
+  forward('acceptance-run.mjs');
 } else if (command === 'brief') {
-  const result = spawnSync(process.execPath, [path.join(HOME, 'brief.mjs'), ...rest], { stdio: 'inherit' });
-  process.exit(result.status ?? 1);
+  forward('brief.mjs');
 } else if (command === 'worker-check') {
-  const result = spawnSync(process.execPath, [path.join(HOME, 'worker-check.mjs'), ...rest], { stdio: 'inherit' });
-  process.exit(result.status ?? 1);
+  forward('worker-check.mjs');
 } else if (command === 'tier2-verify') {
-  const result = spawnSync(process.execPath, [path.join(HOME, 'tier2-verify.mjs'), ...rest], { stdio: 'inherit' });
-  process.exit(result.status ?? 1);
+  forward('tier2-verify.mjs');
+} else if (command === 'freeze') {
+  forward('freeze-check.mjs');
+} else if (command === 'profiles') {
+  forward('profiles-check.mjs');
+} else if (command === 'preflight') {
+  forward('preflight.mjs');
+} else if (command === 'scenarios') {
+  forward('scenarios.mjs');
+} else if (command === 'risk-scan') {
+  forward('risk-scan.mjs');
+} else if (command === 'inspect') {
+  let parsed;
+  try { parsed = parseOptions(rest, { json: 'boolean' }); } catch (error) { die(error.message); }
+  if (parsed.positional.length !== 1) die('inspect needs <change-dir>');
+  const dir = path.resolve(parsed.positional[0]);
+  const parseChild = (scriptName, childArgs) => {
+    const res = spawnSync(process.execPath, [path.join(HOME, scriptName), ...childArgs], { encoding: 'utf8' });
+    let data = null;
+    try { data = JSON.parse(res.stdout); } catch { data = null; }
+    return { status: res.status ?? 1, data, stderr: res.stderr.trim() };
+  };
+  const ns = parseChild('namespace.mjs', [dir, '--json']);
+  const sc = parseChild('scenarios.mjs', [dir, '--json']);
+  const hs = parseChild('r0-hotspots.mjs', [dir]);
+  const ok = ns.status === 0 && sc.status === 0 && hs.status === 0;
+  if (parsed.options.json) {
+    console.log(JSON.stringify({
+      change: dir,
+      ok,
+      namespace: { exit: ns.status, ...(ns.data ?? { error: ns.stderr }) },
+      scenarios: { exit: sc.status, ...(sc.data ?? { error: sc.stderr }) },
+      hotspots: { exit: hs.status, ...(hs.data ?? { error: hs.stderr }) },
+    }, null, 2));
+  } else {
+    console.log(`[inspect] ${dir} (ok=${ok})`);
+    console.log(`- namespace: exit=${ns.status} prefixes=${ns.data?.scenarios?.length ?? 0}`);
+    console.log(`- scenarios: exit=${sc.status} declared=${sc.data?.scenarios?.length ?? 0} undeclaredClaims=${sc.data?.undeclaredClaims?.length ?? 0}`);
+    console.log(`- hotspots: exit=${hs.status} tasks=${hs.data?.tasks?.length ?? 0} requirements=${hs.data?.requirements?.length ?? 0}`);
+    for (const sub of [ns, sc, hs]) if (sub.status !== 0 && sub.stderr) console.error(sub.stderr);
+  }
+  process.exit(ok ? 0 : 1);
+} else if (command === 'report') {
+  let parsed;
+  try { parsed = parseOptions(rest, { days: 'value', json: 'boolean' }); } catch (error) { die(error.message); }
+  if (parsed.positional.length > 0) die('report takes no positional arguments');
+  const days = parsed.options.days ? Number(parsed.options.days) : 7;
+  if (!Number.isFinite(days) || days <= 0) die('--days must be a positive number');
+  const summary = summarizeTelemetry({ days });
+  if (parsed.options.json) {
+    console.log(JSON.stringify(summary, null, 2));
+  } else {
+    console.log(`[report] window=${summary.windowDays}d events=${summary.totalEvents} file=${summary.file}`);
+    console.log(`- tool_guard: rewrite=${summary.hookActions.rewrite} deny=${summary.hookActions.deny} advise=${summary.hookActions.advise}`);
+    console.log(`- tier2_verify: total=${summary.verify.total} pass=${summary.verify.pass} review_required=${summary.verify.reviewRequired} fail=${summary.verify.fail} unprovable=${summary.verify.unprovableRejections}`);
+    console.log(`- worker_check: total=${summary.workerCheck.total} pass=${summary.workerCheck.pass} fail=${summary.workerCheck.fail}`);
+    console.log(`- tier_stop blocks: total=${summary.stopBlocks.total}`);
+    if (summary.topReasonCodes.length) {
+      console.log(`- top reasons: ${summary.topReasonCodes.slice(0, 8).map((r) => `${r.code}=${r.count}`).join(', ')}`);
+    }
+  }
+  process.exit(0);
 } else if (command === 'plan') {
   let parsed;
   try { parsed = parseOptions(rest, planOptions); } catch (error) { die(error.message); }
   if (parsed.positional.length !== 1) die('plan needs <change-dir>');
   const dir = changeDirOf(parsed.positional[0]);
   for (const warning of hookWarnings(path.basename(dir))) console.error(`[pipeline-run] ${warning}`);
-  const result = spawnSync(process.execPath, [path.join(HOME, 'next-actions.mjs'), ...rest], {
-    encoding: 'utf8',
-    stdio: 'inherit',
-  });
-  process.exit(result.status ?? 1);
+  forward('next-actions.mjs');
 } else if (command === 'install-hook') {
-  // One command per workspace instead of two raw git invocations; idempotent.
   let parsed;
   try { parsed = parseOptions(rest, { 'replace-hooks': 'boolean' }); } catch (error) { die(error.message); }
   const targets = parsed.positional.length ? parsed.positional.map((item) => path.resolve(item)) : [process.cwd()];
@@ -127,18 +213,12 @@ if (command === 'acceptance') {
     if (!fs.existsSync(target)) die(`no worktree at ${target}`, 3);
     const probe = runGit(target, ['rev-parse', '--is-inside-work-tree']);
     if (probe.status !== 0) die(`not a git worktree: ${target}`, 3);
-    // Installation replaces the whole hooks directory, so anything already there would be lost
-    // silently. Name it and stop before writing; `--replace-hooks` is the human's approval.
     const displaced = [];
     const configured = runGit(target, ['config', '--get', 'core.hooksPath']);
     const current = configured.status === 0 ? configured.stdout.trim() : '';
     if (current && path.resolve(target, current) !== path.resolve(HOOKS_DIR)) {
       displaced.push(`core.hooksPath=${current}`);
     }
-    // The default hooks directory may hold the repository's own hooks. Samples are inert.
-    // `--git-path hooks` honours `core.hooksPath`, so it would report the pipeline's own hooks
-    // after a first install and make the command refuse itself; the default directory is
-    // `<git-common-dir>/hooks`.
     const commonDir = runGit(target, ['rev-parse', '--git-common-dir']);
     if (commonDir.status === 0) {
       const dir = path.resolve(target, commonDir.stdout.trim(), 'hooks');
@@ -146,14 +226,12 @@ if (command === 'acceptance') {
       for (const name of entries.sort()) {
         if (name.endsWith('.sample')) continue;
         const file = path.join(dir, name);
-        // git runs only an executable regular file; a leftover without the bit is inert.
         try {
           if (fs.statSync(file).isFile() && (fs.statSync(file).mode & 0o111)) displaced.push(file);
         } catch {}
       }
     }
     if (displaced.length && !parsed.options['replace-hooks']) {
-      // Name each object before refusing so the human approving --replace-hooks sees what is lost.
       for (const item of displaced) console.error(`displaced: ${item}`);
       console.error(`[pipeline-run] ${target} already has hooks this install would displace: ${displaced.join(', ')}; re-run with --replace-hooks after confirming replacing them is intended`);
       failed = true;
@@ -163,7 +241,6 @@ if (command === 'acceptance') {
     if (enable.status !== 0) { console.error(`[pipeline-run] cannot enable worktreeConfig in ${target}: ${enable.stderr.trim()}`); failed = true; continue; }
     const set = runGit(target, ['config', '--worktree', 'core.hooksPath', HOOKS_DIR]);
     if (set.status !== 0) { console.error(`[pipeline-run] cannot set core.hooksPath in ${target}: ${set.stderr.trim()}`); failed = true; continue; }
-    // Only after the install succeeded: an approved replacement is now factual.
     for (const item of displaced) console.log(`replaced: ${item}`);
     console.log(`hook installed: ${target}`);
   }
@@ -183,30 +260,23 @@ if (command === 'acceptance') {
     .split('\n').map((line) => line.trim()).filter(Boolean);
   const candidates = refs
     .filter((ref) => ref === `task/${change}/${taskId}` || ref.startsWith(`task/${change}/${taskId}-a`))
-    .sort((a, b) => {
-      const attempt = (ref) => Number(ref.match(/-a(\d+)$/)?.[1] ?? 1);
-      return attempt(a) - attempt(b);
-    });
+    .sort((a, b) => Number(a.match(/-a(\d+)$/)?.[1] ?? 1) - Number(b.match(/-a(\d+)$/)?.[1] ?? 1));
   const branch = candidates.at(-1);
   if (!branch) die(`no branch for ${taskId} under task/${change}/`, 3);
-  const result = spawnSync(process.execPath, [path.join(HOME, 'merge-task.mjs'), branch, taskId, ...mergeOptions], {
-    encoding: 'utf8',
-    stdio: 'inherit',
-  });
-  process.exit(result.status ?? 1);
+  forward('merge-task.mjs', [branch, taskId, ...mergeOptions]);
 } else if (command === 'cleanup') {
   process.exit(runCleanup(rest));
-} else if (command === 'scenarios') {
-  // Read-only derivation: it reads the change directory once and prints relations. It is a
-  // separate process so it cannot even import the scheduler; the child's exit code is the answer.
-  const result = spawnSync(process.execPath, [path.join(HOME, 'scenarios.mjs'), ...rest], { stdio: 'inherit' });
-  process.exit(result.status ?? 1);
-} else if (command === 'risk-scan') {
-  const result = spawnSync(process.execPath, [path.join(HOME, 'risk-scan.mjs'), ...rest], { stdio: 'inherit' });
-  process.exit(result.status ?? 1);
 } else if (command === 'prepare-task') {
   let parsed;
-  try { parsed = parseOptions(rest, { 'worktree-root': 'value', json: 'boolean', 'replace-hooks': 'boolean' }); } catch (error) { die(error.message); }
+  try {
+    parsed = parseOptions(rest, {
+      'worktree-root': 'value',
+      'workspace-dir': 'value',
+      hydrate: 'boolean',
+      json: 'boolean',
+      'replace-hooks': 'boolean',
+    });
+  } catch (error) { die(error.message); }
   if (parsed.positional.length !== 2) die('prepare-task needs <change-dir> <task-id>');
   const dir = changeDirOf(parsed.positional[0]);
   const taskId = parsed.positional[1];
@@ -232,29 +302,47 @@ if (command === 'acceptance') {
     if (mkBranch.status !== 0) die(`cannot create branch ${branch}: ${mkBranch.stderr.trim()}`, 1);
   }
 
-  const wtList = runGit(root, ['worktree', 'list', '--porcelain']).stdout.split(/\r?\n\r?\n/);
   let worktreePath = null;
-  for (const block of wtList) {
-    const lines = block.split(/\r?\n/);
-    if (lines.find((l) => l === `branch refs/heads/${branch}`)) {
-      const wtLine = lines.find((l) => l.startsWith('worktree '));
-      if (wtLine) { worktreePath = wtLine.slice('worktree '.length); break; }
+  if (parsed.options['workspace-dir']) {
+    worktreePath = path.resolve(parsed.options['workspace-dir']);
+    if (!fs.existsSync(worktreePath)) die(`no workspace directory at ${worktreePath}`, 3);
+    if (runGit(worktreePath, ['rev-parse', '--is-inside-work-tree']).status !== 0) {
+      die(`workspace is not a git worktree: ${worktreePath}`, 3);
     }
-  }
-  if (!worktreePath) {
-    const wtRoot = parsed.options['worktree-root']
-      ? path.resolve(parsed.options['worktree-root'])
-      : path.join(root, '.claude', 'worktrees');
-    fs.mkdirSync(wtRoot, { recursive: true });
-    worktreePath = path.join(wtRoot, `task-${change}-${taskId}`);
-    const addWt = runGit(root, ['worktree', 'add', worktreePath, branch]);
-    if (addWt.status !== 0) die(`cannot create worktree ${worktreePath}: ${addWt.stderr.trim()}`, 1);
+    if (commonGitDir(worktreePath) !== commonGitDir(root)) {
+      die(`workspace ${worktreePath} belongs to a different git repository`, 2);
+    }
+    worktreePath = fs.realpathSync(worktreePath);
+    const current = runGit(worktreePath, ['symbolic-ref', '--short', '-q', 'HEAD']).stdout.trim();
+    if (current !== branch) {
+      if (runGit(worktreePath, ['status', '--porcelain=v1', '--untracked-files=all']).stdout.trim()) {
+        die(`workspace ${worktreePath} has uncommitted changes on ${current || 'HEAD'}`, 3);
+      }
+      const sw = runGit(worktreePath, ['checkout', branch]);
+      if (sw.status !== 0) die(`cannot attach ${worktreePath} to ${branch}: ${sw.stderr.trim()}`, 1);
+    }
+  } else {
+    worktreePath = worktreeForBranch(root, branch);
+    if (!worktreePath) {
+      const wtRoot = parsed.options['worktree-root']
+        ? path.resolve(parsed.options['worktree-root'])
+        : path.join(root, '.claude', 'worktrees');
+      fs.mkdirSync(wtRoot, { recursive: true });
+      worktreePath = path.join(wtRoot, `task-${change}-${taskId}`);
+      const addWt = runGit(root, ['worktree', 'add', worktreePath, branch]);
+      if (addWt.status !== 0) die(`cannot create worktree ${worktreePath}: ${addWt.stderr.trim()}`, 1);
+    }
   }
 
   const hookArgs = [path.join(HOME, 'pipeline-run.mjs'), 'install-hook', worktreePath];
   if (parsed.options['replace-hooks']) hookArgs.push('--replace-hooks');
   const hookRes = spawnSync(process.execPath, hookArgs, { cwd: root, encoding: 'utf8' });
   if (hookRes.status !== 0) die(`install-hook failed:\n${hookRes.stderr}${hookRes.stdout}`, hookRes.status ?? 1);
+
+  const hydration = parsed.options.hydrate ? hydrateWorktree(worktreePath) : null;
+  if (hydration?.attempted && !hydration.ok) {
+    console.error(`[pipeline-run] WARN hydration via ${hydration.tool} failed (exit=${hydration.status}): ${hydration.error || 'unknown error'}`);
+  }
 
   const commits = runGit(worktreePath, ['log', '--format=%(trailers:key=Pipeline-Role,valueonly)', '--no-merges', `${baseBranch}..${branch}`]);
   const hasCeshiCommit = commits.status === 0 && commits.stdout.split(/\r?\n/).some((r) => r.trim().toLowerCase() === 'ceshi');
@@ -275,10 +363,12 @@ if (command === 'acceptance') {
     title: titleFull.length <= 60 ? titleFull : `[Pipeline] ${role} ${branch.slice(`task/${change}/`.length)}`,
     labels: { 'pipeline.change': change },
     prompt: briefData.prompt,
+    ...(hydration ? { hydration } : {}),
   };
   if (parsed.options.json) console.log(JSON.stringify(out, null, 2));
   else {
     console.log(`prepared ${taskId}: branch=${branch} worktree=${worktreePath} role=${role} briefKind=${briefKind}`);
+    if (hydration) console.log(`hydration: attempted=${hydration.attempted}${hydration.tool ? ` tool=${hydration.tool} ok=${hydration.ok}` : ` reason=${hydration.skippedReason}`}`);
     console.log(`title="${out.title}" label=pipeline.change=${change}`);
   }
 } else if (command === 'cp2-merge') {
@@ -298,17 +388,8 @@ if (command === 'acceptance') {
   if (runGit(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${integrationBranch}`]).status !== 0) {
     die(`missing branch ${integrationBranch}`, 3);
   }
-  const wtList = runGit(root, ['worktree', 'list', '--porcelain']).stdout.split(/\r?\n\r?\n/);
-  let intWorktree = null;
-  let baseWorktree = null;
-  for (const block of wtList) {
-    const lines = block.split(/\r?\n/);
-    const bLine = lines.find((l) => l.startsWith('branch '));
-    const wLine = lines.find((l) => l.startsWith('worktree '));
-    if (!bLine || !wLine) continue;
-    if (bLine === `branch refs/heads/${integrationBranch}`) intWorktree = wLine.slice('worktree '.length);
-    if (bLine === `branch refs/heads/${baseBranch}`) baseWorktree = wLine.slice('worktree '.length);
-  }
+  const intWorktree = worktreeForBranch(root, integrationBranch);
+  const baseWorktree = worktreeForBranch(root, baseBranch);
   const targetBaseWt = baseWorktree || (curBranch === baseBranch ? root : null);
   if (!targetBaseWt) die(`checkout ${baseBranch} in a clean worktree before cp2-merge`, 3);
   if (runGit(targetBaseWt, ['status', '--porcelain=v1', '--untracked-files=all']).stdout.trim()) {
@@ -341,7 +422,6 @@ if (command === 'acceptance') {
   if (parsed.positional.length > 1) die('status accepts one <change-dir>');
   const dir = changeDirOf(parsed.positional[0]);
   const change = path.basename(dir);
-  // Done state is written on the integration branch; never report the stale local copy.
   let markdown;
   let tasksSource;
   try { ({ markdown, source: tasksSource } = readTasksMarkdown(dir, change)); }
@@ -368,5 +448,5 @@ if (command === 'acceptance') {
     for (const item of doneVerification(change, tasks, dir)) console.log(`ATTENTION ${item.task}: ${item.kind} — ${item.reason}`);
   }
 } else {
-  die('usage: pipeline-run.mjs plan|prepare-task|merge|cp2-merge|status|cleanup|scenarios|acceptance|worker-check|tier2-verify|brief|risk-scan|install-hook ...', 2);
+  die('usage: pipeline-run.mjs plan|prepare-task|merge|cp2-merge|status|cleanup|inspect|freeze|profiles|preflight|scenarios|acceptance|worker-check|tier2-verify|brief|risk-scan|install-hook|report ...', 2);
 }

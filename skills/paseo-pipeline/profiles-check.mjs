@@ -19,6 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ROLE_PROFILE_IDS, AUTHOR_ROLES, IMPLEMENTER_ROLES, profileIdOf } from './lib/roles.mjs';
+import { loadProfiles } from './lib/paseo.mjs';
 
 export { ROLE_PROFILE_IDS, profileIdOf };
 
@@ -96,7 +97,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
       i += 2;
     }
     roles = rolesOf(fs.readFileSync(skillFile, 'utf8'));
-    profiles = JSON.parse(fs.readFileSync(configFile, 'utf8'))?.daemon?.agentProfiles ?? [];
+    profiles = loadProfiles({ configPath: configFile, strict: true });
     if (!roles.length) throw new Error(`no roles parsed from ${skillFile}`);
   } catch (error) {
     console.error(`Usage: profiles-check.mjs [--skill SKILL.md] [--config ~/.paseo/config.json] [--root repo]\n${error.message}`);
