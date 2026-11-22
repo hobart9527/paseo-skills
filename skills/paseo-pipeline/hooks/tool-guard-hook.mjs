@@ -62,6 +62,83 @@ function sanitizedCreateAgent(input) {
   }
   return changed ? next : null;
 }
+const GENERIC_ROLE_PREFIXES = /^(?:兼容入口|测试|开发|审查|调研|架构|协调|攻坚|界面)$/;
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+function profileMatchTokens(profile) {
+  const tokens = new Set();
+  const idMatch = typeof profile?.id === 'string' ? profile.id.trim().match(/^agent_profile_([a-z][a-z0-9-]+)$/i) : null;
+  if (idMatch) tokens.add(idMatch[1].toLowerCase());
+  const name = typeof profile?.name === 'string' ? profile.name.trim() : '';
+  if (name) {
+    for (const m of name.matchAll(/[（(]([^）)]+)[）)]/g)) {
+      const inner = m[1].trim();
+      if (!inner || /[，,]/.test(inner)) continue;
+      if (/^[a-z0-9-]+$/i.test(inner)) {
+        if (inner.length >= 3) tokens.add(inner.toLowerCase());
+      } else if (inner.length >= 2 && inner.length <= 6) {
+        tokens.add(inner);
+      }
+    }
+    const lead = name.split(/[\s（(]/)[0].trim();
+    if (lead.length >= 2 && !GENERIC_ROLE_PREFIXES.test(lead) && (!/^[a-z0-9-]+$/i.test(lead) || lead.length >= 3)) {
+      tokens.add(/^[a-z0-9-]+$/i.test(lead) ? lead.toLowerCase() : lead);
+    }
+  }
+  return [...tokens];
+}
+function tokenMatchesText(text, token) {
+  if (!text || !token) return false;
+  if (/^[a-z0-9-]+$/i.test(token)) {
+    return new RegExp(`(?<![A-Za-z0-9_])${escapeRegExp(token)}(?![A-Za-z0-9_])`, 'i').test(text);
+  }
+  return text.toLowerCase().includes(token.toLowerCase());
+}
+/** Rewrite a bare provider only when model is explicit or one profile matches title/intro unambiguously. */
+function resolvedBareProvider(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const provider = typeof input.provider === 'string' ? input.provider.trim() : '';
+  if (!provider || provider.includes('/')) return null;
+  const profiles = loadProfiles();
+  const nested = input.settings && typeof input.settings === 'object' && !Array.isArray(input.settings) ? input.settings : null;
+  const topModel = typeof input.model === 'string' ? input.model.trim() : '';
+  const nestedModel = typeof nested?.model === 'string' ? nested.model.trim() : '';
+  if (topModel && nestedModel && topModel.toLowerCase() !== nestedModel.toLowerCase()) return null;
+  const explicitModel = topModel || nestedModel;
+  if (explicitModel) {
+    const targetPair = `${provider}/${explicitModel}`;
+    const matched = profiles.find((p) => profilePair(p)?.toLowerCase() === targetPair.toLowerCase());
+    if (profiles.length > 0 && !matched) return null;
+    const next = { ...input, provider: matched ? profilePair(matched) : targetPair };
+    delete next.model;
+    if (nested && 'model' in nested) {
+      const nextSettings = { ...nested };
+      delete nextSettings.model;
+      if (Object.keys(nextSettings).length > 0) next.settings = nextSettings;
+      else delete next.settings;
+    }
+    return next;
+  }
+  const candidates = profiles.filter(
+    (p) => typeof p?.provider === 'string' && p.provider.trim().toLowerCase() === provider.toLowerCase() && profilePair(p),
+  );
+  if (!candidates.length) return null;
+  const matchText = (text) => candidates.filter((p) => profileMatchTokens(p).some((tok) => tokenMatchesText(text, tok)));
+  const title = typeof input.title === 'string' ? input.title.trim() : '';
+  if (title) {
+    const titleHits = matchText(title);
+    if (titleHits.length === 1) return { ...input, provider: profilePair(titleHits[0]) };
+    if (titleHits.length > 1) return null;
+  }
+  const prompt = typeof input.initialPrompt === 'string' ? input.initialPrompt : '';
+  const intro = prompt.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 2).join('\n');
+  if (intro) {
+    const introHits = matchText(intro);
+    if (introHits.length === 1) return { ...input, provider: profilePair(introHits[0]) };
+  }
+  return null;
+}
 /** A bare provider ("claude") is ambiguous across profiles, so it cannot be rewritten; name the valid pairs. */
 function bareProviderReason(input) {
   const provider = typeof input?.provider === 'string' ? input.provider.trim() : '';
@@ -407,6 +484,11 @@ async function main() {
     const sanitized = sanitizedPaseoInput(name, updated);
     if (sanitized) {
       updated = sanitized;
+      changed = true;
+    }
+    const resolvedProvider = isObject && name === 'mcp__paseo__create_agent' ? resolvedBareProvider(updated) : null;
+    if (resolvedProvider) {
+      updated = resolvedProvider;
       changed = true;
     }
     const bare = isObject && name === 'mcp__paseo__create_agent' ? bareProviderReason(updated) : null;

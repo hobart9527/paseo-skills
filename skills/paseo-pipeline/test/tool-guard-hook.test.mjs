@@ -100,6 +100,67 @@ test('create_agent: bare provider is denied with the valid provider/model pairs'
   assert.match(out.permissionDecisionReason, /codex\/gpt/);
 });
 
+test('create_agent: bare provider auto-resolves only on explicit model or unambiguous role in title/intro', (t) => {
+  const PASEO_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'tool-guard-multi-codex-'));
+  t.after(() => fs.rmSync(PASEO_HOME, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(PASEO_HOME, 'config.json'), JSON.stringify({ daemon: { agentProfiles: [
+    { id: 'agent_profile_ceshi', name: '测试（独立 Red）', provider: 'codex', model: 'codex', modeId: 'auto-review', thinkingOptionId: 'high' },
+    { id: 'agent_profile_gaogong', name: '攻坚（高工）', provider: 'codex', model: 'glm', modeId: 'auto-review', thinkingOptionId: 'high' },
+    { id: 'agent_profile_anchasi', name: '审查（按察司）', provider: 'codex', model: 'gpt', modeId: 'auto-review', thinkingOptionId: 'high' },
+  ] } }));
+
+  const topModel = guard({ tool_name: 'mcp__paseo__create_agent', tool_input: { provider: 'codex', model: 'gpt', title: 'Review', initialPrompt: 'p' } }, { PASEO_HOME });
+  assert.equal(topModel.permissionDecision, 'allow');
+  assert.equal(topModel.updatedInput.provider, 'codex/gpt');
+  assert.equal('model' in topModel.updatedInput, false);
+  assert.equal(topModel.updatedInput.settings?.modeId, 'auto-review');
+
+  const nestedModel = guard({ tool_name: 'mcp__paseo__create_agent', tool_input: { provider: 'codex', settings: { model: 'gpt', thinkingOptionId: 'high' }, title: 'Review', initialPrompt: 'p' } }, { PASEO_HOME });
+  assert.equal(nestedModel.permissionDecision, 'allow');
+  assert.equal(nestedModel.updatedInput.provider, 'codex/gpt');
+  assert.equal('model' in nestedModel.updatedInput.settings, false);
+  assert.equal(nestedModel.updatedInput.settings.modeId, 'auto-review');
+  assert.equal(nestedModel.updatedInput.settings.thinkingOptionId, 'high');
+
+  const byIntro = guard({
+    tool_name: 'mcp__paseo__create_agent',
+    tool_input: { provider: 'codex', title: '[Tier2] Review', initialPrompt: '你是独立异构审查（按察司 anchasi）。\n请审查改动' },
+  }, { PASEO_HOME });
+  assert.equal(byIntro.permissionDecision, 'allow');
+  assert.equal(byIntro.updatedInput.provider, 'codex/gpt');
+  assert.equal(byIntro.updatedInput.settings?.modeId, 'auto-review');
+
+  const titleWins = guard({
+    tool_name: 'mcp__paseo__create_agent',
+    tool_input: {
+      provider: 'codex',
+      title: '[Pipeline] anchasi FINAL c1',
+      labels: { 'pipeline.change': 'c1' },
+      initialPrompt: 'ceshi wrote Red tests',
+    },
+  }, { PASEO_HOME });
+  assert.equal(titleWins.permissionDecision, 'allow');
+  assert.equal(titleWins.updatedInput.provider, 'codex/gpt');
+
+  const twoRoles = guard({
+    tool_name: 'mcp__paseo__create_agent',
+    tool_input: { provider: 'codex', title: 'Ambiguous', initialPrompt: 'gaogong and anchasi both mentioned' },
+  }, { PASEO_HOME });
+  assert.equal(twoRoles.permissionDecision, 'deny');
+
+  const mismatchModels = guard({
+    tool_name: 'mcp__paseo__create_agent',
+    tool_input: { provider: 'codex', model: 'gpt', settings: { model: 'glm' }, title: 'Mismatch', initialPrompt: 'p' },
+  }, { PASEO_HOME });
+  assert.equal(mismatchModels.permissionDecision, 'deny');
+
+  const badModel = guard({
+    tool_name: 'mcp__paseo__create_agent',
+    tool_input: { provider: 'codex', model: 'nonexistent', title: 'Typo', initialPrompt: 'p' },
+  }, { PASEO_HOME });
+  assert.equal(badModel.permissionDecision, 'deny');
+});
+
 test('create_agent: placeholder workspaceId dropped, missing title derived, long title clipped', (t) => {
   const PASEO_HOME = paseoHome(t);
   for (const workspaceId of ['', '\t', 'default', 'local', 'current']) {
