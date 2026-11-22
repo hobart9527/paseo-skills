@@ -7,7 +7,7 @@
 import { parseOptions } from './lib/cli.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseTasks, parseTaskLine, isFileWithinScopes, graphErrors, taskErrorsFor, verifyLegs } from './lib/tasks.mjs';
+import { parseTasks, parseTaskLine, isFileWithinScopes, graphErrors, taskErrorsFor, verifyLegs, auditTestInfra } from './lib/tasks.mjs';
 import { mergeDeps, regressionReplays } from './lib/schedule.mjs';
 import { runGit } from './lib/git.mjs';
 import { writeMergeState, clearMergeState } from './lib/merge-state.mjs';
@@ -172,9 +172,6 @@ if (gitMaybe(['merge-base', '--is-ancestor', base, preMergeHead]).status !== 0) 
 }
 
 const files = gitMaybe(['diff', '--name-only', '-z', '--no-renames', `${base}..${tip}`]).stdout.split('\0').filter(Boolean);
-function auditTestInfra(changedFiles) {
-  return changedFiles.filter((file) => /(?:^|\/)test\/setup\//.test(file) || /(?:^|\/)(?:jest|vitest)\.config\.[^/]+$/.test(file));
-}
 const testInfra = auditTestInfra(files);
 if (testInfra.length && !parsedArgs.options['allow-test-infra']) {
   fail(`test infrastructure changes require human approval (--allow-test-infra): ${testInfra.join(', ')}`, 38);
@@ -245,7 +242,7 @@ if (base !== preMergeHead) {
   if (defaultBranch) {
     const mainFiles = gitMaybe(['diff', '--no-renames', '--name-only', '-z', `HEAD...${defaultBranch}`]).stdout.split('\0').filter(Boolean);
     const clash = mainFiles.filter((file) => isFileWithinScopes(file, task.scope) || files.includes(file));
-    if (clash.length) fail(`${defaultBranch} advanced on task scope (${clash.join(', ')}); rebase integration/${change} onto ${defaultBranch} and re-verify`, 34);
+    if (clash.length) fail(`${defaultBranch} advanced on task scope (${clash.join(', ')}); sync integration/${change} with \`git merge --no-ff ${defaultBranch}\` and re-verify`, 34);
   }
 }
 

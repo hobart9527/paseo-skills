@@ -261,10 +261,11 @@ function loadTranscriptCalls(file) {
   }
 }
 
-function repeatedFailures(file, name, input) {
+function repeatedFailures(file, name, input, rewritten = null) {
   const calls = loadTranscriptCalls(file);
-  const expected = canonical(input);
-  return calls.length >= 3 && calls.slice(-3).every((call) => call.name === name && call.input === expected && call.result === true);
+  const candidates = new Set([canonical(input)]);
+  if (rewritten !== null) candidates.add(canonical(rewritten));
+  return calls.length >= 3 && calls.slice(-3).every((call) => call.name === name && candidates.has(call.input) && call.result === true);
 }
 
 // Say what to change, not just that something failed. The old message ("change args") was read as
@@ -315,8 +316,14 @@ function primaryRootForWorktree(cwd) {
 function targetsPrimary(cwd, ctx, primaryRoot, command, regex, skipDash = false) {
   for (const match of command.matchAll(regex)) {
     const rawTarget = (match[1] ?? match[2] ?? match[3] ?? '').trim();
-    if (!rawTarget || rawTarget.startsWith('$') || rawTarget.startsWith('~') || (skipDash && rawTarget === '-')) continue;
-    const resolved = realOrResolved(path.isAbsolute(rawTarget) ? rawTarget : path.resolve(cwd, rawTarget));
+    if (!rawTarget || rawTarget.startsWith('$') || (skipDash && rawTarget === '-')) continue;
+    let expandedTarget = rawTarget;
+    if (rawTarget === '~' || rawTarget.startsWith('~/')) {
+      expandedTarget = rawTarget === '~' ? os.homedir() : path.join(os.homedir(), rawTarget.slice(2));
+    } else if (rawTarget.startsWith('~')) {
+      continue;
+    }
+    const resolved = realOrResolved(path.isAbsolute(expandedTarget) ? expandedTarget : path.resolve(cwd, expandedTarget));
     if (inside(primaryRoot, resolved) && !inside(ctx.root, resolved)) return true;
   }
   return false;
@@ -424,13 +431,15 @@ async function main() {
       changed = true;
     }
   }
-  // A rewritten call cannot be the same failing call, so it never reaches the deny below.
+  if (repeatedFailures(payload.transcript_path, name, input, changed ? updated : null)) {
+    deny(repeatedFailureReason(name), 'repeated_failure');
+    return;
+  }
   if (changed) {
     recordEvent('tool_guard', { action: 'rewrite', reasonCode: name === 'mcp__paseo__create_workspace' ? 'sanitize_workspace' : 'sanitize_paseo' });
     output({ permissionDecision: 'allow', updatedInput: updated });
     return;
   }
-  if (repeatedFailures(payload.transcript_path, name, input)) deny(repeatedFailureReason(name), 'repeated_failure');
 }
 
 try { await main(); } catch (err) { logHookError('tool-guard-hook', err); }

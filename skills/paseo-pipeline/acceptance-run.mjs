@@ -107,7 +107,8 @@ async function main() {
         if (histMatrix.status === 0 && histMatrix.stdout === record.matrix) {
           if (currentBranch === branch) {
             const diffFiles = git(root, ['diff', '--name-only', record.sourceSha, sha]).split(/\r?\n/).filter(Boolean);
-            const signoffOnly = new RegExp(`^openspec/changes/(?:archive/\\d{4}-\\d{2}-\\d{2}-)?${changeName}/(?:review\\.md|run-log\\.md|evidence/.*)$`);
+            const escapedChange = changeName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const signoffOnly = new RegExp(`^openspec/changes/(?:archive/\\d{4}-\\d{2}-\\d{2}-)?${escapedChange}/(?:review\\.md|rulings\\.md|run-log\\.md|evidence/.*)$`);
             if (diffFiles.length > 0 && diffFiles.every((f) => signoffOnly.test(f))) sourceValid = true;
           } else if (currentBranch === 'main' || currentBranch === 'master') {
             sourceValid = record.matrix === text;

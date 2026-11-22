@@ -92,7 +92,7 @@ const RULE_FIXES = {
   EMPTY_TASKS: 'write at least one parseable task line',
   TEST_FILE_UNOWNED: 'add the referenced file to the Write scope of the task that changes it, or narrow the test',
   FROZEN_BEHIND_MAIN: 'rebase the contract onto the default branch (or re-verify it at its tip) and re-run R0',
-  R0_HUMAN_ACCEPT_UNRECORDED: 'record the human approval verbatim in run-log.md for the exact reviewed SHA, or get a hanlin pass',
+  R0_HUMAN_ACCEPT_UNRECORDED: 'record the human approval verbatim in run-log.md for the exact reviewed SHA, or get an anchasi pass',
   UNDECIDED_HARD_DECISION: 'get the user decision, record it with `Decided:` in proposal.md, and re-run freeze-check',
   MISSING_SCEN_VERIFY: 'add one `- **Verify:** <command>` line under the scenario, before the next heading',
 };
@@ -819,7 +819,7 @@ if (!structural) {
   ].sort((a, b) => a.index - b.index) : [];
   const r0Match = signoffs.at(-1);
   if (!r0Match) {
-    blocking.push('MISSING_R0_SIGNOFF: review.md must contain `R0: pass(<reviewer-uuid>@<sha>)` — run hanlin R0 review before freeze — or `R0: human-accept(@<sha>)` when the human accepted the residual risk');
+    blocking.push('MISSING_R0_SIGNOFF: review.md must contain `R0: pass(<reviewer-uuid>@<sha>)` — run anchasi R0 review before freeze — or `R0: human-accept(@<sha>)` when the human accepted the residual risk');
   } else if (r0Match.kind === 'human-accept') {
     // A human exception is legitimate only when the human's words are on record; it is never
     // rewritten as a pass, so the two approval kinds stay distinguishable after the fact.
@@ -828,7 +828,7 @@ if (!structural) {
     if (!runLog || !approval.test(runLog)) {
       blocking.push(`R0_HUMAN_ACCEPT_UNRECORDED: review.md records \`R0: human-accept(@${r0Match.sha})\` but run-log.md has no matching \`Approval: R0 residual risk accepted for ${r0Match.sha} — <reason>\` line; record the human approval verbatim before freezing`);
     } else {
-      advisories.push(`R0_HUMAN_EXCEPTION: freeze relies on a human risk acceptance at ${r0Match.sha}, not an independent hanlin pass; the open items and reasons must be recorded in rulings.md`);
+      advisories.push(`R0_HUMAN_EXCEPTION: freeze relies on a human risk acceptance at ${r0Match.sha}, not an independent anchasi pass; the open items and reasons must be recorded in rulings.md`);
       const rulings = read(path.join(changeDir, 'rulings.md'));
       if (!rulings || !/^(?:[-*]\s+)?R0-\d+-/m.test(rulings)) advisories.push('R0_HUMAN_EXCEPTION_UNRULED: rulings.md has no `R0-<round>-<n>` entries; record each open item and why it was accepted');
     }
@@ -848,7 +848,7 @@ if (!structural) {
       };
       const authors = (signed.stdout || '').split('\n').filter(Boolean).flatMap((line) => line.split('\0')[1]?.split(',') ?? []).filter(Boolean);
       if (signed.status === 0 && authors.some(sameAgent)) {
-        blocking.push(`R0_SELF_REVIEW: signer ${r0Match.signer} is a Pipeline-Author of a contract commit reachable at ${r0Match.sha}; the contract author cannot mint its own R0 pass — dispatch an independent hanlin R0 review`);
+        blocking.push(`R0_SELF_REVIEW: signer ${r0Match.signer} is a Pipeline-Author of a contract commit reachable at ${r0Match.sha}; the contract author cannot mint its own R0 pass — dispatch an independent anchasi R0 review`);
       }
     }
     // The signer must be a real Paseo agent, so a made-up uuid cannot satisfy the gate. Role is not
@@ -885,7 +885,7 @@ if (!structural) {
       const drift = [...new Set([...nulList(diff), ...nulList(untracked)])]
         .filter((file) => !exemptRecords.has(file));
       if (diff.status !== 0) blocking.push(`STALE_R0_SIGNOFF: cannot diff contract against reviewed commit ${sha}`);
-      else if (drift.length) blocking.push(`STALE_R0_SIGNOFF: contract changed after R0 reviewed ${sha}: ${drift.slice(0, 5).join(', ')} — re-run hanlin R0`);
+      else if (drift.length) blocking.push(`STALE_R0_SIGNOFF: contract changed after R0 reviewed ${sha}: ${drift.slice(0, 5).join(', ')} — re-run anchasi R0`);
       // A frozen base can be valid and still predate main: the contract was written on an older
       // tree, so a task's Reads/Interfaces may cite files main has since moved. That is a rebase
       // decision for the author, not a contract defect, so it only blocks under --strict.

@@ -82,7 +82,7 @@ Gate failures, exit codes and interrupted merges: `templates/approvals.md` § Op
 
 ## FINAL and CP-2
 
-1. Require all tasks Done, nothing blocked and clean integration worktree. Capture full SHA; run full suite, `Required=yes` acceptance rows, and `risk-scan.mjs main <full-SHA>` at that SHA. Dispatch `anchasi` (`brief.mjs final`) for independent FINAL on `main...<full-SHA>`. For suspected regression, compare main movement with `git rev-list --count $(git merge-base integration/<change> main)..main`; rebase and rerun if needed.
+1. Require all tasks Done, nothing blocked and clean integration worktree. Capture full SHA; run full suite, `Required=yes` acceptance rows, and `risk-scan.mjs main <full-SHA>` at that SHA. Dispatch `anchasi` (`brief.mjs final`) for independent FINAL on `main...<full-SHA>`. For suspected regression, compare main movement with `git rev-list --count $(git merge-base integration/<change> main)..main`; merge `main` (`git merge --no-ff main`) and rerun if needed.
 2. Record conformance in `review.md`. `DEVIATION` enters one repair wave; contract gaps need human disposition before CP-2. Never emit `ENHANCEMENT` or style nits.
 3. Maximum two FINAL rounds: full then delta. Unresolved `NOT_MET`/`UNVERIFIABLE`: human picks `Accept` or `Terminate` per `templates/approvals.md` § FINAL after round 2.
 4. Before CP-2, confirm pinned evidence, no unaccepted row, and human diff review. CP-2 authorizes merge only.

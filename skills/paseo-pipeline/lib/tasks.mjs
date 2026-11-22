@@ -19,6 +19,10 @@ export const REVIEW_MODES = ['standard', 'strict', 'mechanical', 'deferred'];
 const INTERFACE_SYMBOL = /^[^\s#]+$/;
 const DECISION_ID = /^D-\d+$/;
 
+export function auditTestInfra(changedFiles) {
+  return (changedFiles || []).filter((file) => /(?:^|\/)test\/setup\//.test(file) || /(?:^|\/)(?:jest|vitest)\.config\.[^/]+$/.test(file));
+}
+
 
 export function isTaskId(value) {
   return typeof value === 'string' && TASK_ID.test(value);

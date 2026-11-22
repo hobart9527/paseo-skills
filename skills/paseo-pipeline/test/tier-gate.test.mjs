@@ -6,6 +6,7 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { assessTierGate, assessStop, takeSnapshot, logHookError, scopeKey, TIER_RULES, DEFAULT_LIMIT } from '../lib/tier-gate.mjs';
+import { recordReview } from '../lib/review-record.mjs';
 import { shouldRemind, isSystemNotification, REMINDER } from '../hooks/tier-reminder-hook.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -874,3 +875,83 @@ test('tool guard breaks consecutive identical MCP failures', (t) => {
   assert.deepEqual(run([...failures, ...pair('4', { a: 2 }, true)]), {});
   assert.deepEqual(toolGuard({ tool_name: name, tool_input: input, transcript_path: path.join(dir, 'missing') }), {});
 });
+
+test('P1-1 large_file asks once, promotes via askedSigs after disk change, preserves churn, and Stop catches Bash large/test blast + tier1 signoff', () => withState(() => {
+  const prevTel = process.env.PIPELINE_TELEMETRY;
+  process.env.PIPELINE_TELEMETRY = 'off';
+  try {
+    const root = makeRepo();
+    const big = path.join(root, 'src', 'big.js');
+    fs.writeFileSync(big, Array.from({ length: 820 }, (_, i) => `export const v${i} = ${i};`).join('\n'));
+    sh(root, 'add', 'src/big.js');
+    sh(root, 'commit', '-qm', 'add big file');
+
+    // First write to large file -> ask; repeating without disk mutation still asks
+    assert.equal(assessTierGate({ target: big, sessionId: 'lf1' }).verdict, 'ask');
+    assert.equal(assessTierGate({ target: big, sessionId: 'lf1' }).verdict, 'ask');
+
+    // Simulate user click Allow -> file actually changed on disk -> subsequent edit promotes to allow
+    fs.appendFileSync(big, '\nexport const extra = 1;\n');
+    const afterAllow = assessTierGate({ target: big, sessionId: 'lf1' });
+    assert.equal(afterAllow.verdict, 'allow');
+
+    // Churn still fires across turns on the promoted large file
+    for (let turn = 0; turn < 3; turn += 1) {
+      takeSnapshot({ cwd: root, sessionId: 'lf1' });
+      fs.appendFileSync(big, `\n// edit ${turn}\n`);
+      const res = assessStop({ cwd: root, sessionId: 'lf1' });
+      if (turn < 2) assert.equal(res.verdict, 'ok');
+      else {
+        assert.equal(res.verdict, 'block');
+        assert.equal(res.reasonCode, 'churn');
+      }
+    }
+
+    // Stop catches Bash edits to large file and >5 test files
+    const bashRoot = makeRepo();
+    const bashBig = path.join(bashRoot, 'src', 'huge.js');
+    fs.writeFileSync(bashBig, Array.from({ length: 820 }, (_, i) => `export const h${i} = ${i};`).join('\n'));
+    sh(bashRoot, 'add', 'src/huge.js');
+    sh(bashRoot, 'commit', '-qm', 'add huge');
+    takeSnapshot({ cwd: bashRoot, sessionId: 'bash-lf' });
+    fs.appendFileSync(bashBig, '\n// bash edit\n');
+    const lfStop = assessStop({ cwd: bashRoot, sessionId: 'bash-lf' });
+    assert.equal(lfStop.verdict, 'block');
+    assert.equal(lfStop.reasonCode, 'large_file');
+
+    fs.mkdirSync(path.join(bashRoot, 'test'), { recursive: true });
+    takeSnapshot({ cwd: bashRoot, sessionId: 'bash-tb' });
+    for (let i = 1; i <= 6; i += 1) {
+      fs.writeFileSync(path.join(bashRoot, 'test', `f${i}.test.mjs`), `// test ${i}\n`);
+    }
+    const tbStop = assessStop({ cwd: bashRoot, sessionId: 'bash-tb' });
+    assert.equal(tbStop.verdict, 'block');
+    assert.equal(tbStop.reasonCode, 'test_blast');
+
+    // riskStopReason emits snap.head SHA, and recorded tier1 signoff on committed HEAD clears Stop block
+    const riskRoot = makeRepo();
+    const baseSha = sh(riskRoot, 'rev-parse', 'HEAD').trim();
+    fs.mkdirSync(path.join(riskRoot, 'src', 'auth'), { recursive: true });
+    fs.writeFileSync(path.join(riskRoot, 'src', 'auth', 'gate.js'), 'export const auth = true;\n');
+    takeSnapshot({ cwd: riskRoot, sessionId: 't1sig' });
+    fs.appendFileSync(path.join(riskRoot, 'src', 'auth', 'gate.js'), 'export const token = true;\n');
+    const riskBlock = assessStop({ cwd: riskRoot, sessionId: 't1sig' });
+    assert.equal(riskBlock.verdict, 'block');
+    assert.equal(riskBlock.reasonCode, 'risk_sentinel');
+    assert.ok(riskBlock.reason.includes(`pipeline-run.mjs risk-scan ${baseSha}`), riskBlock.reason);
+
+    sh(riskRoot, 'add', '.');
+    sh(riskRoot, 'commit', '-qm', 'commit auth fix');
+    recordReview({ cwd: riskRoot, mode: 'tier1', verdict: 'PASS', reviewer: 'anchasi-1', sha: 'HEAD' });
+    takeSnapshot({ cwd: riskRoot, sessionId: 't1sig', isHumanTurn: true });
+    fs.writeFileSync(path.join(riskRoot, 'src', 'auth', 'gate.js'), 'export const auth = true;\nexport const token = 2;\n');
+    sh(riskRoot, 'add', '.');
+    sh(riskRoot, 'commit', '-qm', 'next commit reviewed');
+    recordReview({ cwd: riskRoot, mode: 'tier1', verdict: 'PASS', reviewer: 'anchasi-1', sha: 'HEAD' });
+    // Note: takeSnapshot saw clean tree -> commit made head !== snap.head and clean -> signoff clears risk_sentinel
+    assert.equal(assessStop({ cwd: riskRoot, sessionId: 't1sig' }).verdict, 'ok');
+  } finally {
+    if (prevTel === undefined) delete process.env.PIPELINE_TELEMETRY;
+    else process.env.PIPELINE_TELEMETRY = prevTel;
+  }
+}));

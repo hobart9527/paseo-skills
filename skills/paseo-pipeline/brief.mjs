@@ -367,7 +367,7 @@ if (['reviewer', 'final', 'tier2-review', 'r0'].includes(role) && !task) {
     prompt = `${prompt.trimEnd()}\n${lines.join('\n')}\n`;
   }
   if (isGit && base) {
-    const stat = git(['diff', '--stat', base]);
+    const stat = git(['diff', '--stat', `${base}...HEAD`]) ?? git(['diff', '--stat', base]);
     if (stat) {
       const statLines = stat.split(/\r?\n/).slice(0, 30).join('\n');
       const capped = statLines.length > 1500 ? `${statLines.slice(0, 1480)}\n... [truncated]` : statLines;
@@ -429,7 +429,7 @@ if (role === 'tier2') {
   }
 }
 
-if (/(?<!\.)\b(?:claude|gpt|codex|anthropic|openai|gemini|opus|sonnet|haiku)[-/](?!CLAUDE\.md\b)[\w.-]+/i.test(prompt)) {
+if (/(?<![/.\w-])(?:claude|gpt|codex|anthropic|openai|gemini|opus|sonnet|haiku)[-/](?![\w.-]*\.(?:md|mjs|cjs|js|ts|tsx|jsx|json|ya?ml|sh|txt)\b)[\w.-]+/i.test(prompt)) {
   console.error('[brief] refusing to emit a concrete model id; resolve profiles with list_profiles');
   process.exit(1);
 }

@@ -2477,7 +2477,10 @@ test('invalid acceptance diagnostics keep base order and spelling, not a grouped
     const render = (script) => {
       const result = spawnSync('node', [script, dir, '--json', '--skip-signer-check'], { encoding: 'utf8' });
       const report = JSON.parse(result.stdout);
-      return { status: result.status, blocking: report.blocking.map((item) => item.split(dir).join('<dir>')) };
+      return {
+        status: result.status,
+        blocking: report.blocking.map((item) => item.split(dir).join('<dir>').replace(/run (?:hanlin|anchasi) R0 review/, 'run <r0> R0 review')),
+      };
     };
     const oracle = render(base);
     assert.deepEqual(render(path.join(root, 'freeze-check.mjs')), oracle, name);

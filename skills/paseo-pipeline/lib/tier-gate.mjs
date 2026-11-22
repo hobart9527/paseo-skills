@@ -19,6 +19,7 @@ import {
   resolveScopedPath,
 } from './paths.mjs';
 import { scanRepo } from './risk-scan.mjs';
+import { findReviewSignoff } from './review-record.mjs';
 import { recordEvent } from './telemetry.mjs';
 
 export { DEFAULT_LIMIT, UNCOUNTED, EXEMPT, scopeKey, resolveScopedPath };
@@ -32,11 +33,11 @@ const PROTECTED_BRANCHES = new Set(['main', 'master']);
 
 // 规则正本是 ~/.claude/CLAUDE.md；这里只放必须看到的精简摘要，阈值与正本一致。
 export const TIER_RULES = [
-  `先只读探查（rg/调研）再定档：Tier 1 ≤${DEFAULT_LIMIT} 个源文件、单一作用域 → 主 checkout 做；Tier 2 >${DEFAULT_LIMIT} 个源文件或跨作用域 → 进 linked worktree（收口必跑 tier2-verify）；Tier 3 ≥4 实质任务且 maxWidth≥3（或 maxWidth≥2 且加速比≥1.8）→ /paseo-pipeline。`,
+  `先只读探查（rg/调研）再定档：Tier 1 ≤${DEFAULT_LIMIT} 个源文件、单一作用域 → 主 checkout 做；Tier 2 >${DEFAULT_LIMIT} 个源文件、跨作用域、${DEFAULT_LARGE_FILE_LINES}+ 行或>${DEFAULT_TEST_FILE_LIMIT} 测试 → 进 linked worktree（收口必跑 tier2-verify）；Tier 3 ≥4 实质任务且 maxWidth≥3（或 maxWidth≥2 且加速比≥1.8）→ /paseo-pipeline。`,
   '风险：风险操作（部署、生产写入、迁移、push）要用户原话授权与回滚方案；风险代码（鉴权、并发幂等、schema、资金、外部写入或改弱既有测试）须过 risk-scan + 1 个独立 reviewer（1+1 上限），不升档、不需授权。其余见 ~/.claude/CLAUDE.md。',
 ].join('\n');
 
-const TIER_2_DEFINITION = `Tier 2：>${DEFAULT_LIMIT} 个源文件或跨作用域 → 先隔离到 linked worktree，主会话自己进去做；整体可独立完成或需要并行时才委派（brief.mjs tier2 / /tier2-handoff → /paseo-handoff），收口必跑 tier2-verify。`;
+const TIER_2_DEFINITION = `Tier 2：>${DEFAULT_LIMIT} 个源文件、跨作用域、≥${DEFAULT_LARGE_FILE_LINES} 行或>${DEFAULT_TEST_FILE_LIMIT} 测试 → 先隔离到 linked worktree，主会话自己进去做；整体可独立完成或需要并行时才委派（brief.mjs tier2 / /tier2-handoff → /paseo-handoff），收口必跑 tier2-verify。`;
 const TIER_3_DEFINITION = 'Tier 3：主会话粗画 DAG 有 ≥4 个实质任务且 maxWidth≥3（或 maxWidth≥2 且加权加速比≥1.8）→ /paseo-pipeline。';
 
 function stateDir() {
@@ -181,6 +182,29 @@ function declaredScopes(files, root) {
   return [...new Set(files.map((file) => scopeKey(resolveScopedPath(file, root))))].sort();
 }
 
+function targetSig(target) {
+  try {
+    const st = fs.statSync(target);
+    return st.isFile() ? `${st.size}:${st.mtimeMs}` : 'nonfile';
+  } catch {
+    return 'missing';
+  }
+}
+
+function isControlArtifact(rel) {
+  return rel === 'openspec' || rel.startsWith('openspec/')
+    || rel === '.superpowers' || rel.startsWith('.superpowers/');
+}
+
+function sigMap(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (typeof v === 'string') out[k] = v;
+  }
+  return out;
+}
+
 function segment(entry, now = Date.now()) {
   const legacy = Array.isArray(entry);
   const strings = (value) => (Array.isArray(value) ? value : []).filter((v) => typeof v === 'string');
@@ -192,6 +216,8 @@ function segment(entry, now = Date.now()) {
     fresh,
     files: fresh ? [] : strings(legacy ? entry : entry?.files),
     asked: fresh ? [] : strings(legacy ? [] : entry?.asked),
+    askedSigs: fresh || legacy ? {} : sigMap(entry?.askedSigs),
+    approved: fresh ? [] : strings(legacy ? [] : entry?.approved),
     stopFiles: fresh ? [] : strings(legacy ? [] : entry?.stopFiles),
     reported: fresh ? [] : strings(legacy ? [] : entry?.reported),
     testFiles: fresh ? [] : strings(legacy ? [] : entry?.testFiles),
@@ -292,29 +318,53 @@ export function assessTierGate({ target, sessionId, declared }) {
   const state = readState(file);
   const now = Date.now();
   const seg = segment(state[ctx.root], now);
-  const counted = seg.files.filter((filePath) => !EXEMPT(filePath));
-  const asked = seg.asked.filter((filePath) => !EXEMPT(filePath));
+  let counted = seg.files.filter((filePath) => !EXEMPT(filePath));
+  const trackableAsked = (filePath) => !isControlArtifact(filePath) && (!UNCOUNTED(filePath) || isTestPath(filePath));
+  let asked = seg.asked.filter(trackableAsked);
+  const askedSigs = { ...seg.askedSigs };
+  let approved = seg.approved.filter(trackableAsked);
+  let testFiles = [...seg.testFiles];
+  let promotedThisCall = false;
+
+  if (asked.includes(rel) && typeof askedSigs[rel] === 'string' && targetSig(target) !== askedSigs[rel]) {
+    asked = asked.filter((filePath) => filePath !== rel);
+    delete askedSigs[rel];
+    if (!approved.includes(rel)) approved = [...approved, rel];
+    if (UNCOUNTED(rel)) {
+      if (isTestPath(rel) && !testFiles.includes(rel)) testFiles = [...testFiles, rel];
+    } else if (!counted.includes(rel)) {
+      counted = [...counted, rel];
+    }
+    promotedThisCall = true;
+  }
+
   const keep = {
     turns: seg.turns,
     reported: seg.reported,
     churnReported: seg.churnReported,
     riskReported: seg.riskReported,
     stopFiles: seg.stopFiles,
-    testFiles: seg.testFiles,
+    testFiles,
+    askedSigs,
+    approved,
     zeroWriteTurns: seg.zeroWriteTurns,
     zeroWriteReported: seg.zeroWriteReported,
   };
 
   if (UNCOUNTED(rel)) {
-    if (isTestPath(rel) && !seg.testFiles.includes(rel)) {
+    if (isTestPath(rel) && !testFiles.includes(rel)) {
       const testLimit = testFileLimitFromEnv();
-      if (seg.testFiles.length >= testLimit) {
-        writeSegment(file, state, ctx.root, { ...keep, files: counted, at: now, asked: asked.includes(rel) ? asked : [...asked, rel] });
-        return { verdict: 'ask', reasonCode: 'test_blast', reason: testBlastReason(rel, testLimit, seg.testFiles) };
+      if (testFiles.length >= testLimit) {
+        askedSigs[rel] = targetSig(target);
+        writeSegment(file, state, ctx.root, { ...keep, files: counted, at: now, asked: asked.includes(rel) ? asked : [...asked, rel], askedSigs });
+        return { verdict: 'ask', reasonCode: 'test_blast', reason: testBlastReason(rel, testLimit, testFiles) };
       }
-      writeSegment(file, state, ctx.root, { ...keep, files: counted, at: now, asked, testFiles: [...seg.testFiles, rel] });
+      testFiles = [...testFiles, rel];
+      writeSegment(file, state, ctx.root, { ...keep, files: counted, at: now, asked, testFiles });
+    } else if (promotedThisCall) {
+      writeSegment(file, state, ctx.root, { ...keep, files: counted, at: now, asked });
     }
-    return { verdict: 'allow', note: 'test/doc file not counted' };
+    return { verdict: 'allow', note: promotedThisCall ? 'already approved' : 'test/doc file not counted' };
   }
 
   if (declared && Array.isArray(declared.files) && declared.files.length > 0) {
@@ -338,24 +388,30 @@ export function assessTierGate({ target, sessionId, declared }) {
     }
   }
 
-  if (counted.includes(rel)) return { verdict: 'allow', note: 'already counted' };
+  if (counted.includes(rel)) {
+    if (promotedThisCall) writeSegment(file, state, ctx.root, { ...keep, files: counted, at: now, asked });
+    return { verdict: 'allow', note: promotedThisCall ? 'already approved' : 'already counted' };
+  }
 
   const limit = limitFromEnv();
-  const known = [...new Set([...counted, ...asked])];
+  const known = [...new Set([...counted, ...asked.filter((filePath) => !EXEMPT(filePath))])];
   const scopes = [...new Set([...known.map(scopeKey), scopeKey(rel)])].sort();
   if (known.length > 0 && scopes.length >= 2) {
-    writeSegment(file, state, ctx.root, { ...keep, files: counted, at: now, asked: asked.includes(rel) ? asked : [...asked, rel] });
+    askedSigs[rel] = targetSig(target);
+    writeSegment(file, state, ctx.root, { ...keep, files: counted, at: now, asked: asked.includes(rel) ? asked : [...asked, rel], askedSigs });
     return { verdict: 'ask', reasonCode: 'scope_cross', reason: denyReason(known.length, limit, known, scopes) };
   }
   if (counted.length >= limit) {
-    writeSegment(file, state, ctx.root, { ...keep, files: counted, at: now, asked: asked.includes(rel) ? asked : [...asked, rel] });
+    askedSigs[rel] = targetSig(target);
+    writeSegment(file, state, ctx.root, { ...keep, files: counted, at: now, asked: asked.includes(rel) ? asked : [...asked, rel], askedSigs });
     return { verdict: 'ask', reasonCode: 'file_limit', reason: denyReason(counted.length, limit, counted) };
   }
 
   const largeFileLines = largeFileLinesFromEnv();
   const lineCount = existingFileLineCount(target);
   if (lineCount >= largeFileLines) {
-    writeSegment(file, state, ctx.root, { ...keep, files: counted, at: now, asked: asked.includes(rel) ? asked : [...asked, rel] });
+    askedSigs[rel] = targetSig(target);
+    writeSegment(file, state, ctx.root, { ...keep, files: counted, at: now, asked: asked.includes(rel) ? asked : [...asked, rel], askedSigs });
     return { verdict: 'ask', reasonCode: 'large_file', reason: largeFileReason(rel, lineCount, largeFileLines) };
   }
 
@@ -447,7 +503,7 @@ export function otherSessionsClaimedFiles(dir, currentSessionId, root, now = Dat
   return claimed;
 }
 
-function riskStopReason({ hits = [], testMutations = [], caveatRemovals = [] }) {
+function riskStopReason({ hits = [], testMutations = [], caveatRemovals = [] }, baseSha = 'HEAD') {
   const details = [];
   if (hits.length) {
     const classes = [...new Set(hits.map((h) => h.class))].sort();
@@ -463,7 +519,7 @@ function riskStopReason({ hits = [], testMutations = [], caveatRemovals = [] }) 
   return [
     '[tier-gate] 本轮 Tier 1 改动触发风险/断言扫描哨兵：',
     ...details,
-    '风险不自动升档也无需用户授权，但收口前必须完成：`pipeline-run.mjs risk-scan HEAD` + 1 次独立异构 reviewer（1+1 上限，可用 `anchasi` / `/paseo-advisor`），并在汇报中列出核验结论。',
+    `风险不自动升档也无需用户授权，但收口前必须完成：\`pipeline-run.mjs risk-scan ${baseSha || 'HEAD'}\` + 1 次独立异构 reviewer（1+1 上限，可用 \`anchasi\` / \`/paseo-advisor\`，并用 \`pipeline-run.mjs record-review --mode tier1\` 登记），并在汇报中列出核验结论。`,
   ].join('\n');
 }
 
@@ -491,26 +547,52 @@ export function assessStop({ cwd, sessionId }) {
   const state = readState(file);
   const seg = segment(state[ctx.root]);
   const asked = new Set(seg.asked);
+  const approved = new Set(seg.approved);
   const claimedByOthers = otherSessionsClaimedFiles(stateDir(), sessionId, ctx.root);
-  const business = (rel) => !EXEMPT(rel) && !UNCOUNTED(rel) && !asked.has(rel) && !claimedByOthers.has(rel);
+  const business = (rel) => !EXEMPT(rel) && !UNCOUNTED(rel) && !asked.has(rel) && !approved.has(rel) && !claimedByOthers.has(rel);
   const round = [...changed].filter(business).sort();
   const combined = [...new Set([...seg.files, ...seg.stopFiles, ...round])].filter(business).sort();
   const limit = limitFromEnv();
   const reportedBefore = new Set(seg.reported);
   const unreported = combined.filter((rel) => !reportedBefore.has(rel));
   const fileLimitBlock = ctx.isPrimary && combined.length > limit && unreported.length > 0;
-  const scopes = [...new Set([...combined, ...seg.asked].map(scopeKey))].sort();
+  const scopes = [...new Set([...combined, ...seg.asked.filter((rel) => !EXEMPT(rel))].map(scopeKey))].sort();
   const scopeBlock = ctx.isPrimary && !fileLimitBlock && combined.length > 0 && scopes.length >= 2 && unreported.length > 0;
+
+  const largeFileLines = largeFileLinesFromEnv();
+  const knownBefore = new Set([...seg.files, ...seg.stopFiles, ...seg.asked, ...seg.approved, ...seg.reported]);
+  const stopLargeHits = ctx.isPrimary
+    ? round
+      .filter((rel) => !knownBefore.has(rel))
+      .map((rel) => ({ rel, lines: existingFileLineCount(path.join(ctx.root, rel)) }))
+      .filter((item) => item.lines >= largeFileLines)
+    : [];
+  const largeFileBlock = ctx.isPrimary && !fileLimitBlock && !scopeBlock && stopLargeHits.length > 0;
+
+  const testLimit = testFileLimitFromEnv();
+  const changedTestFiles = ctx.isPrimary
+    ? [...changed].filter((rel) => !isControlArtifact(rel) && isTestPath(rel) && !asked.has(rel) && !approved.has(rel) && !claimedByOthers.has(rel)).sort()
+    : [];
+  const unapprovedNewTests = changedTestFiles.filter((rel) => !seg.testFiles.includes(rel) && !reportedBefore.has(rel));
+  const allTestFiles = [...new Set([...seg.testFiles, ...changedTestFiles])].filter((rel) => !asked.has(rel) && !approved.has(rel)).sort();
+  const testBlastBlock = ctx.isPrimary && allTestFiles.length > testLimit && unapprovedNewTests.length > 0;
+
   const turnLimit = turnsFromEnv();
-  const churnRound = round.filter((rel) => churnTouched.has(rel) && !CHURN_EXEMPT(rel));
+  const churnBusiness = (rel) => !EXEMPT(rel) && !UNCOUNTED(rel) && !claimedByOthers.has(rel);
+  const churnRound = [...changed].filter((rel) => churnBusiness(rel) && churnTouched.has(rel) && !CHURN_EXEMPT(rel));
   const turnsAfter = churnRound.length > 0 ? seg.turns + 1 : seg.turns;
-  const previouslyTouched = new Set([...seg.files, ...seg.stopFiles]);
+  const previouslyTouched = new Set([...seg.files, ...seg.stopFiles, ...seg.asked]);
   const fresh = churnRound.filter((rel) => !previouslyTouched.has(rel));
   const churnBlock = turnsAfter >= turnLimit && churnRound.length > 0 && fresh.length === 0 && !seg.churnReported;
 
   let riskFindings = null;
   let riskBlock = false;
-  if (ctx.isPrimary && !fileLimitBlock && !scopeBlock && !churnBlock && !seg.riskReported && changed.size > 0) {
+  const dirtyTree = Object.keys(current).length > 0;
+  const tier1Signoff = !dirtyTree && head !== snap.head
+    ? findReviewSignoff({ cwd: ctx.root, sha: head, mode: 'tier1' })
+    : null;
+  const tier1Satisfied = ['PASS', 'HUMAN_ACCEPT'].includes(tier1Signoff?.verdict);
+  if (ctx.isPrimary && !fileLimitBlock && !scopeBlock && !largeFileBlock && !testBlastBlock && !churnBlock && !seg.riskReported && changed.size > 0 && !tier1Satisfied) {
     try {
       const scan = scanRepo({ cwd: ctx.root, base: snap.head, workingTree: true });
       const hits = scan.hits.filter((item) => changed.has(item.file));
@@ -532,28 +614,41 @@ export function assessStop({ cwd, sessionId }) {
     && zeroWriteAfter >= zeroWriteTurnsFromEnv()
     && !seg.zeroWriteReported;
 
-  const block = fileLimitBlock || scopeBlock || churnBlock || riskBlock || zeroWriteBlock;
+  const block = fileLimitBlock || scopeBlock || largeFileBlock || testBlastBlock || churnBlock || riskBlock || zeroWriteBlock;
+  const nextReported = [...new Set([
+    ...seg.reported,
+    ...(fileLimitBlock || scopeBlock ? combined : []),
+    ...(largeFileBlock ? stopLargeHits.map((item) => item.rel) : []),
+    ...(testBlastBlock ? unapprovedNewTests : []),
+  ])];
+  const nextTestFiles = [...new Set([...seg.testFiles, ...(testBlastBlock ? unapprovedNewTests : [])])];
 
-  if (round.length > 0) {
+  if (round.length > 0 || churnRound.length > 0 || testBlastBlock) {
     writeSegment(file, state, ctx.root, {
       files: seg.files,
       stopFiles: combined.filter((rel) => !seg.files.includes(rel)),
       asked: seg.asked,
-      testFiles: seg.testFiles,
+      askedSigs: seg.askedSigs,
+      approved: seg.approved,
+      testFiles: nextTestFiles,
       at: Date.now(),
       turns: turnsAfter,
       zeroWriteTurns: zeroWriteAfter,
-      reported: fileLimitBlock || scopeBlock ? combined : seg.reported,
+      reported: nextReported,
       churnReported: seg.churnReported || churnBlock,
       riskReported: seg.riskReported || riskBlock,
       zeroWriteReported: changed.size > 0 ? false : (seg.zeroWriteReported || zeroWriteBlock),
     });
-  } else if (fileLimitBlock || scopeBlock || riskBlock || zeroWriteBlock || (trackZeroWrite && zeroWriteAfter !== seg.zeroWriteTurns)) {
+  } else if (fileLimitBlock || scopeBlock || largeFileBlock || riskBlock || zeroWriteBlock || (trackZeroWrite && zeroWriteAfter !== seg.zeroWriteTurns)) {
     writeSegment(file, state, ctx.root, {
       ...seg,
+      askedSigs: seg.askedSigs,
+      approved: seg.approved,
       at: Date.now(),
+      turns: turnsAfter,
       zeroWriteTurns: zeroWriteAfter,
-      reported: fileLimitBlock || scopeBlock ? combined : seg.reported,
+      reported: nextReported,
+      churnReported: seg.churnReported || churnBlock,
       riskReported: seg.riskReported || riskBlock,
       zeroWriteReported: changed.size > 0 ? false : (seg.zeroWriteReported || zeroWriteBlock),
     });
@@ -573,18 +668,29 @@ export function assessStop({ cwd, sessionId }) {
     `累计：${combined.join('、')}`,
     '不要再改文件，也不要回滚。先向用户汇报：这次已越出 Tier 1，是否未先探查定界；然后请用户决定由主会话进 worktree（Tier 2）、委派（/tier2-handoff → /paseo-handoff）、走 Tier 3（/paseo-pipeline）或明确放行。',
   ].join('\n');
+  const stopLargeReason = largeFileBlock
+    ? `[tier-gate] 本轮通过 Bash 改动了大文件：\n${stopLargeHits.map((item) => largeFileReason(item.rel, item.lines, largeFileLines)).join('\n')}`
+    : '';
+  const stopTestBlastReason = testBlastBlock
+    ? `[tier-gate] 本轮通过 Bash 新增/改动测试使本任务段测试文件达到 ${allTestFiles.length} 个：\n${testBlastReason(unapprovedNewTests[0], testLimit, allTestFiles)}`
+    : '';
   const reason = [
     fileLimitBlock ? limitReason : '',
     scopeBlock ? scopeReason : '',
+    stopLargeReason,
+    stopTestBlastReason,
     churnBlock ? churnReason(turnsAfter) : '',
-    riskBlock ? riskStopReason(riskFindings) : '',
+    riskBlock ? riskStopReason(riskFindings, snap.head) : '',
     zeroWriteBlock ? zeroWriteStallReason(zeroWriteAfter, activeChanges) : '',
   ]
     .filter(Boolean).join('\n\n');
   const reportedFiles = (fileLimitBlock || scopeBlock || churnBlock) ? combined : [...changed].sort();
   const reasonCode = fileLimitBlock
     ? 'file_limit'
-    : (scopeBlock ? 'scope_cross' : (churnBlock ? 'churn' : (zeroWriteBlock ? 'zero_write_stall' : 'risk_sentinel')));
+    : (scopeBlock ? 'scope_cross'
+      : (largeFileBlock ? 'large_file'
+        : (testBlastBlock ? 'test_blast'
+          : (churnBlock ? 'churn' : (zeroWriteBlock ? 'zero_write_stall' : 'risk_sentinel')))));
   recordEvent('tier_stop', { verdict: 'block', reasonCode, tier: ctx.isPrimary ? '1' : '2', count: reportedFiles.length });
   return { verdict: 'block', reasonCode, files: reportedFiles, reason };
 }

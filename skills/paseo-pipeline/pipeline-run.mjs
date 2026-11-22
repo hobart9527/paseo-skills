@@ -14,7 +14,7 @@
 //   pipeline-run.mjs preflight <repo> [--json] [--strict]
 //   pipeline-run.mjs acceptance run|check|sync <change-dir> ...
 //   pipeline-run.mjs prepare-author <change-dir> [--repo <path>] [--schema paseo-pipeline|paseo-tier2] [--scaffold] [--capability <cap>] [--hydrate] [--base main] [--json]
-//   pipeline-run.mjs prepare-task <change-dir> <task-id> [--worktree-root <dir>] [--workspace-dir <dir>] [--hydrate] [--json]
+//   pipeline-run.mjs prepare-task <change-dir> <task-id> [--worktree-root <dir>] [--workspace-dir <dir>] [--hydrate] [--new-attempt] [--allow-attempt-over] [--json]
 //   pipeline-run.mjs hydrate [<dir>] [--json]
 //   pipeline-run.mjs record-review --mode r0|final|tier2|tier1 --verdict PASS|BLOCKED|INCOMPLETE|HUMAN_ACCEPT --reviewer <id> [--sha <ref>] [--change-dir <dir>] [--reason <text>] [--cwd <dir>] [--json]
 //   pipeline-run.mjs cp2-merge <change-dir> [--base main] [--verify <cmd>]... [--timeout ms] [--skip-drift-verify] [--json]
@@ -39,7 +39,7 @@ import { runCleanup } from './lib/cleanup.mjs';
 import { recommendedWorkerRole } from './lib/roles.mjs';
 import { runVerifyCommand } from './lib/verify-runner.mjs';
 import { proveVerifyCommand } from './lib/verify-policy.mjs';
-import { recordReview } from './lib/review-record.mjs';
+import { recordReview, findReviewSignoff } from './lib/review-record.mjs';
 import { recordEvent, summarizeTelemetry } from './lib/telemetry.mjs';
 
 const HOME = path.dirname(fileURLToPath(import.meta.url));
@@ -121,7 +121,7 @@ function hookWarnings(change) {
   for (const tree of worktrees) {
     if (!tree.branch) continue;
     if (tree.branch !== `integration/${change}` && !tree.branch.startsWith(`task/${change}/`)) continue;
-    const configured = runGit(undefined, ['-C', tree.path, 'config', '--worktree', '--get', 'core.hooksPath']);
+    const configured = runGit(undefined, ['-C', tree.path, 'config', '--get', 'core.hooksPath']);
     const value = configured.status === 0 ? configured.stdout.trim() : '';
     if (value && path.resolve(value) === path.resolve(HOOKS_DIR)) continue;
     warnings.push(`WARN ${tree.branch} (${tree.path}) has no author hook: run \`node ${path.join(HOME, 'pipeline-run.mjs')} install-hook ${tree.path}\`, or its worker commits will exit 31`);
@@ -534,7 +534,8 @@ if (command === 'acceptance') {
     if (!fs.existsSync(specTarget) && (parsed.options.capability || !hasExistingSpec)) {
       fs.mkdirSync(path.dirname(specTarget), { recursive: true });
       const specTpl = fs.readFileSync(path.join(tplRoot, 'spec.md'), 'utf8')
-        .replace(/SCEN-<CAP>-01/g, scen01);
+        .replace(/SCEN-<CAP>-01/g, scen01)
+        .replace(/SCEN-<CAP>-02/g, scen02);
       fs.writeFileSync(specTarget, specTpl);
       scaffolded.push(path.relative(dir, specTarget).split(path.sep).join('/'));
     }
@@ -640,6 +641,8 @@ if (command === 'acceptance') {
       hydrate: 'boolean',
       json: 'boolean',
       'replace-hooks': 'boolean',
+      'new-attempt': 'boolean',
+      'allow-attempt-over': 'boolean',
     });
   } catch (error) { die(error.message); }
   if (parsed.positional.length !== 2) die('prepare-task needs <change-dir> <task-id>');
@@ -661,8 +664,17 @@ if (command === 'acceptance') {
     .split('\n').map((line) => line.trim()).filter(Boolean)
     .filter((ref) => ref === `task/${change}/${taskId}` || ref.startsWith(`task/${change}/${taskId}-a`))
     .sort((a, b) => Number(a.match(/-a(\d+)$/)?.[1] ?? 1) - Number(b.match(/-a(\d+)$/)?.[1] ?? 1));
-  const branch = refs.at(-1) ?? `task/${change}/${taskId}`;
-  if (!refs.length) {
+  let branch = refs.at(-1) ?? `task/${change}/${taskId}`;
+  if (parsed.options['new-attempt'] && refs.length > 0) {
+    const maxAttempt = Math.max(...refs.map((ref) => Number(ref.match(/-a(\d+)$/)?.[1] ?? 1)));
+    const nextAttempt = maxAttempt + 1;
+    if (nextAttempt > 3 && !parsed.options['allow-attempt-over']) {
+      die(`${taskId} attempt -a${nextAttempt} exceeds retry cap 3; record human approval and pass --allow-attempt-over`, 37);
+    }
+    branch = `task/${change}/${taskId}-a${nextAttempt}`;
+    const mkAttempt = runGit(root, ['branch', branch, baseBranch]);
+    if (mkAttempt.status !== 0) die(`cannot create branch ${branch}: ${mkAttempt.stderr.trim()}`, 1);
+  } else if (!refs.length) {
     const mkBranch = runGit(root, ['branch', branch, baseBranch]);
     if (mkBranch.status !== 0) die(`cannot create branch ${branch}: ${mkBranch.stderr.trim()}`, 1);
   }
@@ -694,7 +706,8 @@ if (command === 'acceptance') {
         ? path.resolve(parsed.options['worktree-root'])
         : defaultWtRoot;
       fs.mkdirSync(wtRoot, { recursive: true });
-      worktreePath = path.join(wtRoot, `task-${change}-${taskId}`);
+      const attemptSuffix = branch.match(/-a\d+$/)?.[0] ?? '';
+      worktreePath = path.join(wtRoot, `task-${change}-${taskId}${attemptSuffix}`);
       const addWt = runGit(root, ['worktree', 'add', worktreePath, branch]);
       if (addWt.status !== 0) die(`cannot create worktree ${worktreePath}: ${addWt.stderr.trim()}`, 1);
     }
@@ -772,12 +785,89 @@ if (command === 'acceptance') {
     die(`${baseBranch} worktree ${targetBaseWt} has uncommitted changes; aborting merge`, 3);
   }
   const baseShaBefore = runGit(targetBaseWt, ['rev-parse', baseBranch]).stdout.trim();
+  const integrationTip = runGit(root, ['rev-parse', integrationBranch]).stdout.trim();
+  const dirTop = fs.realpathSync(rootRes.stdout.trim());
+  const relChangeDir = path.relative(dirTop, dir).split(path.sep).join('/');
+  const readBranchChangeFile = (branchRef, fileName) => {
+    if (branchRef === integrationBranch && intWorktree) {
+      const onDisk = path.join(intWorktree, relChangeDir, fileName);
+      if (fs.existsSync(onDisk)) return fs.readFileSync(onDisk, 'utf8');
+    }
+    const show = runGit(root, ['show', `${branchRef}:${relChangeDir}/${fileName}`]);
+    return show.status === 0 ? show.stdout : null;
+  };
+  const intTasksMd = readBranchChangeFile(integrationBranch, 'tasks.md');
+  if (!intTasksMd) {
+    recordEvent('cp2_merge', { tier: '3', ok: false, verdict: 'incomplete_tasks', reasonCode: 'missing_tasks' });
+    die(`missing tasks.md on ${integrationBranch}; cannot merge unverified change`, 3);
+  }
+  const parsedIntTasks = parseTasks(intTasksMd);
+  const incompleteTasks = parsedIntTasks.tasks.filter((t) => !t.checked || !t.done);
+  if (parsedIntTasks.errors.length || !parsedIntTasks.tasks.length || incompleteTasks.length) {
+    recordEvent('cp2_merge', { tier: '3', ok: false, verdict: 'incomplete_tasks', reasonCode: 'incomplete_tasks' });
+    const detail = !parsedIntTasks.tasks.length
+      ? 'no tasks found'
+      : parsedIntTasks.errors.length
+        ? `${parsedIntTasks.errors.length} tasks.md error(s)`
+        : `incomplete tasks: ${incompleteTasks.map((t) => t.id).join(', ')}`;
+    die(`refusing cp2-merge: ${integrationBranch} has ${detail} (every task must be checked Done before CP-2)`, 3);
+  }
+
   const gitCommon = commonGitDir(root);
   const pendingDriftMarker = gitCommon
     ? path.join(gitCommon, `paseo-cp2-pending-${change.replace(/[^A-Za-z0-9._-]/g, '_')}`)
     : null;
+  let driftMarker = null;
+  if (pendingDriftMarker && fs.existsSync(pendingDriftMarker)) {
+    const rawMarker = fs.readFileSync(pendingDriftMarker, 'utf8').trim();
+    if (rawMarker) {
+      try {
+        const obj = JSON.parse(rawMarker);
+        driftMarker = obj && typeof obj === 'object' ? obj : { baseSha: rawMarker };
+      } catch {
+        driftMarker = { baseSha: rawMarker };
+      }
+    } else {
+      driftMarker = {};
+    }
+  }
+  const signoffCwd = intWorktree || root;
+  const tipSignoff = findReviewSignoff({
+    cwd: signoffCwd,
+    changeDir: relChangeDir,
+    sha: integrationTip,
+    ref: intWorktree ? null : integrationBranch,
+    mode: 'final',
+  });
+  if (tipSignoff?.verdict === 'BLOCKED') {
+    recordEvent('cp2_merge', { tier: '3', ok: false, verdict: 'final_blocked', reasonCode: 'final_blocked' });
+    die(`FINAL review is BLOCKED on ${integrationBranch} (${integrationTip.slice(0, 7)})`, 3);
+  }
+  let validFinalSignoff = ['PASS', 'HUMAN_ACCEPT'].includes(tipSignoff?.verdict) ? tipSignoff : null;
+  let signedPreSyncSha = validFinalSignoff ? integrationTip : null;
+  if (!validFinalSignoff && driftMarker?.signedPreSyncSha) {
+    const anc = runGit(root, ['merge-base', '--is-ancestor', driftMarker.signedPreSyncSha, integrationTip]);
+    if (anc.status === 0) {
+      const preSyncSignoff = findReviewSignoff({
+        cwd: signoffCwd,
+        changeDir: relChangeDir,
+        sha: driftMarker.signedPreSyncSha,
+        ref: driftMarker.signedPreSyncSha,
+        mode: 'final',
+      });
+      if (['PASS', 'HUMAN_ACCEPT'].includes(preSyncSignoff?.verdict)) {
+        validFinalSignoff = preSyncSignoff;
+        signedPreSyncSha = driftMarker.signedPreSyncSha;
+      }
+    }
+  }
+  if (!validFinalSignoff) {
+    recordEvent('cp2_merge', { tier: '3', ok: false, verdict: 'missing_final_signoff', reasonCode: 'missing_final_signoff' });
+    die(`refusing cp2-merge: missing valid FINAL signoff (PASS or HUMAN_ACCEPT) for ${integrationBranch} @ ${integrationTip.slice(0, 7)}`, 3);
+  }
+
   const drifted = runGit(targetBaseWt, ['merge-base', '--is-ancestor', baseShaBefore, integrationBranch]).status !== 0;
-  let driftedSynced = !!(pendingDriftMarker && fs.existsSync(pendingDriftMarker));
+  let driftedSynced = Boolean(driftMarker);
   let driftVerified = false;
   const driftVerifyResults = [];
   if (drifted) {
@@ -792,7 +882,10 @@ if (command === 'acceptance') {
       die(`${baseBranch} drifted and conflicts with ${integrationBranch}; resolve manually in ${intWorktree} and re-run Verify`, 10);
     }
     driftedSynced = true;
-    if (pendingDriftMarker) fs.writeFileSync(pendingDriftMarker, `${baseShaBefore}\n`);
+    const preservedSignedSha = driftMarker?.signedPreSyncSha || signedPreSyncSha || integrationTip;
+    if (pendingDriftMarker) {
+      fs.writeFileSync(pendingDriftMarker, `${JSON.stringify({ baseSha: baseShaBefore, signedPreSyncSha: preservedSignedSha })}\n`);
+    }
   }
   if (driftedSynced) {
     if (parsed.options['skip-drift-verify']) {

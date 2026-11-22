@@ -244,10 +244,12 @@ if (prechecksOk) {
   }
 }
 
-const risk = scanRepo({ cwd, base, workingTree: Boolean(dirty) });
+const risk = scanRepo({ cwd, base, head: dirty ? null : tip, workingTree: Boolean(dirty) });
 const reviewSignoff = findReviewSignoff({ cwd, changeDir, sha: tip, mode: 'tier2' });
-const ok = prechecksOk && allVerifyPassed;
-const verdict = !ok ? 'FAIL' : (risk.reviewRequired ? 'REVIEW_REQUIRED' : 'PASS');
+const reviewBlocked = reviewSignoff?.verdict === 'BLOCKED';
+const reviewSatisfied = !risk.reviewRequired || ['PASS', 'HUMAN_ACCEPT'].includes(reviewSignoff?.verdict);
+const ok = prechecksOk && allVerifyPassed && !reviewBlocked;
+const verdict = !ok ? 'FAIL' : (reviewSatisfied ? 'PASS' : 'REVIEW_REQUIRED');
 
 recordEvent('tier2_verify', {
   tier: '2',
@@ -261,7 +263,8 @@ recordEvent('tier2_verify', {
       : (unprovableVerify.length ? 'unprovable_verify'
         : (!scopeOk ? 'scope_drift'
           : (!contractOk ? (collidingScenarios.length ? 'colliding_scen' : (taskErrors.length ? 'tasks_invalid' : 'openspec_invalid'))
-            : (!allVerifyPassed ? 'verify_failed' : undefined))))),
+            : (!allVerifyPassed ? 'verify_failed'
+              : (reviewBlocked ? 'review_blocked' : undefined)))))),
 });
 
 const report = {
@@ -315,11 +318,15 @@ if (parsed.options.json) {
   for (const adv of advisories) console.log(`ADVISE: ${adv}`);
   if (uncheckedTasks.length) console.log(`WARN: unchecked tasks in tasks.md: ${uncheckedTasks.join(', ')}`);
   for (const r of verifyResults) console.log(`${r.ok ? 'PASS' : 'FAIL'} verify (${r.durationMs}ms): ${r.command}`);
+  if (reviewBlocked) {
+    console.error(`FAIL: Tier 2 review BLOCKED (${reviewSignoff.reviewer}@${tip.slice(0, 7)}${reviewSignoff.reason ? `: ${reviewSignoff.reason}` : ''})`);
+  }
   if (risk.reviewRequired) {
     if (reviewSignoff) {
       console.log(`REVIEW_RECORDED: ${reviewSignoff.verdict} (${reviewSignoff.reviewer}@${tip.slice(0, 7)})`);
-    } else {
-      console.log(`REVIEW_REQUIRED: classes=[${risk.classes.join(', ')}] testMutations=${risk.testMutations.length} -> run 1+1 independent reviewer (docs/tier2-reviewer-brief.md) and record with \`pipeline-run.mjs record-review --mode tier2\``);
+    }
+    if (!reviewSatisfied) {
+      console.log(`REVIEW_REQUIRED: classes=[${risk.classes.join(', ')}] testMutations=${risk.testMutations.length} -> run 1+1 independent reviewer (\`pipeline-run.mjs brief tier2-review ${currentChangeName ? `--change ${currentChangeName} ` : ''}--base ${base} --repo .\`) and record with \`pipeline-run.mjs record-review --mode tier2\``);
     }
   }
   console.log(`RESULT tier2-verify: ${verdict}`);

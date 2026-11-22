@@ -252,3 +252,33 @@ test('risk-scan supports --files, --tracked-only, and marks untracked-only resid
   assert.ok(targetedJson.classes.includes('auth'));
   assert.equal(targetedJson.hits[0].untracked, true);
 });
+
+test('risk-scan uses merge-base so main drift after branch cut is never blamed on the branch (P0-3)', (t) => {
+  const root = makeRepo();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const forkSha = sh(root, 'rev-parse', 'HEAD');
+
+  // Create feature branch with a benign UI change only
+  const wt = `${root}-branch`;
+  sh(root, 'worktree', 'add', '-q', '-b', 'feat/ui-only', wt);
+  t.after(() => fs.rmSync(wt, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(wt, 'src/ui'), { recursive: true });
+  fs.writeFileSync(path.join(wt, 'src/ui/button.js'), 'export const btn = () => "ok";\n');
+  sh(wt, 'add', 'src/ui/button.js');
+  sh(wt, 'commit', '-qm', 'branch benign ui');
+
+  // Main drifts forward with an unrelated auth change
+  fs.mkdirSync(path.join(root, 'src/auth'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'src/auth/main-only.js'), 'export const token = true;\n');
+  sh(root, 'add', 'src/auth/main-only.js');
+  sh(root, 'commit', '-qm', 'main auth drift');
+
+  const scan = scanRepo({ cwd: wt, base: 'main', head: 'HEAD' });
+  assert.equal(scan.mergeBase, forkSha);
+  assert.equal(scan.reviewRequired, false, `drifted main auth file must not taint branch: ${JSON.stringify(scan.hits)}`);
+  assert.equal(scan.hits.length, 0);
+
+  const cliRes = spawnSync('node', [RISK_SCAN_CLI, 'main', 'HEAD', '--cwd', wt, '--json'], { encoding: 'utf8' });
+  assert.equal(cliRes.status, 0, cliRes.stderr);
+  assert.equal(JSON.parse(cliRes.stdout).reviewRequired, false);
+});

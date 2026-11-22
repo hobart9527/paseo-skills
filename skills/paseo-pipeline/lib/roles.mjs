@@ -10,7 +10,7 @@ export const ROLES = {
   hanlin: {
     kind: 'author',
     brief: 'skills/paseo-pipeline/templates/author.md',
-    stageTitles: ['FULL', 'R0', 'FINAL'],
+    stageTitles: ['FULL', 'REVISE', 'R0', 'FINAL'],
     canSignR0: true,
   },
   neon: {

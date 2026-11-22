@@ -124,12 +124,40 @@ function shaMatches(recordedSha, targetSha) {
   return (a.length >= 7 && b.startsWith(a)) || (b.length >= 7 && a.startsWith(b));
 }
 
-export function findReviewSignoff({ cwd = process.cwd(), changeDir = null, sha, mode = 'tier2' } = {}) {
-  if (!sha) return null;
-  const targetMode = String(mode || 'tier2').trim().toLowerCase();
-  const matches = [];
+function resolveCommitSha(root, value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const res = runGit(root, ['rev-parse', '--verify', `${raw}^{commit}`]);
+  return res.status === 0 && res.stdout.trim() ? res.stdout.trim() : null;
+}
 
-  const gitDir = gitDirOf(path.resolve(cwd));
+function isSignoffOnlyDescendant(root, recordedSha, targetFullSha, changeName = null) {
+  if (!recordedSha || !targetFullSha) return false;
+  if (!/^[a-f0-9]{40,64}$/i.test(recordedSha) || !/^[a-f0-9]{40,64}$/i.test(targetFullSha)) return false;
+  if (recordedSha.toLowerCase() === targetFullSha.toLowerCase()) return false;
+  const anc = runGit(root, ['merge-base', '--is-ancestor', recordedSha, targetFullSha]);
+  if (anc.status !== 0) return false;
+  const diff = runGit(root, ['diff', '--no-renames', '--name-only', '-z', recordedSha, targetFullSha]);
+  if (diff.status !== 0) return false;
+  const files = diff.stdout.split('\0').filter(Boolean);
+  if (!files.length) return false;
+  const escaped = changeName ? changeName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '[^/]+';
+  const signoffOnly = new RegExp(`^openspec/changes/(?:archive/\\d{4}-\\d{2}-\\d{2}-)?${escaped}/(?:review\\.md|rulings\\.md|run-log\\.md|evidence/.*)$`);
+  return files.every((file) => signoffOnly.test(file.replace(/\\/g, '/')));
+}
+
+export function findReviewSignoff({ cwd = process.cwd(), changeDir = null, sha, ref = null, mode = 'tier2' } = {}) {
+  const targetInput = sha || ref;
+  if (!targetInput) return null;
+  const root = path.resolve(cwd);
+  const resolvedTargetSha = resolveCommitSha(root, targetInput);
+  const targetSha = resolvedTargetSha || String(targetInput).trim();
+  const targetMode = String(mode || 'tier2').trim().toLowerCase();
+  const exactMatches = [];
+  const ancestorMatches = [];
+  const changeName = changeDir ? path.basename(path.resolve(root, changeDir)) : null;
+
+  const gitDir = gitDirOf(root);
   if (gitDir) {
     const ledger = path.join(gitDir, 'paseo-reviews.jsonl');
     try {
@@ -138,8 +166,12 @@ export function findReviewSignoff({ cwd = process.cwd(), changeDir = null, sha, 
         if (!line.trim()) continue;
         try {
           const entry = JSON.parse(line);
-          if (entry && entry.mode === targetMode && shaMatches(entry.sha, sha)) {
-            matches.push({
+          if (!entry || entry.mode !== targetMode) continue;
+          const exact = shaMatches(entry.sha, targetSha);
+          const ancestor = !exact && Boolean(resolvedTargetSha)
+            && isSignoffOnlyDescendant(root, resolveCommitSha(root, entry.sha) || entry.sha, resolvedTargetSha, changeName);
+          if (exact || ancestor) {
+            const record = {
               source: 'git-ledger',
               mode: entry.mode,
               verdict: entry.verdict,
@@ -147,7 +179,9 @@ export function findReviewSignoff({ cwd = process.cwd(), changeDir = null, sha, 
               sha: entry.sha,
               ts: entry.ts ?? null,
               reason: entry.reason ?? null,
-            });
+            };
+            if (exact) exactMatches.push(record);
+            else ancestorMatches.push(record);
           }
         } catch {
           // Ignore malformed ledger line
@@ -159,28 +193,56 @@ export function findReviewSignoff({ cwd = process.cwd(), changeDir = null, sha, 
   }
 
   if (changeDir) {
-    const reviewFile = path.join(path.resolve(cwd, changeDir), 'review.md');
-    try {
-      const raw = fs.readFileSync(reviewFile, 'utf8');
+    const reviewFile = path.join(path.resolve(root, changeDir), 'review.md');
+    let raw = null;
+    if (ref) {
+      const topRes = runGit(root, ['rev-parse', '--show-toplevel']);
+      const repoRoot = topRes.status === 0 && topRes.stdout.trim() ? topRes.stdout.trim() : root;
+      const relReview = path.relative(repoRoot, reviewFile).replace(/\\/g, '/');
+      const show = runGit(repoRoot, ['show', `${ref}:${relReview}`]);
+      if (show.status === 0) raw = show.stdout;
+    }
+    if (raw === null) {
+      try {
+        raw = fs.readFileSync(reviewFile, 'utf8');
+      } catch {
+        raw = null;
+      }
+    }
+    if (raw === null && resolvedTargetSha) {
+      const topRes = runGit(root, ['rev-parse', '--show-toplevel']);
+      const repoRoot = topRes.status === 0 && topRes.stdout.trim() ? topRes.stdout.trim() : root;
+      const relReview = path.relative(repoRoot, reviewFile).replace(/\\/g, '/');
+      const show = runGit(repoRoot, ['show', `${resolvedTargetSha}:${relReview}`]);
+      if (show.status === 0) raw = show.stdout;
+    }
+    if (raw !== null) {
       const upper = targetMode.toUpperCase();
-      const re = new RegExp(`^${upper}:\\s*(pass|human-accept|blocked|incomplete)\\((?:([^@)]+)@)?([a-f0-9]{7,40})\\)`, 'gim');
+      const re = new RegExp(`^${upper}:\\s*(pass|human-accept|blocked|incomplete)\\((?:([^@)]+)@)?([^)\\s]+)\\)`, 'gim');
       for (const m of raw.matchAll(re)) {
-        if (!shaMatches(m[3], sha)) continue;
+        const rawRef = m[3].trim();
+        const isHex = /^[a-f0-9]{7,40}$/i.test(rawRef);
+        const resolvedEntrySha = resolveCommitSha(root, rawRef);
+        const exact = shaMatches(resolvedEntrySha || rawRef, targetSha);
+        const ancestor = !exact && Boolean(resolvedTargetSha && resolvedEntrySha)
+          && isSignoffOnlyDescendant(root, resolvedEntrySha, resolvedTargetSha, changeName);
+        if (!exact && !ancestor) continue;
         const rawVerdict = m[1].toUpperCase();
-        matches.push({
+        const record = {
           source: 'review.md',
           mode: targetMode,
           verdict: rawVerdict === 'HUMAN-ACCEPT' ? 'HUMAN_ACCEPT' : rawVerdict,
           reviewer: (m[2] || 'human').trim(),
-          sha: m[3],
+          sha: isHex ? rawRef : (resolvedEntrySha || rawRef),
           ts: null,
           reason: null,
-        });
+        };
+        if (exact) exactMatches.push(record);
+        else ancestorMatches.push(record);
       }
-    } catch {
-      // No review.md yet
     }
   }
 
-  return matches.length ? matches.at(-1) : null;
+  if (exactMatches.length) return exactMatches.at(-1);
+  return ancestorMatches.length ? ancestorMatches.at(-1) : null;
 }

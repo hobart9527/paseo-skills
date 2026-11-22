@@ -196,3 +196,43 @@ test('brief: author in linked worktree falls back to primary checkout baseline-f
   assert.match(prompt, /## Baseline Facts \(Stage 0\/1 — JIT inlined\)/);
   assert.match(prompt, /Fact: primary checkout verified/);
 });
+
+test('brief: model-id guard allows Codex/ repo paths and doc extensions while blocking concrete model IDs', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'brief-codex-'));
+  const codexRepo = path.join(base, 'Codex', 'approval-hub');
+  fs.mkdirSync(codexRepo, { recursive: true });
+  write(codexRepo, 'src/app.mjs', 'export const x = 1;\n');
+  git(codexRepo, ['init', '-q', '-b', 'main']);
+  git(codexRepo, ['add', '-A']);
+  git(codexRepo, ['commit', '-qm', 'seed']);
+
+  // Repo path under .../Codex/... and markdown docs like claude-notes.md must pass
+  write(codexRepo, 'docs/claude-notes.md', '# Notes\n');
+  git(codexRepo, ['add', 'docs/claude-notes.md']);
+  git(codexRepo, ['commit', '-qm', 'add claude notes']);
+  const okRes = run(['tier2', '--repo', codexRepo, '--goal', 'review fix under Codex/approval-hub', '--json']);
+  assert.equal(okRes.status, 0, okRes.out);
+
+  // Reviewer diff --stat uses three-dot base...HEAD so main drift is excluded
+  const forkBase = git(codexRepo, ['rev-parse', 'HEAD~1']);
+  const wt = path.join(base, 'wt-branch');
+  git(codexRepo, ['worktree', 'add', '-q', '-b', 'feat/branch', wt, forkBase]);
+  write(codexRepo, 'main-drift-only.txt', 'drift\n');
+  git(codexRepo, ['add', 'main-drift-only.txt']);
+  git(codexRepo, ['commit', '-qm', 'main moved forward']);
+  write(wt, 'branch-only.mjs', 'export const b = 2;\n');
+  git(wt, ['add', 'branch-only.mjs']);
+  git(wt, ['commit', '-qm', 'branch work']);
+  const revRes = run(['tier2-review', '--repo', wt, '--base', 'main', '--json']);
+  assert.equal(revRes.status, 0, revRes.out);
+  const revPrompt = JSON.parse(revRes.stdout).prompt;
+  assert.match(revPrompt, /branch-only\.mjs/);
+  assert.doesNotMatch(revPrompt, /main-drift-only\.txt/);
+
+  // Concrete model IDs are still rejected
+  for (const leaked of ['codex/gpt', 'gpt-5.4', 'claude-sonnet-4']) {
+    const badRes = run(['recon', '--repo', codexRepo, '--goal', `use ${leaked} to run`, '--json']);
+    assert.equal(badRes.status, 1, `expected model guard to block "${leaked}"`);
+    assert.match(badRes.stderr, /refusing to emit a concrete model id/);
+  }
+});

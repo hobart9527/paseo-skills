@@ -11,3 +11,7 @@
      Executable Verify lives in tasks.md (`Verify with:` + `Entry:`). -->
 - **WHEN** <!-- condition -->
 - **THEN** <!-- expected outcome -->
+
+#### Scenario: SCEN-<CAP>-02 <!-- optional description -->
+- **WHEN** <!-- condition -->
+- **THEN** <!-- expected outcome -->

@@ -414,3 +414,53 @@ test('Bash: primary-checkout read-only recon stall advises once at threshold and
   assert.deepEqual(readCmd(repo, 'sed -n 1,5p src/a.js'), {});
   assert.match(readCmd(repo, 'cat src/a.js').additionalContext, /\[recon-budget\]/);
 });
+
+test('tool guard checks repeated_failure before rewrite exit and expands ~ in targetsPrimary', (t) => {
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-loop-'));
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-'));
+  t.after(() => {
+    fs.rmSync(state, { recursive: true, force: true });
+    fs.rmSync(fakeHome, { recursive: true, force: true });
+  });
+  const tel = path.join(state, 'metrics.jsonl');
+  const transcript = path.join(state, 'transcript.jsonl');
+  const badWs = { isolation: 'worktree', branchName: 'feat/x', baseBranch: 'main', branch: 'main' };
+  const records = [1, 2, 3].flatMap((n) => [
+    { message: { content: [{ type: 'tool_use', id: `w${n}`, name: 'mcp__paseo__create_workspace', input: badWs }] } },
+    { message: { content: [{ type: 'tool_result', tool_use_id: `w${n}`, is_error: true }] } },
+  ]);
+  fs.writeFileSync(transcript, records.map(JSON.stringify).join('\n'));
+  const loopOut = guard({
+    tool_name: 'mcp__paseo__create_workspace',
+    tool_input: badWs,
+    transcript_path: transcript,
+  }, { PIPELINE_TELEMETRY_FILE: tel, state });
+  assert.equal(loopOut.permissionDecision, 'deny');
+  assert.match(loopOut.permissionDecisionReason, /failed 3 times/);
+
+  // Expand ~/... inside targetsPrimary from a linked worktree
+  const primary = path.join(fakeHome, 'Codex', 'demo-repo');
+  fs.mkdirSync(path.join(primary, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(primary, 'src/a.js'), '1\n');
+  spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: primary });
+  spawnSync('git', ['config', 'user.email', 't@t'], { cwd: primary });
+  spawnSync('git', ['config', 'user.name', 't'], { cwd: primary });
+  spawnSync('git', ['add', '.'], { cwd: primary });
+  spawnSync('git', ['commit', '-qm', 'seed'], { cwd: primary });
+  const wt = path.join(fakeHome, 'wt-demo');
+  spawnSync('git', ['worktree', 'add', '-q', '-b', 'feat/y', wt], { cwd: primary });
+
+  const cdOut = guard({
+    tool_name: 'Bash',
+    cwd: wt,
+    tool_input: { command: 'cd ~/Codex/demo-repo && git status' },
+  }, { HOME: fakeHome, PIPELINE_TELEMETRY_FILE: tel, state });
+  assert.match(cdOut.additionalContext, /avoid `cd` into the shared primary checkout/);
+
+  const gitCOut = guard({
+    tool_name: 'Bash',
+    cwd: wt,
+    tool_input: { command: 'git -C ~/Codex/demo-repo status' },
+  }, { HOME: fakeHome, PIPELINE_TELEMETRY_FILE: tel, state });
+  assert.match(gitCOut.additionalContext, /block `git -C` targeting the primary checkout/);
+});

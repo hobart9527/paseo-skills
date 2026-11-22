@@ -74,6 +74,19 @@ function gitStatusLines(root, args) {
   }
 }
 
+function hasFilledTasks(changeDir) {
+  const tasksFile = path.join(changeDir, 'tasks.md');
+  if (!fs.existsSync(tasksFile)) return false;
+  try {
+    const content = fs.readFileSync(tasksFile, 'utf8');
+    // Unfilled scaffold templates from openspec-schema-tier2 still contain template placeholders.
+    if (content.includes('path/to/file.mjs') || content.includes('<一句话目标>')) return false;
+    return true;
+  } catch {
+    return true;
+  }
+}
+
 function isAuthorChangeRoot(changeDir) {
   if (fs.existsSync(path.join(changeDir, 'proposal.md'))) return true;
   if (fs.existsSync(path.join(changeDir, 'baseline-facts.md'))) return true;
@@ -106,7 +119,7 @@ export function detectActiveAuthorChange(cwd) {
       if (!ent.isDirectory() || ent.name === 'archive') continue;
       const change = ent.name;
       const changeDir = path.join(changesRoot, change);
-      if (fs.existsSync(path.join(changeDir, 'tasks.md'))) continue;
+      if (hasFilledTasks(changeDir)) continue;
       if (!isAuthorChangeRoot(changeDir)) continue;
       const hasSpecs = hasAnySpecFile(path.join(changeDir, 'specs'));
       const prefix = `openspec/changes/${change}/`;
@@ -165,7 +178,7 @@ function resolveCachedActiveChange({ cwd, existing, now }) {
 
   if (sameCwd) {
     if (existing.change && existing.root && existing.changeDir) {
-      const hasTasks = fs.existsSync(path.join(existing.changeDir, 'tasks.md'));
+      const hasTasks = hasFilledTasks(existing.changeDir);
       const hasRoot = !hasTasks && isAuthorChangeRoot(existing.changeDir);
       const changesMtimeMs = dirMtimeMs(path.join(existing.root, 'openspec', 'changes'));
       if (hasRoot && !hasTasks && changesMtimeMs === existing.changesMtimeMs) {

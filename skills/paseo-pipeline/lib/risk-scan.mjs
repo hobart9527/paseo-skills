@@ -283,7 +283,13 @@ export function scanRepo({ cwd = process.cwd(), base, head = null, workingTree =
     || fileFilter.has(String(entry.file || '').replace(/\\/g, '/'))
     || (entry.from && fileFilter.has(String(entry.from).replace(/\\/g, '/')));
 
-  const rangeArgs = useWorkingTree ? [baseSha] : [baseSha, headSha];
+  let mergeBaseSha = baseSha;
+  const mbRes = runGit(root, ['merge-base', baseSha, headSha || 'HEAD']);
+  if (mbRes.status === 0 && mbRes.stdout.trim()) {
+    mergeBaseSha = mbRes.stdout.trim();
+  }
+
+  const rangeArgs = useWorkingTree ? [mergeBaseSha] : [mergeBaseSha, headSha];
   const nameStatus = runGit(root, ['diff', '--name-status', '-z', ...rangeArgs]);
   if (nameStatus.status !== 0) throw new Error(`git diff --name-status failed: ${nameStatus.stderr}`);
   const entries = parseNameStatusZ(nameStatus.stdout).filter(matchesFilter);
@@ -317,6 +323,7 @@ export function scanRepo({ cwd = process.cwd(), base, head = null, workingTree =
   return {
     repo: root,
     base: baseSha,
+    mergeBase: mergeBaseSha,
     head: headSha,
     workingTree: useWorkingTree,
     trackedOnly: Boolean(trackedOnly),

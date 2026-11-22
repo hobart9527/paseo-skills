@@ -314,6 +314,21 @@ test('pipeline-run prepare-task sets up branch, worktree, hook, and brief idempo
   fs.writeFileSync(path.join(intWt, 'src/a.js'), 'export const a = () => 7;\n');
   git(intWt, 'add', 'src/a.js');
   git(intWt, 'commit', '-q', '-m', 'integration work');
+  const srcSha = git(intWt, 'rev-parse', '--short=7', 'HEAD');
+  const intTasksPath = path.join(intWt, 'openspec/changes/c1/tasks.md');
+  const doneTasks = fs.readFileSync(intTasksPath, 'utf8')
+    .replace('- [ ] 1.1 T-01 Core backend task', '- [x] 1.1 T-01 Core backend task')
+    .replace('  - Verify with: node --test test/a.test.js\n\n', `  - Verify with: node --test test/a.test.js\n  - Done: source=${srcSha} review=mechanical\n\n`)
+    .replace('- [ ] 1.2 T-02 UI view tweak', '- [x] 1.2 T-02 UI view tweak')
+    .replace(/  - Verify with: node --test test\/a\.test\.js\n$/, `  - Verify with: node --test test/a.test.js\n  - Done: source=${srcSha} review=mechanical\n`);
+  fs.writeFileSync(intTasksPath, doneTasks);
+  git(intWt, 'add', 'openspec/changes/c1/tasks.md');
+  git(intWt, 'commit', '-q', '-m', 'mark tasks done');
+  const preSyncTip = git(intWt, 'rev-parse', 'HEAD');
+  const intReviewPath = path.join(intWt, 'openspec/changes/c1/review.md');
+  fs.appendFileSync(intReviewPath, `FINAL: pass(anchasi-1@${preSyncTip})\n`);
+  git(intWt, 'add', 'openspec/changes/c1/review.md');
+  git(intWt, 'commit', '-q', '-m', 'record FINAL signoff');
 
   fs.writeFileSync(path.join(root, 'README.md'), '# Drifted main\n');
   git(root, 'add', 'README.md');

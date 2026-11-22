@@ -506,3 +506,28 @@ test('next-actions: the SKILL.md role table and lib/roles.mjs name the same role
   assert.deepEqual([...listed].sort(), [...coded].sort(), `SKILL.md roles: ${[...listed].sort().join(', ')}; lib/roles.mjs: ${[...coded].sort().join(', ')}`);
 });
 
+test('next-actions recognizes hanlin REVISE stage and archived changes in changesIn (P2)', () => {
+  const { cwd, localEnv } = fixture();
+  const paseo = path.join(cwd, '.fake-bin', 'paseo');
+  const archiveDir = path.join(cwd, 'openspec/changes/archive/2026-11-22-done-chg');
+  fs.mkdirSync(archiveDir, { recursive: true });
+  fs.writeFileSync(path.join(archiveDir, 'tasks.md'), '# Archived\n');
+  const agents = [
+    { id: 'revise-1', name: '[Pipeline] hanlin REVISE', status: 'running', cwd },
+    { id: 'arch-1', name: '[Pipeline] gongbu T-01 done-chg', status: 'idle', cwd },
+  ];
+  fs.writeFileSync(paseo, `#!/bin/sh
+if [ "$1" = "ls" ]; then
+  case "$*" in
+    *"pipeline.change=done-chg"*) printf '%s' '[{"id":"arch-1"}]' ;;
+    *"pipeline.change=c1"*) printf '%s' '${JSON.stringify([agents[0]])}' ;;
+    *) printf '%s' '${JSON.stringify(agents)}' ;;
+  esac
+elif [ "$1" = "inspect" ]; then
+  printf '%s' '{"Id":"revise-1","Status":"running","PendingPermissions":[]}'
+fi
+`);
+  const res = run(cwd, localEnv);
+  assert.equal(res.status, 0, res.out);
+});
+

@@ -243,3 +243,25 @@ test('acceptance check allows post-signoff review/evidence commits on integratio
   const checkMain = invoke(f, 'check', inRepoEv);
   assert.equal(checkMain.status, 0, checkMain.stderr + checkMain.stdout);
 });
+
+test('acceptance check escapes regex chars in change name and allows rulings.md in post-signoff commit', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'acceptance-regex-'));
+  const repo = path.join(base, 'repo'); fs.mkdirSync(repo);
+  const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  const specialName = 'feat+1.0(beta)';
+  git('init', '-q', '-b', `integration/${specialName}`);
+  git('config', 'user.email', 'test@example.com'); git('config', 'user.name', 'Test');
+  const dir = path.join(repo, 'openspec/changes', specialName); fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'tasks.md'), 'fixture\n');
+  fs.writeFileSync(path.join(dir, 'acceptance.md'), '# Acceptance\n| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |\n| --- | --- | --- | --- | --- | --- | --- |\n| SCEN-1 | CLI | T-01 | printf ok | yes | PENDING | pending |\n');
+  git('add', '.'); git('commit', '-qm', 'contract');
+  const sha = git('rev-parse', 'HEAD');
+  const f = { base, repo, dir, git, sha };
+  const ev = path.join(base, 'ev.json');
+  assert.equal(execute(f, ev).status, 0);
+
+  fs.writeFileSync(path.join(dir, 'rulings.md'), '- accepted residual risk\n');
+  fs.writeFileSync(path.join(dir, 'review.md'), 'FINAL: pass(agent@sha)\n');
+  git('add', '.'); git('commit', '-qm', 'docs(openspec): rulings and review');
+  assert.equal(invoke(f, 'check', ev).status, 0);
+});

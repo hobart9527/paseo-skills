@@ -196,8 +196,19 @@ function changesIn(cwd) {
   const expanded = cwd === '~' ? os.homedir() : cwd.startsWith('~/') ? path.join(os.homedir(), cwd.slice(2)) : cwd;
   const top = runGit(expanded, ['rev-parse', '--show-toplevel']);
   if (top.error || top.status !== 0) return [];
-  try { return fs.readdirSync(path.join(top.stdout.trim(), 'openspec', 'changes'), { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name); }
-  catch { return []; }
+  const changesRoot = path.join(top.stdout.trim(), 'openspec', 'changes');
+  try {
+    const live = fs.readdirSync(changesRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name !== 'archive')
+      .map((entry) => entry.name);
+    let archived = [];
+    try {
+      archived = fs.readdirSync(path.join(changesRoot, 'archive'), { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name.replace(/^\d{4}-\d{2}-\d{2}-/, ''));
+    } catch { archived = []; }
+    return [...new Set([...live, ...archived])];
+  } catch { return []; }
 }
 function labelledFor(other, id) {
   if (!otherChanges.has(other)) {
@@ -264,7 +275,7 @@ for (const agent of listedAgents) {
   const parts = agent.name.match(/^\[Pipeline\]\s+(\S+)\s+(\S+)(?:\s+.*)?$/);
   const match = parts && WORKER_ROLE_RE.test(parts[1]) && /^[A-Za-z][A-Za-z0-9]*-\d+(?:-a[1-9]\d*)?$/.test(parts[2]) ? parts : null;
   // A round suffix (`R0-r2`, `FINAL-r2`, `RECON`) is display only; it never changes the role.
-  const nonWorker = parts && NON_WORKER_ROLE_RE.test(parts[1]) && /^(R0|FINAL|FULL|RECON)(?:-r[1-9]\d*)?$/.test(parts[2]);
+  const nonWorker = parts && NON_WORKER_ROLE_RE.test(parts[1]) && /^(R0|FINAL|FULL|REVISE|RECON)(?:-r[1-9]\d*)?$/.test(parts[2]);
   if (agent.status === 'closed' && !match) continue;
   const agentRepo = commonDir(agent.cwd);
   if (agentRepo && agentRepo !== repository) continue;

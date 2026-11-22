@@ -631,3 +631,60 @@ test('prepare-task invoked from integration worktree defaults .claude/worktrees 
   assert.ok(out.worktree.startsWith(fs.realpathSync(f.cwd)), `expected primary checkout root, got ${out.worktree}`);
   assert.equal(fs.existsSync(path.join(intWt, '.claude')), false);
 });
+
+test('prepare-task --new-attempt increments -a2/-a3, blocks -a4 at exit 37 without --allow-attempt-over, and worker-check checks infra + drift + merge-base', () => {
+  const f = fixture({ done: false });
+  const telOff = { ...f.localEnv, PIPELINE_TELEMETRY: 'off' };
+  const dir = path.join(f.cwd, 'openspec/changes/chg');
+  const a1 = JSON.parse(run(f.cwd, telOff, ['prepare-task', dir, 'T-01', '--json']).stdout);
+  assert.equal(a1.branch, 'task/chg/T-01');
+  const a2 = JSON.parse(run(f.cwd, telOff, ['prepare-task', dir, 'T-01', '--new-attempt', '--json']).stdout);
+  assert.equal(a2.branch, 'task/chg/T-01-a2');
+  assert.notEqual(a2.worktree, a1.worktree);
+  const a3 = JSON.parse(run(f.cwd, telOff, ['prepare-task', dir, 'T-01', '--new-attempt', '--json']).stdout);
+  assert.equal(a3.branch, 'task/chg/T-01-a3');
+
+  const blocked4 = run(f.cwd, telOff, ['prepare-task', dir, 'T-01', '--new-attempt', '--json']);
+  assert.equal(blocked4.status, 37, blocked4.out);
+  const allowed4 = run(f.cwd, telOff, ['prepare-task', dir, 'T-01', '--new-attempt', '--allow-attempt-over', '--json']);
+  assert.equal(allowed4.status, 0, allowed4.out);
+  assert.equal(JSON.parse(allowed4.stdout).branch, 'task/chg/T-01-a4');
+
+  // worker-check standalone: without integration/ branch uses merge-base(main, HEAD), checks auditTestInfra & main drift
+  const wRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wc-standalone-'));
+  write(wRoot, 'seed/outside.txt', 'root file\n');
+  git(wRoot, 'init', '-q', '-b', 'main');
+  git(wRoot, 'add', '.'); git(wRoot, 'commit', '-qm', 'root seed');
+  write(wRoot, 'openspec/changes/wc/tasks.md', '- [ ] 1.1 T-01 work\n  - Write scope: src,test\n  - Verify with: node --test test/a.test.mjs\n');
+  git(wRoot, 'add', '.'); git(wRoot, 'commit', '-qm', 'contract');
+  git(wRoot, 'switch', '-qc', 'feat/wc-t1');
+  write(wRoot, 'src/a.txt', 'a');
+  write(wRoot, 'test/a.test.mjs', PASSING_TEST);
+  git(wRoot, 'add', '.');
+  git(wRoot, 'commit', '-qm', `impl\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
+
+  const workerCheckScript = fileURLToPath(new URL('../worker-check.mjs', import.meta.url));
+  const runWc = (args = []) => spawnSync(process.execPath, [workerCheckScript, path.join(wRoot, 'openspec/changes/wc'), 'T-01', ...args], {
+    cwd: wRoot,
+    encoding: 'utf8',
+    env: { ...env, PIPELINE_TELEMETRY: 'off' },
+  });
+  assert.equal(runWc().status, 0, 'merge-base(main, HEAD) must ignore earlier root commit seed/outside.txt');
+
+  // test/setup/* triggers auditTestInfra exit 38 unless --allow-test-infra
+  write(wRoot, 'test/setup/helper.mjs', 'export const h = 1;\n');
+  git(wRoot, 'add', 'test/setup/helper.mjs');
+  git(wRoot, 'commit', '-qm', `infra\n\nPipeline-Role: gongbu\nPipeline-Author: ${WORKER}`);
+  assert.equal(runWc().status, 38);
+  assert.equal(runWc(['--allow-test-infra']).status, 0);
+
+  // main drift overlapping task scope fails exit 34
+  git(wRoot, 'switch', '-q', 'main');
+  write(wRoot, 'src/concurrent.txt', 'drift\n');
+  git(wRoot, 'add', 'src/concurrent.txt');
+  git(wRoot, 'commit', '-qm', 'main drift on src');
+  git(wRoot, 'switch', '-q', 'feat/wc-t1');
+  const driftRes = runWc(['--allow-test-infra']);
+  assert.equal(driftRes.status, 34, driftRes.stderr);
+  assert.match(driftRes.stderr, /BASE_DRIFT/);
+});

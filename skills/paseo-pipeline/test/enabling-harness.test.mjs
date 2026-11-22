@@ -255,10 +255,10 @@ test('tool-guard-hook incremental cache stays exact across appends/rewrites and 
 });
 
 test('lib/verify-policy + tier2-verify reject spoofed Verify commands without executing them', (t) => {
-  for (const okCmd of ['node --test test/a.test.js', 'bash test/run-all.sh', 'npm test', 'npx tsc --noEmit', 'node --test test/a.test.js && npm test']) {
+  for (const okCmd of ['node --test test/a.test.js', 'bash test/run-all.sh', 'npm test', 'npm run typecheck', 'npm run test:expense', 'npm run web:test', 'pnpm run web:test', 'npx tsc --noEmit', 'node --test test/a.test.js && npm test']) {
     assert.equal(proveVerifyCommand(okCmd).ok, true, okCmd);
   }
-  for (const badCmd of ['true', 'echo ok || true', 'node -e "process.exit(0)"', 'bash -c "true"', 'eval "npm test"', 'node --test test/a.test.js | tail']) {
+  for (const badCmd of ['true', 'echo ok || true', 'node -e "process.exit(0)"', 'bash -c "true"', 'eval "npm test"', 'node --test test/a.test.js | tail', 'npm run noop', 'npm run', 'pnpm run dev', 'yarn run hello', 'bun run start']) {
     assert.equal(proveVerifyCommand(badCmd).ok, false, badCmd);
   }
 

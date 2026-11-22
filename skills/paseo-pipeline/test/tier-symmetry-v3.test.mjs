@@ -6,7 +6,7 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { assessTierGate, assessStop, takeSnapshot } from '../lib/tier-gate.mjs';
-import { recordAuthorRead } from '../lib/author-guard.mjs';
+import { detectActiveAuthorChange, recordAuthorRead } from '../lib/author-guard.mjs';
 import { recordEvent, summarizeTelemetry, telemetryFile } from '../lib/telemetry.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -112,6 +112,14 @@ test('P0 cp2-merge re-runs Verify after main drift sync and refuses ff-only push
   fs.writeFileSync(path.join(intWt, 'src/a.js'), 'export const helper = () => 1;\n');
   git(intWt, 'add', 'src/a.js');
   git(intWt, 'commit', '-qm', 'int change');
+  const srcSha = git(intWt, 'rev-parse', '--short=7', 'HEAD');
+  fs.writeFileSync(path.join(intWt, 'openspec/changes/c1/tasks.md'), `- [x] 1.1 T-01 core\n  - Write scope: src/a.mjs\n  - Entry: CLI\n  - Verify with: node --test test/a.test.mjs\n  - Scenarios: SCEN-CORE-01\n  - Done: source=${srcSha} review=mechanical\n`);
+  git(intWt, 'add', 'openspec/changes/c1/tasks.md');
+  git(intWt, 'commit', '-qm', 'mark T-01 done');
+  const preSyncTip = git(intWt, 'rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(intWt, 'openspec/changes/c1/review.md'), `FINAL: pass(anchasi-1@${preSyncTip})\n`);
+  git(intWt, 'add', 'openspec/changes/c1/review.md');
+  git(intWt, 'commit', '-qm', 'record FINAL signoff');
 
   // Main drifts by adding a failing requirement check into test/a.test.mjs
   fs.writeFileSync(path.join(root, 'test/a.test.mjs'), "import test from 'node:test'; import assert from 'node:assert/strict'; test('drift break', () => assert.equal(1, 2));\n");
@@ -283,7 +291,7 @@ test('P1 record-review, hydrate, and brief tier2 --task slice relay integrate cl
   const verifyOut = runNode(TIER2_VERIFY, wt, ['main', '--change-dir', chg, '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
   assert.equal(verifyOut.status, 0, verifyOut.stderr + verifyOut.stdout);
   const vData = JSON.parse(verifyOut.stdout);
-  assert.equal(vData.verdict, 'REVIEW_REQUIRED');
+  assert.equal(vData.verdict, 'PASS');
   assert.equal(vData.reviewSignoff?.verdict, 'PASS');
   assert.equal(vData.reviewSignoff?.reviewer, 'anchasi-uuid-999');
   assert.equal(vData.reviewSignoff?.sha, git(wt, 'rev-parse', 'HEAD'));
@@ -457,6 +465,7 @@ test('M3 prepare-author --schema paseo-tier2 --scaffold creates collision-free s
   const specPath = path.join(chg, 'specs', 'billing-ui', 'spec.md');
   const tasksPath = path.join(chg, 'tasks.md');
   assert.match(fs.readFileSync(specPath, 'utf8'), /SCEN-BIUI-05/);
+  assert.match(fs.readFileSync(specPath, 'utf8'), /SCEN-BIUI-06/);
   assert.match(fs.readFileSync(tasksPath, 'utf8'), /SCEN-BIUI-05/);
   assert.match(fs.readFileSync(tasksPath, 'utf8'), /SCEN-BIUI-06/);
 
@@ -486,4 +495,112 @@ test('M3 prepare-author --schema paseo-tier2 --scaffold creates collision-free s
   const reviewPrompt = JSON.parse(reviewBrief.stdout).prompt;
   assert.match(reviewPrompt, /Never use the built-in `Agent` tool/);
   assert.doesNotMatch(reviewPrompt, /\b(?:sonnet|opus|haiku|gpt-[\w.]+|claude-[\w.]+|codex\/)/i);
+});
+
+test('P0-2 tier2-verify handles BLOCKED/INCOMPLETE/HUMAN_ACCEPT and signoffOnlyCommit ancestor tolerance', (t) => {
+  const root = makeRepo(t);
+  const wt = `${root}-signoff`;
+  git(root, 'worktree', 'add', '-q', '-b', 'feat/t2-signoff', wt);
+  t.after(() => fs.rmSync(wt, { recursive: true, force: true }));
+
+  const chg = path.join(wt, 'openspec', 'changes', 'sig-chg');
+  makeTier2Change(wt, chg);
+  fs.mkdirSync(path.join(wt, 'src/auth'), { recursive: true });
+  fs.writeFileSync(path.join(wt, 'src/auth/token.mjs'), 'export const token = () => 1;\n');
+  git(wt, 'add', '.');
+  git(wt, 'commit', '-qm', 'auth change');
+
+  const telFile = path.join(path.dirname(root), 'metrics-signoff.jsonl');
+  // INCOMPLETE leaves REVIEW_REQUIRED
+  assert.equal(runNode(PIPELINE_RUN, wt, ['record-review', '--mode', 'tier2', '--verdict', 'INCOMPLETE', '--reviewer', 'anchasi-1', '--json'], { PIPELINE_TELEMETRY_FILE: telFile }).status, 0);
+  const incRes = runNode(TIER2_VERIFY, wt, ['main', '--change-dir', chg, '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
+  assert.equal(incRes.status, 0);
+  assert.equal(JSON.parse(incRes.stdout).verdict, 'REVIEW_REQUIRED');
+
+  // BLOCKED forces FAIL (exit 1)
+  assert.equal(runNode(PIPELINE_RUN, wt, ['record-review', '--mode', 'tier2', '--verdict', 'BLOCKED', '--reviewer', 'anchasi-1', '--reason', 'missing check', '--json'], { PIPELINE_TELEMETRY_FILE: telFile }).status, 0);
+  const blkRes = runNode(TIER2_VERIFY, wt, ['main', '--change-dir', chg, '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
+  assert.equal(blkRes.status, 1);
+  assert.equal(JSON.parse(blkRes.stdout).verdict, 'FAIL');
+
+  // HUMAN_ACCEPT written to review.md + committed together with rulings.md / evidence/* still satisfies PASS via signoffOnlyCommit
+  assert.equal(runNode(PIPELINE_RUN, wt, ['record-review', '--mode', 'tier2', '--verdict', 'HUMAN_ACCEPT', '--reviewer', 'human', '--change-dir', chg, '--reason', 'accepted', '--json'], { PIPELINE_TELEMETRY_FILE: telFile }).status, 0);
+  fs.writeFileSync(path.join(chg, 'rulings.md'), '- accepted\n');
+  fs.mkdirSync(path.join(chg, 'evidence'), { recursive: true });
+  fs.writeFileSync(path.join(chg, 'evidence', 'note.txt'), 'ok\n');
+  git(wt, 'add', '.');
+  git(wt, 'commit', '-qm', 'commit review, rulings, and evidence');
+
+  const okRes = runNode(TIER2_VERIFY, wt, ['main', '--change-dir', chg, '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
+  assert.equal(okRes.status, 0, okRes.stderr + okRes.stdout);
+  const okJson = JSON.parse(okRes.stdout);
+  assert.equal(okJson.verdict, 'PASS');
+  assert.equal(okJson.reviewSignoff?.verdict, 'HUMAN_ACCEPT');
+});
+
+test('P1-4 & P1-5 author-guard ignores unfilled scaffold tasks.md and cp2-merge enforces Done tasks and FINAL signoff', (t) => {
+  const root = makeRepo(t);
+  const wt = `${root}-ag`;
+  git(root, 'worktree', 'add', '-q', '-b', 'feat/ag-scaffold', wt);
+  t.after(() => fs.rmSync(wt, { recursive: true, force: true }));
+
+  const telFile = path.join(path.dirname(root), 'metrics-cp2.jsonl');
+  const chg = path.join(wt, 'openspec', 'changes', 'scaf-chg');
+  const prep = runNode(PIPELINE_RUN, wt, ['prepare-author', chg, '--schema', 'paseo-tier2', '--scaffold', '--capability', 'pay', '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
+  assert.equal(prep.status, 0, prep.stderr + prep.stdout);
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-scaf-state-'));
+  t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
+  const prevState = process.env.PIPELINE_TIER_GATE_STATE;
+  process.env.PIPELINE_TIER_GATE_STATE = stateDir;
+  try {
+    assert.equal(detectActiveAuthorChange(wt)?.change, 'scaf-chg');
+    const res = recordAuthorRead({ cwd: wt, sessionId: 'ag-scaf-1', command: 'rg val src/' });
+    assert.equal(res.readCount, 1, 'unfilled scaffold tasks.md should keep change in authoring mode');
+    const tasksFile = path.join(chg, 'tasks.md');
+    fs.writeFileSync(
+      tasksFile,
+      fs.readFileSync(tasksFile, 'utf8')
+        .replaceAll('path/to/file.mjs', 'src/a.mjs')
+        .replaceAll('<一句话目标>', 'Pay flow'),
+    );
+    assert.equal(detectActiveAuthorChange(wt), null, 'filled tasks.md closes authoring mode');
+  } finally {
+    if (prevState === undefined) delete process.env.PIPELINE_TIER_GATE_STATE;
+    else process.env.PIPELINE_TIER_GATE_STATE = prevState;
+  }
+
+  // cp2-merge gate checks Done tasks & FINAL signoff
+  const cRoot = makeRepo(t);
+  const cDir = path.join(cRoot, 'openspec/changes/gate-chg');
+  fs.mkdirSync(path.join(cDir, 'specs/core'), { recursive: true });
+  fs.writeFileSync(path.join(cDir, '.openspec.yaml'), 'schema: paseo-pipeline\n');
+  fs.writeFileSync(path.join(cDir, 'specs/core/spec.md'), '### Requirement: R1\nThe system SHALL work.\n#### Scenario: SCEN-G-01 ok\n- **WHEN** x\n- **THEN** y\n');
+  fs.writeFileSync(path.join(cDir, 'tasks.md'), '- [ ] 1.1 T-01 pending\n  - Write scope: src/a.mjs\n  - Verify with: node --test test/a.test.mjs\n  - Scenarios: SCEN-G-01\n');
+  git(cRoot, 'add', '.');
+  git(cRoot, 'commit', '-qm', 'seed cp2');
+  git(cRoot, 'branch', 'integration/gate-chg');
+  const intWt = `${cRoot}-gate-int`;
+  git(cRoot, 'worktree', 'add', '-q', intWt, 'integration/gate-chg');
+  t.after(() => fs.rmSync(intWt, { recursive: true, force: true }));
+
+  const incomplete = runNode(PIPELINE_RUN, cRoot, ['cp2-merge', 'openspec/changes/gate-chg', '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
+  assert.equal(incomplete.status, 3);
+  assert.match(incomplete.stderr, /incomplete tasks|Done before CP-2/);
+
+  const sha = git(intWt, 'rev-parse', '--short=7', 'HEAD');
+  fs.writeFileSync(path.join(intWt, 'openspec/changes/gate-chg/tasks.md'), `- [x] 1.1 T-01 done\n  - Write scope: src/a.mjs\n  - Verify with: node --test test/a.test.mjs\n  - Scenarios: SCEN-G-01\n  - Done: source=${sha} review=mechanical\n`);
+  git(intWt, 'add', 'openspec/changes/gate-chg/tasks.md');
+  git(intWt, 'commit', '-qm', 'done T-01');
+
+  const noFinal = runNode(PIPELINE_RUN, cRoot, ['cp2-merge', 'openspec/changes/gate-chg', '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
+  assert.equal(noFinal.status, 3);
+  assert.match(noFinal.stderr, /missing valid FINAL signoff/);
+
+  const tip = git(intWt, 'rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(intWt, 'openspec/changes/gate-chg/review.md'), `FINAL: blocked(anchasi-1@${tip}) — fix bug\n`);
+  git(intWt, 'add', 'openspec/changes/gate-chg/review.md');
+  git(intWt, 'commit', '-qm', 'final blocked');
+  const blockedFinal = runNode(PIPELINE_RUN, cRoot, ['cp2-merge', 'openspec/changes/gate-chg', '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
+  assert.equal(blockedFinal.status, 3);
+  assert.match(blockedFinal.stderr, /FINAL review is BLOCKED/);
 });

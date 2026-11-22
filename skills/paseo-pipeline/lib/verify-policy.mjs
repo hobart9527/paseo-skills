@@ -60,12 +60,13 @@ const EXIT_NONZERO = /\|\|\s*exit(?:\s+(?:[1-9]|[1-9]\d|1\d\d|2[0-4]\d|25[0-5]))
 const ITERATION_VAR = /^\$\{?([A-Za-z_]\w*)\}?$/;
 const INLINE_CODE = /^(?:node|bun|deno|python[0-9.]*|ruby|perl|php)\b.*(?:^|\s)(?:-e|--eval|--print|-p)(?:\s|=|$)/;
 const ANY_ARGS = new Set(['tsc', 'eslint', 'swc', 'babel', 'jest', 'mocha', 'phpunit', 'rspec', 'php', 'pytest']);
+const RUN_SCRIPT = '(?:(?:[A-Za-z0-9._-]+:)*(?:test|build|lint|check|typecheck|type-check|verify|spec)(?:[:_-][A-Za-z0-9._-]+)*)';
 const RUNS_TESTS = {
   node: /^(?:-\S+\s+)*--test(?:\s|$)/,
-  npm: /^(?:(?:-\S+)\s+)*(?:test|t|run(?:-script)?(?:\s+(?:test|build|lint|check|typecheck))?)(?:\s|$)/,
-  pnpm: /^(?:(?:-\S+)\s+)*(?:test|t|run(?:\s+(?:test|build|lint|check|typecheck))?)(?:\s|$)/,
-  yarn: /^(?:(?:-\S+)\s+)*(?:test|run(?:\s+(?:test|build|lint|check|typecheck))?)(?:\s|$)/,
-  bun: /^(?:(?:-\S+)\s+)*(?:test|run(?:\s+(?:test|build|lint|check|typecheck))?)(?:\s|$)/,
+  npm: new RegExp(`^(?:(?:-\\S+)\\s+)*(?:test|t|run(?:-script)?\\s+${RUN_SCRIPT})(?:\\s|$)`),
+  pnpm: new RegExp(`^(?:(?:-\\S+)\\s+)*(?:test|t|(?:run\\s+)?${RUN_SCRIPT})(?:\\s|$)`),
+  yarn: new RegExp(`^(?:(?:-\\S+)\\s+)*(?:test|(?:run\\s+)?${RUN_SCRIPT})(?:\\s|$)`),
+  bun: new RegExp(`^(?:(?:-\\S+)\\s+)*(?:test|(?:run\\s+)?${RUN_SCRIPT})(?:\\s|$)`),
   deno: /^(?:(?:-\S+)\s+)*test(?:\s|$)/,
   go: /^(?:(?:-\S+)\s+)*test(?:\s|$)/,
   cargo: /^(?:(?:-\S+)\s+)*(?:test|nextest)(?:\s|$)/,

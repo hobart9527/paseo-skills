@@ -4,7 +4,7 @@
 // BEFORE handing back to the main session for merge-task.
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseTasks, isFileWithinScopes, taskErrorsFor, graphErrors } from './lib/tasks.mjs';
+import { parseTasks, isFileWithinScopes, taskErrorsFor, graphErrors, auditTestInfra } from './lib/tasks.mjs';
 import { runGit } from './lib/git.mjs';
 import { WRITER_ROLES } from './lib/roles.mjs';
 import { runVerifyCommand } from './lib/verify-runner.mjs';
@@ -57,16 +57,38 @@ if (taskErrorsFor(parsed.errors, taskId).length) fail(`[worker-check] invalid ta
 
 const integrationRef = `refs/heads/integration/${change}`;
 const hasIntegration = runGit(process.cwd(), ['rev-parse', '--verify', '--quiet', integrationRef]).status === 0;
-const base = hasIntegration
-  ? git(['merge-base', integrationRef, 'HEAD'])
-  : git(['rev-list', '--max-parents=0', 'HEAD']).split('\n')[0];
+const defaultBranch = ['main', 'master'].find(
+  (name) => runGit(process.cwd(), ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`]).status === 0,
+);
+let base = null;
+if (hasIntegration) {
+  base = git(['merge-base', integrationRef, 'HEAD']);
+} else if (defaultBranch) {
+  const mb = runGit(process.cwd(), ['merge-base', defaultBranch, 'HEAD']);
+  if (mb.status === 0 && mb.stdout.trim()) base = mb.stdout.trim();
+}
+if (!base) base = git(['rev-list', '--max-parents=0', 'HEAD']).split('\n')[0];
 const tip = git(['rev-parse', 'HEAD']);
 
 const changedRes = runGit(process.cwd(), ['diff', '--name-only', '-z', '--no-renames', `${base}..${tip}`]);
 const changedFiles = (changedRes.stdout || '').split('\0').filter(Boolean);
+const testInfra = auditTestInfra(changedFiles);
+if (testInfra.length && !parsedArgs.options['allow-test-infra']) {
+  fail(`[worker-check] TEST_ORACLE_TAMPERING: test infrastructure changes require human approval (--allow-test-infra): ${testInfra.join(', ')}`, 38, 'oracle_tampering');
+}
 for (const file of changedFiles) {
   if (!isFileWithinScopes(file, task.scope)) {
     fail(`[worker-check] SCOPE_VIOLATION: ${file} is outside ${taskId} Write scope`, 30, 'scope_violation');
+  }
+}
+if (defaultBranch) {
+  const driftDiff = runGit(process.cwd(), ['diff', '--no-renames', '--name-only', '-z', `${base}...${defaultBranch}`]);
+  if (driftDiff.status === 0) {
+    const mainFiles = (driftDiff.stdout || '').split('\0').filter(Boolean);
+    const clash = mainFiles.filter((file) => isFileWithinScopes(file, task.scope) || changedFiles.includes(file));
+    if (clash.length) {
+      fail(`[worker-check] BASE_DRIFT: ${defaultBranch} advanced on task scope (${clash.join(', ')}); sync base and re-verify`, 34, 'base_drift');
+    }
   }
 }
 
