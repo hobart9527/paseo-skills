@@ -50,6 +50,26 @@ function die(message, code = 2) {
   process.exit(code);
 }
 
+function resolveWithExistingRealpath(targetPath) {
+  let cur = path.resolve(targetPath || '.');
+  const tail = [];
+  while (!fs.existsSync(cur)) {
+    const parent = path.dirname(cur);
+    if (parent === cur) break;
+    tail.unshift(path.basename(cur));
+    cur = parent;
+  }
+  const existingReal = fs.existsSync(cur) ? fs.realpathSync(cur) : cur;
+  const resolved = tail.length ? path.join(existingReal, ...tail) : existingReal;
+  let existingDir = existingReal;
+  try {
+    if (!fs.statSync(existingReal).isDirectory()) existingDir = path.dirname(existingReal);
+  } catch {
+    existingDir = process.cwd();
+  }
+  return { resolved, existingDir };
+}
+
 function changeDirOf(arg) {
   const dir = path.resolve(arg || '.');
   if (!fs.existsSync(path.join(dir, 'tasks.md'))) die(`no tasks.md in ${dir}`, 3);
@@ -764,12 +784,16 @@ if (command === 'acceptance') {
   if (parsed.positional.length !== 1) die('cp2-merge needs <change-dir>');
   const timeout = Number(parsed.options.timeout ?? '600000');
   if (!Number.isSafeInteger(timeout) || timeout < 1) die('--timeout must be a positive integer');
-  const dir = changeDirOf(parsed.positional[0]);
+  const { resolved: dir, existingDir } = resolveWithExistingRealpath(parsed.positional[0]);
   const change = path.basename(dir);
   const baseBranch = parsed.options.base || 'main';
-  const rootRes = runGit(dir, ['rev-parse', '--show-toplevel']);
+  const rootRes = runGit(existingDir, ['rev-parse', '--show-toplevel']);
   if (rootRes.status !== 0) die('not a git repository', 3);
   const root = fs.realpathSync(rootRes.stdout.trim());
+  const relChangeDir = path.relative(root, dir).split(path.sep).join('/');
+  if (!relChangeDir || relChangeDir.startsWith('..') || path.isAbsolute(relChangeDir)) {
+    die(`change directory ${dir} is outside repository ${root}`, 3);
+  }
   const curBranch = runGit(root, ['symbolic-ref', '--short', 'HEAD']).stdout.trim();
   const dirtyPrimary = runGit(root, ['status', '--porcelain=v1', '--untracked-files=all']).stdout.trim();
   if (dirtyPrimary) die(`working tree is not clean (${dirtyPrimary.split('\n').length} entries); commit/stash other session work first`, 3);
@@ -786,8 +810,6 @@ if (command === 'acceptance') {
   }
   const baseShaBefore = runGit(targetBaseWt, ['rev-parse', baseBranch]).stdout.trim();
   const integrationTip = runGit(root, ['rev-parse', integrationBranch]).stdout.trim();
-  const dirTop = fs.realpathSync(rootRes.stdout.trim());
-  const relChangeDir = path.relative(dirTop, dir).split(path.sep).join('/');
   const readBranchChangeFile = (branchRef, fileName) => {
     if (branchRef === integrationBranch && intWorktree) {
       const onDisk = path.join(intWorktree, relChangeDir, fileName);

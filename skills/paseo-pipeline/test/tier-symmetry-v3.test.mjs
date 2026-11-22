@@ -604,3 +604,39 @@ test('P1-4 & P1-5 author-guard ignores unfilled scaffold tasks.md and cp2-merge 
   assert.equal(blockedFinal.status, 3);
   assert.match(blockedFinal.stderr, /FINAL review is BLOCKED/);
 });
+
+test('cp2-merge from main works when change-dir exists only on integration/<change> (real Stage 0-2 flow)', (t) => {
+  const root = makeRepo(t);
+  const intWt = `${root}-int-only`;
+  git(root, 'worktree', 'add', '-q', '-b', 'integration/branch-only', intWt, 'main');
+  t.after(() => fs.rmSync(intWt, { recursive: true, force: true }));
+
+  const telFile = path.join(path.dirname(root), 'metrics-branch-only.jsonl');
+  const intChg = path.join(intWt, 'openspec/changes/branch-only');
+  fs.mkdirSync(path.join(intChg, 'specs/core'), { recursive: true });
+  fs.writeFileSync(path.join(intChg, '.openspec.yaml'), 'schema: paseo-pipeline\n');
+  fs.writeFileSync(path.join(intChg, 'proposal.md'), '## Why\ntest\n\n## What Changes\n- add\n');
+  fs.writeFileSync(path.join(intChg, 'specs/core/spec.md'), '### Requirement: R1\nThe system SHALL work.\n#### Scenario: SCEN-BO-01 ok\n- **WHEN** x\n- **THEN** y\n');
+  fs.writeFileSync(path.join(intWt, 'src/a.mjs'), 'export const val = () => 9;\n');
+  git(intWt, 'add', 'src/a.mjs');
+  git(intWt, 'commit', '-qm', 'impl');
+  const sha = git(intWt, 'rev-parse', '--short=7', 'HEAD');
+  fs.writeFileSync(path.join(intChg, 'tasks.md'), `- [x] 1.1 T-01 ok\n  - Write scope: src/a.mjs\n  - Verify with: node --test test/a.test.mjs\n  - Scenarios: SCEN-BO-01\n  - Done: source=${sha} review=mechanical\n`);
+  git(intWt, 'add', 'openspec/changes/branch-only');
+  git(intWt, 'commit', '-qm', 'contract and tasks done');
+
+  // main does NOT have openspec/changes/branch-only yet
+  assert.equal(fs.existsSync(path.join(root, 'openspec/changes/branch-only')), false);
+  const noFinal = runNode(PIPELINE_RUN, root, ['cp2-merge', 'openspec/changes/branch-only', '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
+  assert.equal(noFinal.status, 3);
+  assert.match(noFinal.stderr, /missing valid FINAL signoff/);
+
+  const reviewedTip = git(intWt, 'rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(intChg, 'review.md'), `FINAL: pass(anchasi-1@${reviewedTip})\n`);
+  git(intWt, 'add', 'openspec/changes/branch-only/review.md');
+  git(intWt, 'commit', '-qm', 'final signoff');
+
+  const okCp2 = runNode(PIPELINE_RUN, root, ['cp2-merge', 'openspec/changes/branch-only', '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
+  assert.equal(okCp2.status, 0, okCp2.stderr + okCp2.stdout);
+  assert.equal(fs.existsSync(path.join(root, 'openspec/changes/branch-only/tasks.md')), true);
+});
