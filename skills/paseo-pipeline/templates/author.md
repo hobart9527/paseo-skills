@@ -20,16 +20,17 @@ Mode: `FULL | REVISE`. Change: `<change>`. Output: `openspec/changes/<change>/`.
 
 ## Deliverables and decisions
 
-- Return assumptions with verification methods. Separate material product choices from ordinary ones: state options/consequences for the human. Record unresolved choices as `OPEN-DECISION`; open hard decision: commit and return `BLOCKED (decision)` with options before specs/tasks.
-- Keep behavior requirements observable. Avoid invented behavior, ownership or dependencies. For shared cross-layer types across concurrent tasks, prefer a Wave 0 `Kind: skeleton` typed stub checked by the compiler rather than hand-copying TypeScript interfaces into Markdown.
+- Return assumptions with verification methods; mark unverified external/prod premises `[ASSUMPTION]` and surface material ones in `OPEN-DECISION`. Separate material product choices from ordinary ones: state options, consequences, and the strongest counter-argument against the recommended pick. Record unresolved choices as `OPEN-DECISION`; open hard decision: commit and return `BLOCKED (decision)` with options before specs/tasks.
+- Keep behavior requirements observable with concrete input/output and failure examples. Avoid invented behavior, ownership or dependencies. For shared cross-layer types across concurrent tasks, prefer a Wave 0 `Kind: skeleton` typed stub checked by the compiler rather than hand-copying TypeScript interfaces into Markdown.
 
-## Three checks before the structural check
+## Four checks before the structural check
 
 Read baseline only for rules (`rg`, narrow windows, `path:line`) absent from `baseline-facts.md`:
 
 1. **Reach** — each SCEN names `Entry` and a `Verify with:` in `tasks.md` hitting that real entry (fresh-worktree runnable or note dep gap).
 2. **Shape** — cite real baseline field/route/enum/DB shapes (`CHECK`/migration); add a task or `OPEN-DECISION` for missing fields.
 3. **Removal** — every deletion states the gate it carried and its new owner.
+4. **Soundness** — core invariants, non-goals, failure/rollback cases and concrete examples are stated, with no hidden external `[ASSUMPTION]`.
 
 ## DAG draft and route checks
 

@@ -32,7 +32,8 @@
 
 <!-- Only facts that support a changed rule. Write each code-reading finding here
      (or beside the rule in specs/design) AS FOUND and commit: `path:line` plus one
-     line of consequence. A finding that exists only in thinking does not count.
+     line of consequence. Mark unverified external/prod premises as [ASSUMPTION] and
+     escalate to OPEN-DECISION if material. A finding that exists only in thinking does not count.
      No survey, no alignment tables. -->
 - `<path:line>`: <consequence for the changed rule>
 
@@ -40,5 +41,5 @@
 
 <!-- Only for a material product choice the inputs do not settle. Omit if none.
      An open hard decision stops authoring per author.md: return `BLOCKED (decision)` with options. -->
-- **OD-<n> <title>**: options <A | B>; consequences <of each>; Class: money | auth | external-write | product; Status: open
+- **OD-<n> <title>**: options <A | B>; consequences & strongest counter-argument against recommended <...>; Class: money | auth | external-write | product; Status: open
 <!-- A user decision replaces `Status: open` with `Decided: <user words, date>`. -->

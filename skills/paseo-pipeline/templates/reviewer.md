@@ -10,11 +10,12 @@ Build bidirectional traceability: every confirmed requirement has a SCEN, and ev
 
 ## R0 — frozen contract
 
-Review Proposal, Specs, Design (when present), Tasks and Acceptance as one package before CP-1 on three checks, nothing else; a blocker names its check. Structural validity and scope conflicts are `freeze-check --structural`'s output — do not re-verify them.
+Review Proposal, Specs, Design (when present), Tasks and Acceptance as one package before CP-1 on four checks, nothing else; a blocker names its check. Structural validity and scope conflicts are `freeze-check --structural`'s output — do not re-verify them.
 
 1. **Reach**: each SCEN's Entry is owned by a task and its Verify runs that real entry, not a fixture or isolated module; state how wrong/unwired behavior fails. Missing sibling file needs a dependency.
 2. **Shape**: each claimed field, route, enum and payload is cited from baseline with its real shape and agrees with confirmed decisions supplied to the author. Shared concurrent surfaces have one reachable frozen contract.
 3. **Removal**: a removal dropping a gate (submit blocking, validation, lease, ledger) names where that gate goes.
+4. **Soundness**: challenge concrete business invariants (money/auth/idempotency/data loss), unverified external `[ASSUMPTION]`s missing `OPEN-DECISION`, absent failure/rollback semantics on risky surfaces, or clear over-engineering; blockers need a concrete counterexample (no style nits or scope creep).
 
 Review pinned commit and approved external snapshots only; stop on missing or changed inputs. Do not run the full suite: at most one narrow command per package. Baseline exit codes come from the author's `## Baseline`; the reviewer reads that record and does not rerun it. Source-text assertions prove text, not behavior.
 

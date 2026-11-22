@@ -94,3 +94,12 @@ test('handoff Red commits are replayable and heartbeat avoids step crons', () =>
   assert.ok(!brief.includes('One commit per slice.'), 'Tier 2 brief stale one-commit rule');
   has(skill, ['create_heartbeat', 'never `*/30`'], 'SKILL.md');
 });
+
+test('pre-freeze templates capture invariants, assumptions, concrete examples, counter-arguments and R0 soundness', () => {
+  has(read('templates/recon.md'), ['[ASSUMPTION]', 'Existing Invariants'], 'recon.md');
+  has(read('templates/author.md'), ['**Soundness**', '[ASSUMPTION]', 'strongest counter-argument'], 'author.md');
+  has(read('openspec-schema/templates/proposal.md'), ['[ASSUMPTION]', 'strongest counter-argument'], 'proposal.md');
+  has(read('openspec-schema/templates/spec.md'), ['Invariants & Non-Goals', 'concrete business inputs'], 'tier3 spec.md');
+  has(read('openspec-schema-tier2/templates/spec.md'), ['Invariants & Non-Goals', 'concrete business inputs'], 'tier2 spec.md');
+  has(skill, ['half-page CP-1 decision card'], 'SKILL.md');
+});

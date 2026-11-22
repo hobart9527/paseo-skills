@@ -68,7 +68,7 @@ Use 3 isolated stages (Stage 0 script → Stage 1 read-only facts → Stage 2 cl
 2. Dispatch `hanlin` (`brief.mjs author`) with workspace, baseline SHA, `PIPELINE_HOME`, structural commands, constants, confirmed decisions, rough DAG, and a one-shot 20–25m `create_heartbeat` backstop (delete on return). Author commits `proposal.md` rule-list first, pure-behavior `specs/` + `--stage specs` (no full suite pre-spec), then `tasks.md` (`Verify with:`, `Entry:`, `Required:`) + `acceptance sync` + full `--structural`. Stop exhausted authors cleanly on stall and reconcile author branch `git log` once instead of polling.
 3. Route `handoff` qualifies with author `COMPLETE`, structural exit 0, and matching SHA; run `/tier2-handoff` and `/paseo-handoff`.
 4. Resolve material human choices. Dispatch independent `anchasi` (`brief.mjs r0`, never the author or Proposal contributor) for read-only R0 (`[Pipeline] anchasi R0`; legacy `neon R0`/`hanlin R0` signers remain valid); reconcile HEAD, tracked diff and untracked files. Maximum two package rounds (full then delta); unresolved blockers go to human risk acceptance or termination.
-5. Present contract, findings, DAG/scopes/Verify/acceptance and route. Human confirms CP-1 for exact contract commit; freeze only after that. R0 sign-off is `R0: pass(<reviewer-uuid>@<sha>)` or recorded `R0: human-accept(@<sha>)`.
+5. Present a half-page CP-1 decision card (verified facts vs `[ASSUMPTION]`s, invariants/non-goals, concrete examples, R0 findings, DAG/scopes/Verify/acceptance, route). Human confirms CP-1 for exact contract commit; freeze only after that. R0 sign-off is `R0: pass(<reviewer-uuid>@<sha>)` or recorded `R0: human-accept(@<sha>)`.
 
 ## Start and execute after CP-1
 
