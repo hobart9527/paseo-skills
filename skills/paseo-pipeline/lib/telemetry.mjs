@@ -9,6 +9,29 @@ const DAY_MS = 86_400_000;
 const STRING_KEYS = ['verdict', 'action', 'reasonCode', 'tier', 'role'];
 const NUM_KEYS = ['exit', 'durationMs', 'count', 'unprovableCount'];
 
+export const MONITORED_RULES = [
+  'sanitize_paseo',
+  'sanitize_workspace',
+  'paseo_cli_wait',
+  'worktree_cd_primary',
+  'repeated_failure',
+  'bare_provider',
+  'settings_mismatch',
+  'missing_pipeline_label',
+  'file_limit',
+  'scope_cross',
+  'large_file',
+  'test_blast',
+  'churn',
+  'zero_write_stall',
+  'risk_sentinel',
+  'author_thrash_warn',
+  'author_thrash_stop',
+  'author_compact_empty_specs',
+  'builtin_agent_review',
+  'recon_stall',
+];
+
 export function telemetryFile() {
   return process.env.PIPELINE_TELEMETRY_FILE || path.join(paseoHome(), 'harness-metrics.jsonl');
 }
@@ -39,6 +62,8 @@ function sanitizeFields(fields) {
 export function recordEvent(event, fields = {}, { file = null } = {}) {
   try {
     if (process.env.PIPELINE_TELEMETRY === 'off') return false;
+    // Prevent `node --test` invocations from polluting the real global metrics file unless isolated.
+    if (!file && !process.env.PIPELINE_TELEMETRY_FILE && process.env.NODE_TEST_CONTEXT) return false;
     const target = file || telemetryFile();
     const record = {
       ts: Date.now(),
@@ -63,6 +88,10 @@ export function recordEvent(event, fields = {}, { file = null } = {}) {
   }
 }
 
+function rate(num, den) {
+  return den > 0 ? Number(((num / den) * 100).toFixed(1)) : null;
+}
+
 export function summarizeTelemetry({ days = 7, file = null } = {}) {
   const parsedDays = Number(days);
   const windowDays = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 7;
@@ -79,6 +108,19 @@ export function summarizeTelemetry({ days = 7, file = null } = {}) {
     workerCheck: { total: 0, pass: 0, fail: 0 },
     stopBlocks: { total: 0, byReason: {} },
     authorGuard: { warn: 0, stop: 0, compactEmptySpecs: 0 },
+    tierWrite: { ask: 0, deny: 0, byReason: {} },
+    freezeCheck: { total: 0, pipeline: 0, handoff: 0, failed: 0 },
+    mergeTask: { total: 0, pass: 0, fail: 0 },
+    cp2Merge: { total: 0, pass: 0, fail: 0, driftSynced: 0 },
+    reviews: { total: 0, pass: 0, blocked: 0, incomplete: 0, humanAccept: 0 },
+    northStar: {
+      tier2PassRate: null,
+      workerFirstPassRate: null,
+      mergePassRate: null,
+      tier3HandoffRate: null,
+      reviewBlockerRate: null,
+    },
+    pruneCandidates: [],
     topReasonCodes: [],
   };
 
@@ -90,6 +132,7 @@ export function summarizeTelemetry({ days = 7, file = null } = {}) {
   }
 
   const reasonCounts = new Map();
+  let freezeFullTotal = 0;
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
     let entry;
@@ -127,7 +170,50 @@ export function summarizeTelemetry({ days = 7, file = null } = {}) {
       if (code === 'author_thrash_warn') summary.authorGuard.warn += 1;
       else if (code === 'author_thrash_stop') summary.authorGuard.stop += 1;
       else if (code === 'author_compact_empty_specs') summary.authorGuard.compactEmptySpecs += 1;
+    } else if (ev === 'tier_write') {
+      if (entry.action === 'ask') summary.tierWrite.ask += 1;
+      else if (entry.action === 'deny') summary.tierWrite.deny += 1;
+      const code = entry.reasonCode || 'unknown';
+      summary.tierWrite.byReason[code] = (summary.tierWrite.byReason[code] || 0) + 1;
+    } else if (ev === 'freeze_check') {
+      summary.freezeCheck.total += 1;
+      if (entry.verdict === 'pipeline' || entry.verdict === 'handoff') {
+        freezeFullTotal += 1;
+        if (entry.verdict === 'pipeline') summary.freezeCheck.pipeline += 1;
+        else summary.freezeCheck.handoff += 1;
+      }
+      if (entry.ok === false) summary.freezeCheck.failed += 1;
+    } else if (ev === 'merge_task') {
+      summary.mergeTask.total += 1;
+      if (entry.ok === true) summary.mergeTask.pass += 1;
+      else summary.mergeTask.fail += 1;
+    } else if (ev === 'cp2_merge') {
+      summary.cp2Merge.total += 1;
+      if (entry.ok === true) {
+        summary.cp2Merge.pass += 1;
+        if (entry.verdict === 'drift_synced') summary.cp2Merge.driftSynced += 1;
+      } else {
+        summary.cp2Merge.fail += 1;
+      }
+    } else if (ev === 'review_verdict') {
+      summary.reviews.total += 1;
+      if (entry.verdict === 'pass') summary.reviews.pass += 1;
+      else if (entry.verdict === 'blocked') summary.reviews.blocked += 1;
+      else if (entry.verdict === 'incomplete') summary.reviews.incomplete += 1;
+      else if (entry.verdict === 'human_accept') summary.reviews.humanAccept += 1;
     }
+  }
+
+  summary.northStar = {
+    tier2PassRate: rate(summary.verify.pass + summary.verify.reviewRequired, summary.verify.total),
+    workerFirstPassRate: rate(summary.workerCheck.pass, summary.workerCheck.total),
+    mergePassRate: rate(summary.mergeTask.pass, summary.mergeTask.total),
+    tier3HandoffRate: rate(summary.freezeCheck.handoff, freezeFullTotal),
+    reviewBlockerRate: rate(summary.reviews.blocked, summary.reviews.total),
+  };
+
+  if (windowDays >= 30 && summary.totalEvents > 0) {
+    summary.pruneCandidates = MONITORED_RULES.filter((code) => !reasonCounts.has(code));
   }
 
   summary.topReasonCodes = [...reasonCounts.entries()]

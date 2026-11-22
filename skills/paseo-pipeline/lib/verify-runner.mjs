@@ -12,8 +12,11 @@ export function worktreeFingerprint(cwd) {
 
 export function runShell(command, { cwd = process.cwd(), timeout = 120_000, capture = true, streamToStdout = false, maxBytes = 1024 * 1024 } = {}) {
   return new Promise((resolve) => {
+    const childEnv = { ...process.env };
+    delete childEnv.NODE_TEST_CONTEXT;
     const child = spawn('/bin/bash', ['-c', `set -o pipefail; ${command}`], {
       cwd,
+      env: childEnv,
       detached: true,
       stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
     });

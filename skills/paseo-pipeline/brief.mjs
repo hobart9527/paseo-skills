@@ -84,7 +84,7 @@ let tasksMarkdown = null;
 try { tasksMarkdown = fs.readFileSync(tasksFile, 'utf8'); } catch { tasksMarkdown = null; }
 
 const integrationBranch = `integration/${effectiveChange}`;
-const taskBranch = taskId ? `task/${effectiveChange}/${taskId}` : null;
+const taskBranch = taskId && role !== 'tier2' ? `task/${effectiveChange}/${taskId}` : null;
 
 function extraFields(markdown) {
   const out = new Map();
@@ -270,7 +270,27 @@ function substitute(text) {
 }
 let prompt = substitute(template);
 
-if (['author', 'revise'].includes(role)) {
+function readHandoffProgress(repoDir) {
+  if (!isGit) return null;
+  const gitDirRaw = git(['rev-parse', '--git-dir'], repoDir);
+  if (!gitDirRaw) return null;
+  const gitDir = path.isAbsolute(gitDirRaw) ? gitDirRaw : path.resolve(repoDir, gitDirRaw);
+  const progressPath = path.join(gitDir, 'handoff-progress.md');
+  if (!fs.existsSync(progressPath)) return null;
+  try {
+    let text = fs.readFileSync(progressPath, 'utf8').trim();
+    if (!text) return null;
+    const MAX_PROGRESS_BYTES = 4096;
+    if (Buffer.byteLength(text, 'utf8') > MAX_PROGRESS_BYTES) {
+      text = `${text.slice(0, 3800).trimEnd()}\n... [truncated at 4KB]`;
+    }
+    return text;
+  } catch {
+    return null;
+  }
+}
+
+if (['author', 'revise', 'tier2'].includes(role)) {
   const primaryRoot = isGit ? primaryWorktree(repo) : null;
   const localFacts = path.join(changeDir, 'baseline-facts.md');
   const primaryFacts = primaryRoot && path.resolve(primaryRoot) !== path.resolve(repo)
@@ -369,12 +389,44 @@ if (['reviewer', 'final', 'tier2-review', 'r0'].includes(role) && !task) {
   }
 }
 
-if (role === 'tier2' && parsed.tasks.length) {
-  const lines = ['', '## Derived Slices (from tasks.md)'];
-  parsed.tasks.forEach((item, idx) => {
-    lines.push(`S${idx + 1} (${item.id}): ${item.scenarios.join(',') || 'R'} | ${item.scope.join(', ')} | ${item.verify}`);
-  });
-  prompt = `${prompt.trimEnd()}\n${lines.join('\n')}\n`;
+if (role === 'tier2') {
+  if (task) {
+    const extrasForTask = extras.get(task.id) || {};
+    const lines = ['', '## Active Tier 2 Slice (from tasks.md)'];
+    lines.push(`- Slice Task: ${task.id} — ${task.title}`);
+    lines.push(`- Base: ${base || '<base>'}`);
+    lines.push(`- Write scope: ${task.scope.join(', ')}`);
+    if (extrasForTask.entry || task.entry) lines.push(`- Entry: ${task.entry || extrasForTask.entry}`);
+    if (extrasForTask.reads) lines.push(`- Reads: ${extrasForTask.reads}`);
+    if (extrasForTask.est) lines.push(`- Est: ${extrasForTask.est}`);
+    if (extrasForTask['risk-surface']) lines.push(`- Risk-surface: ${extrasForTask['risk-surface']}`);
+    lines.push(`- Verify with: ${task.verify || '(see spec **Verify:**)'}`);
+    lines.push(`- Scenarios: ${task.scenarios.join(', ') || 'none'}`);
+    const adversarial = checklistForSurfaces(extrasForTask['risk-surface']);
+    if (adversarial.length) {
+      lines.push('', `## Adversarial cases (required, Risk-surface: ${extrasForTask['risk-surface']})`);
+      for (const item of adversarial) lines.push(`- [ ] ${item}`);
+    }
+    const jit = compileTaskJitContext();
+    if (jit) lines.push('', jit.trimEnd());
+    if (parsed.tasks.length) {
+      lines.push('', '## Slice Progress (from tasks.md)');
+      parsed.tasks.forEach((item, idx) => {
+        lines.push(`- [${item.checked ? 'x' : ' '}] S${idx + 1} (${item.id}): ${item.title}`);
+      });
+    }
+    prompt = `${prompt.trimEnd()}\n${lines.join('\n')}\n`;
+  } else if (parsed.tasks.length) {
+    const lines = ['', '## Derived Slices (from tasks.md)'];
+    parsed.tasks.forEach((item, idx) => {
+      lines.push(`S${idx + 1} (${item.id}): ${item.scenarios.join(',') || 'R'} | ${item.scope.join(', ')} | ${item.verify}`);
+    });
+    prompt = `${prompt.trimEnd()}\n${lines.join('\n')}\n`;
+  }
+  const progress = readHandoffProgress(repo);
+  if (progress) {
+    prompt = `${prompt.trimEnd()}\n\n## Prior Progress (handoff-progress.md)\n${progress}\n`;
+  }
 }
 
 if (/(?<!\.)\b(?:claude|gpt|codex|anthropic|openai|gemini|opus|sonnet|haiku)[-/](?!CLAUDE\.md\b)[\w.-]+/i.test(prompt)) {

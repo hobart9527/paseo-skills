@@ -1,0 +1,30 @@
+name: paseo-tier2
+version: 1
+description: Tier 2 progressive OpenSpec contract - pure SCEN specs + serial tasks (zero-rewrite scalable to paseo-pipeline)
+artifacts:
+  - id: specs
+    generates: "specs/**/*.md"
+    description: Detailed observable specifications for the change
+    template: spec.md
+    instruction: |
+      Specify observable behavior, inputs, outputs, errors, external constraints and testable scenarios; avoid implementation details. Executable `Verify with:` commands belong in `tasks.md` (single source of truth; legacy `- **Verify:**` lines remain supported).
+      Create one spec per capability (`specs/<capability>/spec.md`). Use delta headings `ADDED`, `MODIFIED`, `REMOVED`, or `RENAMED Requirements` for existing capabilities, or `## Purpose` (50+ characters) + `## ADDED Requirements` for new capabilities.
+      Every requirement uses `### Requirement: <name>` with SHALL/MUST language and at least one `#### Scenario: SCEN-<CAP>-NN <title>` in WHEN/THEN form.
+      Declare each SCEN id once and keep ids collision-free across `openspec/specs/` and active `openspec/changes/` (baseline reuse belongs under MODIFIED/REMOVED). Cite supporting baseline facts as `path:line` beside the rule.
+    requires: []
+
+  - id: tasks
+    generates: tasks.md
+    description: Serial implementation checklist and single source of truth for Entry and Verify with
+    template: tasks.md
+    instruction: |
+      Follow `lib/tasks.mjs` syntax exactly (`- [ ] 1.1 T-01 <goal>`, `Write scope:`, `Entry:`, `Verify with:`, `Scenarios: SCEN-...`). Keep Tier 2 tasks serial (`Depends on: none` or a linear chain; omit concurrent multi-branch DAGs unless escalating to `/paseo-pipeline`).
+      Claim every declared SCEN at least once and never claim undeclared SCEN ids. Each `Verify with:` command must be provable and actually exercise the claimed behavior.
+    requires:
+      - specs
+
+apply:
+  requires: [tasks]
+  tracks: tasks.md
+  instruction: |
+    Implement serial tasks inside a linked worktree (`EnterWorktree` or delegated Paseo worktree). Mark completed tasks `[x]` in `tasks.md`, and pass `node "$PIPELINE_HOME"/pipeline-run.mjs tier2-verify <base> --change-dir openspec/changes/<name>` before merging via `/ship`.

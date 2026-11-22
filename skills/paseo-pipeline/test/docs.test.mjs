@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -187,10 +188,52 @@ test('tier2-handoff wraps paseo-handoff with the brief and pre-dispatch check', 
   assert.ok(wrapper.length < 3000, `tier2-handoff is ${wrapper.length} chars`);
 });
 
-test('ship skill exits EnterWorktree before main-dir ops, handles 403 local fallback, and respects accepted BLOCKED', () => {
+test('ship skill exits EnterWorktree before main-dir ops, handles 403 local fallback, archives openspec, and respects accepted BLOCKED', () => {
   const ship = fs.readFileSync(path.join(dir, '..', 'ship', 'SKILL.md'), 'utf8');
-  for (const token of ['ExitWorktree', 'action: "keep"', 'HTTP 403', 'unaccepted', 'do NOT push or deploy an unmerged']) {
+  for (const token of ['ExitWorktree', 'action: "keep"', 'HTTP 403', 'unaccepted', 'do NOT push or deploy an unmerged', 'openspec archive']) {
     assert.ok(ship.includes(token), `ship missing ${token}`);
   }
   assert.doesNotMatch(ship, /Run every merge step as `git -C <main-dir>`; stay in the current checkout/);
+});
+
+test('paseo-tier2 schema exists with specs -> tasks and zero proposal dependency', () => {
+  exists('openspec-schema-tier2/schema.yaml');
+  exists('openspec-schema-tier2/templates/spec.md');
+  exists('openspec-schema-tier2/templates/tasks.md');
+  const schema = read('openspec-schema-tier2/schema.yaml');
+  assert.match(schema, /^name: paseo-tier2$/m);
+  assert.doesNotMatch(schema, /^  - id: proposal$/m);
+  assert.match(read('../../docs/tier2-contract.md'), /schema: paseo-tier2/);
+});
+
+test('ship triggers tier2-verify generically, no active prompt teaches git -C across checkouts, and CLAUDE.md stays slim', () => {
+  const ship = fs.readFileSync(path.join(dir, '..', 'ship', 'SKILL.md'), 'utf8');
+  assert.doesNotMatch(ship, /Source tree has `docs\/tier2-contract\.md`/);
+  assert.match(ship, /openspec\/changes\/|exceeds Tier 1/);
+  assert.match(ship, /800-line/);
+  assert.match(ship, />5`? test files/);
+  assert.match(ship, /tier2-verify/);
+
+  for (const rel of ['SKILL.md', 'templates/worker.md', '../../docs/tier2-handoff-brief.md', '../../docs/tier2-reviewer-brief.md']) {
+    const content = read(rel);
+    assert.doesNotMatch(content, /`git -C <(?!other-checkout>)(?:abs-path|path)>[^`]*`/, `${rel} still prescribes git -C across checkouts`);
+    assert.doesNotMatch(content, /use relative paths or `git -C <abs-path>` only/, `${rel} still allows git -C`);
+  }
+
+  const handoff = fs.readFileSync(path.join(dir, '../../docs/tier2-handoff-brief.md'), 'utf8');
+  const reviewerBrief = fs.readFileSync(path.join(dir, '../../docs/tier2-reviewer-brief.md'), 'utf8');
+  const contractDoc = fs.readFileSync(path.join(dir, '../../docs/tier2-contract.md'), 'utf8');
+  assert.match(reviewerBrief, /Never use the built-in `Agent` tool for independent review/);
+  assert.match(handoff, />=2 compactions or cross-module rework/);
+  assert.match(contractDoc, /--scaffold/);
+
+  const claudeMd = path.join(os.homedir(), '.claude', 'CLAUDE.md');
+  if (fs.existsSync(claudeMd)) {
+    const claudeText = fs.readFileSync(claudeMd, 'utf8');
+    const bytes = fs.statSync(claudeMd).size;
+    assert.ok(bytes <= 5800, `CLAUDE.md bloated to ${bytes} bytes (>5800)`);
+    assert.match(claudeText, /and ask again/);
+    assert.match(claudeText, /a passing deploy script is not health/);
+    assert.match(claudeText, /Never use built-in Agent tool for independent review/);
+  }
 });

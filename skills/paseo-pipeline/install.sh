@@ -17,10 +17,21 @@ while [ "$#" -gt 0 ]; do
   esac; shift
 done
 BLOCK="# >>> paseo-pipeline >>>\nexport PIPELINE_HOME=\"$PIPELINE_HOME\"\n# <<< paseo-pipeline <<<"
-SCHEMA_DIR="${XDG_DATA_HOME:-${HOME:-}/.local/share}/openspec/schemas/paseo-pipeline"
-SCHEMA_SRC="$PIPELINE_HOME/openspec-schema"
-schema_current() {
-  [ -f "$SCHEMA_DIR/schema.yaml" ] && diff -rq "$SCHEMA_SRC" "$SCHEMA_DIR" >/dev/null 2>&1
+SCHEMAS_ROOT="${XDG_DATA_HOME:-${HOME:-}/.local/share}/openspec/schemas"
+SCHEMA_PAIRS=(
+  "paseo-pipeline:$PIPELINE_HOME/openspec-schema"
+  "paseo-tier2:$PIPELINE_HOME/openspec-schema-tier2"
+)
+schema_current_pair() {
+  local name="${1%%:*}" src="${1#*:}"
+  local dir="$SCHEMAS_ROOT/$name"
+  [ -f "$dir/schema.yaml" ] && diff -rq "$src" "$dir" >/dev/null 2>&1
+}
+schemas_current() {
+  local pair
+  for pair in "${SCHEMA_PAIRS[@]}"; do
+    schema_current_pair "$pair" || return 1
+  done
 }
 # Hooks fail open, so a broken one is silent. Feed each a probe payload and require the expected reaction.
 selftest() {
@@ -35,6 +46,11 @@ selftest() {
   # A placeholder host id is stripped (the call proceeds on the calling daemon), never denied.
   printf '%s' "$out" | grep -q '"permissionDecision":"allow"' || return 1
   printf '%s' "$out" | grep -q '"updatedInput":{}' || return 1
+  local guard_state
+  guard_state="$(mktemp -d)"
+  out="$(printf '%s' '{"tool_name":"Agent","tool_input":{"description":"Tier 2 independent review","prompt":"You are an independent reviewer. Output PASS or BLOCKED."}}' | PIPELINE_TELEMETRY=off PIPELINE_TIER_GATE_STATE="$guard_state" node "$PIPELINE_HOME/hooks/tool-guard-hook.mjs" 2>/dev/null)" || { rm -rf "$guard_state"; return 1; }
+  rm -rf "$guard_state"
+  printf '%s' "$out" | grep -q '"permissionDecision":"deny"' || return 1
   write_gate_probe
 }
 # Probe the write gate in a throwaway primary checkout: first 3 distinct source files allow,
@@ -54,7 +70,7 @@ write_gate_probe() {
 }
 if [ "$MODE" = check ]; then
   SETTINGS="${HOME:-}/.claude/settings.json"
-  schema_current || exit 1
+  schemas_current || exit 1
   grep -q '^# >>> paseo-pipeline >>>' "$ZSHENV" \
     && grep -Fq "export PIPELINE_HOME=\"$PIPELINE_HOME\"" "$ZSHENV" \
     && grep -Fq "node $PIPELINE_HOME/hooks/tier-write-hook.mjs" "$SETTINGS" \
@@ -66,16 +82,21 @@ if [ "$MODE" = check ]; then
     && exit 0
   exit 1
 fi
-if [ -e "$SCHEMA_DIR" ] || [ -L "$SCHEMA_DIR" ]; then
-  if ! schema_current; then
-    echo "Stale or conflicting OpenSpec schema: $SCHEMA_DIR" >&2
-    echo "Expected match for: $SCHEMA_SRC" >&2
-    exit 1
+for pair in "${SCHEMA_PAIRS[@]}"; do
+  name="${pair%%:*}"
+  src="${pair#*:}"
+  dir="$SCHEMAS_ROOT/$name"
+  if [ -e "$dir" ] || [ -L "$dir" ]; then
+    if ! schema_current_pair "$pair"; then
+      echo "Stale or conflicting OpenSpec schema: $dir" >&2
+      echo "Expected match for: $src" >&2
+      exit 1
+    fi
+  elif [ "$MODE" != dry ]; then
+    mkdir -p "$SCHEMAS_ROOT"
+    ln -s "$src" "$dir"
   fi
-elif [ "$MODE" != dry ]; then
-  mkdir -p "$(dirname "$SCHEMA_DIR")"
-  ln -s "$SCHEMA_SRC" "$SCHEMA_DIR"
-fi
+done
 if ! grep -q '^# >>> paseo-pipeline >>>' "$ZSHENV"; then
   [ "$MODE" = dry ] || printf '%b\n' "$BLOCK" >> "$ZSHENV"
 fi
@@ -85,7 +106,7 @@ node "$PIPELINE_HOME/hooks/tier-reminder-hook.mjs" --install-help
 echo "Tier write hook command (PreToolUse, matcher Write|Edit|MultiEdit|NotebookEdit):"
 printf '%s\n' "node $PIPELINE_HOME/hooks/tier-write-hook.mjs"
 echo "Structured writes in primary checkouts enforce Tier 1 file/scope limits; Bash writes are checked at Stop. Hook failures and unsupported inputs fail open."
-echo "Tool guard hook command (PreToolUse, matcher Bash|mcp__.*):"
+echo "Tool guard hook command (PreToolUse, matcher Bash|Agent|mcp__.*):"
 printf '%s\n' "node $PIPELINE_HOME/hooks/tool-guard-hook.mjs"
 echo "Tier session hook command (SessionStart, matcher startup|resume|compact|clear):"
 printf '%s\n' "node $PIPELINE_HOME/hooks/tier-session-hook.mjs"

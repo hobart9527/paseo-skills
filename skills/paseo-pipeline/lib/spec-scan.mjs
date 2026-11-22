@@ -175,6 +175,84 @@ export function classifyScenCollisions({ declared, declaredSection, declaredTitl
   }
   return { blocking, advisories };
 }
+
+/**
+ * Analyze `loadSpecTree()` output once for both `freeze-check` and `tier2-verify`:
+ * extracts declared scenarios, duplicate declarations, unreadable problems, and cross-change collisions.
+ */
+export function analyzeSpecTree({ specTree, changeDir, repoRoot = null }) {
+  const declared = new Map();
+  const declaredSection = new Map();
+  const declaredTitle = new Map();
+  const declaredBody = new Map();
+  const duplicates = [];
+
+  for (const { file, text } of specTree.current) {
+    for (const found of scanScenarios(text)) {
+      const source = path.relative(changeDir, file);
+      if (declared.has(found.id)) {
+        duplicates.push(`DUPLICATE_SCEN ${found.id}: declared in ${declared.get(found.id)} and ${source}`);
+      } else {
+        declared.set(found.id, source);
+        declaredSection.set(found.id, found.section);
+        declaredTitle.set(found.id, found.title);
+        declaredBody.set(found.id, found.body);
+      }
+    }
+  }
+
+  const problems = (specTree.problems || []).map((problem) => ({
+    ...problem,
+    blocking: `UNREADABLE_SPEC ${problem.path}: ${problem.reason}`,
+  }));
+
+  let collisions = [];
+  let advisories = [];
+  if (repoRoot) {
+    const external = new Map();
+    const baselineFiles = new Set((specTree.baseline || []).map((source) => source.file));
+    for (const { file, text } of [...(specTree.baseline || []), ...(specTree.others || [])]) {
+      for (const found of scanScenarios(text)) {
+        if (!external.has(found.id)) external.set(found.id, []);
+        external.get(found.id).push({
+          file: path.relative(repoRoot, file),
+          baseline: baselineFiles.has(file),
+          title: found.title,
+          body: found.body,
+        });
+      }
+    }
+    const result = classifyScenCollisions({ declared, declaredSection, declaredTitle, declaredBody, external });
+    collisions = result.blocking;
+    advisories = result.advisories;
+  }
+
+  return { declared, duplicates, collisions, advisories, problems };
+}
+
+/**
+ * Count unarchived directories under `openspec/changes/` excluding `archive` and `currentChange`.
+ * Fail-open helper used by `prepare-author` and `tier2-verify` to prevent stale-change accumulation.
+ */
+export function findStaleChanges(repoRoot, currentChange = null, { threshold = 3 } = {}) {
+  if (!repoRoot) return { count: 0, names: [], advisory: null };
+  const changesDir = path.join(repoRoot, 'openspec', 'changes');
+  let entries;
+  try {
+    entries = fs.readdirSync(changesDir, { withFileTypes: true });
+  } catch {
+    return { count: 0, names: [], advisory: null };
+  }
+  const names = entries
+    .filter((entry) => entry.isDirectory() && entry.name !== 'archive' && entry.name !== currentChange)
+    .map((entry) => entry.name)
+    .sort();
+  const count = names.length;
+  const advisory = count > threshold
+    ? `ADVISE_ARCHIVE_STALE: ${count} other unarchived change(s) under openspec/changes/ (${names.slice(0, 5).join(', ')}${count > 5 ? ', ...' : ''}); run \`openspec archive <name> -y\` on merged changes to avoid SCEN/requirement collisions`
+    : null;
+  return { count, names, advisory };
+}
 // The capability a spec file belongs to: its path below `specs/`, without the `spec.md` leaf.
 export function capabilityOf(specsDir, file) {
   const relative = path.relative(specsDir, file).split(path.sep).join('/');

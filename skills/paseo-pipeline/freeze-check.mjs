@@ -8,11 +8,12 @@ import { listAgents, inspectAgent, findAgents, nameOf } from './lib/paseo.mjs';
 import { parseTaskLine, parseTasks, graphErrors, computeWaves, normalizeScope, isFileWithinScopes, isTestPath, isTaskId, legPaths, verifyLegs, FULL_SUITE_LEG } from './lib/tasks.mjs';
 import { dispatchDeps, weightedSpeedup, weightedCriticalPath, verifyScope, readsOnlyEdges, pathWithin, resolveModel, LIVE_MODEL } from './lib/schedule.mjs';
 import { runGit } from './lib/git.mjs';
-import { loadSpecTree, visibleLines, scanScenarios, scanRequirements, classifyScenCollisions } from './lib/spec-scan.mjs';
+import { loadSpecTree, visibleLines, scanRequirements, analyzeSpecTree } from './lib/spec-scan.mjs';
 import { parseAcceptanceTable } from './lib/acceptance.mjs';
 import { R0_ROLES } from './lib/roles.mjs';
 import { FIXTURE_DIR, NON_SUBSTANTIVE_SCOPE } from './lib/paths.mjs';
 import { verifyTestPath, testScript, fixtureOnlyLeg, legProves, unprovableVerifyReason } from './lib/verify-policy.mjs';
+import { recordEvent } from './lib/telemetry.mjs';
 
 const args = process.argv.slice(2);
 // One pass over argv. Any token that is `--stage` or starts with it is stage syntax: its value is
@@ -117,26 +118,10 @@ const toplevel = gitIn(changeDir, ['rev-parse', '--show-toplevel']);
 const repoRoot = toplevel.status === 0 ? toplevel.stdout.trim() : null;
 const specTree = loadSpecTree({ repoRoot, changeDir });
 
-// Scenario mapping.
-const declared = new Map();
-// Section (`## ...`), heading text and body each id is declared under in THIS change; the
-// cross-change check below needs them to tell a legitimate MODIFIED/REMOVED re-declaration from a
-// collision, and to recognise a verbatim re-declaration shared with another change.
-const declaredSection = new Map();
-const declaredTitle = new Map();
-const declaredBody = new Map();
-for (const { file, text } of specTree.current) {
-  for (const found of scanScenarios(text)) {
-    const source = path.relative(changeDir, file);
-    if (declared.has(found.id)) blocking.push(`DUPLICATE_SCEN ${found.id}: declared in ${declared.get(found.id)} and ${source}`);
-    else {
-      declared.set(found.id, source);
-      declaredSection.set(found.id, found.section);
-      declaredTitle.set(found.id, found.title);
-      declaredBody.set(found.id, found.body);
-    }
-  }
-}
+const specAnalysis = analyzeSpecTree({ specTree, changeDir, repoRoot });
+const declared = specAnalysis.declared;
+for (const message of specAnalysis.duplicates) blocking.push(message);
+
 const claimed = new Map(tasks.flatMap((task) => task.scenarios.map((scen) => [scen.toUpperCase(), task.id])));
 for (const task of tasks) {
   for (const scen of task.scenarios) {
@@ -147,51 +132,15 @@ for (const [scen, file] of declared) {
   if (!claimed.has(scen)) blocking.push(`UNCLAIMED_SCEN: ${scen} (${file}) has no task`);
 }
 
-// Cross-change SCEN collision. `declared` above only knows this change's own files, so a scenario id
-// another unarchived change already declares goes unnoticed and the two contracts disagree at merge.
-// Classification uses THIS change's declaration section plus the kind of external hit: a baseline id
-// may be re-declared under MODIFIED/REMOVED Requirements, while another change's hit is a collision
-// unless both the heading text and the scenario body are identical (a verbatim re-declaration is
-// legal and mandatory for an unchanged MODIFIED scenario). Identity is byte equality of the compared
-// title and body — conservative content identity, not Markdown rendering equivalence. Git history,
-// archives and branches are out of scope: only the current checkout is read, and a missing repo
-// silently skips the check.
-//
-// An unreadable spec file or directory is a blocking defect, not an empty declaration set. Base
-// crashed with an uncaught TypeError on the same input, so this is deliberately the one place the
-// byte-identical-to-base requirement is relaxed: same exit code (1), never a pass, a readable
-// message, and the normal JSON object under --json. This runs before the `--stage specs` dispatch,
-// so both modes inherit it.
-for (const problem of specTree.problems) {
-  blocking.push(`UNREADABLE_SPEC ${problem.path}: ${problem.reason}`);
+for (const problem of specAnalysis.problems) {
+  blocking.push(problem.blocking);
   console.error(`[freeze-check] unreadable spec ${problem.path}: ${problem.reason}`);
 }
-{
-  if (repoRoot) {
-    const external = new Map();
-    // Which external file declares each id, with its visible heading text and body. The section in
-    // that file decides nothing: the external side cannot know whether this change is legitimately
-    // re-declaring the id. Fenced examples and comments are not declarations (same helper as above).
-    // An unreadable source is absent from the snapshot, so it is never scanned as if it were empty.
-    const baselineFiles = new Set(specTree.baseline.map((source) => source.file));
-    const sources = [...specTree.baseline, ...specTree.others];
-    for (const { file, text } of sources) {
-      for (const found of scanScenarios(text)) {
-        if (!external.has(found.id)) external.set(found.id, []);
-        external.get(found.id).push({
-          file: path.relative(repoRoot, file),
-          baseline: baselineFiles.has(file),
-          title: found.title,
-          body: found.body,
-        });
-      }
-    }
-    const result = classifyScenCollisions({ declared, declaredSection, declaredTitle, declaredBody, external });
-    for (const message of result.blocking) blocking.push(message);
-    for (const message of result.advisories) advisories.push(message);
-    for (const message of result.blocking) fixes.set('COLLIDING_SCEN', 'choose a new SCEN id, or re-declare a baseline id under MODIFIED/REMOVED Requirements in this change');
-  }
+for (const message of specAnalysis.collisions) {
+  blocking.push(message);
+  fixes.set('COLLIDING_SCEN', 'choose a new SCEN id, or re-declare a baseline id under MODIFIED/REMOVED Requirements in this change');
 }
+for (const message of specAnalysis.advisories) advisories.push(message);
 
 // Requirement overlap: another active change already adds, modifies or removes a requirement
 // this change modifies or removes. Structural misses it because each side is a valid delta alone;
@@ -252,6 +201,13 @@ if (stage === 'specs') {
   // the merge gives the capability two intentions for one requirement.
   for (const message of reqOverlapAdvisories) stageAdvisories.push(message);
   const summary = { change: path.resolve(changeDir), stage: 'specs', blocking: [...new Set(specBlocking)], advisories: [...new Set(stageAdvisories)] };
+  recordEvent('freeze_check', {
+    tier: '3',
+    ok: summary.blocking.length === 0,
+    verdict: 'stage_specs',
+    reasonCode: summary.blocking[0]?.match(/^([A-Z0-9_]+)/)?.[1]?.toLowerCase(),
+    count: declared.size,
+  });
   if (json) console.log(JSON.stringify(summary, null, 2));
   else {
     console.log(`[freeze-check] ${summary.change} (stage specs)`);
@@ -1095,7 +1051,14 @@ else {
   } else console.log(`[ROUTE] invalid: task graph invalid; fix graph errors before routing`);
   for (const item of summary.advisories) console.log(`ADVISE ${item}`);
   for (const item of summary.blocking) console.error(`BLOCK ${item}`);
-  if (explain) for (const item of summary.explanations) console.error(`EXPLAIN ${item.code}: ${item.reason}\n  fix: ${item.fix}`);
+if (explain) for (const item of summary.explanations) console.error(`EXPLAIN ${item.code}: ${item.reason}\n  fix: ${item.fix}`);
   console.log(summary.blocking.length ? `RESULT freeze rejected (${summary.blocking.length})` : 'RESULT freeze ok');
 }
+recordEvent('freeze_check', {
+  tier: '3',
+  ok: summary.blocking.length === 0,
+  verdict: route || 'invalid',
+  reasonCode: summary.blocking[0]?.match(/^([A-Z0-9_]+)/)?.[1]?.toLowerCase(),
+  count: tasks.length,
+});
 process.exit(summary.blocking.length ? 1 : 0);

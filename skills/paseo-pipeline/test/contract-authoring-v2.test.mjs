@@ -82,9 +82,27 @@ test('Stage 0 prepare-author scaffolds baseline-facts.md, preserves Stage 1 body
   const out2 = JSON.parse(res2.stdout);
   assert.ok(out2.splitReasons.includes('capabilities=3>2'), JSON.stringify(out2.splitReasons));
   assert.match(fs.readFileSync(factsPath, 'utf8'), /custom Stage 1 note: src\/a\.mjs:10/);
+
+  // Tier 2 mode writes schema: paseo-tier2 and omits CP-1 worktreeNote; invalid schema fails closed.
+  const t2Dir = path.join(repo, 'openspec', 'changes', 't2-demo');
+  const t2Res = spawnSync(process.execPath, [script('pipeline-run.mjs'), 'prepare-author', t2Dir, '--schema', 'paseo-tier2', '--json'], {
+    cwd: repo,
+    encoding: 'utf8',
+  });
+  assert.equal(t2Res.status, 0, t2Res.stderr + t2Res.stdout);
+  const t2Out = JSON.parse(t2Res.stdout);
+  assert.equal(t2Out.schema, 'paseo-tier2');
+  assert.equal(t2Out.worktreeNote, undefined);
+  assert.match(fs.readFileSync(path.join(t2Dir, '.openspec.yaml'), 'utf8'), /^schema: paseo-tier2$/m);
+
+  const badSchema = spawnSync(process.execPath, [script('pipeline-run.mjs'), 'prepare-author', t2Dir, '--schema', 'bogus'], {
+    cwd: repo,
+    encoding: 'utf8',
+  });
+  assert.notEqual(badSchema.status, 0);
 });
 
-test('brief.mjs author JIT-inlines baseline-facts.md and truncates cleanly at 15KB budget', () => {
+test('brief.mjs author and tier2 JIT-inline baseline-facts.md and truncate cleanly at 15KB budget', () => {
   const repo = initRepo();
   const changeDir = path.join(repo, 'openspec', 'changes', 'jit-demo');
   fs.mkdirSync(changeDir, { recursive: true });
@@ -92,15 +110,17 @@ test('brief.mjs author JIT-inlines baseline-facts.md and truncates cleanly at 15
   const hugeFacts = `# Baseline Facts\n\n${'A'.repeat(20 * 1024)}\n`;
   fs.writeFileSync(path.join(changeDir, 'baseline-facts.md'), hugeFacts);
 
-  const res = spawnSync(process.execPath, [script('brief.mjs'), 'author', '--change', 'jit-demo', '--repo', repo], {
-    cwd: repo,
-    encoding: 'utf8',
-  });
-  assert.equal(res.status, 0, res.stderr + res.stdout);
-  assert.match(res.stdout, /## Baseline Facts \(Stage 0\/1 — JIT inlined\)/);
-  assert.match(res.stdout, /\.\.\. \[truncated at 15KB budget\]/);
-  const section = res.stdout.split('## Baseline Facts (Stage 0/1 — JIT inlined)\n')[1];
-  assert.ok(Buffer.byteLength(section, 'utf8') <= 15 * 1024 + 5, `inlined section too large: ${Buffer.byteLength(section, 'utf8')}`);
+  for (const role of ['author', 'tier2']) {
+    const res = spawnSync(process.execPath, [script('brief.mjs'), role, '--change', 'jit-demo', '--repo', repo], {
+      cwd: repo,
+      encoding: 'utf8',
+    });
+    assert.equal(res.status, 0, `${role}: ${res.stderr + res.stdout}`);
+    assert.match(res.stdout, /## Baseline Facts \(Stage 0\/1 — JIT inlined\)/, role);
+    assert.match(res.stdout, /\.\.\. \[truncated at 15KB budget\]/, role);
+    const section = res.stdout.split('## Baseline Facts (Stage 0/1 — JIT inlined)\n')[1];
+    assert.ok(Buffer.byteLength(section, 'utf8') <= 15 * 1024 + 5, `${role} inlined section too large: ${Buffer.byteLength(section, 'utf8')}`);
+  }
 });
 
 test('tasks.mjs & acceptance-sync.mjs own Entry/Verify/Required with SCEN-ID mapping and BAD_REQUIRED', () => {
@@ -258,6 +278,52 @@ test('tier2-verify resolves Verify from tasks.md first, falls back to specs Veri
     assert.notEqual(failMissing.status, 0);
     const failData = JSON.parse(failMissing.stdout);
     assert.ok(failData.missingVerify.some((item) => item.includes('SCEN-APP-01')));
+
+    // Catch cross-change COLLIDING_SCEN, undeclaredClaims, unclaimedScenarios, and taskErrors; advise on paseo-pipeline schema without proposal.md
+    fs.writeFileSync(path.join(changeDir, '.openspec.yaml'), 'schema: paseo-pipeline\ncreated: 2026-11-22\n');
+    const otherSpecDir = path.join(wt, 'openspec', 'changes', 'other-chg', 'specs', 'cap');
+    fs.mkdirSync(otherSpecDir, { recursive: true });
+    fs.writeFileSync(path.join(otherSpecDir, 'spec.md'), [
+      '## ADDED Requirements',
+      '### Requirement: Other app',
+      'The system SHALL differ.',
+      '#### Scenario: SCEN-APP-01 conflicting definition',
+      '- **WHEN** invoked elsewhere',
+      '- **THEN** returns 99',
+    ].join('\n'));
+    fs.writeFileSync(path.join(changeDir, 'specs', 'cap', 'spec.md'), [
+      '## ADDED Requirements',
+      '### Requirement: App runs',
+      'The system SHALL return v.',
+      '#### Scenario: SCEN-APP-01 returns value',
+      '- **WHEN** invoked',
+      '- **THEN** returns 1',
+      '#### Scenario: SCEN-APP-02 unclaimed',
+      '- **WHEN** called twice',
+      '- **THEN** returns 2',
+    ].join('\n'));
+    fs.writeFileSync(path.join(changeDir, 'tasks.md'), [
+      '- [ ] 1.1 T-01 app',
+      '  - Write scope: src/app.mjs,test/app.test.mjs',
+      '  - Verify with: node --test test/app.test.mjs',
+      '  - Scenarios: SCEN-APP-01, SCEN-APP-99',
+      '- [ ] malformed task without id',
+    ].join('\n'));
+    git(wt, 'add', '.');
+    git(wt, 'commit', '-qm', 'invalid tier2 contract cases');
+    const failIntegrity = spawnSync(process.execPath, [script('tier2-verify.mjs'), 'main', '--change-dir', changeDir, '--json'], {
+      cwd: wt,
+      encoding: 'utf8',
+    });
+    assert.notEqual(failIntegrity.status, 0);
+    const intData = JSON.parse(failIntegrity.stdout);
+    assert.equal(intData.verdict, 'FAIL');
+    assert.ok(intData.collidingScenarios.some((item) => item.includes('SCEN-APP-01')));
+    assert.ok(intData.undeclaredClaims.some((item) => item.includes('SCEN-APP-99')));
+    assert.ok(intData.unclaimedScenarios.some((item) => item.includes('SCEN-APP-02')));
+    assert.ok(intData.taskErrors.some((item) => item.includes('MALFORMED_LINE')));
+    assert.ok(intData.uncheckedTasks.includes('T-01'));
+    assert.ok(intData.advisories.some((item) => item.includes('ADVISORY_TIER2_SCHEMA')));
   } finally {
     fs.rmSync(wt, { recursive: true, force: true });
   }

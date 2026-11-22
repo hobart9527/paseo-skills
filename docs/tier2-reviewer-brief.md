@@ -8,13 +8,13 @@ Tier 2 delivery gate (applies to both delegated `/tier2-handoff` and main-sessio
 - **Delivery evidence:** `<evidence per R; risk-scan output; test command/output; known gaps>`
 - **Entry points:** `<files / functions>`
 - **Risk class:** `<Risk: class + path:line, or risk-scan hits / test-oracle mutation>`; if both `Risk: none` and `risk-scan` is clean, no reviewer is needed.
-- **Independence:** `<actual target contributors + reviewer profile ids / declared families>`; 审查（按察司）must not review its own contribution, and the main session must not self-review its own worktree edits. Resolve live profiles; aliases alone do not prove family diversity. Reconcile HEAD, tracked diff and untracked files before/after when writes are not prevented.
+- **Independence:** `<actual target contributors + reviewer profile ids / declared families>`; 审查（按察司）must not review its own contribution, and the main session must not self-review its own worktree edits. Never use the built-in `Agent` tool for independent review (it shares the caller's model family and blocks the main context); dispatch an external heterogeneous reviewer via Paseo (`list_profiles` → `审查（按察司）` / `anchasi`). Resolve live profiles; aliases alone do not prove family diversity. Reconcile HEAD, tracked diff and untracked files before/after when writes are not prevented.
 - **Testing:** `<owner tests | independent Red packet>`; inspect whether claimed Verify/tests exercise real entry points (not source-text regex or mocked-out core logic) and whether existing assertions were weakened.
 
 ## Review
 Read-only: do not edit files, commit, or change workspace state. Report any write; it never voids verdict.
 **Strict 1+1 budget per delivery:** One reviewer; 1 initial verdict + at most 1 delta recheck (limited strictly to earlier blockers and regressions in the fix diff). Never swap reviewers to reset the budget. Do not redo supplied machine checks without concrete suspicion.
-Target uncommitted changes by absolute worktree path (`git -C <path> diff`); never use `isolation: worktree`, which sees a different tree. If the actual patch cannot be read, answer `INCOMPLETE`; that is a followup for the caller, never a blocker.
+Run with `cwd` set to the target worktree (never `isolation: worktree`, which sees a different tree; worktree-isolated sessions block `git -C` to another checkout). If the actual patch cannot be read, answer `INCOMPLETE`; that is a followup for the caller, never a blocker.
 
 ## Output
 First line: `PASS` | `BLOCKED` | `INCOMPLETE`.

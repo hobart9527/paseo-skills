@@ -17,7 +17,7 @@ Scope is the current branch, current worktree, current workspace. Other branches
    - `<main-dir>`: the worktree holding `<default>` (`git worktree list`). `<in-worktree>`: true when `git rev-parse --git-dir` differs from `git rev-parse --git-common-dir`.
    - Tracked changes in `<source>`: on a feature branch, make one atomic commit (`feat:` / `fix:` / `docs:` / `refactor:` verb phrase, `Co-Authored-By` trailer). On `<default>`: Stop. Untracked files never block.
    - Mode: **PR** when `gh api repos/{owner}/{repo}/branches/<default>/protection` returns 200 or `gh api repos/{owner}/{repo}/rules/branches/<default>` is non-empty; otherwise (including 404, empty rules, or HTTP 403 plan-gated/unavailable branch protection on private repos) **local**. Say which in the report.
-2. **Verify (in `<source>` before exiting worktree).** Source tree has `docs/tier2-contract.md`: `pipeline-run.mjs tier2-verify <default>` at tip SHA; show any unaccepted reviewer `BLOCKED` / `NOT_MET` verbatim and Stop — unless the user explicitly accepted that remaining risk in this session (quote their acceptance in the report). Otherwise run the project's test command (`package.json`, `Makefile`, CLAUDE.md); none found → say so, continue.
+2. **Verify (in `<source>` before exiting worktree).** When `<in-worktree>` and `<source>` touches `openspec/changes/<name>/` or exceeds Tier 1 (`>3` source files, `>=2` scopes, any `>=800-line` source file, or `>5` test files per `git diff --name-only <default>...HEAD`): run `node "${PIPELINE_HOME:-$HOME/.claude/skills/paseo-pipeline}/pipeline-run.mjs" tier2-verify <default>` at tip SHA (passing `--change-dir openspec/changes/<name>` when present, else `--auto-verify` or `--verify "<cmd>"`). If `REVIEW_REQUIRED`, require a recorded `PASS` at tip SHA (`pipeline-run.mjs record-review --mode tier2` / reviewer output) or explicit user acceptance in this session (quoted in the report); show any unaccepted reviewer `BLOCKED` / `NOT_MET` verbatim and Stop. Otherwise run the project's test command (`package.json`, `Makefile`, CLAUDE.md); none found → say so, continue.
 3. **Return to `<main-dir>` (local mode when `<in-worktree>`).**
    - Worktree-isolated Claude Code sessions reject `cd <main-dir>` and `git -C <main-dir>`; never run or retry them from an isolated worktree.
    - Load `ExitWorktree` (via `ToolSearch` if deferred) and call `ExitWorktree` with `action: "keep"` so this session returns to `<main-dir>` on `<default>`. Verify `<main-dir>` is clean and on `<default>` (else Stop).
@@ -32,10 +32,11 @@ Scope is the current branch, current worktree, current workspace. Other branches
 6. **Push** (local mode, in `<main-dir>`; PR mode is already on origin): `git push origin <default>`. Rejected → `git fetch`; origin only moved forward and merges clean → merge, re-verify, push once more. Second rejection or conflict → Stop.
 7. **Evidence.** `git rev-parse <default> origin/<default>` match; merge SHA; PR or commit URL.
 8. **Cleanup, one question.** Skip when `<source>` = `<default>`. List the items below with a number each and ask `y` (all) or numbers. Every `y` item runs; every item left out stays listed:
-   1. remote branch: `git push origin --delete <source>` (when it exists on origin)
-   2. Paseo workspace: `list_workspaces`, pick the entry whose `cwd` equals the `<source>` worktree path. Archive only when `kind=worktree`, no workspace has it as `parentWorkspaceId`, and `list_agents --cwd` shows no other `running` agent. Otherwise list the blocker and skip. Run last, after the report is printed, if the session still lives inside it.
-   3. linked worktree, when no Paseo workspace owns it: `git worktree remove <path>` (from `<main-dir>`)
-   4. local branch: `git branch -d <source>` (from `<main-dir>`); the worktree must be gone first (`git worktree list`). Gone not confirmed → report, keep the branch.
+   1. OpenSpec change archive (when `openspec/changes/<name>/` belongs to `<source>` and `<default>` is merged): `openspec archive <name> -y` (add `--skip-specs` if no `specs/` directory) on `<main-dir>`, then commit the archived spec update on `<default>`.
+   2. remote branch: `git push origin --delete <source>` (when it exists on origin)
+   3. Paseo workspace: `list_workspaces`, pick the entry whose `cwd` equals the `<source>` worktree path. Archive only when `kind=worktree`, no workspace has it as `parentWorkspaceId`, and `list_agents --cwd` shows no other `running` agent. Otherwise list the blocker and skip. Run last, after the report is printed, if the session still lives inside it.
+   4. linked worktree, when no Paseo workspace owns it: `git worktree remove <path>` (from `<main-dir>`)
+   5. local branch: `git branch -d <source>` (from `<main-dir>`); the worktree must be gone first (`git worktree list`). Gone not confirmed → report, keep the branch.
 
 ## Stop
 

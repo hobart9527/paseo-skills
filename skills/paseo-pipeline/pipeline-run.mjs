@@ -13,13 +13,15 @@
 //   pipeline-run.mjs profiles [--skill F] [--config F] [--root R] [--json]
 //   pipeline-run.mjs preflight <repo> [--json] [--strict]
 //   pipeline-run.mjs acceptance run|check|sync <change-dir> ...
-//   pipeline-run.mjs prepare-author <change-dir> [--repo <path>] [--hydrate] [--base main] [--json]
+//   pipeline-run.mjs prepare-author <change-dir> [--repo <path>] [--schema paseo-pipeline|paseo-tier2] [--scaffold] [--capability <cap>] [--hydrate] [--base main] [--json]
 //   pipeline-run.mjs prepare-task <change-dir> <task-id> [--worktree-root <dir>] [--workspace-dir <dir>] [--hydrate] [--json]
-//   pipeline-run.mjs cp2-merge <change-dir> [--base main] [--json]
+//   pipeline-run.mjs hydrate [<dir>] [--json]
+//   pipeline-run.mjs record-review --mode r0|final|tier2|tier1 --verdict PASS|BLOCKED|INCOMPLETE|HUMAN_ACCEPT --reviewer <id> [--sha <ref>] [--change-dir <dir>] [--reason <text>] [--cwd <dir>] [--json]
+//   pipeline-run.mjs cp2-merge <change-dir> [--base main] [--verify <cmd>]... [--timeout ms] [--skip-drift-verify] [--json]
 //   pipeline-run.mjs brief <role> --change <name> --repo <path> ...
 //   pipeline-run.mjs worker-check <change-dir> <task-id> [--timeout ms] [--allow-test-infra]
-//   pipeline-run.mjs tier2-verify <base> [--change-dir <dir>] [--verify <cmd>]... [--auto-verify] [--cwd <dir>] [--json]
-//   pipeline-run.mjs risk-scan <base> [<head>] [--cwd <dir>] [--working-tree] [--json] [--require-clean]
+//   pipeline-run.mjs tier2-verify <base> [--change-dir <dir>] [--verify <cmd>]... [--auto-verify] [--strict-scope] [--cwd <dir>] [--json]
+//   pipeline-run.mjs risk-scan <base> [<head>] [--cwd <dir>] [--working-tree] [--files <p1,p2>] [--tracked-only] [--json] [--require-clean]
 //   pipeline-run.mjs install-hook <worktree> [<worktree>...]
 //   pipeline-run.mjs report [--days N] [--json]
 
@@ -29,11 +31,16 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseTasks } from './lib/tasks.mjs';
 import { readTasksMarkdown } from './lib/tasks-source.mjs';
+import { parseAcceptanceTable } from './lib/acceptance.mjs';
+import { findStaleChanges, scanScenarios } from './lib/spec-scan.mjs';
 import { runGit, listWorktreesMaybe, worktreeForBranch, primaryWorktree } from './lib/git.mjs';
 import { parseOptions, planOptions } from './lib/cli.mjs';
 import { runCleanup } from './lib/cleanup.mjs';
 import { recommendedWorkerRole } from './lib/roles.mjs';
-import { summarizeTelemetry } from './lib/telemetry.mjs';
+import { runVerifyCommand } from './lib/verify-runner.mjs';
+import { proveVerifyCommand } from './lib/verify-policy.mjs';
+import { recordReview } from './lib/review-record.mjs';
+import { recordEvent, summarizeTelemetry } from './lib/telemetry.mjs';
 
 const HOME = path.dirname(fileURLToPath(import.meta.url));
 const [command, ...rest] = process.argv.slice(2);
@@ -196,11 +203,84 @@ if (command === 'acceptance') {
     if (summary.authorGuard && (summary.authorGuard.warn || summary.authorGuard.stop || summary.authorGuard.compactEmptySpecs)) {
       console.log(`- author_guard: warn=${summary.authorGuard.warn} stop=${summary.authorGuard.stop} compact_empty_specs=${summary.authorGuard.compactEmptySpecs}`);
     }
+    if (summary.tierWrite && (summary.tierWrite.ask || summary.tierWrite.deny)) {
+      console.log(`- tier_write: ask=${summary.tierWrite.ask} deny=${summary.tierWrite.deny}`);
+    }
+    if (summary.freezeCheck?.total) {
+      console.log(`- freeze_check: total=${summary.freezeCheck.total} pipeline=${summary.freezeCheck.pipeline} handoff=${summary.freezeCheck.handoff} failed=${summary.freezeCheck.failed}`);
+    }
+    if (summary.mergeTask?.total) {
+      console.log(`- merge_task: total=${summary.mergeTask.total} pass=${summary.mergeTask.pass} fail=${summary.mergeTask.fail}`);
+    }
+    if (summary.cp2Merge?.total) {
+      console.log(`- cp2_merge: total=${summary.cp2Merge.total} pass=${summary.cp2Merge.pass} fail=${summary.cp2Merge.fail} drift_synced=${summary.cp2Merge.driftSynced}`);
+    }
+    if (summary.reviews?.total) {
+      console.log(`- reviews: total=${summary.reviews.total} pass=${summary.reviews.pass} blocked=${summary.reviews.blocked} incomplete=${summary.reviews.incomplete} human_accept=${summary.reviews.humanAccept}`);
+    }
+    const ns = summary.northStar || {};
+    const nsItems = [
+      ns.tier2PassRate !== null ? `tier2_pass=${ns.tier2PassRate}%` : null,
+      ns.workerFirstPassRate !== null ? `worker_pass=${ns.workerFirstPassRate}%` : null,
+      ns.mergePassRate !== null ? `merge_pass=${ns.mergePassRate}%` : null,
+      ns.tier3HandoffRate !== null ? `tier3_handoff=${ns.tier3HandoffRate}%` : null,
+    ].filter(Boolean);
+    if (nsItems.length) console.log(`- north_star: ${nsItems.join(', ')}`);
+    if (summary.pruneCandidates?.length) {
+      console.log(`- prune_candidates (${summary.windowDays}d 0-hit): ${summary.pruneCandidates.join(', ')}`);
+    }
     if (summary.topReasonCodes.length) {
       console.log(`- top reasons: ${summary.topReasonCodes.slice(0, 8).map((r) => `${r.code}=${r.count}`).join(', ')}`);
     }
   }
   process.exit(0);
+} else if (command === 'hydrate') {
+  let parsed;
+  try { parsed = parseOptions(rest, { json: 'boolean' }); } catch (error) { die(error.message); }
+  if (parsed.positional.length > 1) die('hydrate accepts at most one <dir>');
+  const targetDir = path.resolve(parsed.positional[0] || process.cwd());
+  if (!fs.existsSync(targetDir)) die(`missing directory: ${targetDir}`, 3);
+  const topRes = runGit(targetDir, ['rev-parse', '--show-toplevel']);
+  const rootDir = topRes.status === 0 ? fs.realpathSync(topRes.stdout.trim()) : targetDir;
+  const hydration = hydrateWorktree(rootDir);
+  if (parsed.options.json) {
+    console.log(JSON.stringify({ dir: rootDir, ...hydration }, null, 2));
+  } else {
+    console.log(`[hydrate] ${rootDir}: attempted=${hydration.attempted}${hydration.tool ? ` tool=${hydration.tool} ok=${hydration.ok}` : ` reason=${hydration.skippedReason}`}`);
+    if (hydration.attempted && !hydration.ok && hydration.error) console.error(hydration.error);
+  }
+  process.exit(hydration.attempted && !hydration.ok ? 1 : 0);
+} else if (command === 'record-review') {
+  let parsed;
+  try {
+    parsed = parseOptions(rest, {
+      mode: 'value',
+      verdict: 'value',
+      reviewer: 'value',
+      sha: 'value',
+      'change-dir': 'value',
+      reason: 'value',
+      cwd: 'value',
+      json: 'boolean',
+    });
+  } catch (error) { die(error.message); }
+  if (parsed.positional.length > 0) die('record-review takes options only (--mode --verdict --reviewer ...)');
+  try {
+    const out = recordReview({
+      cwd: parsed.options.cwd || process.cwd(),
+      mode: parsed.options.mode,
+      verdict: parsed.options.verdict,
+      reviewer: parsed.options.reviewer,
+      sha: parsed.options.sha || 'HEAD',
+      changeDir: parsed.options['change-dir'] || null,
+      reason: parsed.options.reason || '',
+    });
+    if (parsed.options.json) console.log(JSON.stringify(out, null, 2));
+    else console.log(`[record-review] ${out.line} (${out.targets.join(', ')})`);
+    process.exit(0);
+  } catch (error) {
+    die(error.message, 2);
+  }
 } else if (command === 'plan') {
   let parsed;
   try { parsed = parseOptions(rest, planOptions); } catch (error) { die(error.message); }
@@ -275,12 +355,19 @@ if (command === 'acceptance') {
   try {
     parsed = parseOptions(rest, {
       repo: 'value',
+      schema: 'value',
+      scaffold: 'boolean',
+      capability: 'value',
       hydrate: 'boolean',
       base: 'value',
       json: 'boolean',
     });
   } catch (error) { die(error.message); }
   if (parsed.positional.length !== 1) die('prepare-author needs <change-dir>');
+  const schema = parsed.options.schema || 'paseo-pipeline';
+  if (!['paseo-pipeline', 'paseo-tier2'].includes(schema)) {
+    die(`prepare-author --schema must be paseo-pipeline or paseo-tier2, got "${schema}"`);
+  }
   const dir = path.resolve(parsed.positional[0]);
   const change = path.basename(dir);
   const existingAncestor = (target) => {
@@ -300,7 +387,7 @@ if (command === 'acceptance') {
   fs.mkdirSync(dir, { recursive: true });
   const openspecYaml = path.join(dir, '.openspec.yaml');
   if (!fs.existsSync(openspecYaml)) {
-    fs.writeFileSync(openspecYaml, `schema: paseo-pipeline\ncreated: ${new Date().toISOString().slice(0, 10)}\n`);
+    fs.writeFileSync(openspecYaml, `schema: ${schema}\ncreated: ${new Date().toISOString().slice(0, 10)}\n`);
   }
 
   const head = runGit(root, ['rev-parse', 'HEAD']).stdout.trim();
@@ -364,6 +451,7 @@ if (command === 'acceptance') {
     walk(specsDir);
     capabilityCount = Math.max(capabilityCount, capDirs.size);
   }
+  const stale = findStaleChanges(root, change);
   const splitReasons = [];
   if (ruleCount > 10) splitReasons.push(`rules=${ruleCount}>10`);
   if (capabilityCount > 2) splitReasons.push(`capabilities=${capabilityCount}>2`);
@@ -381,6 +469,85 @@ if (command === 'acceptance') {
   const nsSummary = namespaceRes.data?.scenarios?.length
     ? namespaceRes.data.scenarios.slice(0, 12).map((s) => `SCEN-${s.prefix}(next=${s.next})`).join(', ')
     : 'none';
+
+  const scaffolded = [];
+  let suggestedScenarios = [];
+  const capSlug = String(parsed.options.capability || change)
+    .trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') || 'core';
+  if (parsed.options.scaffold && schema === 'paseo-tier2') {
+    const alphaWords = capSlug.split('-').map((w) => w.replace(/[^a-z]/g, '')).filter(Boolean);
+    let prefix = alphaWords.length >= 3
+      ? alphaWords.slice(0, 4).map((w) => w[0]).join('').toUpperCase()
+      : (alphaWords.length === 2
+        ? `${alphaWords[0].slice(0, 2)}${alphaWords[1].slice(0, 2)}`.toUpperCase()
+        : (alphaWords[0] || capSlug.replace(/[^a-z]/g, '') || 'CAP').slice(0, 4).toUpperCase());
+    if (prefix.length < 2) prefix = `${prefix}X`.slice(0, 3);
+    const existingPrefix = (namespaceRes.data?.scenarios || []).find((item) => item.prefix === prefix);
+    const nsNext = existingPrefix ? Math.max(1, Number(existingPrefix.next) || (Number(existingPrefix.max) + 1)) : 1;
+    let localMax = 0;
+    const scanPrefixText = (text) => {
+      for (const found of scanScenarios(text)) {
+        const match = /^SCEN-(.*)-(\d+)$/.exec(found.id);
+        if (match && match[1] === prefix) localMax = Math.max(localMax, Number.parseInt(match[2], 10));
+      }
+      const rx = /\bSCEN-([A-Z0-9-]+)-(\d+)\b/g;
+      for (const m of String(text || '').matchAll(rx)) {
+        if (m[1] === prefix) localMax = Math.max(localMax, Number.parseInt(m[2], 10));
+      }
+    };
+    if (fs.existsSync(specsDir)) {
+      const stack = [specsDir];
+      while (stack.length) {
+        const cur = stack.pop();
+        for (const ent of fs.readdirSync(cur, { withFileTypes: true })) {
+          const full = path.join(cur, ent.name);
+          if (ent.isDirectory()) stack.push(full);
+          else if (ent.isFile() && ent.name === 'spec.md') {
+            try { scanPrefixText(fs.readFileSync(full, 'utf8')); } catch {}
+          }
+        }
+      }
+    }
+    const existingTasksPath = path.join(dir, 'tasks.md');
+    if (fs.existsSync(existingTasksPath)) {
+      try { scanPrefixText(fs.readFileSync(existingTasksPath, 'utf8')); } catch {}
+    }
+    const startNum = Math.max(nsNext, localMax + 1);
+    const scen01 = `SCEN-${prefix}-${String(startNum).padStart(2, '0')}`;
+    const scen02 = `SCEN-${prefix}-${String(startNum + 1).padStart(2, '0')}`;
+    suggestedScenarios = [scen01, scen02];
+
+    const tplRoot = path.join(HOME, 'openspec-schema-tier2', 'templates');
+    const hasExistingSpec = (() => {
+      if (!fs.existsSync(specsDir)) return false;
+      const stack = [specsDir];
+      while (stack.length) {
+        const cur = stack.pop();
+        for (const ent of fs.readdirSync(cur, { withFileTypes: true })) {
+          if (ent.isFile() && ent.name === 'spec.md') return true;
+          if (ent.isDirectory()) stack.push(path.join(cur, ent.name));
+        }
+      }
+      return false;
+    })();
+    const specTarget = path.join(specsDir, capSlug, 'spec.md');
+    if (!fs.existsSync(specTarget) && (parsed.options.capability || !hasExistingSpec)) {
+      fs.mkdirSync(path.dirname(specTarget), { recursive: true });
+      const specTpl = fs.readFileSync(path.join(tplRoot, 'spec.md'), 'utf8')
+        .replace(/SCEN-<CAP>-01/g, scen01);
+      fs.writeFileSync(specTarget, specTpl);
+      scaffolded.push(path.relative(dir, specTarget).split(path.sep).join('/'));
+    }
+    const tasksTarget = path.join(dir, 'tasks.md');
+    if (!fs.existsSync(tasksTarget)) {
+      const tasksTpl = fs.readFileSync(path.join(tplRoot, 'tasks.md'), 'utf8')
+        .replace(/SCEN-CAP-01/g, scen01)
+        .replace(/SCEN-CAP-02/g, scen02);
+      fs.writeFileSync(tasksTarget, tasksTpl);
+      scaffolded.push('tasks.md');
+    }
+  }
+
   const stage0Block = [
     '<!-- STAGE0:START -->',
     `- Generated: ${new Date().toISOString()} | Change: \`${change}\` | Branch: \`${branch}\` | HEAD: \`${head.slice(0, 12)}\` | Dirty: ${dirtyCount}`,
@@ -388,6 +555,7 @@ if (command === 'acceptance') {
     `- Preflight: ${preflightSummary}${hydration ? ` | Hydration: ${hydration.ok ? 'ok' : hydration.skippedReason || `exit=${hydration.status}`}` : ''}`,
     `- Namespace prefixes: ${nsSummary}`,
     `- Entropy check: rules=${ruleCount}/10, capabilities=${capabilityCount}/2 (${splitRecommended ? `SPLIT_RECOMMENDED: ${splitReasons.join(', ')}` : 'ok'})`,
+    ...(stale.count > 0 ? [`- Workspace changes: ${stale.count} other unarchived directory(s)${stale.advisory ? ' (ARCHIVE_RECOMMENDED)' : ''}`] : []),
     '<!-- STAGE0:END -->',
   ].join('\n');
 
@@ -408,14 +576,26 @@ if (command === 'acceptance') {
     if (endIdx !== -1) {
       const tail = existing.slice(endIdx + endMarker.length).trim();
       if (tail) preservedBody = tail;
+    } else {
+      const stripped = existing.replace(/^#\s+Baseline Facts\s*\r?\n+/i, '').trim();
+      if (stripped) preservedBody = stripped;
     }
   }
   const fullFacts = `# Baseline Facts\n\n${stage0Block}\n\n${preservedBody}\n`;
   fs.writeFileSync(factsPath, fullFacts);
 
+  const nextCommands = schema === 'paseo-tier2'
+    ? [
+        `openspec validate ${change} --strict`,
+        `node "$PIPELINE_HOME"/pipeline-run.mjs tier2-verify ${baseCandidate || 'main'} --change-dir openspec/changes/${change}`,
+        `node "$PIPELINE_HOME"/pipeline-run.mjs brief tier2 --change ${change} --repo . --task T-01`,
+      ]
+    : [];
+
   const payload = {
     change,
     changeDir: dir,
+    schema,
     repo: root,
     head,
     branch,
@@ -425,17 +605,30 @@ if (command === 'acceptance') {
     preflight: { exit: preflightRes.status, ...(preflightRes.data ? { findings: preflightRes.data.findings?.length ?? 0 } : {}) },
     namespace: { exit: namespaceRes.status, prefixes: namespaceRes.data?.scenarios?.length ?? 0 },
     baselineFactsPath: factsPath,
+    ...(scaffolded.length ? { scaffolded } : {}),
+    ...(suggestedScenarios.length ? { suggestedScenarios } : {}),
+    ...(nextCommands.length ? { nextCommands } : {}),
     splitRecommended,
     splitReasons,
-    ...(!branch.startsWith('author/') ? { worktreeNote: 'If dispatching hanlin in a separate branch-off worktree, pass/sync baseline-facts.md and remove untracked Stage 0 seeds from the default branch before CP-1 --ff-only merge.' } : {}),
+    staleChanges: stale.names,
+    ...(stale.advisory ? { staleAdvisory: stale.advisory } : {}),
+    ...(schema === 'paseo-pipeline' && !branch.startsWith('author/')
+      ? { worktreeNote: 'If dispatching hanlin in a separate branch-off worktree, pass/sync baseline-facts.md and remove untracked Stage 0 seeds from the default branch before CP-1 --ff-only merge.' }
+      : {}),
   };
   if (parsed.options.json) console.log(JSON.stringify(payload, null, 2));
   else {
-    console.log(`[prepare-author] ${change} @ ${head.slice(0, 7)} (${branch}, dirty=${dirtyCount})`);
+    console.log(`[prepare-author] ${change} (${schema}) @ ${head.slice(0, 7)} (${branch}, dirty=${dirtyCount})`);
     console.log(`- baseline-facts: ${factsPath}`);
+    if (scaffolded.length) console.log(`- scaffolded: ${scaffolded.join(', ')} (suggested: ${suggestedScenarios.join(', ')})`);
     console.log(`- drift: ${driftLine}`);
     console.log(`- preflight: ${preflightSummary} | namespace prefixes: ${nsSummary}`);
+    if (stale.advisory) console.log(`ADVISE ${stale.advisory}`);
     if (splitRecommended) console.log(`SPLIT_RECOMMENDED: ${splitReasons.join(', ')}`);
+    if (nextCommands.length) {
+      console.log('Next commands:');
+      for (const cmdLine of nextCommands) console.log(`  ${cmdLine}`);
+    }
     if (payload.worktreeNote) console.log(`- note: ${payload.worktreeNote}`);
   }
 } else if (command === 'prepare-task') {
@@ -546,8 +739,18 @@ if (command === 'acceptance') {
   }
 } else if (command === 'cp2-merge') {
   let parsed;
-  try { parsed = parseOptions(rest, { base: 'value', json: 'boolean' }); } catch (error) { die(error.message); }
+  try {
+    parsed = parseOptions(rest, {
+      base: 'value',
+      verify: 'repeat',
+      timeout: 'value',
+      'skip-drift-verify': 'boolean',
+      json: 'boolean',
+    });
+  } catch (error) { die(error.message); }
   if (parsed.positional.length !== 1) die('cp2-merge needs <change-dir>');
+  const timeout = Number(parsed.options.timeout ?? '600000');
+  if (!Number.isSafeInteger(timeout) || timeout < 1) die('--timeout must be a positive integer');
   const dir = changeDirOf(parsed.positional[0]);
   const change = path.basename(dir);
   const baseBranch = parsed.options.base || 'main';
@@ -569,8 +772,14 @@ if (command === 'acceptance') {
     die(`${baseBranch} worktree ${targetBaseWt} has uncommitted changes; aborting merge`, 3);
   }
   const baseShaBefore = runGit(targetBaseWt, ['rev-parse', baseBranch]).stdout.trim();
+  const gitCommon = commonGitDir(root);
+  const pendingDriftMarker = gitCommon
+    ? path.join(gitCommon, `paseo-cp2-pending-${change.replace(/[^A-Za-z0-9._-]/g, '_')}`)
+    : null;
   const drifted = runGit(targetBaseWt, ['merge-base', '--is-ancestor', baseShaBefore, integrationBranch]).status !== 0;
-  let driftedSynced = false;
+  let driftedSynced = !!(pendingDriftMarker && fs.existsSync(pendingDriftMarker));
+  let driftVerified = false;
+  const driftVerifyResults = [];
   if (drifted) {
     if (!intWorktree) die(`${baseBranch} advanced past integration base and ${integrationBranch} has no checked-out worktree to sync`, 3);
     if (runGit(intWorktree, ['status', '--porcelain=v1', '--untracked-files=all']).stdout.trim()) {
@@ -579,16 +788,76 @@ if (command === 'acceptance') {
     const syncMerge = runGit(intWorktree, ['merge', '--no-ff', '--no-edit', baseBranch]);
     if (syncMerge.status !== 0) {
       runGit(intWorktree, ['merge', '--abort']);
+      recordEvent('cp2_merge', { tier: '3', ok: false, verdict: 'conflict', reasonCode: 'merge_conflict' });
       die(`${baseBranch} drifted and conflicts with ${integrationBranch}; resolve manually in ${intWorktree} and re-run Verify`, 10);
     }
     driftedSynced = true;
+    if (pendingDriftMarker) fs.writeFileSync(pendingDriftMarker, `${baseShaBefore}\n`);
+  }
+  if (driftedSynced) {
+    if (parsed.options['skip-drift-verify']) {
+      if (pendingDriftMarker && fs.existsSync(pendingDriftMarker)) fs.unlinkSync(pendingDriftMarker);
+    } else {
+      if (!intWorktree) {
+        recordEvent('cp2_merge', { tier: '3', ok: false, verdict: 'missing_int_wt', reasonCode: 'missing_int_wt' });
+        die(`pending post-drift Verify requires a checked-out worktree for ${integrationBranch}; check it out, verify, and retry cp2-merge`, 3);
+      }
+      if (runGit(intWorktree, ['status', '--porcelain=v1', '--untracked-files=all']).stdout.trim()) {
+        recordEvent('cp2_merge', { tier: '3', ok: false, verdict: 'dirty_int_wt', reasonCode: 'dirty_int_wt' });
+        die(`integration worktree ${intWorktree} is dirty; commit or clean changes before retrying cp2-merge`, 3);
+      }
+      const verifyCwd = intWorktree;
+      const cmds = [...(parsed.options.verify ?? [])];
+      const intChangeDir = path.join(verifyCwd, 'openspec', 'changes', change);
+      if (!cmds.length) {
+        const accFile = path.join(intChangeDir, 'acceptance.md');
+        if (fs.existsSync(accFile)) {
+          const table = parseAcceptanceTable(fs.readFileSync(accFile, 'utf8'));
+          for (const row of table.rows) {
+            if (/^yes$/i.test(row.required) && row.verify && !cmds.includes(row.verify)) cmds.push(row.verify);
+          }
+        }
+      }
+      if (!cmds.length) {
+        const tasksFile = path.join(intChangeDir, 'tasks.md');
+        if (fs.existsSync(tasksFile)) {
+          const parsedTasks = parseTasks(fs.readFileSync(tasksFile, 'utf8'));
+          for (const t of parsedTasks.tasks) {
+            const v = String(t.verify || '').replace(/^`(.+)`$/, '$1').trim();
+            if (v && !cmds.includes(v)) cmds.push(v);
+          }
+        }
+      }
+      const unprovable = cmds.map((c) => ({ c, ...proveVerifyCommand(c) })).filter((r) => !r.ok);
+      if (!cmds.length || unprovable.length) {
+        recordEvent('cp2_merge', { tier: '3', ok: false, verdict: 'drift_unverified', reasonCode: 'verify_unprovable' });
+        const detail = !cmds.length
+          ? 'no Verify commands found in --verify, acceptance.md, or tasks.md'
+          : `unprovable Verify command(s): ${unprovable.map((u) => u.c).join(', ')}`;
+        die(`synced ${baseBranch} drift into ${integrationBranch}, but refusing to fast-forward ${baseBranch} unverified (${detail}); run Verify in ${verifyCwd} or re-run cp2-merge with --verify "<cmd>"`, 20);
+      }
+      for (const cmd of cmds) {
+        const res = await runVerifyCommand(cmd, { cwd: verifyCwd, timeout, streamToStdout: !parsed.options.json });
+        driftVerifyResults.push({ command: cmd, ok: res.ok, status: res.status, durationMs: res.durationMs });
+        if (!res.ok) {
+          recordEvent('cp2_merge', { tier: '3', ok: false, verdict: 'drift_verify_failed', reasonCode: 'verify_failed' });
+          die(`synced ${baseBranch} drift into ${integrationBranch}, but post-sync Verify failed (command=${cmd}, status=${res.status}); ${baseBranch} was NOT updated — fix in ${verifyCwd} before merging`, 20);
+        }
+      }
+      if (pendingDriftMarker && fs.existsSync(pendingDriftMarker)) fs.unlinkSync(pendingDriftMarker);
+      driftVerified = true;
+    }
   }
   const ff = runGit(targetBaseWt, ['merge', '--ff-only', integrationBranch]);
-  if (ff.status !== 0) die(`fast-forward merge into ${baseBranch} failed: ${ff.stderr}`, 1);
+  if (ff.status !== 0) {
+    recordEvent('cp2_merge', { tier: '3', ok: false, verdict: 'ff_failed', reasonCode: 'ff_failed' });
+    die(`fast-forward merge into ${baseBranch} failed: ${ff.stderr}`, 1);
+  }
   const mergedSha = runGit(targetBaseWt, ['rev-parse', 'HEAD']).stdout.trim();
-  const payload = { change, base: baseBranch, rollbackSha: baseShaBefore, mergedSha, driftedSynced };
+  recordEvent('cp2_merge', { tier: '3', ok: true, verdict: driftedSynced ? 'drift_synced' : 'clean', count: driftVerifyResults.length });
+  const payload = { change, base: baseBranch, rollbackSha: baseShaBefore, mergedSha, driftedSynced, driftVerified, driftVerifyResults };
   if (parsed.options.json) console.log(JSON.stringify(payload, null, 2));
-  else console.log(`cp2-merge ok: ${integrationBranch} -> ${baseBranch} @ ${mergedSha.slice(0, 7)} (rollback=${baseShaBefore.slice(0, 7)}${driftedSynced ? ', synced main drift — rerun full Verify now' : ''})`);
+  else console.log(`cp2-merge ok: ${integrationBranch} -> ${baseBranch} @ ${mergedSha.slice(0, 7)} (rollback=${baseShaBefore.slice(0, 7)}${driftedSynced ? `, synced main drift & verified (${driftVerifyResults.length} cmd)` : ''})`);
 } else if (command === 'status') {
   let parsed;
   try { parsed = parseOptions(rest, { json: 'boolean' }); } catch (error) { die(error.message); }
@@ -621,5 +890,5 @@ if (command === 'acceptance') {
     for (const item of doneVerification(change, tasks, dir)) console.log(`ATTENTION ${item.task}: ${item.kind} — ${item.reason}`);
   }
 } else {
-  die('usage: pipeline-run.mjs plan|prepare-author|prepare-task|merge|cp2-merge|status|cleanup|inspect|freeze|profiles|preflight|scenarios|acceptance|worker-check|tier2-verify|brief|risk-scan|install-hook|report ...', 2);
+  die('usage: pipeline-run.mjs plan|prepare-author|prepare-task|hydrate|record-review|merge|cp2-merge|status|cleanup|inspect|freeze|profiles|preflight|scenarios|acceptance|worker-check|tier2-verify|brief|risk-scan|install-hook|report ...', 2);
 }

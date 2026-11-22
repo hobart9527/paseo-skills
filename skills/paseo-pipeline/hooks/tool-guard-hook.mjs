@@ -7,7 +7,7 @@ import { logHookError, repoContext } from '../lib/tier-gate.mjs';
 import { paseoHome, loadProfiles, profilePair } from '../lib/paseo.mjs';
 import { runGit } from '../lib/git.mjs';
 import { recordEvent } from '../lib/telemetry.mjs';
-import { recordAuthorRead } from '../lib/author-guard.mjs';
+import { recordAuthorRead, recordPrimaryReconRead } from '../lib/author-guard.mjs';
 
 const LIMIT = 2 * 1024 * 1024;
 const TAIL_ANCHOR = 256;
@@ -339,12 +339,33 @@ function primaryCheckoutWarning(cwd, command) {
   return null;
 }
 
+function builtinAgentReviewReason(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const subType = typeof input.subagent_type === 'string' ? input.subagent_type.trim() : '';
+  const desc = typeof input.description === 'string' ? input.description : '';
+  const prompt = typeof input.prompt === 'string' ? input.prompt : '';
+  const subHit = /^(?:code-review(?:er)?|contract-review(?:er)?|reviewer|review)$/i.test(subType);
+  const descHit = /(?:independent\s+(?:tier\s*2\s*|code\s+|contract\s+)?review(?:er)?|tier\s*2\s*(?:independent\s*)?review|code\s+review(?:er)?|contract\s+review(?:er)?|独立评审|独立审查|异构审查|契约审查|代码审查)/i.test(desc);
+  const promptIntent = /(?:independent\s+(?:tier\s*2\s*|code\s+|contract\s+)?review(?:er)?|独立评审|独立审查|异构审查|tier\s*2\s*reviewer\s*brief)/i.test(prompt);
+  const promptVerdict = /(?:\bPASS\b|\bBLOCKED\b|\bverdict\b|只评审|不改代码|read-only)/i.test(prompt);
+  if (!subHit && !descHit && !(promptIntent && promptVerdict)) return null;
+  return [
+    'Do NOT use the built-in Agent tool for independent code/contract review: it inherits the calling model family and blocks the main context.',
+    'Dispatch an external heterogeneous reviewer via mcp__paseo__create_agent (call list_profiles to pick anchasi / 审查（按察司）, assemble brief via `pipeline-run.mjs brief tier2-review`), OR return the `tier2-verify` / `risk-scan` evidence directly to the user for human decision.',
+  ].join(' ');
+}
+
 async function main() {
   const chunks = []; for await (const chunk of process.stdin) chunks.push(chunk);
   let payload;
   try { payload = JSON.parse(Buffer.concat(chunks).toString()); } catch { return; }
   const name = payload?.tool_name;
   const input = payload?.tool_input;
+  if (name === 'Agent') {
+    const reviewReason = builtinAgentReviewReason(input);
+    if (reviewReason) deny(reviewReason, 'builtin_agent_review');
+    return;
+  }
   if (name === 'Bash' && typeof input?.command === 'string') {
     const command = input.command;
     const contexts = [];
@@ -358,7 +379,12 @@ async function main() {
       contexts.push(cdWarn);
     }
     const authorGuard = recordAuthorRead({ cwd: payload?.cwd, sessionId: payload?.session_id, command });
-    if (authorGuard?.message) contexts.push(authorGuard.message);
+    if (authorGuard?.message) {
+      contexts.push(authorGuard.message);
+    } else {
+      const reconGuard = recordPrimaryReconRead({ cwd: payload?.cwd, sessionId: payload?.session_id, command });
+      if (reconGuard?.message) contexts.push(reconGuard.message);
+    }
     if (contexts.length) output({ additionalContext: contexts.join('\n') });
   }
   if (typeof name !== 'string' || !name.startsWith('mcp__')) return;

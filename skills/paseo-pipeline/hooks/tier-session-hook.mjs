@@ -10,6 +10,8 @@ export const SESSION_CONTEXT = [
   TIER_RULES,
 ].join('\n');
 
+export const WORKTREE_COMPACT_REDLINE = '[worktree-compact] 压缩恢复红线：以 git status/log 与 handoff-progress.md 为准；隔离 worktree 内禁 cd/git -C 到主 checkout（用 ExitWorktree）；写文件用 Write/Edit、提交用 git commit -m/-F（禁 heredoc <<EOF）；满 2 次压缩优先落盘 handoff-progress.md 切干净切片；收口跑 tier2-verify；已获授权不重复问，未获授权不 push/deploy。';
+
 export function shouldSkipSource(source) {
   return source === 'startup' || source === 'clear';
 }
@@ -27,6 +29,7 @@ async function main() {
   const contexts = [];
   if (compactNotice) contexts.push(compactNotice);
   if (!skipInjection(payload?.cwd)) contexts.push(SESSION_CONTEXT);
+  else if (payload?.source === 'compact') contexts.push(WORKTREE_COMPACT_REDLINE);
   if (!contexts.length) return;
   fs.writeSync(1, `${JSON.stringify({
     hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: contexts.join('\n\n') },

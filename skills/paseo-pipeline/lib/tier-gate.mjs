@@ -14,6 +14,7 @@ import {
   UNCOUNTED,
   EXEMPT,
   CHURN_EXEMPT,
+  isTestPath,
   scopeKey,
   resolveScopedPath,
 } from './paths.mjs';
@@ -23,6 +24,10 @@ import { recordEvent } from './telemetry.mjs';
 export { DEFAULT_LIMIT, UNCOUNTED, EXEMPT, scopeKey, resolveScopedPath };
 export const DEFAULT_IDLE_MS = 30 * 60 * 1000;
 export const DEFAULT_TURNS = 3;
+export const DEFAULT_LARGE_FILE_LINES = 800;
+export const DEFAULT_TEST_FILE_LIMIT = 5;
+export const DEFAULT_ZERO_WRITE_TURNS = 4;
+const MAX_LINE_SCAN_BYTES = 2 * 1024 * 1024;
 const PROTECTED_BRANCHES = new Set(['main', 'master']);
 
 // 规则正本是 ~/.claude/CLAUDE.md；这里只放必须看到的精简摘要，阈值与正本一致。
@@ -132,6 +137,44 @@ function turnsFromEnv() {
   return Number.isInteger(raw) && raw >= 1 ? raw : DEFAULT_TURNS;
 }
 
+function largeFileLinesFromEnv() {
+  const raw = Number.parseInt(process.env.PIPELINE_TIER_GATE_LARGE_FILE_LINES ?? '', 10);
+  return Number.isInteger(raw) && raw >= 1 ? raw : DEFAULT_LARGE_FILE_LINES;
+}
+
+function testFileLimitFromEnv() {
+  const raw = Number.parseInt(process.env.PIPELINE_TIER_GATE_TEST_FILE_LIMIT ?? '', 10);
+  return Number.isInteger(raw) && raw >= 1 ? raw : DEFAULT_TEST_FILE_LIMIT;
+}
+
+function zeroWriteTurnsFromEnv() {
+  const raw = Number.parseInt(process.env.PIPELINE_TIER_GATE_ZERO_WRITE_TURNS ?? '', 10);
+  return Number.isInteger(raw) && raw >= 1 ? raw : DEFAULT_ZERO_WRITE_TURNS;
+}
+
+function existingFileLineCount(target) {
+  try {
+    const st = fs.statSync(target);
+    if (!st.isFile() || st.size === 0 || st.size > MAX_LINE_SCAN_BYTES) return 0;
+    const content = fs.readFileSync(target, 'utf8');
+    return content.split(/\r?\n/).length;
+  } catch {
+    return 0;
+  }
+}
+
+function activeUnarchivedChanges(root) {
+  const dir = path.join(root, 'openspec', 'changes');
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name !== 'archive')
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
 // Path and scope matchers live in ./paths.mjs (re-exported above).
 
 function declaredScopes(files, root) {
@@ -151,9 +194,12 @@ function segment(entry, now = Date.now()) {
     asked: fresh ? [] : strings(legacy ? [] : entry?.asked),
     stopFiles: fresh ? [] : strings(legacy ? [] : entry?.stopFiles),
     reported: fresh ? [] : strings(legacy ? [] : entry?.reported),
+    testFiles: fresh ? [] : strings(legacy ? [] : entry?.testFiles),
     turns: fresh ? 0 : (!legacy && Number.isInteger(entry?.turns) ? entry.turns : 0),
+    zeroWriteTurns: fresh ? 0 : (!legacy && Number.isInteger(entry?.zeroWriteTurns) ? entry.zeroWriteTurns : 0),
     churnReported: fresh ? false : (!legacy && entry?.churnReported === true),
     riskReported: fresh ? false : (!legacy && entry?.riskReported === true),
+    zeroWriteReported: fresh ? false : (!legacy && entry?.zeroWriteReported === true),
   };
 }
 
@@ -199,8 +245,33 @@ function planDenyReason(declared, files, scopes, limit) {
   ].join('\n');
 }
 
+function largeFileReason(rel, lineCount, threshold) {
+  return [
+    `目标源文件 ${rel} 已有 ${lineCount} 行（≥${threshold} 行大文件红线），主 checkout 原地改易造成爆炸半径失控与上下文膨胀。`,
+    '先停手，改走 Tier 2 linked worktree（若复杂度高，先跑 Stage 0/1 `prepare-author --schema paseo-tier2` + `chanpin` 生成 `baseline-facts.md`，再按切片接力或交接）：',
+    TIER_2_DEFINITION,
+    '若确实只需微调且经用户放行，请在确认框放行后继续。',
+  ].join('\n');
+}
+
+function testBlastReason(rel, limit, testFiles) {
+  return [
+    `本任务段已在主 checkout 修改了 ${testFiles.length} 个测试文件，新增 ${rel} 将超过 ${limit} 个测试文件上限：测试爆炸半径已进入 Tier 2 量级。`,
+    `已改测试：${testFiles.join('、')}`,
+    TIER_2_DEFINITION,
+    '用户若在确认框放行才继续；建议直接进 linked worktree 并走 `paseo-tier2` / 切片接力。',
+  ].join('\n');
+}
+
+function zeroWriteStallReason(turns, changes) {
+  return [
+    `[tier-gate] 已在 linked worktree 连续 ${turns} 轮无任何文件写入（活跃变更：${changes.join(', ')}），存在纯读空转/重复压缩风险。`,
+    '请先停下继续只读摸排：把已确认事实、已完成进展与阻塞点写入 `$(git rev-parse --git-dir)/handoff-progress.md`（或 `openspec/changes/<name>/baseline-facts.md`），然后用 `brief.mjs tier2 --change <name> --repo <path> --task <T-id>` 切换干净切片上下文接力，或向用户汇报 `INCOMPLETE`。',
+  ].join('\n');
+}
+
 /**
- * 判定一次写入。主 checkout 仅允许 Tier 1（≤3 源文件、单一作用域），超限触发 ask/deny。
+ * 判定一次写入。主 checkout 仅允许 Tier 1（≤3 源文件、单一作用域，且避开 ≥800 行大文件与 >5 个测试文件爆炸），超限触发 ask/deny。
  * @param {{target: string, sessionId?: string, declared?: {tier: 1|2, files: string[]}}} input
  */
 export function assessTierGate({ target, sessionId, declared }) {
@@ -216,27 +287,6 @@ export function assessTierGate({ target, sessionId, declared }) {
   if (rel === null) return { verdict: 'allow', note: 'outside repo' };
   if (rel === 'openspec' || rel.startsWith('openspec/')) return { verdict: 'allow', note: 'openspec artifact' };
   if (rel === '.superpowers' || rel.startsWith('.superpowers/')) return { verdict: 'allow', note: 'gitignored scratch artifact' };
-  if (UNCOUNTED(rel)) return { verdict: 'allow', note: 'test/doc file not counted' };
-
-  if (declared && Array.isArray(declared.files) && declared.files.length > 0) {
-    const planned = declared.files.filter((f) => !EXEMPT(f));
-    const limit = limitFromEnv();
-    const scopes = declaredScopes(planned, ctx.root);
-    if (declared.tier === 2) {
-      return {
-        verdict: 'deny',
-        reason: [
-          '[tier-gate] 声明的是 Tier 2，但当前仍在主 checkout 原地写业务文件。',
-          TIER_2_DEFINITION,
-          '测试和文档不计数；源文件请在 linked worktree 里改（主会话自己进去即可，闸门在那里放行）。',
-          `声明：tier=2 files=${planned.join('、')}`,
-        ].join('\n'),
-      };
-    }
-    if (planned.length > limit || scopes.length >= 2) {
-      return { verdict: 'deny', reason: planDenyReason(declared, planned, scopes, limit) };
-    }
-  }
 
   const file = stateFile(sessionId);
   const state = readState(file);
@@ -250,7 +300,44 @@ export function assessTierGate({ target, sessionId, declared }) {
     churnReported: seg.churnReported,
     riskReported: seg.riskReported,
     stopFiles: seg.stopFiles,
+    testFiles: seg.testFiles,
+    zeroWriteTurns: seg.zeroWriteTurns,
+    zeroWriteReported: seg.zeroWriteReported,
   };
+
+  if (UNCOUNTED(rel)) {
+    if (isTestPath(rel) && !seg.testFiles.includes(rel)) {
+      const testLimit = testFileLimitFromEnv();
+      if (seg.testFiles.length >= testLimit) {
+        writeSegment(file, state, ctx.root, { ...keep, files: counted, at: now, asked: asked.includes(rel) ? asked : [...asked, rel] });
+        return { verdict: 'ask', reasonCode: 'test_blast', reason: testBlastReason(rel, testLimit, seg.testFiles) };
+      }
+      writeSegment(file, state, ctx.root, { ...keep, files: counted, at: now, asked, testFiles: [...seg.testFiles, rel] });
+    }
+    return { verdict: 'allow', note: 'test/doc file not counted' };
+  }
+
+  if (declared && Array.isArray(declared.files) && declared.files.length > 0) {
+    const planned = declared.files.filter((f) => !EXEMPT(f));
+    const limit = limitFromEnv();
+    const scopes = declaredScopes(planned, ctx.root);
+    if (declared.tier === 2) {
+      return {
+        verdict: 'deny',
+        reasonCode: 'declared_tier2',
+        reason: [
+          '[tier-gate] 声明的是 Tier 2，但当前仍在主 checkout 原地写业务文件。',
+          TIER_2_DEFINITION,
+          '测试和文档不计数；源文件请在 linked worktree 里改（主会话自己进去即可，闸门在那里放行）。',
+          `声明：tier=2 files=${planned.join('、')}`,
+        ].join('\n'),
+      };
+    }
+    if (planned.length > limit || scopes.length >= 2) {
+      return { verdict: 'deny', reasonCode: 'declared_overflow', reason: planDenyReason(declared, planned, scopes, limit) };
+    }
+  }
+
   if (counted.includes(rel)) return { verdict: 'allow', note: 'already counted' };
 
   const limit = limitFromEnv();
@@ -258,11 +345,18 @@ export function assessTierGate({ target, sessionId, declared }) {
   const scopes = [...new Set([...known.map(scopeKey), scopeKey(rel)])].sort();
   if (known.length > 0 && scopes.length >= 2) {
     writeSegment(file, state, ctx.root, { ...keep, files: counted, at: now, asked: asked.includes(rel) ? asked : [...asked, rel] });
-    return { verdict: 'ask', reason: denyReason(known.length, limit, known, scopes) };
+    return { verdict: 'ask', reasonCode: 'scope_cross', reason: denyReason(known.length, limit, known, scopes) };
   }
   if (counted.length >= limit) {
     writeSegment(file, state, ctx.root, { ...keep, files: counted, at: now, asked: asked.includes(rel) ? asked : [...asked, rel] });
-    return { verdict: 'ask', reason: denyReason(counted.length, limit, counted) };
+    return { verdict: 'ask', reasonCode: 'file_limit', reason: denyReason(counted.length, limit, counted) };
+  }
+
+  const largeFileLines = largeFileLinesFromEnv();
+  const lineCount = existingFileLineCount(target);
+  if (lineCount >= largeFileLines) {
+    writeSegment(file, state, ctx.root, { ...keep, files: counted, at: now, asked: asked.includes(rel) ? asked : [...asked, rel] });
+    return { verdict: 'ask', reasonCode: 'large_file', reason: largeFileReason(rel, lineCount, largeFileLines) };
   }
 
   writeSegment(file, state, ctx.root, { ...keep, files: [...counted, rel], at: now, asked });
@@ -311,11 +405,13 @@ export function takeSnapshot({ cwd, sessionId, isHumanTurn = true }) {
     const inspected = prev.churnReported === true
       || (Number.isInteger(prev.turns) && prev.turns >= turnsFromEnv());
     const resetRisk = prev.riskReported === true;
-    if (inspected || resetRisk) {
+    const resetZeroWrite = prev.zeroWriteReported === true;
+    if (inspected || resetRisk || resetZeroWrite) {
       writeSegment(file, state, ctx.root, {
         ...prev,
         ...(inspected ? { turns: 0, churnReported: false } : {}),
         ...(resetRisk ? { riskReported: false } : {}),
+        ...(resetZeroWrite ? { zeroWriteTurns: 0, zeroWriteReported: false } : {}),
       });
     }
   }
@@ -429,24 +525,37 @@ export function assessStop({ cwd, sessionId }) {
     }
   }
 
-  const block = fileLimitBlock || scopeBlock || churnBlock || riskBlock;
+  const activeChanges = !ctx.isPrimary ? activeUnarchivedChanges(ctx.root) : [];
+  const trackZeroWrite = !ctx.isPrimary && activeChanges.length > 0;
+  const zeroWriteAfter = trackZeroWrite ? (changed.size > 0 ? 0 : seg.zeroWriteTurns + 1) : 0;
+  const zeroWriteBlock = trackZeroWrite
+    && zeroWriteAfter >= zeroWriteTurnsFromEnv()
+    && !seg.zeroWriteReported;
+
+  const block = fileLimitBlock || scopeBlock || churnBlock || riskBlock || zeroWriteBlock;
 
   if (round.length > 0) {
     writeSegment(file, state, ctx.root, {
       files: seg.files,
       stopFiles: combined.filter((rel) => !seg.files.includes(rel)),
       asked: seg.asked,
+      testFiles: seg.testFiles,
       at: Date.now(),
       turns: turnsAfter,
+      zeroWriteTurns: zeroWriteAfter,
       reported: fileLimitBlock || scopeBlock ? combined : seg.reported,
       churnReported: seg.churnReported || churnBlock,
       riskReported: seg.riskReported || riskBlock,
+      zeroWriteReported: changed.size > 0 ? false : (seg.zeroWriteReported || zeroWriteBlock),
     });
-  } else if (fileLimitBlock || scopeBlock || riskBlock) {
+  } else if (fileLimitBlock || scopeBlock || riskBlock || zeroWriteBlock || (trackZeroWrite && zeroWriteAfter !== seg.zeroWriteTurns)) {
     writeSegment(file, state, ctx.root, {
       ...seg,
+      at: Date.now(),
+      zeroWriteTurns: zeroWriteAfter,
       reported: fileLimitBlock || scopeBlock ? combined : seg.reported,
       riskReported: seg.riskReported || riskBlock,
+      zeroWriteReported: changed.size > 0 ? false : (seg.zeroWriteReported || zeroWriteBlock),
     });
   }
 
@@ -469,10 +578,13 @@ export function assessStop({ cwd, sessionId }) {
     scopeBlock ? scopeReason : '',
     churnBlock ? churnReason(turnsAfter) : '',
     riskBlock ? riskStopReason(riskFindings) : '',
+    zeroWriteBlock ? zeroWriteStallReason(zeroWriteAfter, activeChanges) : '',
   ]
     .filter(Boolean).join('\n\n');
   const reportedFiles = (fileLimitBlock || scopeBlock || churnBlock) ? combined : [...changed].sort();
-  const reasonCode = fileLimitBlock ? 'file_limit' : (scopeBlock ? 'scope_cross' : (churnBlock ? 'churn' : 'risk_sentinel'));
+  const reasonCode = fileLimitBlock
+    ? 'file_limit'
+    : (scopeBlock ? 'scope_cross' : (churnBlock ? 'churn' : (zeroWriteBlock ? 'zero_write_stall' : 'risk_sentinel')));
   recordEvent('tier_stop', { verdict: 'block', reasonCode, tier: ctx.isPrimary ? '1' : '2', count: reportedFiles.length });
-  return { verdict: 'block', files: reportedFiles, reason };
+  return { verdict: 'block', reasonCode, files: reportedFiles, reason };
 }

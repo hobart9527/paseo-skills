@@ -11,7 +11,9 @@ export const DEFAULT_WARN_READS = 15;
 export const DEFAULT_STOP_READS = 25;
 export const DEFAULT_WARN_MIN = 10;
 export const DEFAULT_STOP_MIN = 18;
+export const DEFAULT_RECON_WARN_READS = 15;
 const NEGATIVE_CACHE_TTL_MS = 60_000;
+const RECON_IDLE_MS = 45 * 60_000;
 
 function dirMtimeMs(dir) {
   try { return fs.statSync(dir).mtimeMs; } catch { return null; }
@@ -72,6 +74,18 @@ function gitStatusLines(root, args) {
   }
 }
 
+function isAuthorChangeRoot(changeDir) {
+  if (fs.existsSync(path.join(changeDir, 'proposal.md'))) return true;
+  if (fs.existsSync(path.join(changeDir, 'baseline-facts.md'))) return true;
+  const metaPath = path.join(changeDir, '.openspec.yaml');
+  if (!fs.existsSync(metaPath)) return false;
+  try {
+    return /^schema:\s*(?:paseo-pipeline|paseo-tier2)\s*$/m.test(fs.readFileSync(metaPath, 'utf8'));
+  } catch {
+    return false;
+  }
+}
+
 export function detectActiveAuthorChange(cwd) {
   try {
     if (typeof cwd !== 'string' || cwd.trim() === '') return null;
@@ -92,8 +106,8 @@ export function detectActiveAuthorChange(cwd) {
       if (!ent.isDirectory() || ent.name === 'archive') continue;
       const change = ent.name;
       const changeDir = path.join(changesRoot, change);
-      if (!fs.existsSync(path.join(changeDir, 'proposal.md'))) continue;
       if (fs.existsSync(path.join(changeDir, 'tasks.md'))) continue;
+      if (!isAuthorChangeRoot(changeDir)) continue;
       const hasSpecs = hasAnySpecFile(path.join(changeDir, 'specs'));
       const prefix = `openspec/changes/${change}/`;
       const touched = touchedText.includes(prefix);
@@ -151,10 +165,10 @@ function resolveCachedActiveChange({ cwd, existing, now }) {
 
   if (sameCwd) {
     if (existing.change && existing.root && existing.changeDir) {
-      const hasProposal = fs.existsSync(path.join(existing.changeDir, 'proposal.md'));
       const hasTasks = fs.existsSync(path.join(existing.changeDir, 'tasks.md'));
+      const hasRoot = !hasTasks && isAuthorChangeRoot(existing.changeDir);
       const changesMtimeMs = dirMtimeMs(path.join(existing.root, 'openspec', 'changes'));
-      if (hasProposal && !hasTasks && changesMtimeMs === existing.changesMtimeMs) {
+      if (hasRoot && !hasTasks && changesMtimeMs === existing.changesMtimeMs) {
         return {
           active: { root: existing.root, change: existing.change, changeDir: existing.changeDir },
           cacheHit: true,
@@ -327,9 +341,73 @@ export function assessAuthorCompact({ cwd, sessionId } = {}) {
       reasonCode: 'author_compact_empty_specs',
       count: existing?.readCount ?? 0,
     });
-    return `[author-guard] Context compacted while authoring "${active.change}" with no spec.md written under openspec/changes/${active.change}/specs/. Do NOT re-read source files from scratch; read baseline-facts.md and proposal.md only to persist specs/<cap>/spec.md immediately, or return INCOMPLETE.`;
+    return `[author-guard] Context compacted while authoring "${active.change}" with no spec.md written under openspec/changes/${active.change}/specs/. Do NOT re-read source files from scratch; read baseline-facts.md (and proposal.md if present) only to persist specs/<cap>/spec.md immediately, or return INCOMPLETE.`;
   } catch (err) {
     logHookError('author-guard:compact', err);
     return null;
+  }
+}
+
+function reconStateFile(sessionId) {
+  const hash = crypto.createHash('sha1').update(String(sessionId)).digest('hex').slice(0, 12);
+  return path.join(stateDir(), `rg-${hash}.json`);
+}
+
+export function resetPrimaryRecon(sessionId) {
+  try {
+    if (typeof sessionId !== 'string' || !sessionId) return false;
+    fs.rmSync(reconStateFile(sessionId), { force: true });
+    return true;
+  } catch (err) {
+    logHookError('recon-guard:reset', err);
+    return false;
+  }
+}
+
+export function recordPrimaryReconRead({ cwd, sessionId, command, now = Date.now() } = {}) {
+  try {
+    if (process.env.PIPELINE_TIER_GATE === 'off' || process.env.PIPELINE_RECON_GUARD === 'off') {
+      return { action: 'none' };
+    }
+    if (typeof sessionId !== 'string' || !sessionId) return { action: 'none' };
+    if (typeof cwd !== 'string' || !cwd.trim()) return { action: 'none' };
+    if (!isReadOnlyBash(command)) return { action: 'none' };
+
+    const ctx = repoContext(cwd);
+    if (!ctx || !ctx.isPrimary) return { action: 'none' };
+
+    const file = reconStateFile(sessionId);
+    const existing = readState(file);
+    const fresh = existing && existing.root === ctx.root && typeof existing.updatedAt === 'number' && (now - existing.updatedAt) < RECON_IDLE_MS;
+    const state = {
+      root: ctx.root,
+      count: fresh && Number.isInteger(existing.count) ? existing.count : 0,
+      warned: fresh ? Boolean(existing.warned) : false,
+      updatedAt: now,
+    };
+
+    state.count += 1;
+    const warnReads = intEnv('PIPELINE_RECON_WARN_READS', DEFAULT_RECON_WARN_READS);
+    if (!state.warned && state.count >= warnReads) {
+      state.warned = true;
+      writeState(file, state);
+      recordEvent('tool_guard', {
+        action: 'advise',
+        reasonCode: 'recon_stall',
+        count: state.count,
+      });
+      return {
+        action: 'warn',
+        reasonCode: 'recon_stall',
+        count: state.count,
+        message: `[recon-budget] 已在主 checkout 连续执行 ${state.count} 次只读探测尚无改动：若关键证据依赖生产数据/未运行服务等本地不可得信息，立即停下输出「已证代码缺陷 + 缺失的 1 项外部证据」向用户确认，或先修已证缺陷；批读代码请改用 Read 大段读取或合并单条 Bash 命令。`,
+      };
+    }
+
+    writeState(file, state);
+    return { action: 'none', count: state.count };
+  } catch (err) {
+    logHookError('recon-guard:read', err);
+    return { action: 'none' };
   }
 }

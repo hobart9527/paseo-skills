@@ -53,12 +53,12 @@ All under `$PIPELINE_HOME` (set by `install.sh`). Each prints usage on bad args.
 | `pipeline-run.mjs prepare-task <change-dir> <T-id>` | Create worktree/branch, `install-hook`, and render brief in one step. |
 | `pipeline-run.mjs worker-check <change-dir> <T-id>` | Worker before reporting: scope, trailers, `ceshi` Red immutability, Verify. |
 | `pipeline-run.mjs merge <change-dir> <T-id>` | From integration worktree after worker passes `worker-check`. |
-| `pipeline-run.mjs cp2-merge <change-dir>` | After CP-2: drift sync + `--ff-only` merge onto default branch. |
+| `pipeline-run.mjs cp2-merge <change-dir>` | After CP-2: drift sync + Verify rerun + `--ff-only` merge onto default branch. |
 | `pipeline-run.mjs tier2-verify <base>` | Unified Tier 2 delivery gate (OpenSpec + Verify rerun + `risk-scan`). |
-| `pipeline-run.mjs install-hook <worktree>...` | Install author hook (or run via `prepare-task`). |
-| `pipeline-run.mjs risk-scan <base> [<head>]` | Diff scan for 5 risk classes, test-oracle mutations, and doc caveat removals. |
+| `pipeline-run.mjs install-hook <worktree>...` | Install author hook (or via `prepare-task`). |
+| `pipeline-run.mjs risk-scan <base> [<head>]` | Diff scan for risk classes, test-oracle mutations, and caveat removals. |
 | `pipeline-run.mjs cleanup <change-dir>` | After CP-2: lists worktrees/branches and commands; executes nothing. |
-| `pipeline-run.mjs freeze\|profiles\|preflight\|inspect\|report` | Unified facade entries (`inspect`: namespace + scenarios + hotspots; `report`: local metrics). |
+| `pipeline-run.mjs freeze\|profiles\|preflight\|inspect\|hydrate\|record-review\|report` | Facade entries (`inspect`, `hydrate`, `record-review`, `report`). |
 
 ## Entry and CP-1
 
@@ -91,5 +91,5 @@ Gate failures, exit codes and interrupted merges: `templates/approvals.md` § Op
 ## Hard lines
 
 - Main session edits no business code; workers stay in Write scope and keep `ceshi` Red paths; `hanlin` writes only `openspec/changes/<change>/`; `chanpin` and `anchasi` write nothing (main session or scoped Stage 1 records `baseline-facts.md`).
-- Never `cd` across isolated checkouts (`git -C <abs-path>` only).
+- Stay inside the assigned worktree: never `cd` or `git -C` across isolated checkouts (exit worktree or delegate to an agent rooted there).
 - Missing deps are environment faults: install per lockfile; Verify and tests stay frozen. Destructive cleanup, push and merge follow their gates.

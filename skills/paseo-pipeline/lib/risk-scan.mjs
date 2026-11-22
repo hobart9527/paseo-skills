@@ -145,25 +145,28 @@ export function scanChanges({ entries = [], diffText = '', untrackedContents = n
   const testMutations = [];
   const caveatRemovals = [];
   const sourceFiles = [];
+  const untrackedFiles = new Set();
   const seenHits = new Set();
 
-  const recordHit = (riskClass, file, reason) => {
+  const recordHit = (riskClass, file, reason, untracked = false) => {
     const key = `${riskClass}:${file}:${reason}`;
     if (seenHits.has(key)) return;
     seenHits.add(key);
-    hits.push({ class: riskClass, file, reason });
+    hits.push({ class: riskClass, file, reason, untracked: Boolean(untracked) });
   };
 
   for (const entry of entries) {
     const file = String(entry.file || '').replace(/\\/g, '/');
     if (!file) continue;
+    const isUntracked = entry.status === '?';
+    if (isUntracked) untrackedFiles.add(file);
 
     if (!EXEMPT(file)) sourceFiles.push(file);
 
     if (isTestFile(file)) {
       if (entry.status === 'D' || entry.status === 'R') {
         testMutations.push({ file, reason: `existing test file ${entry.status === 'D' ? 'deleted' : 'renamed'}` });
-      } else if (entry.status !== 'A' && entry.status !== '?') {
+      } else if (entry.status !== 'A' && !isUntracked) {
         const fileHunk = hunks.get(file);
         if (fileHunk) {
           if (fileHunk.removed.some((line) => TEST_REMOVED_ASSERTION.test(line))) {
@@ -179,7 +182,7 @@ export function scanChanges({ entries = [], diffText = '', untrackedContents = n
       continue;
     }
 
-    if (DOC_OR_PROMPT_PATH.test(file) && entry.status !== 'A' && entry.status !== '?') {
+    if (DOC_OR_PROMPT_PATH.test(file) && entry.status !== 'A' && !isUntracked) {
       const fileHunk = hunks.get(file);
       if (fileHunk && fileHunk.removed.length) {
         const countTerms = (lines) => {
@@ -209,7 +212,7 @@ export function scanChanges({ entries = [], diffText = '', untrackedContents = n
     }
 
     for (const rule of PATH_RULES) {
-      if (rule.pattern.test(file)) recordHit(rule.riskClass, file, rule.reason);
+      if (rule.pattern.test(file)) recordHit(rule.riskClass, file, rule.reason, isUntracked);
     }
 
     const fileHunk = hunks.get(file);
@@ -218,7 +221,7 @@ export function scanChanges({ entries = [], diffText = '', untrackedContents = n
       : (untrackedContents.has(file) ? String(untrackedContents.get(file)).split(/\r?\n/) : []);
     for (const line of changedLines) {
       for (const rule of HUNK_RULES) {
-        if (rule.pattern.test(line)) recordHit(rule.riskClass, file, rule.reason);
+        if (rule.pattern.test(line)) recordHit(rule.riskClass, file, rule.reason, isUntracked);
       }
     }
   }
@@ -228,6 +231,10 @@ export function scanChanges({ entries = [], diffText = '', untrackedContents = n
   const classes = [...new Set(hits.map((h) => h.class))].sort();
   const reviewRequired = classes.length > 0 || testMutations.length > 0 || caveatRemovals.length > 0;
   const tierRequired = uniqueSources.length > DEFAULT_LIMIT || scopes.length >= 2 ? 2 : 1;
+  const untrackedOnlyRisk = hits.length > 0
+    && hits.every((h) => h.untracked)
+    && testMutations.length === 0
+    && caveatRemovals.length === 0;
 
   return {
     reviewRequired,
@@ -238,11 +245,22 @@ export function scanChanges({ entries = [], diffText = '', untrackedContents = n
     caveatRemovals,
     sourceFiles: uniqueSources,
     scopes,
+    untrackedFiles: [...untrackedFiles].sort(),
+    untrackedOnlyRisk,
   };
 }
 
+function normalizeScanFilter(files) {
+  if (!Array.isArray(files) || !files.length) return null;
+  const normalized = files
+    .flatMap((item) => String(item || '').split(','))
+    .map((p) => p.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, ''))
+    .filter(Boolean);
+  return normalized.length ? new Set(normalized) : null;
+}
+
 /** Run git diff + untracked scan in `cwd` comparing `base` to `head` (or working tree). */
-export function scanRepo({ cwd = process.cwd(), base, head = null, workingTree = false } = {}) {
+export function scanRepo({ cwd = process.cwd(), base, head = null, workingTree = false, files = null, trackedOnly = false } = {}) {
   if (!base) throw new Error('base ref or SHA is required');
   const rootRes = runGit(cwd, ['rev-parse', '--show-toplevel']);
   if (rootRes.status !== 0) throw new Error(`not a git repository: ${cwd}`);
@@ -260,25 +278,32 @@ export function scanRepo({ cwd = process.cwd(), base, head = null, workingTree =
     headSha = verifyHead.stdout.trim();
   }
 
+  const fileFilter = normalizeScanFilter(files);
+  const matchesFilter = (entry) => !fileFilter
+    || fileFilter.has(String(entry.file || '').replace(/\\/g, '/'))
+    || (entry.from && fileFilter.has(String(entry.from).replace(/\\/g, '/')));
+
   const rangeArgs = useWorkingTree ? [baseSha] : [baseSha, headSha];
   const nameStatus = runGit(root, ['diff', '--name-status', '-z', ...rangeArgs]);
   if (nameStatus.status !== 0) throw new Error(`git diff --name-status failed: ${nameStatus.stderr}`);
-  const entries = parseNameStatusZ(nameStatus.stdout);
+  const entries = parseNameStatusZ(nameStatus.stdout).filter(matchesFilter);
 
   const diffOut = runGit(root, ['diff', '-U0', '--no-color', ...rangeArgs], { maxBuffer: 32 * 1024 * 1024 });
   if (diffOut.status !== 0) throw new Error(`git diff failed: ${diffOut.stderr}`);
 
   const untrackedContents = new Map();
-  if (useWorkingTree) {
+  if (useWorkingTree && !trackedOnly) {
     const untracked = runGit(root, ['ls-files', '--others', '--exclude-standard', '-z']);
     if (untracked.status === 0) {
       for (const file of untracked.stdout.split('\0').filter(Boolean)) {
-        entries.push({ status: '?', file });
-        if (!UNCOUNTED(file) && !file.startsWith('openspec/') && !file.startsWith('.superpowers/')) {
+        const normFile = file.replace(/\\/g, '/');
+        if (fileFilter && !fileFilter.has(normFile)) continue;
+        entries.push({ status: '?', file: normFile });
+        if (!UNCOUNTED(normFile) && !normFile.startsWith('openspec/') && !normFile.startsWith('.superpowers/')) {
           try {
-            const full = path.join(root, file);
+            const full = path.join(root, normFile);
             if (fs.statSync(full).size <= 512 * 1024) {
-              untrackedContents.set(file, fs.readFileSync(full, 'utf8'));
+              untrackedContents.set(normFile, fs.readFileSync(full, 'utf8'));
             }
           } catch {
             // Skip unreadable untracked file
@@ -294,6 +319,8 @@ export function scanRepo({ cwd = process.cwd(), base, head = null, workingTree =
     base: baseSha,
     head: headSha,
     workingTree: useWorkingTree,
+    trackedOnly: Boolean(trackedOnly),
+    ...(fileFilter ? { filteredFiles: [...fileFilter].sort() } : {}),
     ...scan,
   };
 }

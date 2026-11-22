@@ -214,3 +214,41 @@ test('detects removal of safety or prohibition caveats from docs and prompts (T-
   assert.equal(preserved.reviewRequired, false);
   assert.equal(preserved.caveatRemovals.length, 0);
 });
+
+test('risk-scan supports --files, --tracked-only, and marks untracked-only residue hits (M2)', (t) => {
+  const root = makeRepo();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const base = sh(root, 'rev-parse', 'HEAD');
+
+  // Benign tracked edit (Tier 1 UI fix) while unrelated untracked auth residue sits in workspace
+  fs.mkdirSync(path.join(root, 'src', 'ui'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'src', 'ui', 'picker.js'), 'export const picker = () => "ok";\n');
+  sh(root, 'add', 'src/ui/picker.js');
+  sh(root, 'commit', '-qm', 'add clean picker');
+
+  fs.mkdirSync(path.join(root, 'design', 'auth'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'design', 'auth', 'probe.js'), 'export const token = true;\n');
+
+  // Default working-tree scan detects the untracked auth file and flags untrackedOnlyRisk
+  const defaultRes = spawnSync('node', [RISK_SCAN_CLI, base, '--cwd', root, '--working-tree'], { encoding: 'utf8' });
+  assert.equal(defaultRes.status, 0);
+  assert.match(defaultRes.stdout, /RISK \[auth\] \(untracked\) design\/auth\/probe\.js/);
+  assert.match(defaultRes.stdout, /NOTE hits came only from untracked files/);
+
+  // Scoped with --files or --tracked-only avoids false escalation from unrelated residue
+  const scopedRes = spawnSync('node', [RISK_SCAN_CLI, base, '--cwd', root, '--working-tree', '--files', 'src/ui/picker.js', '--require-clean', '--json'], { encoding: 'utf8' });
+  assert.equal(scopedRes.status, 0, scopedRes.stderr + scopedRes.stdout);
+  assert.equal(JSON.parse(scopedRes.stdout).reviewRequired, false);
+
+  const trackedRes = spawnSync('node', [RISK_SCAN_CLI, base, '--cwd', root, '--working-tree', '--tracked-only', '--require-clean', '--json'], { encoding: 'utf8' });
+  assert.equal(trackedRes.status, 0, trackedRes.stderr + trackedRes.stdout);
+  assert.equal(JSON.parse(trackedRes.stdout).reviewRequired, false);
+
+  // If --files explicitly includes a risky untracked file, risk is still detected!
+  const targetedUntracked = spawnSync('node', [RISK_SCAN_CLI, base, '--cwd', root, '--working-tree', '--files', 'src/ui/picker.js,design/auth/probe.js', '--require-clean', '--json'], { encoding: 'utf8' });
+  assert.equal(targetedUntracked.status, 1);
+  const targetedJson = JSON.parse(targetedUntracked.stdout);
+  assert.equal(targetedJson.reviewRequired, true);
+  assert.ok(targetedJson.classes.includes('auth'));
+  assert.equal(targetedJson.hits[0].untracked, true);
+});

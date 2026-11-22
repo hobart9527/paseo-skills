@@ -2,6 +2,7 @@
 // PreToolUse tier gate: counts distinct source files and scopes touched on the primary checkout
 // so Tier 2+ work moves into linked worktrees without fragile transcript-JSONL parsing.
 import { logHookError } from '../lib/tier-gate.mjs';
+import { recordEvent } from '../lib/telemetry.mjs';
 
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
 async function main() {
@@ -11,8 +12,9 @@ async function main() {
   const target = payload?.tool_input?.file_path ?? payload?.tool_input?.notebook_path;
   if (typeof target !== 'string' || !target) return;
   try {
-    const { recordAuthorWrite } = await import('../lib/author-guard.mjs');
+    const { recordAuthorWrite, resetPrimaryRecon } = await import('../lib/author-guard.mjs');
     recordAuthorWrite({ target, sessionId: payload.session_id });
+    resetPrimaryRecon(payload.session_id);
   } catch (err) {
     logHookError('tier-write-hook:author-guard', err);
   }
@@ -22,8 +24,10 @@ async function main() {
     sessionId: payload.session_id,
   });
   if (verdict.verdict === 'deny') {
+    recordEvent('tier_write', { tier: '1', action: 'deny', reasonCode: verdict.reasonCode || 'tier1_limit' });
     console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: verdict.reason } }));
   } else if (verdict.verdict === 'ask') {
+    recordEvent('tier_write', { tier: '1', action: 'ask', reasonCode: verdict.reasonCode || 'tier1_limit' });
     console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: `[tier-gate] ${verdict.reason}` } }));
   }
 }

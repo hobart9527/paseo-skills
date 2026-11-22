@@ -317,3 +317,100 @@ test('identical-call deny for other tools says to read the error and change a fi
   assert.match(out.permissionDecisionReason, /字段|field/i);
   assert.doesNotMatch(out.permissionDecisionReason, /The identical call failed 3 times; change args/);
 });
+
+test('Agent: denies built-in independent code review while allowing normal Explore/research subagents', (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-agent-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const tel = path.join(tmp, 'metrics.jsonl');
+
+  const deniedByType = guard({
+    tool_name: 'Agent',
+    tool_input: { description: 'Check picker diff', subagent_type: 'code-review', prompt: 'Inspect commit abc' },
+  }, { PIPELINE_TELEMETRY_FILE: tel, state: tmp });
+  assert.equal(deniedByType.permissionDecision, 'deny');
+  assert.match(deniedByType.permissionDecisionReason, /anchasi/);
+
+  const deniedByDesc = guard({
+    tool_name: 'Agent',
+    tool_input: { description: 'Tier 2 independent review', prompt: 'You are an independent reviewer. Output PASS or BLOCKED.' },
+  }, { PIPELINE_TELEMETRY_FILE: tel, state: tmp });
+  assert.equal(deniedByDesc.permissionDecision, 'deny');
+
+  const deniedByZh = guard({
+    tool_name: 'Agent',
+    tool_input: { description: '复核提交', prompt: '独立评审一个已提交的前端修复，只评审、不改代码，输出 PASS 或 BLOCKED。' },
+  }, { PIPELINE_TELEMETRY_FILE: tel, state: tmp });
+  assert.equal(deniedByZh.permissionDecision, 'deny');
+
+  const deniedContract = guard({
+    tool_name: 'Agent',
+    tool_input: { description: 'Review contract', prompt: 'You are an independent contract reviewer. Read-only; output PASS or BLOCKED.' },
+  }, { PIPELINE_TELEMETRY_FILE: tel, state: tmp });
+  assert.equal(deniedContract.permissionDecision, 'deny');
+
+  const deniedCodeReviewer = guard({
+    tool_name: 'Agent',
+    tool_input: { description: 'Review changes', subagent_type: 'code-reviewer', prompt: 'You are an independent code reviewer. Read-only; output PASS or BLOCKED.' },
+  }, { PIPELINE_TELEMETRY_FILE: tel, state: tmp });
+  assert.equal(deniedCodeReviewer.permissionDecision, 'deny');
+
+  const allowedExplore = guard({
+    tool_name: 'Agent',
+    tool_input: { description: 'Search auth routes', subagent_type: 'Explore', prompt: 'Find where session tokens are validated in packages/server.' },
+  }, { PIPELINE_TELEMETRY_FILE: tel, state: tmp });
+  assert.deepEqual(allowedExplore, {});
+});
+
+test('Bash: primary-checkout read-only recon stall advises once at threshold and resets after write', (t) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'recon-repo-')));
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), 'recon-state-'));
+  t.after(() => {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(state, { recursive: true, force: true });
+  });
+  spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: repo });
+  spawnSync('git', ['config', 'user.email', 't@t'], { cwd: repo });
+  spawnSync('git', ['config', 'user.name', 't'], { cwd: repo });
+  fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'src/a.js'), 'export const a = 1;\n');
+  spawnSync('git', ['add', '.'], { cwd: repo });
+  spawnSync('git', ['commit', '-qm', 'seed'], { cwd: repo });
+
+  const wt = `${repo}-wt`;
+  spawnSync('git', ['worktree', 'add', '-q', '-b', 'feat/x', wt], { cwd: repo });
+  t.after(() => fs.rmSync(wt, { recursive: true, force: true }));
+
+  const tel = path.join(state, 'metrics.jsonl');
+  const env = { PIPELINE_RECON_WARN_READS: '3', PIPELINE_TELEMETRY_FILE: tel, state };
+  const readCmd = (cwd, cmd, session_id = 'recon-1') => guard({
+    tool_name: 'Bash',
+    cwd,
+    session_id,
+    tool_input: { command: cmd },
+  }, env);
+
+  assert.deepEqual(readCmd(repo, 'rg a src/'), {});
+  assert.deepEqual(readCmd(repo, 'sed -n 1,5p src/a.js'), {});
+  const third = readCmd(repo, 'git status --short');
+  assert.match(third.additionalContext, /\[recon-budget\]/);
+  // Advisory fires once per segment.
+  assert.deepEqual(readCmd(repo, 'cat src/a.js'), {});
+
+  // Linked worktree never emits primary-checkout recon_stall.
+  for (const cmd of ['rg a src/', 'cat src/a.js', 'git status --short']) {
+    assert.deepEqual(readCmd(wt, cmd, 'recon-wt'), {});
+  }
+
+  // Write via tier-write-hook resets primary recon counter.
+  const writeHook = path.join(here, '..', 'hooks', 'tier-write-hook.mjs');
+  const writeRes = spawnSync('node', [writeHook], {
+    input: JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: path.join(repo, 'src/a.js') }, session_id: 'recon-1' }),
+    encoding: 'utf8',
+    env: { ...process.env, PIPELINE_TIER_GATE_STATE: state, PIPELINE_TELEMETRY_FILE: tel },
+  });
+  assert.equal(writeRes.status, 0);
+
+  assert.deepEqual(readCmd(repo, 'rg a src/'), {});
+  assert.deepEqual(readCmd(repo, 'sed -n 1,5p src/a.js'), {});
+  assert.match(readCmd(repo, 'cat src/a.js').additionalContext, /\[recon-budget\]/);
+});

@@ -6,16 +6,17 @@ user-invocable: true
 
 # Tier 2 Handoff
 
-`/paseo-handoff` is bundled with Paseo and synced by the app, so it is not edited. This skill wraps it: the brief is filled and checked here first, then pasted into the `/paseo-handoff` prompt.
+`/paseo-handoff` is bundled with Paseo and synced by the app, so it is not edited. This skill wraps it: fill and check the brief here, then paste into `/paseo-handoff`.
 
-1. Read `docs/tier2-handoff-brief.md` from this skills checkout (`~/Codex/paseo-skills/docs/tier2-handoff-brief.md`). It is the only template; do not restate it.
-2. Fill every Assignment field. `Slices` is serial, one line per slice, no DAG. A Tier 3 `freeze-check` that routed `handoff` supplies its tasks as `Slices` unchanged.
-3. Run the brief's `Pre-dispatch check`. Do not dispatch while any item fails:
-   - `Delegate:`, `Testing:`, `Authorization:`, `Pending decisions`, `Slices`, `Risk:` or `Contract:` is missing (`none — <reason>` counts), or a named contract fails `openspec validate <name> --strict`.
-   - Independent Red was requested but test paths, available real interface, Verify or the tester brief are missing. Default owner testing adds no extra dispatch. Check the Red evidence packet before handing the same branch to the named Delegate; never choose a different model merely from its display name.
-   - A must-pass test asserts a defect being fixed. Move it into its slice as "change to …".
-   - A pending decision touches a risky operation, or auth or money semantics, and has no user answer. Ask the user once, giving the exact reply sentence, and end the turn.
-4. Tell the user the size estimate (files, lines, minutes) and the slice count.
-5. Invoke `/paseo-handoff`. If `tasks.md` exists, render the briefing directly with `node "$PIPELINE_HOME"/brief.mjs tier2 --change <name> --repo <path>`; otherwise paste the filled brief in `## Constraints` / `## Acceptance criteria` and `Slices` in `## Task`.
-6. Track progress by finished slices and Git tips, not elapsed time. Hard-risk questions the delegate raises go to the user verbatim; never answer them.
-7. On delivery, run the brief's Evidence recheck yourself via `node "$PIPELINE_HOME"/pipeline-run.mjs tier2-verify <base> [--change-dir openspec/changes/<name>]` (which executes `risk-scan.mjs`) at the tip SHA. Dispatch a reviewer (`brief.mjs tier2-review` / `docs/tier2-reviewer-brief.md`) whenever `Risk:` names a class OR `tier2-verify` reports `REVIEW_REQUIRED` (even if `Risk: none` was declared); present any unresolved `BLOCKED` verdict verbatim to the human before merge.
+1. For heavy/serial work (post-`/brainstorming`, compacted, `>=800`-line files, or `>=5` test files), share Stage 0/1 first: `node "$PIPELINE_HOME"/pipeline-run.mjs prepare-author openspec/changes/<name> --schema paseo-tier2 --hydrate` + read-only `chanpin` (`brief.mjs recon`) → `baseline-facts.md` (`<=15KB`) before specs/code.
+2. Read `docs/tier2-handoff-brief.md` from the skills checkout. It is the only template; do not restate it.
+3. Fill every Assignment field. `Slices` is serial, one line per slice, no DAG. A `handoff` route from `freeze-check` keeps its tasks as `Slices` unchanged.
+4. Run `Pre-dispatch check`; do not dispatch while any item fails:
+   - Missing `Delegate:`, `Testing:`, `Authorization:`, `Pending decisions`, `Slices`, `Risk:`, or `Contract:` (`none — <reason>` counts), or named contract fails `openspec validate <name> --strict`.
+   - Requested independent Red lacks test paths, real interface, Verify, or `templates/tester.md`. Default owner testing adds no dispatch; verify Red evidence before handing the same branch to Delegate (never pick models by display name).
+   - Move any must-pass defect-locking test into its slice as "change to …".
+   - Unanswered risky operation / auth / money decision: ask user once with exact reply sentence and end turn.
+5. Tell user the size estimate (files, lines, minutes) and slice count.
+6. Invoke `/paseo-handoff`. When `tasks.md` exists, render whole or per-slice JIT prompts with `node "$PIPELINE_HOME"/brief.mjs tier2 --change <name> --repo <path> [--task T-01]` (relays `handoff-progress.md` cleanly across heavy slices); else paste the filled brief.
+7. Track progress by finished slices and Git tips, not elapsed time; forward hard-risk questions verbatim.
+8. On delivery, run Evidence recheck via `node "$PIPELINE_HOME"/pipeline-run.mjs tier2-verify <base> [--change-dir openspec/changes/<name>]` (runs `risk-scan.mjs`) at tip SHA. If `Risk:` is non-none or `tier2-verify` returns `REVIEW_REQUIRED`, run 1+1 reviewer (`brief.mjs tier2-review`), record via `pipeline-run.mjs record-review --mode tier2`, and present unresolved `BLOCKED` verbatim before merge.

@@ -15,6 +15,7 @@ import { patchIdOf as patchIdFor, samePatchCommits as samePatchCommitsFor } from
 import { missingDependency, dependencyMessage } from './lib/toolchain.mjs';
 import { WRITER_ROLES } from './lib/roles.mjs';
 import { runShell } from './lib/verify-runner.mjs';
+import { recordEvent } from './lib/telemetry.mjs';
 const usage = 'Usage: merge-task.mjs <branch> <task-id> [<legacy-review-tag>] [--timeout ms] [--allow-test-infra]';
 let mergeState = null;
 function fail(message, code = 1) {
@@ -22,6 +23,21 @@ function fail(message, code = 1) {
     try { writeMergeState(undefined, mergeState.change, mergeState.task, { tip: mergeState.tip, status: 'failed', code }); }
     catch (error) { console.error(`[merge-task] cannot record failure: ${error.message}`); }
   }
+  const reasonByCode = {
+    2: 'usage',
+    3: 'state_error',
+    10: 'merge_conflict',
+    20: 'verify_failed',
+    21: 'regression_failed',
+    30: 'scope_violation',
+    31: 'provenance_error',
+    34: 'base_drift',
+    35: 'dep_not_done',
+    36: 'missing_deps',
+    37: 'retry_cap',
+    38: 'oracle_tampering',
+  };
+  recordEvent('merge_task', { tier: '3', ok: false, exit: code, reasonCode: reasonByCode[code] || 'merge_failed' });
   console.error(`[merge-task] Error: ${message}`);
   process.exit(code);
 }
@@ -309,4 +325,5 @@ git(['commit', '-m', `merge(${taskId}): ${branch}`, '-m', [
 ].join('\n')]);
 try { clearMergeState(undefined, change, taskId); mergeState = null; }
 catch (error) { console.error(`[merge-task] merged, but cannot clear merge state: ${error.message}`); process.exit(3); }
+recordEvent('merge_task', { tier: '3', ok: true, exit: 0, durationMs: timing.total, count: replayed });
 console.log(`[merge-task] merged ${taskId} from ${tip.slice(0, 7)} as ${git(['rev-parse', 'HEAD']).slice(0, 7)}`);
