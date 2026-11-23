@@ -523,5 +523,5 @@ test('tool guard checks repeated_failure before rewrite exit and expands ~ in ta
     cwd: wt,
     tool_input: { command: 'git -C ~/Codex/demo-repo status' },
   }, { HOME: fakeHome, PIPELINE_TELEMETRY_FILE: tel, state });
-  assert.match(gitCOut.additionalContext, /block `git -C` targeting the primary checkout/);
+  assert.match(gitCOut.additionalContext, /Avoid `git -C` mutating the primary checkout/);
 });

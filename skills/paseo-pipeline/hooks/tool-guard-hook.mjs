@@ -415,10 +415,10 @@ function primaryCheckoutWarning(cwd, command) {
   const { ctx, primaryRoot } = info;
 
   if (hasCd && targetsPrimary(cwd, ctx, primaryRoot, command, /(?:^|[;&|(\s])cd\s+(?:-P\s+|-L\s+)?(?:"([^"\n]+)"|'([^'\n]+)'|([^\s;&|()]+))/g, true)) {
-    return `You are in a linked worktree (${ctx.root}); avoid \`cd\` into the shared primary checkout (${primaryRoot}). Use absolute paths for reads, or call \`ExitWorktree\` (\`action: "keep"\`) before running git in the primary checkout (worktree-isolated sessions block \`git -C\` to another checkout).`;
+    return `You are in a linked worktree (${ctx.root}); avoid \`cd\` into the shared primary checkout (${primaryRoot}). Use absolute paths for reads, or call \`ExitWorktree\` (\`action: "keep"\`) before running git writes in the primary checkout.`;
   }
   if (hasGitC && targetsPrimary(cwd, ctx, primaryRoot, command, /(?:^|[;&|(\s])git\s+(?:[^\n;&|]*?\s)?-C\s+(?:"([^"\n]+)"|'([^'\n]+)'|([^\s;&|()]+))/g)) {
-    return `Worktree-isolated sessions block \`git -C\` targeting the primary checkout (${primaryRoot}). Call \`ExitWorktree\` (\`action: "keep"\`) first to return to ${primaryRoot}, or delegate the primary-checkout git operation to a Paseo agent rooted there.`;
+    return `Avoid \`git -C\` mutating the primary checkout (${primaryRoot}) from a worktree. Call \`ExitWorktree\` (\`action: "keep"\`) first to return to ${primaryRoot} (or if \`ExitWorktree\` is no-op, keep primary access read-only or delegate writes to a Paseo agent rooted there).`;
   }
   return null;
 }

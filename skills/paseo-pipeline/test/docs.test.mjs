@@ -190,7 +190,7 @@ test('tier2-handoff wraps paseo-handoff with the brief and pre-dispatch check', 
 
 test('ship skill exits EnterWorktree before main-dir ops, handles 403 local fallback, archives openspec, and respects accepted BLOCKED', () => {
   const ship = fs.readFileSync(path.join(dir, '..', 'ship', 'SKILL.md'), 'utf8');
-  for (const token of ['ExitWorktree', 'action: "keep"', 'HTTP 403', 'unaccepted', 'do NOT push or deploy an unmerged', 'openspec archive']) {
+  for (const token of ['ExitWorktree', 'action: "keep"', 'HTTP 403', 'unaccepted', 'do NOT push or deploy an unmerged', 'openspec archive', 'Exceptions & Options', 'NOT acceptance of']) {
     assert.ok(ship.includes(token), `ship missing ${token}`);
   }
   assert.doesNotMatch(ship, /Run every merge step as `git -C <main-dir>`; stay in the current checkout/);
