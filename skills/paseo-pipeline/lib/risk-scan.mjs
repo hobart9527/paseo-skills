@@ -68,6 +68,9 @@ const TEST_REMOVED_ASSERTION = /\b(?:assert|expect|should|rejects|throws|doesNot
 const TEST_SKIP_ADDED = /\b(?:test|it|describe)\.(?:skip|todo|only)\b|@?(?:pytest\.mark\.(?:skip|xfail)|unittest\.skip)\b/;
 const DOC_OR_PROMPT_PATH = /(?:^|\/)(?:SKILL\.md|README\.md|CLAUDE\.md|task-routing\.md|(?:docs|templates)\/.*\.md)$/i;
 const DOC_CAVEAT_TERM = /\b(?:never|must not|do not|cannot|not\s+(?:an?|only|independence|sandbox|self)|read-only|refuse|block(?:ed)?|unverified|forbidden|prohibited|caveat)\b/gi;
+const UI_ONLY_PATH = /(?:^|\/)(?:components|pages|views|styles)\/.*\.(?:tsx|jsx|css|scss|less)$/i;
+const UI_PATH_RULE_SKIP = new Set(['money', 'persistence', 'external-write']);
+const COMMENT_ONLY_LINE = /^\s*(?:\/\/|\/\*|\*(?:\/|\s|$)|#(?!!))/;
 
 export const isTestFile = isTestPath;
 
@@ -211,7 +214,9 @@ export function scanChanges({ entries = [], diffText = '', untrackedContents = n
       continue;
     }
 
+    const isUiOnlyPath = UI_ONLY_PATH.test(file);
     for (const rule of PATH_RULES) {
+      if (isUiOnlyPath && UI_PATH_RULE_SKIP.has(rule.riskClass)) continue;
       if (rule.pattern.test(file)) recordHit(rule.riskClass, file, rule.reason, isUntracked);
     }
 
@@ -220,6 +225,7 @@ export function scanChanges({ entries = [], diffText = '', untrackedContents = n
       ? [...fileHunk.added, ...fileHunk.removed]
       : (untrackedContents.has(file) ? String(untrackedContents.get(file)).split(/\r?\n/) : []);
     for (const line of changedLines) {
+      if (COMMENT_ONLY_LINE.test(line)) continue;
       for (const rule of HUNK_RULES) {
         if (rule.pattern.test(line)) recordHit(rule.riskClass, file, rule.reason, isUntracked);
       }

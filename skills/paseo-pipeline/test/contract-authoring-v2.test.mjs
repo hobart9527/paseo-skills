@@ -6,7 +6,7 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseTasks, entryForScenario, requiredForScenario } from '../lib/tasks.mjs';
-import { isReadOnlyBash, recordAuthorRead } from '../lib/author-guard.mjs';
+import { isReadOnlyBash, recordAuthorRead, recordWorktreeReadStall, resetPrimaryRecon } from '../lib/author-guard.mjs';
 import { parseAcceptanceTable } from '../lib/acceptance.mjs';
 import { summarizeTelemetry } from '../lib/telemetry.mjs';
 
@@ -387,6 +387,11 @@ test('freeze-check: baseline-facts R0 exemption, ROI 1.8x threshold at maxWidth=
 test('author-guard hooks: read thrashing warn/stop, git -C allowance, write reset, linked-worktree compact stop, and telemetry report', () => {
   assert.equal(isReadOnlyBash('rg foo src/'), true);
   assert.equal(isReadOnlyBash('git -C /tmp/wt log --oneline -n 5 | wc -l'), true);
+  assert.equal(isReadOnlyBash('S=packages/server/src; echo "=== foo" && rg -n bar $S'), true);
+  assert.equal(isReadOnlyBash('W=/tmp/repo && cd $W && sed -n "1,50p" a.ts'), true);
+  assert.equal(isReadOnlyBash('S=1; echo hi'), false);
+  assert.equal(isReadOnlyBash('S=$(rm -rf /tmp/x); rg foo src/'), false);
+  assert.equal(isReadOnlyBash('echo $(touch x) && rg foo src/'), false);
   assert.equal(isReadOnlyBash('node scripts/run.mjs > out.txt'), false);
   assert.equal(isReadOnlyBash('mkdir -p specs/cap'), false);
 
@@ -601,5 +606,56 @@ test('author-guard recordAuthorRead uses O(1) session state cache with negative 
     else process.env.PIPELINE_TIER_GATE_STATE = prevState;
     if (prevTel === undefined) delete process.env.PIPELINE_TELEMETRY_FILE;
     else process.env.PIPELINE_TELEMETRY_FILE = prevTel;
+  }
+});
+
+test('author-guard tracks Read repeat-file warnings and worktree read-stall with write reset', () => {
+  const prevState = process.env.PIPELINE_TIER_GATE_STATE;
+  const prevTel = process.env.PIPELINE_TELEMETRY_FILE;
+  const prevWtWarn = process.env.PIPELINE_WORKTREE_READ_WARN;
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-read-wt-'));
+  process.env.PIPELINE_TIER_GATE_STATE = stateDir;
+  process.env.PIPELINE_TELEMETRY_FILE = path.join(stateDir, 'metrics.jsonl');
+  process.env.PIPELINE_WORKTREE_READ_WARN = '3';
+  const primary = initRepo();
+  const wt = path.join(os.tmpdir(), `ag-read-wt-${process.pid}-${Date.now()}`);
+  git(primary, 'worktree', 'add', '-q', '-b', 'feat/read-wt', wt, 'main');
+  try {
+    const activeDir = path.join(wt, 'openspec', 'changes', 'repeat-check');
+    fs.mkdirSync(activeDir, { recursive: true });
+    fs.writeFileSync(path.join(activeDir, 'proposal.md'), '# Active\n');
+    const srcFile = path.join(wt, 'README.md');
+
+    // 4th Read on same file triggers soft repeat warning even before warnReads (15)
+    for (let i = 1; i <= 3; i += 1) {
+      const r = recordAuthorRead({ cwd: wt, sessionId: 's-repeat', toolName: 'Read', target: srcFile, now: 1000 + i });
+      assert.equal(r.action, 'none');
+    }
+    const r4 = recordAuthorRead({ cwd: wt, sessionId: 's-repeat', toolName: 'Read', target: srcFile, now: 2000 });
+    assert.equal(r4.action, 'warn');
+    assert.equal(r4.reasonCode, 'author_repeat_read');
+    assert.match(r4.message, /read 4 times/);
+    // Fires once per file
+    const r5 = recordAuthorRead({ cwd: wt, sessionId: 's-repeat', toolName: 'Read', target: srcFile, now: 3000 });
+    assert.equal(r5.action, 'none');
+
+    // Once tasks.md exists, recordWorktreeReadStall guards against pure-read loops and resets via resetPrimaryRecon
+    fs.writeFileSync(path.join(activeDir, 'tasks.md'), '- [ ] 1.1 T-01 do work\n');
+    assert.equal(recordWorktreeReadStall({ cwd: wt, sessionId: 's-wt-loop', toolName: 'Read', target: srcFile, now: 1000 }).action, 'none');
+    assert.equal(recordWorktreeReadStall({ cwd: wt, sessionId: 's-wt-loop', command: 'S=.; rg foo README.md', now: 2000 }).action, 'none');
+    const stall = recordWorktreeReadStall({ cwd: wt, sessionId: 's-wt-loop', toolName: 'Read', target: srcFile, now: 3000 });
+    assert.equal(stall.action, 'warn');
+    assert.equal(stall.reasonCode, 'worktree_read_stall');
+
+    resetPrimaryRecon('s-wt-loop');
+    assert.equal(recordWorktreeReadStall({ cwd: wt, sessionId: 's-wt-loop', toolName: 'Read', target: srcFile, now: 4000 }).action, 'none');
+  } finally {
+    fs.rmSync(wt, { recursive: true, force: true });
+    if (prevState === undefined) delete process.env.PIPELINE_TIER_GATE_STATE;
+    else process.env.PIPELINE_TIER_GATE_STATE = prevState;
+    if (prevTel === undefined) delete process.env.PIPELINE_TELEMETRY_FILE;
+    else process.env.PIPELINE_TELEMETRY_FILE = prevTel;
+    if (prevWtWarn === undefined) delete process.env.PIPELINE_WORKTREE_READ_WARN;
+    else process.env.PIPELINE_WORKTREE_READ_WARN = prevWtWarn;
   }
 });

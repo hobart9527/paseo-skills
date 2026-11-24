@@ -282,3 +282,47 @@ test('risk-scan uses merge-base so main drift after branch cut is never blamed o
   assert.equal(cliRes.status, 0, cliRes.stderr);
   assert.equal(JSON.parse(cliRes.stdout).reviewRequired, false);
 });
+
+test('skips path-only money/persistence/external-write for UI files and ignores comment-only lines while keeping real money math flagged', () => {
+  const uiDebounceOnly = scanChanges({
+    entries: [{ status: 'M', file: 'packages/web/src/components/invoices/InvoicePoolPage.tsx' }],
+    diffText: [
+      'diff --git a/packages/web/src/components/invoices/InvoicePoolPage.tsx b/packages/web/src/components/invoices/InvoicePoolPage.tsx',
+      '--- a/packages/web/src/components/invoices/InvoicePoolPage.tsx',
+      '+++ b/packages/web/src/components/invoices/InvoicePoolPage.tsx',
+      '@@ -1 +1 @@',
+      '-const delay = 100;',
+      '+const delay = 300;',
+    ].join('\n'),
+  });
+  assert.equal(uiDebounceOnly.reviewRequired, false);
+  assert.deepEqual(uiDebounceOnly.classes, []);
+
+  const uiRealMoneyMath = scanChanges({
+    entries: [{ status: 'M', file: 'packages/web/src/components/invoices/InvoiceSplitViewer.tsx' }],
+    diffText: [
+      'diff --git a/packages/web/src/components/invoices/InvoiceSplitViewer.tsx b/packages/web/src/components/invoices/InvoiceSplitViewer.tsx',
+      '--- a/packages/web/src/components/invoices/InvoiceSplitViewer.tsx',
+      '+++ b/packages/web/src/components/invoices/InvoiceSplitViewer.tsx',
+      '@@ -1 +1 @@',
+      '-const total = 0;',
+      '+const total = taxAmount + netAmount;',
+    ].join('\n'),
+  });
+  assert.equal(uiRealMoneyMath.reviewRequired, true);
+  assert.deepEqual(uiRealMoneyMath.classes, ['money']);
+
+  const commentOnly = scanChanges({
+    entries: [{ status: 'M', file: 'src/view.ts' }],
+    diffText: [
+      'diff --git a/src/view.ts b/src/view.ts',
+      '--- a/src/view.ts',
+      '+++ b/src/view.ts',
+      '@@ -1 +1 @@',
+      '-// old comment',
+      '+// note: verifySignature and ledger happen upstream',
+    ].join('\n'),
+  });
+  assert.equal(commentOnly.reviewRequired, false);
+  assert.deepEqual(commentOnly.classes, []);
+});

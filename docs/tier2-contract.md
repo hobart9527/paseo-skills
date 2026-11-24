@@ -12,7 +12,7 @@ openspec/changes/<name>/
   tasks.md
 ```
 
-`proposal.md` and `acceptance.md` are omitted in Tier 2 (do not write them, run `scenarios.mjs`, or edit skills `docs/tier2-contract.md`). Run `prepare-author <dir> --schema paseo-tier2 --scaffold --hydrate` for collision-free skeleton + next commands; for heavy/serial work (post-`/brainstorming`, compacted, `>=800`-line / `>=5` test files), add `chanpin` (`brief.mjs recon`) → `baseline-facts.md`, commit + log 2-line milestones every 1–2 tasks, and relay slices via `brief.mjs tier2 --task T-01` + `handoff-progress.md`. Cold worktree alone: `pipeline-run.mjs hydrate`.
+**Tier 2 Fast Path:** Stay on this doc (skip Tier 3 `SKILL.md` unless scaling to DAG). Omit `proposal.md`/`acceptance.md` (skip `scenarios.mjs` and don't edit `docs/tier2-contract.md`). Enter linked worktree upfront, run `prepare-author <dir> --schema paseo-tier2 --scaffold --hydrate`, and batch `specs/` + `tasks.md` `Write`s in one turn. If post-recon context compacted or >100k tokens, finish contract authoring and relay implementation to a clean session/slice (`brief.mjs tier2 --task T-01` + `handoff-progress.md`). Heavy/serial work adds `chanpin` (`brief.mjs recon`) → `baseline-facts.md` and commits every 1–2 tasks. Cold worktree alone: `pipeline-run.mjs hydrate`.
 
 ## spec.md & tasks.md
 - `spec.md`: `## Purpose` (50+ chars, new only) + `## ADDED | MODIFIED | REMOVED Requirements`; `### Requirement:` (SHALL) + `#### Scenario: SCEN-<CAP>-NN <title>` (`WHEN`/`THEN`, `path:line`).
@@ -20,7 +20,7 @@ openspec/changes/<name>/
 
 ## Check, Delivery & Archive
 1. `openspec validate <name> --strict` exits 0 before coding.
-2. Mark finished tasks `[x]` and run `node "$PIPELINE_HOME"/tier2-verify.mjs <base> --change-dir openspec/changes/<name>` (Verify, collisions, `Write scope` drift, stale-archive check, `risk-scan.mjs`). If `REVIEW_REQUIRED`, run 1+1 reviewer and record via `pipeline-run.mjs record-review --mode tier2`.
+2. Mark finished tasks `[x]` and run `node "$PIPELINE_HOME"/tier2-verify.mjs <base> --change-dir openspec/changes/<name>` (Verify, collisions, `Write scope` drift, stale-archive, `risk-scan.mjs`). If `REVIEW_REQUIRED`, run 1+1 reviewer and `pipeline-run.mjs record-review --mode tier2`.
 3. After `/ship` merges to `<default>`, run `openspec archive <name> -y` on `<default>`.
 
-Grows into concurrent DAG (`tasks >= 4` and `maxWidth >= 3`, or `maxWidth >= 2` with `weightedSpeedup >= 1.8`): keep `specs/` and `tasks.md`, switch `.openspec.yaml` to `schema: paseo-pipeline`, add `Depends on:` + `proposal.md`, run `acceptance sync` + `/paseo-pipeline`.
+Grows into concurrent DAG (`tasks >= 4` and `maxWidth >= 3`, or `maxWidth >= 2`, `weightedSpeedup >= 1.8`): keep `specs/` and `tasks.md`, switch `.openspec.yaml` to `schema: paseo-pipeline`, add `Depends on:` + `proposal.md`, run `acceptance sync` + `/paseo-pipeline`.

@@ -302,7 +302,11 @@ if (parsed.options.json) {
   console.log(`[tier2-verify] ${ctx.branch || 'detached'} @ ${tip.slice(0, 7)} (base ${risk.base.slice(0, 7)})`);
   console.log(`isolatedWorktree=${isolatedWorktree} clean=${!dirty} verifies=${verifyResults.length} riskReviewRequired=${risk.reviewRequired}`);
   if (!isolatedWorktree) console.error('FAIL: Tier 2 delivery is on primary checkout instead of a linked worktree');
-  if (dirty) console.error('FAIL: worktree has uncommitted changes');
+  if (dirty) {
+    const dirtyLines = dirty.split(/\r?\n/).filter(Boolean);
+    const sample = dirtyLines.slice(0, 5).map((l) => l.trim()).join(', ');
+    console.error(`FAIL: worktree has uncommitted changes (${dirtyLines.length}: ${sample}${dirtyLines.length > 5 ? ', ...' : ''})\nHINT: run \`git status --short\`, commit intended changes (or clean untracked scratch files), then re-run tier2-verify.`);
+  }
   if (contractChecked && (openSpecStrictError || openSpecStrictExit !== 0)) {
     console.error(`FAIL: openspec validate --strict failed (exit=${openSpecStrictExit ?? 'unavailable'}${openSpecStrictError ? `: ${openSpecStrictError}` : ''})`);
   }

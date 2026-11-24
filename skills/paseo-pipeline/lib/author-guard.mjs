@@ -143,6 +143,20 @@ export function detectActiveAuthorChange(cwd) {
 
 const READ_ONLY_CMD_RE = /^(?:rg|grep|egrep|fgrep|ag|ack|cat|head|tail|less|more|bat|sed\s+-n|ls|exa|eza|find|fd|tree|wc|stat|file|pwd|which|type|git\s+(?:(?:(?:-C|--git-dir|--work-tree)\s+\S+\s+)*(?:status|log|show|diff|grep|ls-files|rev-parse|branch(?:\s|$))))\b/;
 const MUTATION_OR_SCRIPT_RE = /\b(?:rm|mv|cp|mkdir|rmdir|touch|chmod|chown|ln|tee|sed\s+-i|perl\s+-pi|npm|pnpm|yarn|bun|pip|openspec\s+validate|pipeline-run\.mjs|freeze-check\.mjs|acceptance-sync\.mjs|tier2-verify\.mjs)\b|\bgit\s+(?:add|commit|checkout|switch|merge|rebase|reset|worktree|push|pull|fetch)\b/;
+const LEADING_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"\n]*"|'[^'\n]*'|[^\s;&|()]+)(?:\s+|$)/;
+const SIMPLE_CD_RE = /^cd\s+(?:-P\s+|-L\s+)?(?:"[^"\n]+"|'[^'\n]+'|[^\s;&|()]+)$/;
+const HAS_CMD_SUBST_RE = /\$\(|`/;
+
+function stripLeadingAssignments(segment) {
+  let rest = segment.trimStart();
+  for (;;) {
+    const match = rest.match(LEADING_ASSIGN_RE);
+    if (!match) break;
+    if (HAS_CMD_SUBST_RE.test(match[0])) return null;
+    rest = rest.slice(match[0].length).trimStart();
+  }
+  return rest;
+}
 
 export function isReadOnlyBash(command) {
   if (typeof command !== 'string') return false;
@@ -154,7 +168,30 @@ export function isReadOnlyBash(command) {
   if (MUTATION_OR_SCRIPT_RE.test(trimmed)) return false;
   const segments = trimmed.split(/\s*(?:\|\||&&|\||;)\s*/).map((s) => s.trim()).filter(Boolean);
   if (!segments.length) return false;
-  return segments.every((seg) => READ_ONLY_CMD_RE.test(seg));
+  let hasReadCmd = false;
+  for (const seg of segments) {
+    const rest = stripLeadingAssignments(seg);
+    if (rest === null) return false;
+    if (!rest) continue;
+    if (/^(?:echo|printf)\b/.test(rest) && !HAS_CMD_SUBST_RE.test(rest)) continue;
+    if (SIMPLE_CD_RE.test(rest) && !HAS_CMD_SUBST_RE.test(rest)) continue;
+    if (!READ_ONLY_CMD_RE.test(rest)) return false;
+    hasReadCmd = true;
+  }
+  return hasReadCmd;
+}
+
+function repoRelativeSourcePath(cwd, target, { skipChangesOnly = false } = {}) {
+  if (typeof target !== 'string' || !target.trim()) return null;
+  const ctx = repoContext(cwd);
+  if (!ctx) return null;
+  const targetAbs = realOrResolved(path.isAbsolute(target) ? target : path.resolve(cwd, target));
+  const rel = path.relative(ctx.root, targetAbs).split(path.sep).join('/');
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  if (skipChangesOnly ? (rel === 'openspec/changes' || rel.startsWith('openspec/changes/')) : (rel === 'openspec' || rel.startsWith('openspec/'))) {
+    return null;
+  }
+  return { ctx, rel };
 }
 
 function readState(file) {
@@ -211,14 +248,21 @@ function resolveCachedActiveChange({ cwd, existing, now }) {
   return { active, cacheHit: false, cwdKey, root, changesMtimeMs };
 }
 
-export function recordAuthorRead({ cwd, sessionId, command, now = Date.now() } = {}) {
+export function recordAuthorRead({ cwd, sessionId, command, toolName, target, now = Date.now() } = {}) {
   try {
     if (process.env.PIPELINE_TIER_GATE === 'off' || process.env.PIPELINE_AUTHOR_GUARD === 'off') {
       return { action: 'none' };
     }
     if (typeof sessionId !== 'string' || !sessionId) return { action: 'none' };
     if (typeof cwd !== 'string' || !cwd.trim()) return { action: 'none' };
-    if (!isReadOnlyBash(command)) return { action: 'none' };
+    let readRel = null;
+    if (toolName === 'Read') {
+      const info = repoRelativeSourcePath(cwd, target, { skipChangesOnly: true });
+      if (!info) return { action: 'none' };
+      readRel = info.rel;
+    } else if (!isReadOnlyBash(command)) {
+      return { action: 'none' };
+    }
 
     const file = guardStateFile(sessionId);
     const existing = readState(file);
@@ -236,12 +280,15 @@ export function recordAuthorRead({ cwd, sessionId, command, now = Date.now() } =
           readCount: 0,
           warnSent: false,
           stopSent: false,
+          fileReads: {},
+          repeatWarnedFiles: {},
         });
       }
       return { action: 'none', cacheHit };
     }
 
     const sameChange = existing && existing.root === active.root && existing.change === active.change;
+    const plainObj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? { ...v } : {});
     const state = {
       cwd: cwdKey,
       root: active.root,
@@ -253,9 +300,14 @@ export function recordAuthorRead({ cwd, sessionId, command, now = Date.now() } =
       readCount: sameChange && Number.isInteger(existing.readCount) ? existing.readCount : 0,
       warnSent: sameChange ? Boolean(existing.warnSent) : false,
       stopSent: sameChange ? Boolean(existing.stopSent) : false,
+      fileReads: sameChange ? plainObj(existing.fileReads) : {},
+      repeatWarnedFiles: sameChange ? plainObj(existing.repeatWarnedFiles) : {},
     };
 
     state.readCount += 1;
+    if (readRel) {
+      state.fileReads[readRel] = (Number.isInteger(state.fileReads[readRel]) ? state.fileReads[readRel] : 0) + 1;
+    }
     const elapsedMs = Math.max(0, now - state.startedAt);
     const elapsedMin = elapsedMs / 60_000;
     const { warnReads, stopReads, warnMin, stopMin } = guardThresholds();
@@ -296,6 +348,25 @@ export function recordAuthorRead({ cwd, sessionId, command, now = Date.now() } =
         elapsedMin,
         cacheHit,
         message: `[author-guard] ${state.readCount} read-only commands (${Math.floor(elapsedMin)}m) on "${active.change}" without persisting a contract file. Consult openspec/changes/${active.change}/baseline-facts.md and write openspec/changes/${active.change}/specs/<cap>/spec.md now (or verify with freeze-check --stage specs).`,
+      };
+    }
+
+    if (readRel && state.fileReads[readRel] >= 4 && !state.repeatWarnedFiles[readRel]) {
+      state.repeatWarnedFiles[readRel] = true;
+      writeState(file, state);
+      recordEvent('author_guard', {
+        action: 'advise',
+        reasonCode: 'author_repeat_read',
+        count: state.fileReads[readRel],
+      });
+      return {
+        action: 'warn',
+        reasonCode: 'author_repeat_read',
+        readCount: state.readCount,
+        repeatCount: state.fileReads[readRel],
+        file: readRel,
+        cacheHit,
+        message: `[author-guard] ${readRel} has already been read ${state.fileReads[readRel]} times on "${active.change}" without persisting contract files. Stop re-reading the same file; consult openspec/changes/${active.change}/baseline-facts.md and write specs/<cap>/spec.md + tasks.md now.`,
       };
     }
 
@@ -366,10 +437,16 @@ function reconStateFile(sessionId) {
   return path.join(stateDir(), `rg-${hash}.json`);
 }
 
+function worktreeReadStateFile(sessionId) {
+  const hash = crypto.createHash('sha1').update(String(sessionId)).digest('hex').slice(0, 12);
+  return path.join(stateDir(), `ws-${hash}.json`);
+}
+
 export function resetPrimaryRecon(sessionId) {
   try {
     if (typeof sessionId !== 'string' || !sessionId) return false;
     fs.rmSync(reconStateFile(sessionId), { force: true });
+    fs.rmSync(worktreeReadStateFile(sessionId), { force: true });
     return true;
   } catch (err) {
     logHookError('recon-guard:reset', err);
@@ -377,16 +454,23 @@ export function resetPrimaryRecon(sessionId) {
   }
 }
 
-export function recordPrimaryReconRead({ cwd, sessionId, command, now = Date.now() } = {}) {
+export function recordPrimaryReconRead({ cwd, sessionId, command, toolName, target, now = Date.now() } = {}) {
   try {
     if (process.env.PIPELINE_TIER_GATE === 'off' || process.env.PIPELINE_RECON_GUARD === 'off') {
       return { action: 'none' };
     }
     if (typeof sessionId !== 'string' || !sessionId) return { action: 'none' };
     if (typeof cwd !== 'string' || !cwd.trim()) return { action: 'none' };
-    if (!isReadOnlyBash(command)) return { action: 'none' };
 
-    const ctx = repoContext(cwd);
+    let ctx;
+    if (toolName === 'Read') {
+      const info = repoRelativeSourcePath(cwd, target, { skipChangesOnly: false });
+      if (!info) return { action: 'none' };
+      ctx = info.ctx;
+    } else {
+      if (!isReadOnlyBash(command)) return { action: 'none' };
+      ctx = repoContext(cwd);
+    }
     if (!ctx || !ctx.isPrimary) return { action: 'none' };
 
     const file = reconStateFile(sessionId);
@@ -413,7 +497,7 @@ export function recordPrimaryReconRead({ cwd, sessionId, command, now = Date.now
         action: 'warn',
         reasonCode: 'recon_stall',
         count: state.count,
-        message: `[recon-budget] 已在主 checkout 连续执行 ${state.count} 次只读探测尚无改动：若关键证据依赖生产数据/未运行服务等本地不可得信息，立即停下输出「已证代码缺陷 + 缺失的 1 项外部证据」向用户确认，或先修已证缺陷；批读代码请改用 Read 大段读取或合并单条 Bash 命令。`,
+        message: `[recon-budget] 已在主 checkout 连续执行 ${state.count} 次只读探测尚无改动：多文件跨端调研请拆给并行只读子代理（chanpin/Agent）汇总，主会话勿逐个全量 Read；若缺生产/外部证据请停下向用户确认；Bash 请直接以白名单命令（rg/git/sed -n）开头以避开 auto_mode 延迟。`,
       };
     }
 
@@ -421,6 +505,62 @@ export function recordPrimaryReconRead({ cwd, sessionId, command, now = Date.now
     return { action: 'none', count: state.count };
   } catch (err) {
     logHookError('recon-guard:read', err);
+    return { action: 'none' };
+  }
+}
+
+/** Warn once in a linked worktree when autonomous tool loops keep reading without writing. */
+export function recordWorktreeReadStall({ cwd, sessionId, command, toolName, target, now = Date.now() } = {}) {
+  try {
+    if (process.env.PIPELINE_TIER_GATE === 'off' || process.env.PIPELINE_RECON_GUARD === 'off') {
+      return { action: 'none' };
+    }
+    if (typeof sessionId !== 'string' || !sessionId) return { action: 'none' };
+    if (typeof cwd !== 'string' || !cwd.trim()) return { action: 'none' };
+
+    let ctx;
+    if (toolName === 'Read') {
+      const info = repoRelativeSourcePath(cwd, target, { skipChangesOnly: false });
+      if (!info) return { action: 'none' };
+      ctx = info.ctx;
+    } else {
+      if (!isReadOnlyBash(command)) return { action: 'none' };
+      ctx = repoContext(cwd);
+    }
+    if (!ctx || ctx.isPrimary) return { action: 'none' };
+
+    const file = worktreeReadStateFile(sessionId);
+    const existing = readState(file);
+    const fresh = existing && existing.root === ctx.root && typeof existing.updatedAt === 'number' && (now - existing.updatedAt) < RECON_IDLE_MS;
+    const state = {
+      root: ctx.root,
+      count: fresh && Number.isInteger(existing.count) ? existing.count : 0,
+      warned: fresh ? Boolean(existing.warned) : false,
+      updatedAt: now,
+    };
+
+    state.count += 1;
+    const warnReads = intEnv('PIPELINE_WORKTREE_READ_WARN', DEFAULT_RECON_WARN_READS);
+    if (!state.warned && state.count >= warnReads) {
+      state.warned = true;
+      writeState(file, state);
+      recordEvent('tool_guard', {
+        action: 'advise',
+        reasonCode: 'worktree_read_stall',
+        count: state.count,
+      });
+      return {
+        action: 'warn',
+        reasonCode: 'worktree_read_stall',
+        count: state.count,
+        message: `[worktree-read-budget] 已在 linked worktree 连续 ${state.count} 次只读探测尚无写入：停止继续发散读源码，立即开始当前任务切片的编码修改，或将进展写入 handoff-progress.md 后切换干净切片会话（若当前为纯只读排查/复盘可忽略）。`,
+      };
+    }
+
+    writeState(file, state);
+    return { action: 'none', count: state.count };
+  } catch (err) {
+    logHookError('worktree-guard:read', err);
     return { action: 'none' };
   }
 }

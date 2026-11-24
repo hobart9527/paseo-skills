@@ -993,7 +993,7 @@ const openHardDecisionBlock = blocking.some((item) => item.startsWith('UNDECIDED
 const roiMet = substantiveIds.size >= 4
   && (substantiveMaxWidth >= 3 || (substantiveMaxWidth >= 2 && (weighted ?? 0) >= policy.minSpeedup));
 if (graphValid && !openHardDecisionBlock && substantiveIds.size >= 4 && substantiveMaxWidth === 2 && (weighted ?? 0) < policy.minSpeedup) {
-  advisories.push(`ADVISORY_LOW_ROI_HANDOFF: substantiveMaxWidth=2 with weightedSpeedup=${weighted} (< ${policy.minSpeedup}); routing to Tier 2 handoff (split into serial Tier 2 slices or widen parallelism to >=3 / >=${policy.minSpeedup}x)`);
+  advisories.push(`ADVISORY_LOW_ROI_HANDOFF: substantiveMaxWidth=2 with weightedSpeedup=${weighted} (< ${policy.minSpeedup}); routing to Tier 2 handoff (use Tier 2 slices (serial, or <=2 disjoint vertical slices with frozen/no shared interfaces) or widen parallelism to >=3 / >=${policy.minSpeedup}x)`);
 }
 const specsDirRoot = path.join(changeDir, 'specs');
 const capabilityCount = new Set(

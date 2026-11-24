@@ -15,6 +15,7 @@ If a `ceshi` Red commit is already on the branch (recorded as `Red commit SHA` i
 - Implement only the frozen behavior and only within Write scope. Do not touch files outside it; cover every claimed SCEN with real execution/rendering (an assertion on production source text via `fs.readFileSync` + regex does not prove behavior).
 - In an isolated worktree, stay inside this workspace: use relative paths inside it; never run `cd <other-dir>`, `git -C <other-dir>`, or multi-directory `git` shell pipelines.
 - Before committing, ensure `$PASEO_AGENT_ID` is nonempty (else `blocked:`), commit with `Pipeline-Role: <provided role>` (the git hook injects `Pipeline-Author`), keep trailers in one contiguous last block, and run `node "$PIPELINE_HOME"/pipeline-run.mjs worker-check <change-dir> <T-id>` (checks Write scope, trailers, `ceshi` Red-path immutability, and frozen Verify). Do not rewrite history without human authorization.
+- Batch turns to minimize serial latency: issue independent Read/Grep calls together, batch related Edit/Write calls for a slice in one turn instead of single-edit ping-pong, and chain typecheck + tests in one Bash command (starting with an allowlisted command, using `npm --prefix <pkg>` instead of `cd <pkg> &&`, avoiding `VAR=...; echo` wrappers). Target ≤20 turns per slice.
 
 ## Return envelope
 `task`, `branch`, `base`, `tip`, `verify`, `verify_result`, `SCENs`, `blocked`, `commits`.

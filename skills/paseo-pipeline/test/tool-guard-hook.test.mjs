@@ -524,4 +524,14 @@ test('tool guard checks repeated_failure before rewrite exit and expands ~ in ta
     tool_input: { command: 'git -C ~/Codex/demo-repo status' },
   }, { HOME: fakeHome, PIPELINE_TELEMETRY_FILE: tel, state });
   assert.match(gitCOut.additionalContext, /Avoid `git -C` mutating the primary checkout/);
+
+  // Read tool calls count toward primary recon_stall and worktree_read_stall without blocking
+  const readEnv = { PIPELINE_RECON_WARN_READS: '2', PIPELINE_WORKTREE_READ_WARN: '2', PIPELINE_TELEMETRY_FILE: tel, state };
+  assert.deepEqual(guard({ tool_name: 'Read', cwd: primary, session_id: 'read-hook-1', tool_input: { file_path: path.join(primary, 'src/a.js') } }, readEnv), {});
+  const priRead2 = guard({ tool_name: 'Read', cwd: primary, session_id: 'read-hook-1', tool_input: { file_path: path.join(primary, 'src/a.js') } }, readEnv);
+  assert.match(priRead2.additionalContext, /\[recon-budget\]/);
+
+  assert.deepEqual(guard({ tool_name: 'Read', cwd: wt, session_id: 'read-hook-wt', tool_input: { file_path: path.join(wt, 'src/a.js') } }, readEnv), {});
+  const wtRead2 = guard({ tool_name: 'Read', cwd: wt, session_id: 'read-hook-wt', tool_input: { file_path: path.join(wt, 'src/a.js') } }, readEnv);
+  assert.match(wtRead2.additionalContext, /\[worktree-read-budget\]/);
 });

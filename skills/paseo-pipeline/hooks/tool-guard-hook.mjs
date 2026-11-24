@@ -7,7 +7,7 @@ import { logHookError, repoContext } from '../lib/tier-gate.mjs';
 import { paseoHome, loadProfiles, profilePair } from '../lib/paseo.mjs';
 import { runGit } from '../lib/git.mjs';
 import { recordEvent } from '../lib/telemetry.mjs';
-import { recordAuthorRead, recordPrimaryReconRead } from '../lib/author-guard.mjs';
+import { recordAuthorRead, recordPrimaryReconRead, recordWorktreeReadStall } from '../lib/author-guard.mjs';
 
 const LIMIT = 2 * 1024 * 1024;
 const TAIL_ANCHOR = 256;
@@ -450,6 +450,15 @@ async function main() {
     if (reviewReason) deny(reviewReason, 'builtin_agent_review');
     return;
   }
+  if (name === 'Read' && typeof input?.file_path === 'string') {
+    const readArgs = { cwd: payload?.cwd, sessionId: payload?.session_id, toolName: 'Read', target: input.file_path };
+    const authorGuard = recordAuthorRead(readArgs);
+    const msg = authorGuard?.message
+      || recordPrimaryReconRead(readArgs)?.message
+      || recordWorktreeReadStall(readArgs)?.message;
+    if (msg) output({ additionalContext: msg });
+    return;
+  }
   if (name === 'Bash' && typeof input?.command === 'string') {
     const command = input.command;
     const contexts = [];
@@ -467,7 +476,12 @@ async function main() {
       contexts.push(authorGuard.message);
     } else {
       const reconGuard = recordPrimaryReconRead({ cwd: payload?.cwd, sessionId: payload?.session_id, command });
-      if (reconGuard?.message) contexts.push(reconGuard.message);
+      if (reconGuard?.message) {
+        contexts.push(reconGuard.message);
+      } else {
+        const worktreeGuard = recordWorktreeReadStall({ cwd: payload?.cwd, sessionId: payload?.session_id, command });
+        if (worktreeGuard?.message) contexts.push(worktreeGuard.message);
+      }
     }
     if (contexts.length) output({ additionalContext: contexts.join('\n') });
   }

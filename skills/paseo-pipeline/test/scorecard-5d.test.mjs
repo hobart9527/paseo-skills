@@ -198,3 +198,138 @@ test('scorecard-5d CLI leaves missing signals as NOT_COLLECTED and supports --co
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('scorecard-5d deduplicates multi-block assistant message.id usage, computes latency breakdown, and tracks read thrash', () => {
+  const tmp = makeTempDir('scorecard-5d-dedup-');
+  try {
+    const metricsFile = path.join(tmp, 'metrics.jsonl');
+    const transcript = path.join(tmp, 'sess.jsonl');
+    const t0 = Date.parse('2026-11-24T01:00:00.000Z');
+    fs.writeFileSync(metricsFile, [
+      { ts: t0 + 1000, event: 'tool_guard', action: 'advise', reasonCode: 'recon_stall' },
+      { ts: t0 + 2000, event: 'tool_guard', action: 'advise', reasonCode: 'worktree_read_stall' },
+      { ts: t0 + 3000, event: 'author_guard', action: 'advise', reasonCode: 'author_repeat_read' },
+    ].map((e) => JSON.stringify(e)).join('\n') + '\n');
+
+    const usage1 = { input_tokens: 1000, cache_creation_input_tokens: 0, cache_read_input_tokens: 500, output_tokens: 200 };
+    const lines = [
+      { type: 'api-request', timestamp: '2026-11-24T01:00:00.000Z' },
+      // Same message.id across thinking + 2 Read blocks -> 1 turn, usage counted once, 2 toolCalls
+      { type: 'assistant', timestamp: '2026-11-24T01:01:00.000Z', message: { id: 'msg_1', content: [{ type: 'thinking', thinking: 'abcde' }], usage: usage1 } },
+      { type: 'assistant', timestamp: '2026-11-24T01:01:01.000Z', message: { id: 'msg_1', content: [{ type: 'tool_use', id: 'r1', name: 'Read', input: { file_path: '/repo/a.ts' } }], usage: usage1 } },
+      { type: 'assistant', timestamp: '2026-11-24T01:01:02.000Z', message: { id: 'msg_1', content: [{ type: 'tool_use', id: 'r2', name: 'Read', input: { file_path: '/repo/a.ts' } }], usage: usage1 } },
+      { type: 'user', timestamp: '2026-11-24T01:01:03.000Z', message: { content: [{ type: 'tool_result', tool_use_id: 'r1', content: 'ok' }, { type: 'tool_result', tool_use_id: 'r2', content: 'ok' }] } },
+      { type: 'system', subtype: 'compact_boundary', timestamp: '2026-11-24T01:03:00.000Z', compactMetadata: { durationMs: 120000 } },
+      { type: 'api-request', timestamp: '2026-11-24T01:03:01.000Z' },
+      { type: 'assistant', timestamp: '2026-11-24T01:04:01.000Z', message: { id: 'msg_2', content: [
+        { type: 'tool_use', id: 'r3', name: 'Read', input: { file_path: '/repo/a.ts' } },
+        { type: 'tool_use', id: 'r4', name: 'Read', input: { file_path: '/repo/a.ts' } },
+        { type: 'tool_use', id: 'b1', name: 'Bash', input: { command: 'rg x' } },
+      ], usage: { input_tokens: 300, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 100 } } },
+      { type: 'user', timestamp: '2026-11-24T01:04:07.000Z', message: { content: [
+        { type: 'tool_result', tool_use_id: 'r3', content: 'ok' },
+        { type: 'tool_result', tool_use_id: 'r4', content: 'ok' },
+        { type: 'tool_result', tool_use_id: 'b1', content: 'ok' },
+      ] } },
+    ];
+    fs.writeFileSync(transcript, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+
+    const report = evaluateTask({
+      repo: repoRoot,
+      base: 'HEAD~1',
+      head: 'HEAD',
+      since: '2026-11-24T00:59:00.000Z',
+      until: '2026-11-24T01:05:00.000Z',
+      'metrics-file': metricsFile,
+      'paseo-home': path.join(tmp, 'missing-paseo'),
+      'claude-projects': path.join(tmp, 'missing-claude'),
+      transcript: [transcript],
+    });
+
+    const t = report.dimensions.d1.transcripts;
+    assert.equal(t.assistantTurns, 2);
+    assert.equal(t.toolCalls, 5);
+    assert.equal(t.totalTokens, 2100);
+    assert.equal(t.thinkingChars, 5);
+    assert.equal(t.maxRepeatFileReads, 4);
+    assert.equal(t.repeatedFilesCount, 1);
+    assert.equal(t.slowBashCalls, 1);
+    assert.equal(report.dimensions.d3.apiWaitMinutes, 2);
+    assert.equal(report.dimensions.d3.compactionMinutes, 2);
+    assert.equal(report.dimensions.d3.bashWaitMinutes, 0.1);
+    assert.equal(report.dimensions.d3.avgToolsPerTurn, 2.5);
+    assert.equal(report.dimensions.d3.effectiveOutputTokPerSec, 2.5);
+    assert.equal(report.dimensions.d3.bashOnlyTurns, 0);
+    assert.equal(report.dimensions.d3.bashOnlyApiWaitMinutes, 0);
+    assert.equal(report.dimensions.d1.telemetry.toolGuard.reconStall, 1);
+    assert.equal(report.dimensions.d1.telemetry.toolGuard.worktreeReadStall, 1);
+    assert.equal(report.dimensions.d1.telemetry.authorGuard.repeatRead, 1);
+    assert.ok(report.healthFlags.includes('YELLOW:repeat_file_reads'));
+    assert.match(renderMarkdown(report), /Turn efficiency/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('scorecard-5d tracks multi-line bash-only turns and flags YELLOW:fragmented_turns', () => {
+  const tmp = makeTempDir('scorecard-5d-d3-');
+  try {
+    const fragmentedTranscript = path.join(tmp, 'fragmented.jsonl');
+    const batchedTranscript = path.join(tmp, 'batched.jsonl');
+    const buildLines = (toolsPerTurn) => {
+      const entries = [];
+      let sec = 0;
+      for (let i = 0; i < 40; i += 1) {
+        const mid = `m_${i}`;
+        entries.push({ type: 'api-request', timestamp: new Date(Date.parse('2026-11-24T02:00:00.000Z') + sec * 1000).toISOString() });
+        sec += 3;
+        const tsThink = new Date(Date.parse('2026-11-24T02:00:00.000Z') + sec * 1000).toISOString();
+        entries.push({
+          type: 'assistant',
+          timestamp: tsThink,
+          message: { id: mid, content: [{ type: 'thinking', thinking: 'x' }], usage: { input_tokens: 100, output_tokens: 30 } },
+        });
+        for (let j = 0; j < toolsPerTurn; j += 1) {
+          entries.push({
+            type: 'assistant',
+            timestamp: tsThink,
+            message: { id: mid, content: [{ type: 'tool_use', id: `tu_${i}_${j}`, name: j === 0 ? 'Bash' : 'Read', input: {} }], usage: { input_tokens: 100, output_tokens: 30 } },
+          });
+        }
+        sec += 1;
+      }
+      return entries.map((e) => JSON.stringify(e)).join('\n') + '\n';
+    };
+
+    fs.writeFileSync(fragmentedTranscript, buildLines(1));
+    fs.writeFileSync(batchedTranscript, buildLines(2));
+
+    const fragReport = evaluateTask({
+      repo: repoRoot,
+      base: 'HEAD~1',
+      head: 'HEAD',
+      'paseo-home': path.join(tmp, 'missing-paseo'),
+      'claude-projects': path.join(tmp, 'missing-claude'),
+      transcript: [fragmentedTranscript],
+    });
+    assert.equal(fragReport.dimensions.d3.avgToolsPerTurn, 1);
+    assert.equal(fragReport.dimensions.d3.bashOnlyTurns, 40);
+    assert.equal(fragReport.dimensions.d3.bashOnlyApiWaitMinutes, 2);
+    assert.equal(fragReport.dimensions.d3.effectiveOutputTokPerSec, 10);
+    assert.ok(fragReport.healthFlags.includes('YELLOW:fragmented_turns'));
+
+    const batchReport = evaluateTask({
+      repo: repoRoot,
+      base: 'HEAD~1',
+      head: 'HEAD',
+      'paseo-home': path.join(tmp, 'missing-paseo'),
+      'claude-projects': path.join(tmp, 'missing-claude'),
+      transcript: [batchedTranscript],
+    });
+    assert.equal(batchReport.dimensions.d3.avgToolsPerTurn, 2);
+    assert.equal(batchReport.dimensions.d3.bashOnlyTurns, 0);
+    assert.ok(!batchReport.healthFlags.includes('YELLOW:fragmented_turns'));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

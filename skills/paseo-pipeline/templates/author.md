@@ -36,7 +36,7 @@ Read baseline only for rules (`rg`, narrow windows, `path:line`) absent from `ba
 
 Claim source: `tasks.md` `Scenarios:`; `acceptance sync` compiles `Tasks`, `Entry`, `Verify`, and `Required`. Reuse baseline IDs only under MODIFIED/REMOVED; resolve active conflicts honestly.
 
-List task ID, behavior goal, dependencies, Write scope, Entry and Verify for `freeze-check`. Keep vertical slices together. Wave 0 needs shared contracts and real consumers (`Uses` a `Kind: skeleton` for shared assembly). Parallel Write scopes stay disjoint; dependencies follow consumer readiness. Workers own tests + implementation (`Review: strict` adds independent Red only when needed).
+List task ID, behavior goal, dependencies, Write scope, Entry and Verify for `freeze-check`. Keep vertical slices together (never split horizontally by layer on an unfrozen interface). Wave 0 needs shared contracts and real consumers (`Uses` a `Kind: skeleton` for shared assembly). Parallel Write scopes stay disjoint; dependencies follow consumer readiness. Workers own tests + implementation (`Review: strict` adds independent Red only when needed).
 
 ## Commit and check sequence
 

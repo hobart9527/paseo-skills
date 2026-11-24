@@ -37,7 +37,7 @@ export const TIER_RULES = [
   '风险：风险操作（部署、生产写入、迁移、push）要用户原话授权与回滚方案；风险代码（鉴权、并发幂等、schema、资金、外部写入或改弱既有测试）须过 risk-scan + 1 个独立 reviewer（1+1 上限），不升档、不需授权。其余见 ~/.claude/CLAUDE.md。',
 ].join('\n');
 
-const TIER_2_DEFINITION = `Tier 2：>${DEFAULT_LIMIT} 个源文件、跨作用域、≥${DEFAULT_LARGE_FILE_LINES} 行或>${DEFAULT_TEST_FILE_LIMIT} 测试 → 先隔离到 linked worktree，主会话自己进去做；整体可独立完成或需要并行时才委派（brief.mjs tier2 / /tier2-handoff → /paseo-handoff），收口必跑 tier2-verify。`;
+const TIER_2_DEFINITION = `Tier 2：>${DEFAULT_LIMIT} 个源文件、跨作用域、≥${DEFAULT_LARGE_FILE_LINES} 行或>${DEFAULT_TEST_FILE_LIMIT} 测试 → 先隔离到 linked worktree；轻会话可自改，重/已压缩/慢规划会话冻结契约后交 gongbu（brief.mjs tier2 / /tier2-handoff → /paseo-handoff，无未冻结共享接口的 ≤2 路不相交垂直切片可并行再合并），收口必跑 tier2-verify。`;
 const TIER_3_DEFINITION = 'Tier 3：主会话粗画 DAG 有 ≥4 个实质任务且 maxWidth≥3（或 maxWidth≥2 且加权加速比≥1.8）→ /paseo-pipeline。';
 
 function stateDir() {
@@ -378,7 +378,7 @@ export function assessTierGate({ target, sessionId, declared }) {
         reason: [
           '[tier-gate] 声明的是 Tier 2，但当前仍在主 checkout 原地写业务文件。',
           TIER_2_DEFINITION,
-          '测试和文档不计数；源文件请在 linked worktree 里改（主会话自己进去即可，闸门在那里放行）。',
+          '测试和文档不计数；源文件请转到 linked worktree（轻会话可由主会话自己进去改，重/慢规划会话冻结契约后交 gongbu 执行，闸门在 worktree 放行）。',
           `声明：tier=2 files=${planned.join('、')}`,
         ].join('\n'),
       };
