@@ -18,7 +18,10 @@ import { SCENARIOS, renderTasks, legacyTasks, scenarioFiles } from './scenarios.
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pipeline = path.resolve(here, '../../skills/paseo-pipeline');
-const bin = (name) => path.join(here, 'tools', name);
+const bin = (name) => {
+  const prod = path.join(pipeline, name);
+  return fs.existsSync(prod) ? prod : path.join(here, 'tools', name);
+};
 const libDir = path.join(pipeline, 'lib');
 const { simulate, DEFAULT_MODEL } = await import(path.join(libDir, 'schedule.mjs'));
 const { parseTasks } = await import(path.join(libDir, 'tasks.mjs'));
@@ -30,6 +33,7 @@ const only = args.filter((arg) => !arg.startsWith('--'));
 
 const baseEnv = {
   ...process.env,
+  PIPELINE_TELEMETRY: 'off',
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_AUTHOR_NAME: 'sandbox',
   GIT_AUTHOR_EMAIL: 'sandbox@test.local',
@@ -185,7 +189,7 @@ async function runScenario(scenario, policy) {
         } else {
           s.git('switch', '-q', branchOf.get(task.id));
         }
-        s.write(testFile, `import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('behavior', () => { assert.equal(globalThis.__red_${task.id.replace(/\W/g, '_')}, true, 'behaviour not implemented yet'); });\n`);
+        s.write(testFile, `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\nimport { pathToFileURL } from 'node:url';\nimport path from 'node:path';\ntest('behavior', async () => {\n  const file = '${implFiles[0]}';\n  assert.equal(fs.existsSync(file), true, 'module must exist');\n  const { value } = await import(pathToFileURL(path.resolve(file)).href);\n  assert.equal(value, '${task.id}', 'behaviour not implemented yet');\n});\n`);
         s.git('add', '-A');
         s.git('commit', '-qm', `red(${task.id})\n\nPipeline-Role: ceshi\nPipeline-Author: ${AGENTS.ceshi.id}`);
       } else if (item.action === 'create-branch+dispatch-worker' || item.action === 'dispatch-worker') {
@@ -198,7 +202,7 @@ async function runScenario(scenario, policy) {
         } else {
           s.git('switch', '-q', branchOf.get(task.id));
         }
-        // One worker writes the test and the implementation in one pass.
+        // One worker writes the test and the implementation in one pass (unless ceshi already wrote the Red test).
         if (task.kind === 'skeleton' || task.review === 'mechanical') {
           // Mechanical: an existence-only Verify, no Red phase. A skeleton holds a stub
           // so consumers can compile against the interface; a docs task writes prose.
@@ -208,7 +212,9 @@ async function runScenario(scenario, policy) {
             else s.write(file, `# ${task.title}\n`);
           }
         } else {
-          s.write(testFile, `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\nimport { pathToFileURL } from 'node:url';\nimport path from 'node:path';\ntest('behavior', async () => {\n  const file = '${implFiles[0]}';\n  assert.equal(fs.existsSync(file), true, 'module must exist');\n  const { value } = await import(pathToFileURL(path.resolve(file)).href);\n  assert.equal(value, '${task.id}', 'behaviour not implemented yet');\n});\n`);
+          if (item.action === 'create-branch+dispatch-worker') {
+            s.write(testFile, `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\nimport { pathToFileURL } from 'node:url';\nimport path from 'node:path';\ntest('behavior', async () => {\n  const file = '${implFiles[0]}';\n  assert.equal(fs.existsSync(file), true, 'module must exist');\n  const { value } = await import(pathToFileURL(path.resolve(file)).href);\n  assert.equal(value, '${task.id}', 'behaviour not implemented yet');\n});\n`);
+          }
           for (const file of implFiles) s.write(file, `export const value = '${task.id}';\n`);
         }
         s.git('add', '-A');

@@ -310,15 +310,14 @@ export function legacyTasks(scenario) {
 export function scenarioFiles(scenario) {
   const specPath = `specs/${scenario.capability}/spec.md`;
   const behaviour = scenario.tasks.filter((item) => item.review !== 'mechanical');
-  const last = scenario.tasks.at(-1);
   return {
     'proposal.md': `# Proposal\n\n${scenario.title}\n`,
-    'design.md': `# Design\n\n## Impact Inventory\n${scenario.tasks.map((item) => `- ${item.id}: ${item.scope.join(', ')}`).join('\n')}\n`,
+    'design.md': `# Design\n\n## Impact Inventory\n${scenario.tasks.map((item) => `- ${item.title}: ${item.scope.join(', ')}`).join('\n')}\n`,
     [specPath]: behaviour.map((item) => `#### Scenario: ${scenOf(scenario.capability, item.id)} ${item.title}`).join('\n') + '\n',
     'acceptance.md': [
       '| Scenario | Entry | Tasks | Verify | Required | Result | Evidence |',
       '| --- | --- | --- | --- | --- | --- | --- |',
-      `| ${scenOf(scenario.capability, behaviour.at(-1).id)} | CLI | ${last.id} | ${last.verify} | yes | PENDING | pending |`,
+      ...behaviour.map((item) => `| ${scenOf(scenario.capability, item.id)} | CLI | ${item.id} | ${item.verify} | yes | PENDING | pending |`),
       '',
     ].join('\n'),
   };

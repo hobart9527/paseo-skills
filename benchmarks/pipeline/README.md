@@ -220,3 +220,27 @@ edge is Done; a regression test covers it.
    The earlier `--assert=50` line was removed because the only way to pass it was a
    fixture `freeze-check` rejects. Raising the fixture to clear a threshold is the
    failure mode this benchmark exists to prevent.
+
+## Cross-tier end-to-end sandbox (`Tier 0 / Tier 1 / Tier 2 / Tier 3`)
+
+While `benchmark.mjs` and `sandbox-matrix.mjs` cover Tier 3 multi-task DAG scheduling, everyday traffic spans Tier 0–2 as well. `cross-tier-sandbox.mjs` exercises the real hooks (`tier-session-hook`, `tier-reminder-hook`, `tool-guard-hook`, `tier-write-hook`, `tier-stop-hook`) and `tier2-verify.mjs` end-to-end across tiers in isolated temp repos (`PIPELINE_TELEMETRY=off`):
+
+```
+node benchmarks/pipeline/cross-tier-sandbox.mjs
+node benchmarks/pipeline/cross-tier-sandbox.mjs --json
+node benchmarks/pipeline/cross-tier-sandbox.mjs --with-tier3
+```
+
+It measures hook wall-clock latency, false-positive friction (`injects`, `asks`, `blocks`), and 10 delivery-rigor gates (Tier 1 4th-file / cross-scope / ≥800-line `ask`, risk-sentinel `block`, genuine same-file `churn` `block`, dirty worktree `tier2-verify` `FAIL`, `create_agent` role late-binding rewrite, and worktree `cd <primary>` advisory).
+
+## Historical transcript replay & A/B comparison
+
+`replay-history.mjs` replays real Claude Code JSONL trajectories (`~/.claude/projects`) inside isolated temporary git repositories/worktrees and also runs a 5-case synthetic adversarial suite:
+
+```
+node benchmarks/pipeline/replay-history.mjs --days 10 --limit 25
+node benchmarks/pipeline/replay-history.mjs --compare HEAD --days 10 --limit 25
+node benchmarks/pipeline/replay-history.mjs --session <id>
+```
+
+Use `--compare <git-ref>` before and after hook edits to verify latency improvements, friction reduction, and zero false negatives against `<git-ref>`.

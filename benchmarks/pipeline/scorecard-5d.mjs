@@ -421,6 +421,10 @@ function parseTranscript(filePath) {
     bashOnlyApiWaitMs: 0,
     maxRepeatFileReads: 0,
     repeatedFilesCount: 0,
+    userInterrupts: 0,
+    silentToolStreaks: 0,
+    maxApiWaitMs: 0,
+    longSilentWaits: 0,
     firstTsMs: null,
     lastTsMs: null,
   };
@@ -430,6 +434,17 @@ function parseTranscript(filePath) {
   const fileReads = new Map();
   let lastApiReqMs = null;
   let anonSeq = 0;
+  let inHumanTurn = false;
+  let curHumanTools = 0;
+  let curHumanTextChars = 0;
+  const flushHumanTurn = () => {
+    if (inHumanTurn && curHumanTools >= 10 && curHumanTextChars === 0) {
+      stats.silentToolStreaks += 1;
+    }
+    inHumanTurn = false;
+    curHumanTools = 0;
+    curHumanTextChars = 0;
+  };
 
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
@@ -466,8 +481,11 @@ function parseTranscript(filePath) {
       for (const block of content) {
         if (block?.type === 'thinking') {
           stats.thinkingChars += String(block.thinking || '').length;
+        } else if (block?.type === 'text') {
+          curHumanTextChars += String(block.text || '').trim().length;
         } else if (block?.type === 'tool_use') {
           stats.toolCalls += 1;
+          curHumanTools += 1;
           turn.tools.push(block.name || '');
           if (block.id && ms !== null) {
             toolStartById.set(block.id, { name: block.name || '', tsMs: ms });
@@ -492,29 +510,56 @@ function parseTranscript(filePath) {
         if (lastApiReqMs !== null && ms !== null && ms >= lastApiReqMs) {
           const dt = ms - lastApiReqMs;
           stats.apiWaitMs += dt;
+          if (dt > stats.maxApiWaitMs) stats.maxApiWaitMs = dt;
+          if (dt >= 45_000) stats.longSilentWaits += 1;
           turn.apiWaitMs += dt;
           lastApiReqMs = null;
         }
       }
       continue;
     }
-    if (obj.type === 'user' && Array.isArray(obj.message?.content)) {
-      for (const block of obj.message.content) {
-        if (block?.type === 'tool_result' && block.tool_use_id) {
-          const start = toolStartById.get(block.tool_use_id);
-          if (start && ms !== null && ms >= start.tsMs) {
-            const dt = ms - start.tsMs;
-            stats.toolWaitMs += dt;
-            if (start.name === 'Bash') {
-              stats.bashWaitMs += dt;
-              if (dt >= 2500) stats.slowBashCalls += 1;
+    if (obj.type === 'user') {
+      const content = obj.message?.content;
+      const isInterrupted = (typeof content === 'string' && content.startsWith('[Request interrupted by user'))
+        || (Array.isArray(content) && content.some((b) => b?.type === 'text' && typeof b?.text === 'string' && b.text.startsWith('[Request interrupted by user')));
+      if (isInterrupted) {
+        stats.userInterrupts += 1;
+        flushHumanTurn();
+      } else if (!obj.isMeta) {
+        let promptText = null;
+        if (typeof content === 'string') {
+          promptText = content;
+        } else if (Array.isArray(content) && !content.some((b) => b?.type === 'tool_result') && content.some((b) => b?.type === 'text')) {
+          promptText = content.filter((b) => b?.type === 'text').map((b) => b.text || '').join('');
+        }
+        if (
+          promptText !== null
+          && !promptText.startsWith('This session is being continued from a previous conversation')
+          && !/^\s*<(?:paseo-system|task-notification)\b/i.test(promptText)
+        ) {
+          flushHumanTurn();
+          inHumanTurn = true;
+        }
+      }
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block?.type === 'tool_result' && block.tool_use_id) {
+            const start = toolStartById.get(block.tool_use_id);
+            if (start && ms !== null && ms >= start.tsMs) {
+              const dt = ms - start.tsMs;
+              stats.toolWaitMs += dt;
+              if (start.name === 'Bash') {
+                stats.bashWaitMs += dt;
+                if (dt >= 2500) stats.slowBashCalls += 1;
+              }
             }
+            toolStartById.delete(block.tool_use_id);
           }
-          toolStartById.delete(block.tool_use_id);
         }
       }
     }
   }
+  flushHumanTurn();
   for (const count of fileReads.values()) {
     if (count > stats.maxRepeatFileReads) stats.maxRepeatFileReads = count;
     if (count >= 3) stats.repeatedFilesCount += 1;
@@ -602,6 +647,14 @@ function collectAgentAndTranscriptFacts({ homeDir, claudeProjectsDir, changeName
   const assistantTurns = sumField('assistantTurns');
   const toolCalls = sumField('toolCalls');
   const outputTokens = sumField('outputTokens');
+  const inputTokens = sumField('inputTokens');
+  const cacheCreationTokens = sumField('cacheCreationTokens');
+  const cacheReadTokens = sumField('cacheReadTokens');
+  const totalInputTokens = inputTokens + cacheCreationTokens + cacheReadTokens;
+  const cacheHitRatePct = totalInputTokens > 0
+    ? Number(((cacheReadTokens / totalInputTokens) * 100).toFixed(1))
+    : null;
+  const maxApiWaitMs = Math.max(0, ...parsedTranscripts.map((t) => t.maxApiWaitMs || 0));
 
   return {
     agentCount: matchedAgents.length,
@@ -614,9 +667,10 @@ function collectAgentAndTranscriptFacts({ homeDir, claudeProjectsDir, changeName
       toolCalls,
       avgToolsPerTurn: assistantTurns > 0 ? Number((toolCalls / assistantTurns).toFixed(2)) : null,
       compactions: sumField('compactions'),
-      inputTokens: sumField('inputTokens'),
-      cacheCreationTokens: sumField('cacheCreationTokens'),
-      cacheReadTokens: sumField('cacheReadTokens'),
+      inputTokens,
+      cacheCreationTokens,
+      cacheReadTokens,
+      cacheHitRatePct,
       outputTokens,
       effectiveOutputTokPerSec: apiWaitMs > 0 ? Number((outputTokens / (apiWaitMs / 1000)).toFixed(1)) : null,
       thinkingTokens: sumField('thinkingTokens'),
@@ -626,6 +680,10 @@ function collectAgentAndTranscriptFacts({ homeDir, claudeProjectsDir, changeName
       bashOnlyApiWaitMinutes: toMinutes(bashOnlyApiWaitMs),
       repeatedFilesCount: sumField('repeatedFilesCount'),
       maxRepeatFileReads: Math.max(0, ...parsedTranscripts.map((t) => t.maxRepeatFileReads || 0)),
+      userInterrupts: sumField('userInterrupts'),
+      silentToolStreaks: sumField('silentToolStreaks'),
+      maxApiWaitSec: Number((maxApiWaitMs / 1000).toFixed(1)),
+      longSilentWaits: sumField('longSilentWaits'),
       apiWaitMinutes: toMinutes(apiWaitMs),
       compactionMinutes: toMinutes(compactionMs),
       toolWaitMinutes: toMinutes(toolWaitMs),
@@ -653,6 +711,17 @@ function healthStatus(report) {
   if (d1.transcripts?.maxRepeatFileReads >= 4) flags.push('YELLOW:repeat_file_reads');
   if (d1.transcripts && d1.transcripts !== NOT_COLLECTED && d1.transcripts.assistantTurns >= 40 && typeof d3.avgToolsPerTurn === 'number' && d3.avgToolsPerTurn < 1.8) {
     flags.push('YELLOW:fragmented_turns');
+  }
+  if (d1.transcripts?.userInterrupts >= 1) flags.push(`YELLOW:user_interrupts=${d1.transcripts.userInterrupts}`);
+  if (d1.transcripts?.silentToolStreaks >= 1) flags.push(`YELLOW:silent_tool_streak=${d1.transcripts.silentToolStreaks}`);
+  if (
+    d1.transcripts
+    && d1.transcripts !== NOT_COLLECTED
+    && d1.transcripts.assistantTurns >= 5
+    && (d1.transcripts.inputTokens + (d1.transcripts.cacheCreationTokens || 0)) >= 100_000
+    && d1.transcripts.cacheHitRatePct === 0
+  ) {
+    flags.push('YELLOW:zero_cache_hit');
   }
   if (d1.telemetry?.tier2Verify?.failByReason?.dirty_worktree >= 3) flags.push('RED:dirty_worktree>=3');
   else if (d1.telemetry?.tier2Verify?.failByReason?.dirty_worktree >= 1) flags.push('YELLOW:dirty_worktree');
@@ -756,6 +825,11 @@ export function evaluateTask(options) {
           slowBashCalls: agents.transcripts.slowBashCalls,
           maxRepeatFileReads: agents.transcripts.maxRepeatFileReads,
           repeatedFilesCount: agents.transcripts.repeatedFilesCount,
+          inputTokens: agents.transcripts.inputTokens,
+          cacheCreationTokens: agents.transcripts.cacheCreationTokens,
+          cacheHitRatePct: agents.transcripts.cacheHitRatePct,
+          userInterrupts: agents.transcripts.userInterrupts,
+          silentToolStreaks: agents.transcripts.silentToolStreaks,
           totalTokens,
           tokensPerSourceAddedLine: sourceAdded > 0 && totalTokens !== null
             ? Number((totalTokens / sourceAdded).toFixed(1))
@@ -794,6 +868,8 @@ export function evaluateTask(options) {
         effectiveOutputTokPerSec: agents?.transcripts?.effectiveOutputTokPerSec ?? NOT_COLLECTED,
         bashOnlyTurns: agents?.transcripts?.bashOnlyTurns ?? NOT_COLLECTED,
         bashOnlyApiWaitMinutes: agents?.transcripts?.bashOnlyApiWaitMinutes ?? NOT_COLLECTED,
+        maxApiWaitSec: agents?.transcripts?.maxApiWaitSec ?? NOT_COLLECTED,
+        longSilentWaits: agents?.transcripts?.longSilentWaits ?? NOT_COLLECTED,
         agentActivityUpperBoundMin: agents?.agentActivityUpperBoundMin ?? NOT_COLLECTED,
       },
       d4: {
@@ -847,12 +923,14 @@ export function renderMarkdown(report) {
     `| **D1 Cost & Friction** | Output (src/test/doc files, src +/-) | ${d.d1.output.sourceFiles}/${d.d1.output.testFiles}/${d.d1.output.docsAndSpecFiles} files, +${d.d1.output.sourceLinesAdded}/-${d.d1.output.sourceLinesDeleted} |`,
     `| | Transcripts (coverage, turns, compactions, tokens) | ${t ? `${t.coverage}, ${t.assistantTurns} turns, ${t.compactions} compactions, ${t.totalTokens} tok (${fmt(t.tokensPerSourceAddedLine, ' tok/src+')})` : NOT_COLLECTED} |`,
     `| | Read thrash (max/files>=3) / slow Bash (>=2.5s) / read-guard advises | ${t ? `${t.maxRepeatFileReads}x / ${t.repeatedFilesCount} / ${t.slowBashCalls}` : NOT_COLLECTED} / ${tel ? (tel.toolGuard.reconStall + tel.toolGuard.worktreeReadStall + tel.authorGuard.repeatRead) : NOT_COLLECTED} |`,
+    `| | Cache hit / user interrupts / silent tool streaks | ${t ? `${fmt(t.cacheHitRatePct, '%')} / ${t.userInterrupts} / ${t.silentToolStreaks}` : NOT_COLLECTED} |`,
     `| | Telemetry friction total / dirty_worktree / file_limit / sanitize_paseo | ${tel ? `${tel.frictionTotal} / ${tel.tier2Verify.failByReason.dirty_worktree || 0} / ${tel.tierWrite.fileLimit} / ${tel.toolGuard.sanitizePaseo}` : NOT_COLLECTED} |`,
     `| | Human interventions | ${fmt(d.d1.humanInterventions)} |`,
     `| **D2 Oracle Fidelity** | Risk classes / testMutations / unprovableRejections | ${Array.isArray(d.d2.riskClasses) ? (d.d2.riskClasses.join(', ') || 'none') : NOT_COLLECTED} / ${fmt(d.d2.testMutationCount)} / ${fmt(d.d2.unprovableRejections)} |`,
     `| | Mutation probe (caught/total) | ${d.d2.mutationProbe === NOT_COLLECTED ? NOT_COLLECTED : `${d.d2.mutationProbe.caught}/${d.d2.mutationProbe.total} (${d.d2.mutationProbe.ratePct}%)`} |`,
     `| **D3 Lead Time** | Commits / commit span / transcript span / agent activity upper bound | ${d.d3.commitCount} commits / ${fmt(d.d3.commitSpanMinutes, 'm')} / ${fmt(d.d3.transcriptSpanMinutes, 'm')} / ${fmt(d.d3.agentActivityUpperBoundMin, 'm')} |`,
     `| | Time breakdown (API / compact / tools / Bash) | ${fmt(d.d3.apiWaitMinutes, 'm')} / ${fmt(d.d3.compactionMinutes, 'm')} / ${fmt(d.d3.toolWaitMinutes, 'm')} / ${fmt(d.d3.bashWaitMinutes, 'm')} |`,
+    `| | Wait tails (max API wait / >=45s waits) | ${fmt(d.d3.maxApiWaitSec, 's')} / ${fmt(d.d3.longSilentWaits)} |`,
     `| | Turn efficiency (tools/turn / turns/commit / eff tok/s / bash-only) | ${fmt(d.d3.avgToolsPerTurn)} / ${fmt(d.d3.turnsPerCommit)} / ${fmt(d.d3.effectiveOutputTokPerSec)} / ${d.d3.bashOnlyTurns === NOT_COLLECTED ? NOT_COLLECTED : `${d.d3.bashOnlyTurns} (${fmt(d.d3.bashOnlyApiWaitMinutes, 'm')})`} |`,
     `| **D4 Tier Routing** | Tier initial → final (objective required) | ${fmt(d.d4.tierInitial)} → ${fmt(d.d4.tierFinal)} (req: ${fmt(d.d4.objectiveTierRequired)}, scopes: ${fmt(d.d4.scopeCount)}) |`,
     `| | file_limit / scope_cross / handoff reroutes | ${fmt(d.d4.fileLimitTriggers)} / ${fmt(d.d4.scopeCrossTriggers)} / ${fmt(d.d4.freezeHandoffs)} |`,

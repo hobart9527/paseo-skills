@@ -166,6 +166,63 @@ test('evaluateTask collects git, openspec, telemetry, and claude transcript acro
   }
 });
 
+test('scorecard-5d flags zero cache hit, silent tool streaks, user interrupts, and >=45s API waits', () => {
+  const tmp = makeTempDir('scorecard-5d-runtime-');
+  try {
+    const transcript = path.join(tmp, 'stalled.jsonl');
+    const baseMs = Date.parse('2026-11-24T04:00:00.000Z');
+    const entries = [
+      { type: 'user', timestamp: new Date(baseMs).toISOString(), message: { content: 'check prod' } },
+    ];
+    let t = baseMs + 1000;
+    for (let i = 0; i < 5; i += 1) {
+      const waitSec = i === 0 ? 60 : 5;
+      entries.push({ type: 'api-request', timestamp: new Date(t).toISOString() });
+      t += waitSec * 1000;
+      const blocks = [
+        ...(i === 0 ? [{ type: 'text', text: '   \n' }] : []),
+        { type: 'tool_use', id: `tu_${i}_a`, name: 'Read', input: { file_path: `/repo/${i}a.ts` } },
+        { type: 'tool_use', id: `tu_${i}_b`, name: 'Bash', input: { command: 'rg x' } },
+      ];
+      entries.push({
+        type: 'assistant',
+        timestamp: new Date(t).toISOString(),
+        message: {
+          id: `st_${i}`,
+          content: blocks,
+          usage: { input_tokens: 100, cache_creation_input_tokens: 25000, cache_read_input_tokens: 0, output_tokens: 500 },
+        },
+      });
+      t += 1000;
+    }
+    entries.push({ type: 'user', timestamp: new Date(t).toISOString(), message: { content: '[Request interrupted by user]' } });
+    entries.push({ type: 'user', timestamp: new Date(t + 500).toISOString(), message: { content: '[Request interrupted by user for tool use]' } });
+    fs.writeFileSync(transcript, entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
+
+    const report = evaluateTask({
+      repo: repoRoot,
+      base: 'HEAD~1',
+      head: 'HEAD',
+      'paseo-home': path.join(tmp, 'missing-paseo'),
+      'claude-projects': path.join(tmp, 'missing-claude'),
+      transcript: [transcript],
+    });
+
+    const tr = report.dimensions.d1.transcripts;
+    assert.equal(tr.cacheHitRatePct, 0);
+    assert.equal(tr.userInterrupts, 2);
+    assert.equal(tr.silentToolStreaks, 1);
+    assert.equal(report.dimensions.d3.maxApiWaitSec, 60);
+    assert.equal(report.dimensions.d3.longSilentWaits, 1);
+    assert.ok(report.healthFlags.includes('YELLOW:user_interrupts=2'));
+    assert.ok(report.healthFlags.includes('YELLOW:silent_tool_streak=1'));
+    assert.ok(report.healthFlags.includes('YELLOW:zero_cache_hit'));
+    assert.match(renderMarkdown(report), /Cache hit \/ user interrupts \/ silent tool streaks/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test('scorecard-5d CLI leaves missing signals as NOT_COLLECTED and supports --compare', () => {
   const tmp = makeTempDir('scorecard-5d-cli-');
   try {
