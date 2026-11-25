@@ -8,7 +8,7 @@ import { DEFAULT_LIMIT, EXEMPT, UNCOUNTED, FIXTURE_DIR, isTestPath, scopeKey } f
 
 export const RISK_CLASSES = ['auth', 'concurrency', 'persistence', 'money', 'external-write'];
 
-const PATH_RULES = [
+const HARD_PATH_RULES = [
   {
     riskClass: 'auth',
     pattern: /(?:^|\/)(?:auth|authn|authz|session|oauth|jwt|rbac|acl|permission|permissions|security|crypto|credential|credentials|token|tokens)(?:[\/._-]|$)/i,
@@ -21,18 +21,31 @@ const PATH_RULES = [
   },
   {
     riskClass: 'persistence',
-    pattern: /(?:^|\/)(?:migrations?|schema|prisma|drizzle|db|database|sqlite|postgres|mysql|redis|repositories)(?:[\/._-]|$)|\.(?:sql|prisma)$/i,
-    reason: 'path touches persistence/schema surface',
+    pattern: /(?:^|\/)(?:migrations?|schema|prisma|drizzle)(?:[\/._-]|$)|\.(?:sql|prisma)$/i,
+    reason: 'path touches schema/migration surface',
   },
   {
     riskClass: 'money',
-    pattern: /(?:^|\/)(?:money|pay|payment|payments|billing|invoice|invoices|tax|taxes|settlement|refund|refunds|ledger|balance|pricing|price|payout|payouts|reconcil\w*|fee|fees)(?:[\/._-]|$)/i,
-    reason: 'path touches money/billing/settlement surface',
+    pattern: /(?:^|\/)(?:money|billing|tax|taxes|settlement|refund|refunds|ledger|payout|payouts|reconcil\w*)(?:[\/._-]|$)/i,
+    reason: 'path touches core billing/settlement surface',
   },
   {
     riskClass: 'external-write',
     pattern: /(?:^|\/)(?:webhook|webhooks|mailer|smtp|sms|kingdee|external|gateway|notifier)(?:[\/._-]|$)/i,
     reason: 'path touches external-write integration surface',
+  },
+];
+
+const LIGHT_PATH_RULES = [
+  {
+    riskClass: 'persistence',
+    pattern: /(?:^|\/)(?:db|database|sqlite|postgres|mysql|redis|repositories)(?:[\/._-]|$)/i,
+    reason: 'path-only persistence layer touch without write/DDL hunk',
+  },
+  {
+    riskClass: 'money',
+    pattern: /(?:^|\/)(?:pay|payment|payments|invoice|invoices|balance|pricing|price|fee|fees)(?:[\/._-]|$)/i,
+    reason: 'path-only money/invoice domain touch without arithmetic/settlement hunk',
   },
 ];
 
@@ -69,8 +82,15 @@ const TEST_SKIP_ADDED = /\b(?:test|it|describe)\.(?:skip|todo|only)\b|@?(?:pytes
 const DOC_OR_PROMPT_PATH = /(?:^|\/)(?:SKILL\.md|README\.md|CLAUDE\.md|task-routing\.md|(?:docs|templates)\/.*\.md)$/i;
 const DOC_CAVEAT_TERM = /\b(?:never|must not|do not|cannot|not\s+(?:an?|only|independence|sandbox|self)|read-only|refuse|block(?:ed)?|unverified|forbidden|prohibited|caveat)\b/gi;
 const UI_ONLY_PATH = /(?:^|\/)(?:components|pages|views|styles)\/.*\.(?:tsx|jsx|css|scss|less)$/i;
+const PASSIVE_DOMAIN_PATH = /(?:^|\/)(?:types?|dtos?|interfaces?|constants?|labels?|i18n|locales)\/.*\.(?:ts|tsx|js|mjs|d\.ts)$|\.(?:d\.ts|dto\.ts|types\.ts)$|(?:^|\/)(?:web|frontend|client|ui)\/src\/(?:hooks|utils|formatters)\/.*\.(?:ts|tsx|js|mjs)$/i;
 const UI_PATH_RULE_SKIP = new Set(['money', 'persistence', 'external-write']);
 const COMMENT_ONLY_LINE = /^\s*(?:\/\/|\/\*|\*(?:\/|\s|$)|#(?!!))/;
+const normalizeAssertionLine = (line) => line
+  .replace(/;+\s*$/, '')
+  .replace(/['"`]/g, "'")
+  .replace(/\s+/g, ' ')
+  .replace(/\s*([(),[\]{}:;=])\s*/g, '$1')
+  .trim();
 
 export const isTestFile = isTestPath;
 
@@ -145,17 +165,28 @@ export function parseUnifiedDiff(diffText) {
 export function scanChanges({ entries = [], diffText = '', untrackedContents = new Map() } = {}) {
   const hunks = parseUnifiedDiff(diffText);
   const hits = [];
+  const advisoryHits = [];
   const testMutations = [];
   const caveatRemovals = [];
   const sourceFiles = [];
   const untrackedFiles = new Set();
   const seenHits = new Set();
+  const seenHardFileClass = new Set();
+  const seenAdvisories = new Set();
 
   const recordHit = (riskClass, file, reason, untracked = false) => {
+    seenHardFileClass.add(`${riskClass}:${file}`);
     const key = `${riskClass}:${file}:${reason}`;
     if (seenHits.has(key)) return;
     seenHits.add(key);
     hits.push({ class: riskClass, file, reason, untracked: Boolean(untracked) });
+  };
+
+  const recordAdvisory = (riskClass, file, reason, untracked = false) => {
+    const key = `${riskClass}:${file}:${reason}`;
+    if (seenAdvisories.has(key)) return;
+    seenAdvisories.add(key);
+    advisoryHits.push({ class: riskClass, file, reason, untracked: Boolean(untracked) });
   };
 
   for (const entry of entries) {
@@ -172,12 +203,17 @@ export function scanChanges({ entries = [], diffText = '', untrackedContents = n
       } else if (entry.status !== 'A' && !isUntracked) {
         const fileHunk = hunks.get(file);
         if (fileHunk) {
-          if (fileHunk.removed.some((line) => TEST_REMOVED_ASSERTION.test(line))) {
+          const addedNorm = new Set(
+            fileHunk.added.filter((line) => !COMMENT_ONLY_LINE.test(line)).map(normalizeAssertionLine),
+          );
+          if (fileHunk.removed.some((line) => !COMMENT_ONLY_LINE.test(line)
+            && TEST_REMOVED_ASSERTION.test(line)
+            && !addedNorm.has(normalizeAssertionLine(line)))) {
             testMutations.push({ file, reason: 'existing test assertion modified or removed' });
           } else if (FIXTURE_DIR.test(file) && fileHunk.removed.length > 0) {
             testMutations.push({ file, reason: 'existing snapshot/golden fixture modified' });
           }
-          if (fileHunk.added.some((line) => TEST_SKIP_ADDED.test(line))) {
+          if (fileHunk.added.some((line) => !COMMENT_ONLY_LINE.test(line) && TEST_SKIP_ADDED.test(line))) {
             testMutations.push({ file, reason: 'test skipped or isolated via .skip/.todo/.only' });
           }
         }
@@ -214,9 +250,9 @@ export function scanChanges({ entries = [], diffText = '', untrackedContents = n
       continue;
     }
 
-    const isUiOnlyPath = UI_ONLY_PATH.test(file);
-    for (const rule of PATH_RULES) {
-      if (isUiOnlyPath && UI_PATH_RULE_SKIP.has(rule.riskClass)) continue;
+    const skipDomainPathOnly = UI_ONLY_PATH.test(file) || PASSIVE_DOMAIN_PATH.test(file);
+    for (const rule of HARD_PATH_RULES) {
+      if (skipDomainPathOnly && UI_PATH_RULE_SKIP.has(rule.riskClass)) continue;
       if (rule.pattern.test(file)) recordHit(rule.riskClass, file, rule.reason, isUntracked);
     }
 
@@ -230,11 +266,19 @@ export function scanChanges({ entries = [], diffText = '', untrackedContents = n
         if (rule.pattern.test(line)) recordHit(rule.riskClass, file, rule.reason, isUntracked);
       }
     }
+
+    if (!skipDomainPathOnly) {
+      for (const rule of LIGHT_PATH_RULES) {
+        if (seenHardFileClass.has(`${rule.riskClass}:${file}`)) continue;
+        if (rule.pattern.test(file)) recordAdvisory(rule.riskClass, file, rule.reason, isUntracked);
+      }
+    }
   }
 
   const uniqueSources = [...new Set(sourceFiles)].sort();
   const scopes = [...new Set(uniqueSources.map(scopeKey))].sort();
   const classes = [...new Set(hits.map((h) => h.class))].sort();
+  const advisoryClasses = [...new Set(advisoryHits.map((h) => h.class))].sort();
   const reviewRequired = classes.length > 0 || testMutations.length > 0 || caveatRemovals.length > 0;
   const tierRequired = uniqueSources.length > DEFAULT_LIMIT || scopes.length >= 2 ? 2 : 1;
   const untrackedOnlyRisk = hits.length > 0
@@ -247,6 +291,8 @@ export function scanChanges({ entries = [], diffText = '', untrackedContents = n
     tierRequired,
     classes,
     hits,
+    advisoryClasses,
+    advisoryHits,
     testMutations,
     caveatRemovals,
     sourceFiles: uniqueSources,

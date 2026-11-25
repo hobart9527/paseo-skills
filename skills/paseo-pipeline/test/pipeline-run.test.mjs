@@ -688,3 +688,172 @@ test('prepare-task --new-attempt increments -a2/-a3, blocks -a4 at exit 37 witho
   assert.equal(driftRes.status, 34, driftRes.stderr);
   assert.match(driftRes.stderr, /BASE_DRIFT/);
 });
+
+test('escalate-tier2 losslessly migrates modified, staged, deleted, and untracked changes to a linked worktree and cleans primary checkout', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-escalate-'));
+  const root = path.join(dir, 'repo');
+  const wt = path.join(dir, 'repo-wt-fix-auth');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(root, { recursive: true });
+  git(root, 'init', '-q', '-b', 'main');
+  git(root, 'config', 'user.email', 't@t');
+  git(root, 'config', 'user.name', 't');
+  write(root, 'src/keep.mjs', 'export const keep = 1;\n');
+  write(root, 'src/drop.mjs', 'export const drop = 1;\n');
+  git(root, 'add', '.');
+  git(root, 'commit', '-qm', 'seed');
+
+  // Create mixed dirty state on primary checkout: modified tracked, staged new, deleted tracked, and nested untracked.
+  write(root, 'src/keep.mjs', 'export const keep = 2;\n');
+  write(root, 'src/staged.mjs', 'export const staged = true;\n');
+  git(root, 'add', 'src/staged.mjs');
+  fs.rmSync(path.join(root, 'src/drop.mjs'));
+  write(root, 'tmp-notes/scratch.txt', 'untracked note\n');
+
+  const res = spawnSync(process.execPath, [script, 'escalate-tier2', 'fix-auth', '--cwd', root, '--json'], {
+    encoding: 'utf8',
+    env: { ...env, PIPELINE_TELEMETRY: 'off' },
+  });
+  assert.equal(res.status, 0, res.stderr + res.stdout);
+  const out = JSON.parse(res.stdout);
+  assert.equal(out.ok, true);
+  assert.equal(out.branch, 'feat/fix-auth');
+  assert.equal(out.worktree, fs.realpathSync(wt));
+  assert.deepEqual(out.migratedFiles, ['src/keep.mjs', 'src/staged.mjs', 'tmp-notes/scratch.txt']);
+  assert.deepEqual(out.deletedFiles, ['src/drop.mjs']);
+
+  // Primary checkout is clean at HEAD with untracked dir cleaned up
+  assert.equal(git(root, 'status', '--porcelain=v1'), '');
+  assert.equal(fs.readFileSync(path.join(root, 'src/keep.mjs'), 'utf8'), 'export const keep = 1;\n');
+  assert.equal(fs.existsSync(path.join(root, 'src/drop.mjs')), true);
+  assert.equal(fs.existsSync(path.join(root, 'tmp-notes')), false);
+
+  // Linked worktree has all migrated modifications/untracked files and deletions preserved
+  assert.equal(fs.readFileSync(path.join(wt, 'src/keep.mjs'), 'utf8'), 'export const keep = 2;\n');
+  assert.equal(fs.readFileSync(path.join(wt, 'src/staged.mjs'), 'utf8'), 'export const staged = true;\n');
+  assert.equal(fs.readFileSync(path.join(wt, 'tmp-notes/scratch.txt'), 'utf8'), 'untracked note\n');
+  assert.equal(fs.existsSync(path.join(wt, 'src/drop.mjs')), false);
+
+  // Running escalate-tier2 inside a linked worktree is refused (exit 2)
+  const nested = spawnSync(process.execPath, [script, 'escalate-tier2', 'again', '--cwd', wt, '--json'], {
+    encoding: 'utf8',
+    env: { ...env, PIPELINE_TELEMETRY: 'off' },
+  });
+  assert.equal(nested.status, 2);
+  assert.match(nested.stderr, /already in linked worktree/);
+});
+
+test('escalate-tier2 --into migrates dirty primary changes into an existing clean worktree and tier2-merge verifies, checks review, syncs drift, and fast-forwards main', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-t2-seam-'));
+  const root = path.join(dir, 'repo');
+  const wt = path.join(dir, 'repo-wt-enter');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(root, { recursive: true });
+  git(root, 'init', '-q', '-b', 'main');
+  git(root, 'config', 'user.email', 't@t');
+  git(root, 'config', 'user.name', 't');
+  write(root, 'package.json', JSON.stringify({ name: 't2-merge-app', type: 'module' }));
+  write(root, 'src/app.mjs', 'export const val = () => 1;\n');
+  write(root, 'src/drop.mjs', 'export const drop = true;\n');
+  write(root, 'test/app.test.mjs', "import test from 'node:test'; import assert from 'node:assert/strict'; import { val } from '../src/app.mjs'; test('val', () => { assert.equal(val(), 1); });\n");
+  git(root, 'add', '.');
+  git(root, 'commit', '-qm', 'init');
+
+  // Simulate EnterWorktree creating a clean linked worktree first, while primary still holds dirty edits
+  git(root, 'worktree', 'add', '-q', '-b', 'feat/t2-enter', wt);
+  write(root, 'src/app.mjs', 'export const val = () => 2;\n');
+  write(root, 'test/app.test.mjs', "import test from 'node:test'; import assert from 'node:assert/strict'; import { val } from '../src/app.mjs'; test('val', () => { assert.equal(val(), 2); });\n");
+  fs.rmSync(path.join(root, 'src/drop.mjs'));
+  write(root, 'notes/todo.txt', 'migrate me\n');
+
+  // --into with primary checkout rejected
+  const badTarget = spawnSync(process.execPath, [script, 'escalate-tier2', '--into', root, '--cwd', root, '--json'], {
+    encoding: 'utf8',
+    env: { ...env, PIPELINE_TELEMETRY: 'off' },
+  });
+  assert.equal(badTarget.status, 2);
+
+  // Pull dirty primary changes from inside the existing clean worktree (`--into .`)
+  const intoRes = spawnSync(process.execPath, [script, 'escalate-tier2', '--into', '.', '--cwd', wt, '--json'], {
+    encoding: 'utf8',
+    env: { ...env, PIPELINE_TELEMETRY: 'off' },
+  });
+  assert.equal(intoRes.status, 0, intoRes.stderr + intoRes.stdout);
+  const intoJson = JSON.parse(intoRes.stdout);
+  assert.equal(intoJson.ok, true);
+  assert.equal(intoJson.mode, 'into');
+  assert.equal(intoJson.branch, 'feat/t2-enter');
+  assert.equal(git(root, 'status', '--porcelain=v1'), '');
+  assert.equal(fs.readFileSync(path.join(wt, 'src/app.mjs'), 'utf8'), 'export const val = () => 2;\n');
+  assert.equal(fs.existsSync(path.join(wt, 'src/drop.mjs')), false);
+  assert.equal(fs.readFileSync(path.join(wt, 'notes/todo.txt'), 'utf8'), 'migrate me\n');
+
+  // Commit in worktree; tier2-merge must refuse before tier2-verify receipt exists
+  git(wt, 'add', '.');
+  git(wt, 'commit', '-qm', 'feat impl');
+  const noReceipt = spawnSync(process.execPath, [script, 'tier2-merge', 'feat/t2-enter', '--cwd', root, '--json'], {
+    encoding: 'utf8',
+    env: { ...env, PIPELINE_TELEMETRY: 'off' },
+  });
+  assert.equal(noReceipt.status, 3);
+  assert.match(noReceipt.stderr, /tier2-verify/);
+
+  // Run tier2-verify in worktree (writes receipt)
+  const t2v = spawnSync(process.execPath, [script, 'tier2-verify', 'main', '--verify', 'node --test test/app.test.mjs', '--cwd', wt, '--json'], {
+    encoding: 'utf8',
+    env: { ...env, PIPELINE_TELEMETRY: 'off' },
+  });
+  assert.equal(t2v.status, 0, t2v.stderr + t2v.stdout);
+
+  // Add a risky commit, verify again (REVIEW_REQUIRED), ensure tier2-merge refuses without review signoff
+  write(wt, 'src/auth/token.mjs', 'export const check = () => true;\n');
+  git(wt, 'add', '.');
+  git(wt, 'commit', '-qm', 'add auth module');
+  const t2vRisk = spawnSync(process.execPath, [script, 'tier2-verify', 'main', '--verify', 'node --test test/app.test.mjs', '--cwd', wt, '--json'], {
+    encoding: 'utf8',
+    env: { ...env, PIPELINE_TELEMETRY: 'off' },
+  });
+  assert.equal(t2vRisk.status, 0, t2vRisk.stderr + t2vRisk.stdout);
+  assert.equal(JSON.parse(t2vRisk.stdout).verdict, 'REVIEW_REQUIRED');
+
+  const noReview = spawnSync(process.execPath, [script, 'tier2-merge', 'feat/t2-enter', '--cwd', root, '--json'], {
+    encoding: 'utf8',
+    env: { ...env, PIPELINE_TELEMETRY: 'off' },
+  });
+  assert.equal(noReview.status, 3);
+  assert.match(noReview.stderr, /Tier 2 review signoff/);
+
+  // Record PASS signoff, also advance main with unrelated non-conflicting commit to exercise drift-sync + post-sync Verify
+  const rec = spawnSync(process.execPath, [script, 'record-review', '--mode', 'tier2', '--verdict', 'PASS', '--reviewer', 'anchasi-t2', '--cwd', wt, '--json'], {
+    encoding: 'utf8',
+    env: { ...env, PIPELINE_TELEMETRY: 'off' },
+  });
+  assert.equal(rec.status, 0, rec.stderr + rec.stdout);
+
+  write(root, 'README.md', '# concurrent main commit\n');
+  git(root, 'add', 'README.md');
+  git(root, 'commit', '-qm', 'main advances');
+
+  // If post-sync verify fails, exit 20 and main must NOT move
+  const mainShaBefore = git(root, 'rev-parse', 'HEAD');
+  const failDrift = spawnSync(process.execPath, [script, 'tier2-merge', 'feat/t2-enter', '--verify', 'node -e "process.exit(1)"', '--cwd', root, '--json'], {
+    encoding: 'utf8',
+    env: { ...env, PIPELINE_TELEMETRY: 'off' },
+  });
+  assert.equal(failDrift.status, 20, failDrift.stderr + failDrift.stdout);
+  assert.equal(git(root, 'rev-parse', 'HEAD'), mainShaBefore, 'main must stay unchanged on post-sync Verify failure');
+
+  // Re-run tier2-merge cleanly using preserved receipt commands -> syncs pending verify and fast-forwards main
+  const okMerge = spawnSync(process.execPath, [script, 'tier2-merge', 'feat/t2-enter', '--cwd', root, '--json'], {
+    encoding: 'utf8',
+    env: { ...env, PIPELINE_TELEMETRY: 'off' },
+  });
+  assert.equal(okMerge.status, 0, okMerge.stderr + okMerge.stdout);
+  const mergeJson = JSON.parse(okMerge.stdout);
+  assert.equal(mergeJson.ok, true);
+  assert.equal(mergeJson.driftedSynced, true);
+  assert.equal(mergeJson.driftVerified, true);
+  assert.equal(mergeJson.rollbackSha, mainShaBefore);
+  assert.equal(mergeJson.driftVerifyResults.length, 1);
+  assert.equal(fs.readFileSync(path.join(root, 'src/app.mjs'), 'utf8'), 'export const val = () => 2;\n');
+});

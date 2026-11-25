@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROLE_PROFILE_IDS } from '../profiles-check.mjs';
+import { ROLE_PROFILE_IDS, inferFamily, normalizeFamily } from '../profiles-check.mjs';
 
 const script = fileURLToPath(new URL('../profiles-check.mjs', import.meta.url));
 const ROLES = ['chanpin', 'hanlin', 'ceshi', 'gongbu', 'gaogong', 'jiangzuo', 'anchasi', 'shangshu', 'neon'];
@@ -13,14 +13,14 @@ const ROLES = ['chanpin', 'hanlin', 'ceshi', 'gongbu', 'gaogong', 'jiangzuo', 'a
 const PROFILE_IDS = { neon: 'agent_profile_mvvzv70y_bweu1x85oc9' };
 
 const skillText = `## Roles\n\n| Profile | Scope |\n|---|---|\n${ROLES.map((r) => `| 角色 \`${r}\` | x |`).join('\n')}\n\n## Tools\n`;
-const FAMILY = { chanpin: 'gemini', hanlin: 'claude', ceshi: 'gemini', gongbu: 'glm', gaogong: 'kimi', jiangzuo: 'qwen', anchasi: 'gpt', shangshu: 'claude', neon: 'google' };
+const FAMILY = { chanpin: 'gemini', hanlin: 'claude', ceshi: 'gemini', gongbu: 'glm', gaogong: 'kimi', jiangzuo: 'qwen', anchasi: 'gpt', shangshu: 'claude', neon: 'mistral' };
 
 function profile(role, over = {}) {
   const family = over.family ?? FAMILY[role];
   const write = over.write ?? 'read-only';
   const lines = [`family: ${family}`, `harness: claude`, `write: ${write}`, 'use: u', 'not: n', 'brief: none'];
   return {
-    id: PROFILE_IDS[role] ?? `agent_profile_${role}`, name: role, provider: over.provider ?? 'claude', model: 'm',
+    id: PROFILE_IDS[role] ?? `agent_profile_${role}`, name: role, provider: over.provider ?? 'claude', model: over.model ?? 'm',
     notes: (over.notes ?? lines.join('\n')),
   };
 }
@@ -205,22 +205,55 @@ test('the resolved role-to-profile-id mapping is explicit, not a name guess', ()
   assert.match(r.out, /MISSING_PROFILE neon/);
 });
 
-test('notes without family/harness/write are MISSING_FIELD', () => {
-  const r = run(all({ gongbu: { notes: '只写职责' } }));
-  assert.equal(r.status, 1);
-  for (const f of ['family', 'harness', 'write', 'use', 'not', 'brief']) assert.match(r.out, new RegExp(`MISSING_FIELD gongbu ${f}`));
+test('concise 1-line notes without 6-field template exit 0', () => {
+  const r = run(all({ gongbu: { notes: '默认实现者', provider: 'claude', model: 'flash' }, anchasi: { notes: '独立审查', provider: 'codex', model: 'gpt' } }));
+  assert.equal(r.status, 0, r.out);
 });
 
-test('auditor sharing a family with a writer is FAMILY_CLASH', () => {
-  const r = run(all({ gongbu: { family: 'gpt' } }));
-  assert.equal(r.status, 1);
-  assert.match(r.out, /FAMILY_CLASH anchasi gongbu/);
+test('auditor sharing a family with a writer emits non-blocking ADVISORY_FAMILY_CLASH (both explicit and inferred)', () => {
+  const explicit = run(all({ gongbu: { family: 'gpt' } }));
+  assert.equal(explicit.status, 0, explicit.out);
+  assert.match(explicit.out, /ADVISE ADVISORY_FAMILY_CLASH anchasi gongbu \(openai\)/);
+
+  // Inferred directly from provider/model when notes contain no `family:` tag.
+  const f = fixture(ROLES.map((r) => ({
+    id: PROFILE_IDS[r] ?? `agent_profile_${r}`,
+    name: r,
+    provider: r === 'ceshi' ? 'codex' : (r === 'gongbu' || r === 'anchasi' ? 'codex' : 'claude'),
+    model: r === 'gongbu' || r === 'anchasi' ? 'gpt' : (r === 'ceshi' ? 'glm' : (r === 'chanpin' ? 'gemini' : 'cc')),
+    notes: '简洁说明',
+  })));
+  const res = cli('--json', '--skill', f.skillFile, '--config', f.configFile);
+  assert.equal(res.status, 0, res.stderr);
+  const parsed = JSON.parse(res.stdout);
+  assert.equal(parsed.ok, true);
+  assert.deepEqual(parsed.findings, []);
+  assert.ok(parsed.advisories.includes('ADVISORY_FAMILY_CLASH anchasi gongbu (openai)'));
 });
 
-test('tester sharing a family with the implementer is FAMILY_CLASH', () => {
+test('tester sharing a family with the implementer emits non-blocking ADVISORY_FAMILY_CLASH', () => {
   const r = run(all({ ceshi: { family: 'glm' } }));
-  assert.equal(r.status, 1);
-  assert.match(r.out, /FAMILY_CLASH ceshi gongbu/);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /ADVISE ADVISORY_FAMILY_CLASH ceshi gongbu \(zhipu\)/);
+});
+
+test('normalizeFamily and inferFamily handle aliases, vendor prefixes, and antigravity non-Gemini models', () => {
+  assert.equal(normalizeFamily('gpt'), 'openai');
+  assert.equal(normalizeFamily('glm'), 'zhipu');
+  assert.equal(normalizeFamily('cc'), 'anthropic');
+  assert.equal(inferFamily({ provider: 'codex', model: 'gpt' }), 'openai');
+  assert.equal(inferFamily({ provider: 'claude', model: 'anthropic/claude-sonnet-4' }), 'anthropic');
+  assert.equal(inferFamily({ provider: 'antigravity', model: 'claude-sonnet' }), 'anthropic');
+  assert.equal(inferFamily({ provider: 'antigravity', model: 'gemini-4-hydrogen-high' }), 'google');
+
+  // Explicit `family: gpt` mixes cleanly with inferred `codex/gpt` as `openai`.
+  const mixed = all({
+    anchasi: { provider: 'codex', model: 'gpt', notes: '独立审查' },
+    gongbu: { provider: 'claude', model: 'flash', family: 'gpt' },
+  });
+  const res = run(mixed);
+  assert.equal(res.status, 0, res.out);
+  assert.match(res.out, /ADVISE ADVISORY_FAMILY_CLASH anchasi gongbu \(openai\)/);
 });
 
 test('tester and auditor may share OpenAI family; lint does not prove target independence', () => {
@@ -236,14 +269,8 @@ test('bad or incomplete arguments exit 2', () => {
   }
 });
 
-test('antigravity profile without diff-check is UNENFORCED_WRITE', () => {
-  const r = run(all({ chanpin: { provider: 'antigravity', write: 'read-only' } }));
-  assert.equal(r.status, 1);
-  assert.match(r.out, /UNENFORCED_WRITE chanpin/);
-});
-
-test('antigravity profile declaring diff-check passes', () => {
-  const r = run(all({ chanpin: { provider: 'antigravity', write: 'read-only; diff-check' } }));
+test('antigravity profile passes without requiring diff-check prose in notes', () => {
+  const r = run(all({ chanpin: { provider: 'antigravity', notes: '只读调研' } }));
   assert.equal(r.status, 0, r.out);
 });
 

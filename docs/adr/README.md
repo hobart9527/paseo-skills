@@ -40,7 +40,8 @@ flowchart TB
 | [ADR-0004](0004-enabling-harness-environment-and-context.md) | Enabling Harness: Warm Worktrees, JIT Context & Self-Healing ACI | Accepted | Landed (worktree `--hydrate`/`--workspace-dir`, JIT `brief.mjs`, O(1) `tool-guard`) |
 | [ADR-0005](0005-harness-telemetry-and-self-pruning.md) | Lightweight Local Telemetry & 30-Day Self-Pruning Governance | Accepted | Landed (`lib/telemetry.mjs`, `pipeline-run.mjs report`) |
 | [ADR-0006](0006-contract-authoring-isolation-and-single-source.md) | Contract Authoring Isolation, Single-Source Verification & Unified Review | Accepted | Landed (`prepare-author`, `baseline-facts.md`, `tasks.md` `Verify/Entry`, unified `anchasi`) |
-| [ADR-0007](0007-change-entropy-tier3-roi-and-anti-thrashing.md) | Change Entropy Budget, Tier 3 ROI Routing & Anti-Thrashing Controls | Accepted | Landed (Tier 3 ROI gate, entropy split gate, `lib/author-guard.mjs`, `hanlin` `medium`) |
+| [ADR-0007](0007-change-entropy-tier3-roi-and-anti-thrashing.md) | Change Entropy Budget, Tier 3 ROI Routing & Anti-Thrashing Controls | Accepted | Landed (partially superseded by [ADR-0008](0008-tier0-cache-hygiene-and-role-late-binding.md)) |
+| [ADR-0008](0008-tier0-cache-hygiene-and-role-late-binding.md) | Tier 0 Zero-Friction Isolation, Cache Hygiene & Role Late Binding | Accepted | Landed (`tool-guard` role late binding, slim `profiles-check`, `tier-reminder` Tier 0 skip) |
 
 ## 5-Question Fitness Gate (Before Any New Rule, Hook, or Script)
 
@@ -50,7 +51,7 @@ Every change to prompts, hooks, or pipeline scripts must answer:
 2. **Enable Before Deny:** Can the harness auto-heal or pre-warm this deterministically instead of denying the agent and burning turns?
 3. **Cross-Tier Symmetry:** Does the invariant hold consistently across Tier 1, Tier 2, and Tier 3 (no Tier 1/2 escape hatch)?
 4. **Measurable & Prunable:** What real failure mode does it prevent, and how will we detect if it becomes dead weight (0 hits in 30 days or >20% false positives)?
-5. **Runtime Cost:** Does it add permanent prompt tokens or synchronous large-file I/O on hot hook paths?
+5. **Runtime, Cache & Attention Cost:** Does it add permanent prompt tokens, synchronous large-file I/O, Tier 0 cognitive tax, or mid-turn `additionalContext` that invalidates Prompt Cache prefixes?
 
 ## Conventions
 

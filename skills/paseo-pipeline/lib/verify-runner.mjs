@@ -1,5 +1,7 @@
 // Shared deterministic command runner for worker-check, merge-task, tier2-verify, and acceptance-run.
 // Runs under `set -o pipefail`, checks worktree cleanliness before/after, and detects missing dependencies.
+import fs from 'node:fs';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { runGit } from './git.mjs';
 import { missingDependency, dependencyMessage } from './toolchain.mjs';
@@ -90,4 +92,33 @@ export async function runVerifyCommand(command, { cwd = process.cwd(), timeout =
     dirtyChanged,
     ok,
   };
+}
+
+export function discoverPackageVerifyCommands(rootDir, baseRef) {
+  const diffRes = runGit(rootDir, ['diff', '--name-only', `${baseRef}...HEAD`]);
+  const changed = diffRes.status === 0 ? diffRes.stdout.split(/\r?\n/).filter(Boolean) : [];
+  if (!changed.length) return [];
+  const pkgDirs = new Set();
+  for (const rel of changed) {
+    let dir = path.dirname(path.resolve(rootDir, rel));
+    while (dir.startsWith(rootDir)) {
+      const pkg = path.join(dir, 'package.json');
+      if (fs.existsSync(pkg)) { pkgDirs.add(dir); break; }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  const cmds = [];
+  for (const dir of [...pkgDirs].sort()) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+      const testScript = pkg?.scripts?.test;
+      if (typeof testScript === 'string' && testScript.trim() && !/no test specified/i.test(testScript)) {
+        const relDir = path.relative(rootDir, dir) || '.';
+        cmds.push(relDir === '.' ? 'npm test' : `npm --prefix ${JSON.stringify(relDir)} test`);
+      }
+    } catch {}
+  }
+  return cmds;
 }

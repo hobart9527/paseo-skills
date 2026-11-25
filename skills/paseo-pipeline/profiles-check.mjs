@@ -1,18 +1,11 @@
 #!/usr/bin/env node
-// Read-only check: Paseo agent profile notes vs the SKILL.md `## Roles` table.
-// Checks only what is deterministic: role has a profile, notes carry the template
-// fields, brief paths exist and match the role's `use:` boundary, default implementation-pair
-// families differ, antigravity declares diff-check, no profile claims a read-only guarantee the
-// harness cannot give.
-// Self-declared metadata only: not backend, target-independence or sandbox proof.
-//
-// Notes template (one `key: value` per line):
-//   family:  model family (gemini | gpt | claude | glm | kimi | ...), compared for heterogeneity
-//   harness: claude | codex | antigravity
-//   write:   who guarantees the write boundary; antigravity must contain `diff-check`
-//   use:     one line, when to pick this profile
-//   not:     one line, what it does not do
-//   brief:   repo-relative path(s) of the brief to paste into the task prompt, `;`-separated, or `none`
+// Read-only check: Paseo agent profiles vs the SKILL.md `## Roles` table.
+// Checks deterministic structural health without requiring multi-line template boilerplate in `notes`:
+// - every role in SKILL.md has a mapped profile in config.json
+// - notes never claim false read-only guarantees (`纯只读` / `只读无写权限`)
+// - optional `brief:` paths (when declared in notes) exist and respect author brief boundaries
+// - family heterogeneity across reviewer/implementer/tester is inferred from provider/model
+//   (with optional `family:` override in notes) and reported as non-blocking advisories.
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -23,7 +16,6 @@ import { loadProfiles } from './lib/paseo.mjs';
 
 export { ROLE_PROFILE_IDS, profileIdOf };
 
-const FIELDS = ['family', 'harness', 'write', 'use', 'not', 'brief'];
 const FALSE_READONLY = /纯只读|只读无写权限/;
 const AUTHOR_BRIEF = 'templates/author.md';
 
@@ -42,6 +34,40 @@ export function field(notes, key) {
   return m ? m[1] : null;
 }
 
+const FAMILY_ALIASES = [
+  [/^(?:gpt|codex|openai|o[134])(?:$|[-_.])/, 'openai'],
+  [/^(?:cc|claude|sonnet|opus|haiku|anthropic)(?:$|[-_.])/, 'anthropic'],
+  [/gemini|^google$/, 'google'],
+  [/^(?:flash|deepseek)(?:$|[-_.])/, 'deepseek'],
+  [/glm|^zhipu$/, 'zhipu'],
+  [/kimi|moonshot/, 'moonshot'],
+  [/qwen|^alibaba$/, 'qwen'],
+  [/meta|llama/, 'meta'],
+];
+
+export function normalizeFamily(raw) {
+  const key = String(raw ?? '').trim().toLowerCase();
+  if (!key) return null;
+  for (const [pattern, canonical] of FAMILY_ALIASES) {
+    if (pattern.test(key)) return canonical;
+  }
+  return key;
+}
+
+/** Infer model family from explicit `family:` note or live `provider`/`model` fields. */
+export function inferFamily(profile) {
+  const explicit = field(profile?.notes, 'family');
+  if (explicit) return normalizeFamily(explicit);
+  const provider = String(profile?.provider ?? '').trim().toLowerCase();
+  const model = String(profile?.model ?? '').trim().toLowerCase();
+  const modelTail = model.split('/').pop() || model;
+  for (const [pattern, canonical] of FAMILY_ALIASES) {
+    if (pattern.test(modelTail)) return canonical;
+  }
+  if (provider === 'antigravity') return 'google';
+  return null;
+}
+
 export function check(roles, profiles, root = null) {
   const findings = [];
   const advisories = [];
@@ -50,7 +76,6 @@ export function check(roles, profiles, root = null) {
     const p = profiles.find((x) => x?.id === profileIdOf(role));
     if (!p) { findings.push(`MISSING_PROFILE ${role} (${profileIdOf(role)})`); continue; }
     byRole.set(role, p);
-    for (const f of FIELDS) if (!field(p.notes, f)) findings.push(`MISSING_FIELD ${role} ${f}`);
     if (FALSE_READONLY.test(p.notes ?? '')) findings.push(`FALSE_READONLY ${role}`);
     const brief = field(p.notes, 'brief');
     if (root && brief && brief !== 'none') {
@@ -62,12 +87,9 @@ export function check(roles, profiles, root = null) {
       && brief.split(';').some((part) => part.trim().replace(/^Tier\s+\d+\s+/, '').endsWith(AUTHOR_BRIEF))) {
       advisories.push(`ADVISORY_BRIEF_OUT_OF_SCOPE ${role}: brief ${AUTHOR_BRIEF} belongs to ${AUTHOR_ROLES.join('/')}, and ${role} does not write the contract; point it at a brief matching its use: boundary`);
     }
-    if (p.provider === 'antigravity' && !/diff-check/i.test(field(p.notes, 'write') ?? '')) {
-      findings.push(`UNENFORCED_WRITE ${role}`);
-    }
   }
-  const fam = (r) => field(byRole.get(r)?.notes, 'family')?.toLowerCase();
-  const clash = (a, b) => fam(a) && fam(a) === fam(b) && findings.push(`FAMILY_CLASH ${a} ${b} (${fam(a)})`);
+  const fam = (r) => inferFamily(byRole.get(r));
+  const clash = (a, b) => fam(a) && fam(a) === fam(b) && advisories.push(`ADVISORY_FAMILY_CLASH ${a} ${b} (${fam(a)})`);
   for (const w of IMPLEMENTER_ROLES) clash('anchasi', w);
   clash('ceshi', 'gongbu');
   if (roles.includes('neon') && fam('chanpin') && fam('chanpin') === fam('neon')) {

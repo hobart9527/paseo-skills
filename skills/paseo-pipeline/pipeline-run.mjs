@@ -16,11 +16,13 @@
 //   pipeline-run.mjs prepare-author <change-dir> [--repo <path>] [--schema paseo-pipeline|paseo-tier2] [--scaffold] [--capability <cap>] [--hydrate] [--base main] [--json]
 //   pipeline-run.mjs prepare-task <change-dir> <task-id> [--worktree-root <dir>] [--workspace-dir <dir>] [--hydrate] [--new-attempt] [--allow-attempt-over] [--json]
 //   pipeline-run.mjs hydrate [<dir>] [--json]
-//   pipeline-run.mjs record-review --mode r0|final|tier2|tier1 --verdict PASS|BLOCKED|INCOMPLETE|HUMAN_ACCEPT --reviewer <id> [--sha <ref>] [--change-dir <dir>] [--reason <text>] [--cwd <dir>] [--json]
+//   pipeline-run.mjs record-review --mode r0|final|tier2|tier1 --verdict PASS|BLOCKED|INCOMPLETE|HUMAN_ACCEPT --reviewer <id> [--sha <ref>] [--change-dir <dir>] [--write-review-md] [--reason <text>] [--cwd <dir>] [--json]
 //   pipeline-run.mjs cp2-merge <change-dir> [--base main] [--verify <cmd>]... [--timeout ms] [--skip-drift-verify] [--json]
+//   pipeline-run.mjs tier2-merge <branch> [--base main] [--change-dir <dir>] [--verify <cmd>]... [--auto-verify] [--cwd <dir>] [--timeout ms] [--skip-drift-verify] [--json]
 //   pipeline-run.mjs brief <role> --change <name> --repo <path> ...
 //   pipeline-run.mjs worker-check <change-dir> <task-id> [--timeout ms] [--allow-test-infra]
-//   pipeline-run.mjs tier2-verify <base> [--change-dir <dir>] [--verify <cmd>]... [--auto-verify] [--strict-scope] [--cwd <dir>] [--json]
+//   pipeline-run.mjs tier2-verify <base> [--change-dir <dir>] [--verify <cmd>]... [--auto-verify] [--strict-scope] [--cwd <dir>] [--no-cache] [--json]
+//   pipeline-run.mjs escalate-tier2 [<slug>] [--into <worktree>] [--branch <name>] [--path <dir>] [--cwd <dir>] [--hydrate] [--json]
 //   pipeline-run.mjs risk-scan <base> [<head>] [--cwd <dir>] [--working-tree] [--files <p1,p2>] [--tracked-only] [--json] [--require-clean]
 //   pipeline-run.mjs install-hook <worktree> [<worktree>...]
 //   pipeline-run.mjs report [--days N] [--json]
@@ -37,10 +39,12 @@ import { runGit, listWorktreesMaybe, worktreeForBranch, primaryWorktree } from '
 import { parseOptions, planOptions } from './lib/cli.mjs';
 import { runCleanup } from './lib/cleanup.mjs';
 import { recommendedWorkerRole } from './lib/roles.mjs';
-import { runVerifyCommand } from './lib/verify-runner.mjs';
+import { runVerifyCommand, discoverPackageVerifyCommands } from './lib/verify-runner.mjs';
 import { proveVerifyCommand } from './lib/verify-policy.mjs';
-import { recordReview, findReviewSignoff } from './lib/review-record.mjs';
+import { recordReview, findReviewSignoff, isSignoffOnlyDescendant } from './lib/review-record.mjs';
+import { scanRepo } from './lib/risk-scan.mjs';
 import { recordEvent, summarizeTelemetry } from './lib/telemetry.mjs';
+import { repoContext } from './lib/tier-gate.mjs';
 
 const HOME = path.dirname(fileURLToPath(import.meta.url));
 const [command, ...rest] = process.argv.slice(2);
@@ -78,16 +82,19 @@ function changeDirOf(arg) {
 
 const HOOKS_DIR = path.join(HOME, 'hooks', 'git');
 
-function commonGitDir(dir) {
-  const abs = runGit(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+function resolveGitPathDir(dir, flag) {
+  const abs = runGit(dir, ['rev-parse', '--path-format=absolute', flag]);
   if (abs.status === 0 && abs.stdout.trim()) {
     try { return fs.realpathSync(abs.stdout.trim()); } catch { return path.resolve(abs.stdout.trim()); }
   }
-  const rel = runGit(dir, ['rev-parse', '--git-common-dir']);
+  const rel = runGit(dir, ['rev-parse', flag]);
   if (rel.status !== 0 || !rel.stdout.trim()) return null;
   const target = path.isAbsolute(rel.stdout.trim()) ? rel.stdout.trim() : path.resolve(dir, rel.stdout.trim());
   try { return fs.realpathSync(target); } catch { return path.resolve(target); }
 }
+
+const commonGitDir = (dir) => resolveGitPathDir(dir, '--git-common-dir');
+const gitDirOf = (dir) => resolveGitPathDir(dir, '--git-dir');
 
 function hydrateWorktree(worktreePath) {
   if (!fs.existsSync(path.join(worktreePath, 'package.json'))) {
@@ -152,6 +159,194 @@ function hookWarnings(change) {
 function forward(scriptName, scriptArgs = rest) {
   const result = spawnSync(process.execPath, [path.join(HOME, scriptName), ...scriptArgs], { stdio: 'inherit' });
   process.exit(result.status ?? 1);
+}
+
+async function runDriftVerifyBatch({ eventName, tier, commands, verifyCwd, baseBranch, targetLabel, timeout, json, emptyMessage }) {
+  const unprovable = commands.map((c) => ({ c, ...proveVerifyCommand(c) })).filter((r) => !r.ok);
+  if (!commands.length || unprovable.length) {
+    recordEvent(eventName, { tier, ok: false, verdict: 'drift_unverified', reasonCode: 'verify_unprovable' });
+    const detail = !commands.length ? emptyMessage : `unprovable Verify command(s): ${unprovable.map((u) => u.c).join(', ')}`;
+    die(`synced ${baseBranch} drift into ${targetLabel}, but refusing to fast-forward ${baseBranch} unverified (${detail}); run Verify in ${verifyCwd} or re-run with --verify "<cmd>"`, 20);
+  }
+  const results = [];
+  for (const cmd of commands) {
+    const res = await runVerifyCommand(cmd, { cwd: verifyCwd, timeout, streamToStdout: !json });
+    results.push({ command: cmd, ok: res.ok, status: res.status, durationMs: res.durationMs });
+    if (!res.ok) {
+      recordEvent(eventName, { tier, ok: false, verdict: 'drift_verify_failed', reasonCode: 'verify_failed' });
+      die(`synced ${baseBranch} drift into ${targetLabel}, but post-sync Verify failed (command=${cmd}, status=${res.status}); ${baseBranch} was NOT updated — fix in ${verifyCwd} before merging`, 20);
+    }
+  }
+  return results;
+}
+
+async function runVerifiedFastForwardMerge({
+  eventName,
+  tier,
+  branch,
+  baseBranch,
+  branchWt,
+  targetBaseWt,
+  baseShaBefore,
+  pendingDriftMarker,
+  driftMarker,
+  skipDriftVerify,
+  timeout,
+  json,
+  resolveVerifyCommands,
+  buildMarkerPayload,
+  onDriftVerified,
+  emptyVerifyMessage,
+  missingWtMessage,
+  dirtyWtMessage,
+  conflictHint = 'resolve manually and re-run Verify',
+}) {
+  const drifted = runGit(targetBaseWt, ['merge-base', '--is-ancestor', baseShaBefore, branch]).status !== 0;
+  let driftedSynced = Boolean(driftMarker);
+  let driftVerified = false;
+  let driftVerifyResults = [];
+  if (drifted) {
+    if (!branchWt) die(`${baseBranch} advanced past ${branch} base and ${branch} has no checked-out worktree to sync`, 3);
+    if (runGit(branchWt, ['status', '--porcelain=v1', '--untracked-files=all']).stdout.trim()) {
+      die(`branch worktree ${branchWt} is dirty`, 3);
+    }
+    const syncMerge = runGit(branchWt, ['merge', '--no-ff', '--no-edit', baseBranch]);
+    if (syncMerge.status !== 0) {
+      runGit(branchWt, ['merge', '--abort']);
+      recordEvent(eventName, { tier, ok: false, verdict: 'conflict', reasonCode: 'merge_conflict' });
+      die(`${baseBranch} drifted and conflicts with ${branch}; ${conflictHint}`, 10);
+    }
+    driftedSynced = true;
+    if (pendingDriftMarker) {
+      fs.writeFileSync(pendingDriftMarker, `${JSON.stringify(buildMarkerPayload())}\n`);
+    }
+  }
+  if (driftedSynced) {
+    if (skipDriftVerify) {
+      if (pendingDriftMarker && fs.existsSync(pendingDriftMarker)) fs.unlinkSync(pendingDriftMarker);
+    } else {
+      if (!branchWt) {
+        recordEvent(eventName, { tier, ok: false, verdict: 'missing_wt', reasonCode: 'missing_wt' });
+        die(missingWtMessage, 3);
+      }
+      if (runGit(branchWt, ['status', '--porcelain=v1', '--untracked-files=all']).stdout.trim()) {
+        recordEvent(eventName, { tier, ok: false, verdict: 'dirty_wt', reasonCode: 'dirty_wt' });
+        die(dirtyWtMessage, 3);
+      }
+      const cmds = resolveVerifyCommands();
+      driftVerifyResults = await runDriftVerifyBatch({
+        eventName,
+        tier,
+        commands: cmds,
+        verifyCwd: branchWt,
+        baseBranch,
+        targetLabel: branch,
+        timeout,
+        json,
+        emptyMessage: emptyVerifyMessage,
+      });
+      const syncedHead = runGit(branchWt, ['rev-parse', 'HEAD']).stdout.trim();
+      onDriftVerified?.(syncedHead);
+      if (pendingDriftMarker && fs.existsSync(pendingDriftMarker)) fs.unlinkSync(pendingDriftMarker);
+      driftVerified = true;
+    }
+  }
+  const ff = runGit(targetBaseWt, ['merge', '--ff-only', branch]);
+  if (ff.status !== 0) {
+    recordEvent(eventName, { tier, ok: false, verdict: 'ff_failed', reasonCode: 'ff_failed' });
+    die(`fast-forward merge into ${baseBranch} failed: ${ff.stderr}`, 1);
+  }
+  const mergedSha = runGit(targetBaseWt, ['rev-parse', 'HEAD']).stdout.trim();
+  recordEvent(eventName, { tier, ok: true, verdict: driftedSynced ? 'drift_synced' : 'clean', count: driftVerifyResults.length });
+  return { rollbackSha: baseShaBefore, mergedSha, driftedSynced, driftVerified, driftVerifyResults };
+}
+
+function scanDirtyPrimary(primaryRoot) {
+  const baseHead = runGit(primaryRoot, ['rev-parse', 'HEAD']);
+  if (baseHead.status !== 0) die(`cannot resolve HEAD in ${primaryRoot}: ${baseHead.stderr}`);
+  const baseSha = baseHead.stdout.trim();
+  const statusRes = runGit(primaryRoot, ['status', '--porcelain=v1', '-z', '--untracked-files=all']);
+  if (statusRes.status !== 0) die(`git status failed: ${statusRes.stderr}`);
+  const parts = (statusRes.stdout || '').split('\0').filter(Boolean);
+  const migratedSet = new Set();
+  const deletedSet = new Set();
+  const untrackedFiles = [];
+  let hasTrackedChanges = false;
+  for (let i = 0; i < parts.length; i += 1) {
+    const code = parts[i].slice(0, 2);
+    const filePath = parts[i].slice(3);
+    if (code === '??') {
+      migratedSet.add(filePath);
+      untrackedFiles.push(filePath);
+      continue;
+    }
+    hasTrackedChanges = true;
+    if (code[0] === 'R' || code[0] === 'C') {
+      const fromPath = parts[++i];
+      if (code[0] === 'R' && fromPath) deletedSet.add(fromPath);
+    }
+    try {
+      fs.lstatSync(path.join(primaryRoot, filePath));
+      migratedSet.add(filePath);
+      deletedSet.delete(filePath);
+    } catch {
+      deletedSet.add(filePath);
+      migratedSet.delete(filePath);
+    }
+  }
+  return {
+    baseSha,
+    migratedFiles: [...migratedSet].sort(),
+    deletedFiles: [...deletedSet].sort(),
+    untrackedFiles,
+    hasTrackedChanges,
+  };
+}
+
+function applyPrimaryMigrationToWorktree({ primaryRoot, wtPath, migratedFiles, deletedFiles, untrackedFiles, hasTrackedChanges }) {
+  for (const rel of migratedFiles) {
+    const src = path.join(primaryRoot, rel);
+    const dst = path.join(wtPath, rel);
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    const st = fs.lstatSync(src);
+    if (st.isSymbolicLink()) {
+      const target = fs.readlinkSync(src);
+      try { fs.unlinkSync(dst); } catch {}
+      fs.symlinkSync(target, dst);
+      if (fs.readlinkSync(dst) !== target) die(`symlink verification failed for ${rel}`, 1);
+    } else {
+      fs.copyFileSync(src, dst);
+      fs.chmodSync(dst, st.mode & 0o777);
+      if (fs.lstatSync(dst).size !== st.size) die(`size verification failed for ${rel}`, 1);
+    }
+  }
+  for (const rel of deletedFiles) {
+    const dst = path.join(wtPath, rel);
+    fs.rmSync(dst, { force: true });
+    let stillThere = true;
+    try { fs.lstatSync(dst); } catch { stillThere = false; }
+    if (stillThere) die(`deletion verification failed for ${rel}`, 1);
+  }
+  for (const rel of untrackedFiles) {
+    const src = path.join(primaryRoot, rel);
+    fs.rmSync(src, { force: true });
+    let dir = path.dirname(src);
+    while (dir.startsWith(`${primaryRoot}${path.sep}`)) {
+      try {
+        if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+        else break;
+      } catch { break; }
+      dir = path.dirname(dir);
+    }
+  }
+  if (hasTrackedChanges) {
+    const reset = runGit(primaryRoot, ['reset', '--hard', '-q', 'HEAD']);
+    if (reset.status !== 0) die(`git reset --hard HEAD failed in primary ${primaryRoot}: ${reset.stderr}`, 1);
+  }
+  const primaryCheck = runGit(primaryRoot, ['status', '--porcelain=v1']);
+  if (primaryCheck.status !== 0 || primaryCheck.stdout.trim() !== '') {
+    die(`primary checkout ${primaryRoot} is not clean after migration`, 1);
+  }
 }
 
 if (command === 'acceptance') {
@@ -220,9 +415,6 @@ if (command === 'acceptance') {
     console.log(`- tier2_verify: total=${summary.verify.total} pass=${summary.verify.pass} review_required=${summary.verify.reviewRequired} fail=${summary.verify.fail} unprovable=${summary.verify.unprovableRejections}`);
     console.log(`- worker_check: total=${summary.workerCheck.total} pass=${summary.workerCheck.pass} fail=${summary.workerCheck.fail}`);
     console.log(`- tier_stop blocks: total=${summary.stopBlocks.total}`);
-    if (summary.authorGuard && (summary.authorGuard.warn || summary.authorGuard.stop || summary.authorGuard.compactEmptySpecs)) {
-      console.log(`- author_guard: warn=${summary.authorGuard.warn} stop=${summary.authorGuard.stop} compact_empty_specs=${summary.authorGuard.compactEmptySpecs}`);
-    }
     if (summary.tierWrite && (summary.tierWrite.ask || summary.tierWrite.deny)) {
       console.log(`- tier_write: ask=${summary.tierWrite.ask} deny=${summary.tierWrite.deny}`);
     }
@@ -279,6 +471,7 @@ if (command === 'acceptance') {
       reviewer: 'value',
       sha: 'value',
       'change-dir': 'value',
+      'write-review-md': 'boolean',
       reason: 'value',
       cwd: 'value',
       json: 'boolean',
@@ -293,6 +486,7 @@ if (command === 'acceptance') {
       reviewer: parsed.options.reviewer,
       sha: parsed.options.sha || 'HEAD',
       changeDir: parsed.options['change-dir'] || null,
+      writeReviewMd: Boolean(parsed.options['write-review-md']),
       reason: parsed.options.reason || '',
     });
     if (parsed.options.json) console.log(JSON.stringify(out, null, 2));
@@ -888,47 +1082,27 @@ if (command === 'acceptance') {
     die(`refusing cp2-merge: missing valid FINAL signoff (PASS or HUMAN_ACCEPT) for ${integrationBranch} @ ${integrationTip.slice(0, 7)}`, 3);
   }
 
-  const drifted = runGit(targetBaseWt, ['merge-base', '--is-ancestor', baseShaBefore, integrationBranch]).status !== 0;
-  let driftedSynced = Boolean(driftMarker);
-  let driftVerified = false;
-  const driftVerifyResults = [];
-  if (drifted) {
-    if (!intWorktree) die(`${baseBranch} advanced past integration base and ${integrationBranch} has no checked-out worktree to sync`, 3);
-    if (runGit(intWorktree, ['status', '--porcelain=v1', '--untracked-files=all']).stdout.trim()) {
-      die(`integration worktree ${intWorktree} is dirty`, 3);
-    }
-    const syncMerge = runGit(intWorktree, ['merge', '--no-ff', '--no-edit', baseBranch]);
-    if (syncMerge.status !== 0) {
-      runGit(intWorktree, ['merge', '--abort']);
-      recordEvent('cp2_merge', { tier: '3', ok: false, verdict: 'conflict', reasonCode: 'merge_conflict' });
-      die(`${baseBranch} drifted and conflicts with ${integrationBranch}; resolve manually in ${intWorktree} and re-run Verify`, 10);
-    }
-    driftedSynced = true;
-    const preservedSignedSha = driftMarker?.signedPreSyncSha || signedPreSyncSha || integrationTip;
-    if (pendingDriftMarker) {
-      fs.writeFileSync(pendingDriftMarker, `${JSON.stringify({ baseSha: baseShaBefore, signedPreSyncSha: preservedSignedSha })}\n`);
-    }
-  }
-  if (driftedSynced) {
-    if (parsed.options['skip-drift-verify']) {
-      if (pendingDriftMarker && fs.existsSync(pendingDriftMarker)) fs.unlinkSync(pendingDriftMarker);
-    } else {
-      if (!intWorktree) {
-        recordEvent('cp2_merge', { tier: '3', ok: false, verdict: 'missing_int_wt', reasonCode: 'missing_int_wt' });
-        die(`pending post-drift Verify requires a checked-out worktree for ${integrationBranch}; check it out, verify, and retry cp2-merge`, 3);
-      }
-      if (runGit(intWorktree, ['status', '--porcelain=v1', '--untracked-files=all']).stdout.trim()) {
-        recordEvent('cp2_merge', { tier: '3', ok: false, verdict: 'dirty_int_wt', reasonCode: 'dirty_int_wt' });
-        die(`integration worktree ${intWorktree} is dirty; commit or clean changes before retrying cp2-merge`, 3);
-      }
-      const verifyCwd = intWorktree;
+  const mergeOut = await runVerifiedFastForwardMerge({
+    eventName: 'cp2_merge',
+    tier: '3',
+    branch: integrationBranch,
+    baseBranch,
+    branchWt: intWorktree,
+    targetBaseWt,
+    baseShaBefore,
+    pendingDriftMarker,
+    driftMarker,
+    skipDriftVerify: Boolean(parsed.options['skip-drift-verify']),
+    timeout,
+    json: parsed.options.json,
+    buildMarkerPayload: () => ({ baseSha: baseShaBefore, signedPreSyncSha: driftMarker?.signedPreSyncSha || signedPreSyncSha || integrationTip }),
+    resolveVerifyCommands: () => {
       const cmds = [...(parsed.options.verify ?? [])];
-      const intChangeDir = path.join(verifyCwd, 'openspec', 'changes', change);
+      const intChangeDir = path.join(intWorktree, 'openspec', 'changes', change);
       if (!cmds.length) {
         const accFile = path.join(intChangeDir, 'acceptance.md');
         if (fs.existsSync(accFile)) {
-          const table = parseAcceptanceTable(fs.readFileSync(accFile, 'utf8'));
-          for (const row of table.rows) {
+          for (const row of parseAcceptanceTable(fs.readFileSync(accFile, 'utf8')).rows) {
             if (/^yes$/i.test(row.required) && row.verify && !cmds.includes(row.verify)) cmds.push(row.verify);
           }
         }
@@ -936,43 +1110,22 @@ if (command === 'acceptance') {
       if (!cmds.length) {
         const tasksFile = path.join(intChangeDir, 'tasks.md');
         if (fs.existsSync(tasksFile)) {
-          const parsedTasks = parseTasks(fs.readFileSync(tasksFile, 'utf8'));
-          for (const t of parsedTasks.tasks) {
+          for (const t of parseTasks(fs.readFileSync(tasksFile, 'utf8')).tasks) {
             const v = String(t.verify || '').replace(/^`(.+)`$/, '$1').trim();
             if (v && !cmds.includes(v)) cmds.push(v);
           }
         }
       }
-      const unprovable = cmds.map((c) => ({ c, ...proveVerifyCommand(c) })).filter((r) => !r.ok);
-      if (!cmds.length || unprovable.length) {
-        recordEvent('cp2_merge', { tier: '3', ok: false, verdict: 'drift_unverified', reasonCode: 'verify_unprovable' });
-        const detail = !cmds.length
-          ? 'no Verify commands found in --verify, acceptance.md, or tasks.md'
-          : `unprovable Verify command(s): ${unprovable.map((u) => u.c).join(', ')}`;
-        die(`synced ${baseBranch} drift into ${integrationBranch}, but refusing to fast-forward ${baseBranch} unverified (${detail}); run Verify in ${verifyCwd} or re-run cp2-merge with --verify "<cmd>"`, 20);
-      }
-      for (const cmd of cmds) {
-        const res = await runVerifyCommand(cmd, { cwd: verifyCwd, timeout, streamToStdout: !parsed.options.json });
-        driftVerifyResults.push({ command: cmd, ok: res.ok, status: res.status, durationMs: res.durationMs });
-        if (!res.ok) {
-          recordEvent('cp2_merge', { tier: '3', ok: false, verdict: 'drift_verify_failed', reasonCode: 'verify_failed' });
-          die(`synced ${baseBranch} drift into ${integrationBranch}, but post-sync Verify failed (command=${cmd}, status=${res.status}); ${baseBranch} was NOT updated — fix in ${verifyCwd} before merging`, 20);
-        }
-      }
-      if (pendingDriftMarker && fs.existsSync(pendingDriftMarker)) fs.unlinkSync(pendingDriftMarker);
-      driftVerified = true;
-    }
-  }
-  const ff = runGit(targetBaseWt, ['merge', '--ff-only', integrationBranch]);
-  if (ff.status !== 0) {
-    recordEvent('cp2_merge', { tier: '3', ok: false, verdict: 'ff_failed', reasonCode: 'ff_failed' });
-    die(`fast-forward merge into ${baseBranch} failed: ${ff.stderr}`, 1);
-  }
-  const mergedSha = runGit(targetBaseWt, ['rev-parse', 'HEAD']).stdout.trim();
-  recordEvent('cp2_merge', { tier: '3', ok: true, verdict: driftedSynced ? 'drift_synced' : 'clean', count: driftVerifyResults.length });
-  const payload = { change, base: baseBranch, rollbackSha: baseShaBefore, mergedSha, driftedSynced, driftVerified, driftVerifyResults };
+      return cmds;
+    },
+    emptyVerifyMessage: 'no Verify commands found in --verify, acceptance.md, or tasks.md',
+    missingWtMessage: `pending post-drift Verify requires a checked-out worktree for ${integrationBranch}; check it out, verify, and retry cp2-merge`,
+    dirtyWtMessage: `integration worktree ${intWorktree} is dirty; commit or clean changes before retrying cp2-merge`,
+    conflictHint: `resolve manually in ${intWorktree} and re-run Verify`,
+  });
+  const payload = { change, base: baseBranch, ...mergeOut };
   if (parsed.options.json) console.log(JSON.stringify(payload, null, 2));
-  else console.log(`cp2-merge ok: ${integrationBranch} -> ${baseBranch} @ ${mergedSha.slice(0, 7)} (rollback=${baseShaBefore.slice(0, 7)}${driftedSynced ? `, synced main drift & verified (${driftVerifyResults.length} cmd)` : ''})`);
+  else console.log(`cp2-merge ok: ${integrationBranch} -> ${baseBranch} @ ${mergeOut.mergedSha.slice(0, 7)} (rollback=${baseShaBefore.slice(0, 7)}${mergeOut.driftedSynced ? `, synced main drift & verified (${mergeOut.driftVerifyResults.length} cmd)` : ''})`);
 } else if (command === 'status') {
   let parsed;
   try { parsed = parseOptions(rest, { json: 'boolean' }); } catch (error) { die(error.message); }
@@ -1004,6 +1157,281 @@ if (command === 'acceptance') {
     for (const task of tasks.filter((item) => !item.done)) console.log(`OPEN ${task.id}: ${task.title}`);
     for (const item of doneVerification(change, tasks, dir)) console.log(`ATTENTION ${item.task}: ${item.kind} — ${item.reason}`);
   }
+} else if (command === 'escalate-tier2') {
+  let parsed;
+  try {
+    parsed = parseOptions(rest, { into: 'value', branch: 'value', path: 'value', cwd: 'value', hydrate: 'boolean', json: 'boolean' });
+  } catch (error) { die(error.message); }
+  const cwd = path.resolve(parsed.options.cwd || process.cwd());
+  if (parsed.options.into) {
+    if (parsed.options.branch || parsed.options.path) {
+      die('--into cannot be combined with --branch or --path');
+    }
+    if (parsed.positional.length > 1) {
+      die('Usage: pipeline-run.mjs escalate-tier2 [<slug>] --into <existing-worktree> [--cwd <dir>] [--hydrate] [--json]');
+    }
+    const wtCandidate = path.resolve(cwd, parsed.options.into);
+    if (!fs.existsSync(wtCandidate)) die(`target worktree does not exist: ${wtCandidate}`);
+    const wtCtx = repoContext(wtCandidate);
+    if (!wtCtx) die(`not a git repository: ${wtCandidate}`);
+    if (wtCtx.isPrimary) die(`--into target must be a linked worktree, got primary checkout (${wtCtx.root})`);
+    const wtDirty = runGit(wtCtx.root, ['status', '--porcelain=v1', '--untracked-files=all']).stdout.trim();
+    if (wtDirty) die(`target linked worktree ${wtCtx.root} must be clean before pulling primary changes`, 3);
+    const primaryRaw = primaryWorktree(wtCtx.root);
+    if (!primaryRaw) die(`cannot locate primary checkout for ${wtCtx.root}`);
+    const primaryRoot = fs.realpathSync(primaryRaw);
+
+    const { baseSha, migratedFiles, deletedFiles, untrackedFiles, hasTrackedChanges } = scanDirtyPrimary(primaryRoot);
+    const wtHeadRes = runGit(wtCtx.root, ['rev-parse', 'HEAD']);
+    if (wtHeadRes.status !== 0) die(`cannot resolve HEAD in ${wtCtx.root}: ${wtHeadRes.stderr}`);
+    const wtHead = wtHeadRes.stdout.trim();
+    if (wtHead !== baseSha) {
+      const diffRes = runGit(wtCtx.root, ['diff', '--name-only', '-z', `${baseSha}..${wtHead}`]);
+      if (diffRes.status === 0) {
+        const wtChanged = new Set((diffRes.stdout || '').split('\0').filter(Boolean));
+        const conflicts = [...migratedFiles, ...deletedFiles].filter((rel) => wtChanged.has(rel));
+        if (conflicts.length) {
+          die(`refusing --into migration: target worktree ${wtCtx.branch || wtCtx.root} already modified overlapping file(s): ${conflicts.join(', ')}`);
+        }
+      }
+    }
+
+    applyPrimaryMigrationToWorktree({
+      primaryRoot,
+      wtPath: wtCtx.root,
+      migratedFiles,
+      deletedFiles,
+      untrackedFiles,
+      hasTrackedChanges,
+    });
+
+    const hydrated = parsed.options.hydrate ? hydrateWorktree(wtCtx.root) : null;
+    const result = {
+      ok: true,
+      mode: 'into',
+      slug: parsed.positional[0] || wtCtx.branch || path.basename(wtCtx.root),
+      branch: wtCtx.branch || null,
+      worktree: wtCtx.root,
+      primary: primaryRoot,
+      baseSha,
+      migratedFiles,
+      deletedFiles,
+      hydrated,
+    };
+    if (parsed.options.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(`escalate-tier2 --into ok: ${wtCtx.branch || wtCtx.root} <- ${primaryRoot} (base=${baseSha.slice(0, 7)}, migrated=${migratedFiles.length}, deleted=${deletedFiles.length})`);
+    }
+  } else {
+    const [slug] = parsed.positional;
+    if (!slug || parsed.positional.length > 1 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(slug)) {
+      die('Usage: pipeline-run.mjs escalate-tier2 <slug> [--branch <name>] [--path <dir>] [--cwd <dir>] [--hydrate] [--json]');
+    }
+    const ctx = repoContext(cwd);
+    if (!ctx) die(`not a git repository: ${cwd}`);
+    if (!ctx.isPrimary) die(`already in linked worktree (${ctx.root})`);
+
+    const branch = parsed.options.branch || `feat/${slug}`;
+    if (runGit(ctx.root, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]).status === 0) {
+      die(`branch already exists: ${branch}`);
+    }
+    const wtPath = path.resolve(
+      parsed.options.path || path.join(path.dirname(ctx.root), `${path.basename(ctx.root)}-wt-${slug}`),
+    );
+    if (fs.existsSync(wtPath)) die(`worktree path already exists: ${wtPath}`);
+
+    const { baseSha, migratedFiles, deletedFiles, untrackedFiles, hasTrackedChanges } = scanDirtyPrimary(ctx.root);
+    const wtAdd = runGit(ctx.root, ['worktree', 'add', '-q', '-b', branch, wtPath, 'HEAD']);
+    if (wtAdd.status !== 0) die(`git worktree add failed: ${wtAdd.stderr || wtAdd.stdout}`, 1);
+
+    applyPrimaryMigrationToWorktree({
+      primaryRoot: ctx.root,
+      wtPath,
+      migratedFiles,
+      deletedFiles,
+      untrackedFiles,
+      hasTrackedChanges,
+    });
+
+    const hydrated = parsed.options.hydrate ? hydrateWorktree(wtPath) : null;
+    const result = {
+      ok: true,
+      slug,
+      branch,
+      worktree: fs.realpathSync(wtPath),
+      primary: ctx.root,
+      baseSha,
+      migratedFiles,
+      deletedFiles,
+      hydrated,
+    };
+    if (parsed.options.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(`escalate-tier2 ok: ${branch} -> ${result.worktree} (base=${baseSha.slice(0, 7)}, migrated=${migratedFiles.length}, deleted=${deletedFiles.length})`);
+    }
+  }
+} else if (command === 'tier2-merge') {
+  let parsed;
+  try {
+    parsed = parseOptions(rest, {
+      base: 'value',
+      'change-dir': 'value',
+      verify: 'repeat',
+      'auto-verify': 'boolean',
+      cwd: 'value',
+      timeout: 'value',
+      'skip-drift-verify': 'boolean',
+      json: 'boolean',
+    });
+  } catch (error) { die(error.message); }
+  if (parsed.positional.length !== 1) die('tier2-merge needs <branch>');
+  const branch = parsed.positional[0];
+  const timeout = Number(parsed.options.timeout ?? '600000');
+  if (!Number.isSafeInteger(timeout) || timeout < 1) die('--timeout must be a positive integer');
+  const cwd = path.resolve(parsed.options.cwd || process.cwd());
+  const rootRes = runGit(cwd, ['rev-parse', '--show-toplevel']);
+  if (rootRes.status !== 0) die(`not a git repository: ${cwd}`, 3);
+  const root = fs.realpathSync(rootRes.stdout.trim());
+  const baseBranch = parsed.options.base || 'main';
+  if (branch === baseBranch) die(`branch and --base cannot both be ${baseBranch}`);
+  if (runGit(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).status !== 0) {
+    die(`missing branch ${branch}`, 3);
+  }
+  const branchWtRaw = worktreeForBranch(root, branch);
+  const branchWt = branchWtRaw ? fs.realpathSync(branchWtRaw) : null;
+  if (branchWt && runGit(branchWt, ['status', '--porcelain=v1', '--untracked-files=all']).stdout.trim()) {
+    die(`branch worktree ${branchWt} has uncommitted changes; commit/clean and re-run tier2-verify`, 3);
+  }
+  const baseWorktree = worktreeForBranch(root, baseBranch);
+  const curBranch = runGit(root, ['symbolic-ref', '--short', 'HEAD']).stdout.trim();
+  const targetBaseWtRaw = baseWorktree || (curBranch === baseBranch ? root : null);
+  const targetBaseWt = targetBaseWtRaw ? fs.realpathSync(targetBaseWtRaw) : null;
+  if (!targetBaseWt) die(`checkout ${baseBranch} in a clean worktree before tier2-merge`, 3);
+  if (runGit(targetBaseWt, ['status', '--porcelain=v1', '--untracked-files=all']).stdout.trim()) {
+    die(`${baseBranch} worktree ${targetBaseWt} has uncommitted changes; aborting merge`, 3);
+  }
+
+  const branchTip = runGit(root, ['rev-parse', branch]).stdout.trim();
+  const baseShaBefore = runGit(targetBaseWt, ['rev-parse', baseBranch]).stdout.trim();
+  const checkCwd = branchWt || root;
+  let relChangeDir = null;
+  let changeName = null;
+  if (parsed.options['change-dir']) {
+    const absChange = path.resolve(checkCwd, parsed.options['change-dir']);
+    relChangeDir = path.relative(checkCwd, absChange).split(path.sep).join('/');
+    if (!relChangeDir || relChangeDir.startsWith('..') || path.isAbsolute(relChangeDir)) {
+      die(`change directory ${absChange} is outside repository ${checkCwd}`, 3);
+    }
+    changeName = path.basename(absChange);
+  }
+
+  const gitCommon = commonGitDir(root);
+  const pendingDriftMarker = gitCommon
+    ? path.join(gitCommon, `paseo-tier2-pending-${branch.replace(/[^A-Za-z0-9._-]/g, '_')}`)
+    : null;
+  let driftMarker = null;
+  if (pendingDriftMarker && fs.existsSync(pendingDriftMarker)) {
+    try {
+      const obj = JSON.parse(fs.readFileSync(pendingDriftMarker, 'utf8'));
+      driftMarker = obj && typeof obj === 'object' ? obj : {};
+    } catch {
+      driftMarker = {};
+    }
+  }
+
+  const branchGitDir = branchWt ? gitDirOf(branchWt) : null;
+  const rFile = branchGitDir ? path.join(branchGitDir, 'paseo-tier2-verify.json') : null;
+  let receipt = null;
+  if (rFile && fs.existsSync(rFile)) {
+    try { receipt = JSON.parse(fs.readFileSync(rFile, 'utf8')); } catch { receipt = null; }
+  }
+  const shaMatchesVerifyReceipt = (saved, shaToCheck) => Boolean(
+    saved
+    && saved.allVerifyPassed === true
+    && saved.tip
+    && (saved.tip === shaToCheck || isSignoffOnlyDescendant(checkCwd, saved.tip, shaToCheck, changeName)),
+  );
+  let validVerifyReceipt = shaMatchesVerifyReceipt(receipt, branchTip);
+  let verifiedPreSyncSha = validVerifyReceipt ? receipt.tip : null;
+  if (!validVerifyReceipt && driftMarker?.verifiedPreSyncSha) {
+    const anc = runGit(root, ['merge-base', '--is-ancestor', driftMarker.verifiedPreSyncSha, branchTip]);
+    if (anc.status === 0 && shaMatchesVerifyReceipt(receipt, driftMarker.verifiedPreSyncSha)) {
+      validVerifyReceipt = true;
+      verifiedPreSyncSha = driftMarker.verifiedPreSyncSha;
+    }
+  }
+  if (!validVerifyReceipt) {
+    recordEvent('tier2_merge', { tier: '2', ok: false, verdict: 'missing_verify_receipt', reasonCode: 'missing_verify_receipt' });
+    die(`refusing tier2-merge: missing or stale tier2-verify PASS receipt for ${branch} @ ${branchTip.slice(0, 7)}; run \`pipeline-run.mjs tier2-verify ${baseBranch}\` in its worktree first`, 3);
+  }
+
+  const findTier2Signoff = (shaToCheck, refArg = null) => {
+    const first = findReviewSignoff({ cwd: checkCwd, changeDir: relChangeDir, sha: shaToCheck, ref: refArg, mode: 'tier2' });
+    if (first || !branchWt || branchWt === root) return first;
+    return findReviewSignoff({ cwd: root, changeDir: relChangeDir, sha: shaToCheck, ref: refArg || branch, mode: 'tier2' });
+  };
+  const tipSignoff = findTier2Signoff(branchTip, branchWt ? null : branch);
+  if (tipSignoff?.verdict === 'BLOCKED') {
+    recordEvent('tier2_merge', { tier: '2', ok: false, verdict: 'review_blocked', reasonCode: 'review_blocked' });
+    die(`Tier 2 review is BLOCKED on ${branch} (${branchTip.slice(0, 7)})`, 3);
+  }
+  const risk = scanRepo({ cwd: checkCwd, base: baseBranch, head: branchTip });
+  let validReviewSha = ['PASS', 'HUMAN_ACCEPT'].includes(tipSignoff?.verdict) ? branchTip : null;
+  if (risk.reviewRequired && !validReviewSha && driftMarker?.signedPreSyncSha) {
+    const anc = runGit(root, ['merge-base', '--is-ancestor', driftMarker.signedPreSyncSha, branchTip]);
+    if (anc.status === 0) {
+      const preSyncSignoff = findTier2Signoff(driftMarker.signedPreSyncSha, driftMarker.signedPreSyncSha);
+      if (['PASS', 'HUMAN_ACCEPT'].includes(preSyncSignoff?.verdict)) {
+        validReviewSha = driftMarker.signedPreSyncSha;
+      }
+    }
+  }
+  if (risk.reviewRequired && !validReviewSha) {
+    recordEvent('tier2_merge', { tier: '2', ok: false, verdict: 'missing_review_signoff', reasonCode: 'missing_review_signoff' });
+    die(`refusing tier2-merge: missing valid Tier 2 review signoff (PASS or HUMAN_ACCEPT) for risky diff on ${branch} @ ${branchTip.slice(0, 7)}`, 3);
+  }
+
+  const mergeOut = await runVerifiedFastForwardMerge({
+    eventName: 'tier2_merge',
+    tier: '2',
+    branch,
+    baseBranch,
+    branchWt,
+    targetBaseWt,
+    baseShaBefore,
+    pendingDriftMarker,
+    driftMarker,
+    skipDriftVerify: Boolean(parsed.options['skip-drift-verify']),
+    timeout,
+    json: parsed.options.json,
+    buildMarkerPayload: () => ({
+      baseSha: baseShaBefore,
+      verifiedPreSyncSha: driftMarker?.verifiedPreSyncSha || verifiedPreSyncSha || branchTip,
+      signedPreSyncSha: driftMarker?.signedPreSyncSha || validReviewSha || branchTip,
+      verifyCommands: receipt?.commands || [],
+    }),
+    resolveVerifyCommands: () => {
+      let cmds = [...(parsed.options.verify ?? [])];
+      if (!cmds.length && Array.isArray(receipt?.commands) && receipt.commands.length) cmds = [...receipt.commands];
+      if (!cmds.length && Array.isArray(driftMarker?.verifyCommands) && driftMarker.verifyCommands.length) cmds = [...driftMarker.verifyCommands];
+      if (!cmds.length && parsed.options['auto-verify']) cmds = discoverPackageVerifyCommands(branchWt, baseBranch);
+      return cmds;
+    },
+    onDriftVerified: (syncedHead) => {
+      if (rFile && receipt) {
+        try { fs.writeFileSync(rFile, JSON.stringify({ ...receipt, tip: syncedHead, at: Date.now() })); } catch {}
+      }
+    },
+    emptyVerifyMessage: 'no Verify commands found in receipt, --verify, or --auto-verify',
+    missingWtMessage: `pending post-drift Verify requires a checked-out worktree for ${branch}`,
+    dirtyWtMessage: `branch worktree ${branchWt} is dirty; commit or clean changes before retrying tier2-merge`,
+    conflictHint: `resolve manually in ${branchWt} and re-run tier2-verify`,
+  });
+  const payload = { ok: true, branch, base: baseBranch, ...mergeOut };
+  if (parsed.options.json) console.log(JSON.stringify(payload, null, 2));
+  else console.log(`tier2-merge ok: ${branch} -> ${baseBranch} @ ${mergeOut.mergedSha.slice(0, 7)} (rollback=${baseShaBefore.slice(0, 7)}${mergeOut.driftedSynced ? `, synced drift & verified (${mergeOut.driftVerifyResults.length} cmd)` : ''})`);
 } else {
-  die('usage: pipeline-run.mjs plan|prepare-author|prepare-task|hydrate|record-review|merge|cp2-merge|status|cleanup|inspect|freeze|profiles|preflight|scenarios|acceptance|worker-check|tier2-verify|brief|risk-scan|install-hook|report ...', 2);
+  die('usage: pipeline-run.mjs plan|prepare-author|prepare-task|hydrate|record-review|merge|cp2-merge|tier2-merge|status|cleanup|inspect|freeze|profiles|preflight|scenarios|acceptance|worker-check|tier2-verify|escalate-tier2|brief|risk-scan|install-hook|report ...', 2);
 }

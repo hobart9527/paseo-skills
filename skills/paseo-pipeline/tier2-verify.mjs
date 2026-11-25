@@ -2,6 +2,7 @@
 // Unified Tier 2 delivery gate (applies identically to main-session-in-worktree and /tier2-handoff).
 // Verifies isolation, OpenSpec contract & scenario Verify commands (plus F-1..F-7 provability),
 // executes every Verify command at the current tip SHA, and runs risk-scan to decide if review is mandatory.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -10,13 +11,13 @@ import { runGit } from './lib/git.mjs';
 import { repoContext } from './lib/tier-gate.mjs';
 import { loadSpecTree, scanScenVerify, analyzeSpecTree, findStaleChanges } from './lib/spec-scan.mjs';
 import { parseTasks, isFileWithinScopes } from './lib/tasks.mjs';
-import { runVerifyCommand } from './lib/verify-runner.mjs';
+import { runVerifyCommand, discoverPackageVerifyCommands } from './lib/verify-runner.mjs';
 import { proveVerifyCommand } from './lib/verify-policy.mjs';
 import { scanRepo } from './lib/risk-scan.mjs';
-import { findReviewSignoff } from './lib/review-record.mjs';
+import { findReviewSignoff, isSignoffOnlyDescendant } from './lib/review-record.mjs';
 import { recordEvent } from './lib/telemetry.mjs';
 
-const usage = 'Usage: tier2-verify.mjs <base> [--change-dir <dir>] [--verify <cmd>]... [--auto-verify] [--strict-scope] [--cwd <dir>] [--timeout ms] [--json]';
+const usage = 'Usage: tier2-verify.mjs <base> [--change-dir <dir>] [--verify <cmd>]... [--auto-verify] [--strict-scope] [--cwd <dir>] [--timeout ms] [--no-cache] [--json]';
 
 let parsed;
 try {
@@ -27,6 +28,7 @@ try {
     'strict-scope': 'boolean',
     cwd: 'value',
     timeout: 'value',
+    'no-cache': 'boolean',
     json: 'boolean',
   });
 } catch (error) {
@@ -74,36 +76,109 @@ let autoDiscoveredVerify = [];
 let scopeUnion = [];
 let currentChangeName = null;
 
-function discoverPackageVerifyCommands(rootDir, baseRef) {
-  const diffRes = runGit(rootDir, ['diff', '--name-only', `${baseRef}...HEAD`]);
-  const changed = diffRes.status === 0 ? diffRes.stdout.split(/\r?\n/).filter(Boolean) : [];
-  if (!changed.length) return [];
-  const pkgDirs = new Set();
-  for (const rel of changed) {
-    let dir = path.dirname(path.resolve(rootDir, rel));
-    while (dir.startsWith(rootDir)) {
-      const pkg = path.join(dir, 'package.json');
-      if (fs.existsSync(pkg)) { pkgDirs.add(dir); break; }
-      const parent = path.dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
+const startedAt = Date.now();
+const isolatedWorktree = !ctx.isPrimary;
+if (!isolatedWorktree || dirty) {
+  const reasonCode = !isolatedWorktree ? 'not_worktree' : 'dirty_worktree';
+  recordEvent('tier2_verify', {
+    tier: '2',
+    verdict: 'FAIL',
+    ok: false,
+    durationMs: Date.now() - startedAt,
+    riskClasses: [],
+    unprovableCount: 0,
+    reasonCode,
+  });
+  const failReport = {
+    verdict: 'FAIL',
+    repo: ctx.root,
+    branch: ctx.branch,
+    isolatedWorktree,
+    clean: !dirty,
+    base,
+    tip,
+    contractChecked: false,
+    verifyCached: false,
+    openSpecStrictExit: null,
+    openSpecStrictError: null,
+    specProblems: [],
+    duplicateScenarios: [],
+    collidingScenarios: [],
+    taskErrors: [],
+    undeclaredClaims: [],
+    unclaimedScenarios: [],
+    uncheckedTasks: [],
+    scopeDrift: [],
+    staleChanges: [],
+    advisories: [],
+    autoDiscoveredVerify: [],
+    missingVerify: [],
+    unprovableVerify: [],
+    verifyResults: [],
+    reviewSignoff: null,
+    risk: null,
+    nextActions: [],
+  };
+  if (parsed.options.json) {
+    console.log(JSON.stringify(failReport, null, 2));
+  } else {
+    console.log(`[tier2-verify] ${ctx.branch || 'detached'} @ ${tip.slice(0, 7)} (base ${base.slice(0, 7)})`);
+    console.log(`isolatedWorktree=${isolatedWorktree} clean=${!dirty} verifies=0 riskReviewRequired=false`);
+    if (!isolatedWorktree) console.error('FAIL: Tier 2 delivery is on primary checkout instead of a linked worktree');
+    if (dirty) {
+      const dirtyLines = dirty.split(/\r?\n/).filter(Boolean);
+      const sample = dirtyLines.slice(0, 5).map((l) => l.trim()).join(', ');
+      console.error(`FAIL: worktree has uncommitted changes (${dirtyLines.length}: ${sample}${dirtyLines.length > 5 ? ', ...' : ''})\nHINT: run \`git status --short\`, commit intended changes (or clean untracked scratch files), then re-run tier2-verify.`);
     }
+    console.log('RESULT tier2-verify: FAIL');
   }
-  const cmds = [];
-  for (const dir of [...pkgDirs].sort()) {
-    try {
-      const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
-      const testScript = pkg?.scripts?.test;
-      if (typeof testScript === 'string' && testScript.trim() && !/no test specified/i.test(testScript)) {
-        const relDir = path.relative(rootDir, dir) || '.';
-        cmds.push(relDir === '.' ? 'npm test' : `npm --prefix ${JSON.stringify(relDir)} test`);
-      }
-    } catch {}
-  }
-  return cmds;
+  process.exit(1);
 }
 
-const startedAt = Date.now();
+function receiptFile(cwdDir) {
+  const abs = runGit(cwdDir, ['rev-parse', '--path-format=absolute', '--git-dir']);
+  let gitDir = abs.status === 0 ? abs.stdout.trim() : '';
+  if (!gitDir) {
+    const rel = runGit(cwdDir, ['rev-parse', '--git-dir']);
+    if (rel.status === 0 && rel.stdout.trim()) {
+      gitDir = path.isAbsolute(rel.stdout.trim()) ? rel.stdout.trim() : path.resolve(cwdDir, rel.stdout.trim());
+    }
+  }
+  return gitDir ? path.join(gitDir, 'paseo-tier2-verify.json') : null;
+}
+
+function computeContractDigest(dir) {
+  if (!dir) return '';
+  const files = [];
+  for (const name of ['.openspec.yaml', 'tasks.md']) {
+    const full = path.join(dir, name);
+    if (fs.existsSync(full)) files.push([name, full]);
+  }
+  const specsDir = path.join(dir, 'specs');
+  if (fs.existsSync(specsDir)) {
+    const stack = [specsDir];
+    while (stack.length > 0) {
+      const cur = stack.pop();
+      for (const ent of fs.readdirSync(cur, { withFileTypes: true })) {
+        const full = path.join(cur, ent.name);
+        if (ent.isDirectory()) stack.push(full);
+        else if (ent.isFile() && ent.name === 'spec.md') {
+          files.push([path.relative(dir, full).split(path.sep).join('/'), full]);
+        }
+      }
+    }
+  }
+  files.sort((a, b) => a[0].localeCompare(b[0]));
+  const hash = crypto.createHash('sha256');
+  for (const [rel, full] of files) {
+    hash.update(rel);
+    hash.update('\0');
+    hash.update(fs.readFileSync(full));
+    hash.update('\0');
+  }
+  return hash.digest('hex');
+}
+
 const changeDir = parsed.options['change-dir'] ? path.resolve(cwd, parsed.options['change-dir']) : null;
 if (changeDir) {
   if (!fs.existsSync(changeDir)) {
@@ -219,7 +294,6 @@ for (const cmd of verifyCommands) {
   else provableCommands.push(proved.command);
 }
 
-const isolatedWorktree = !ctx.isPrimary;
 const scopeOk = !parsed.options['strict-scope'] || scopeDrift.length === 0;
 const contractSemanticOk = !specProblems.length && !duplicateScenarios.length && !collidingScenarios.length
   && !taskErrors.length && !undeclaredClaims.length && !unclaimedScenarios.length && scopeOk;
@@ -227,20 +301,66 @@ const contractOk = !contractChecked || (!openSpecStrictError && openSpecStrictEx
 const prechecksOk = isolatedWorktree && !dirty && contractOk && missingVerify.length === 0
   && verifyCommands.length > 0 && unprovableVerify.length === 0;
 
-const verifyResults = [];
+let verifyResults = [];
 let allVerifyPassed = prechecksOk;
+let verifyCached = false;
+const contractDigest = computeContractDigest(changeDir);
+const rFile = receiptFile(cwd);
 if (prechecksOk) {
-  for (const cmd of provableCommands) {
-    const res = await runVerifyCommand(cmd, { cwd, timeout, streamToStdout: !parsed.options.json });
-    verifyResults.push({
-      command: cmd,
-      ok: res.ok,
-      status: res.status,
-      dirtyChanged: res.dirtyChanged,
-      durationMs: res.durationMs,
-      missingDependency: res.missingDependency,
-    });
-    if (!res.ok) allVerifyPassed = false;
+  let cachedHit = null;
+  if (!parsed.options['no-cache'] && rFile && fs.existsSync(rFile)) {
+    try {
+      const saved = JSON.parse(fs.readFileSync(rFile, 'utf8'));
+      const tipMatches = saved && (
+        saved.tip === tip
+        || isSignoffOnlyDescendant(ctx.root, saved.tip, tip, currentChangeName)
+      );
+      if (
+        saved
+        && tipMatches
+        && saved.contractDigest === contractDigest
+        && JSON.stringify(saved.commands) === JSON.stringify(provableCommands)
+        && saved.allVerifyPassed === true
+        && Array.isArray(saved.verifyResults)
+        && saved.verifyResults.length === provableCommands.length
+      ) {
+        cachedHit = saved;
+      }
+    } catch {}
+  }
+  if (cachedHit) {
+    verifyResults = cachedHit.verifyResults.map((r) => ({ ...r, cached: true }));
+    allVerifyPassed = true;
+    verifyCached = true;
+  } else {
+    for (const cmd of provableCommands) {
+      const res = await runVerifyCommand(cmd, { cwd, timeout, streamToStdout: !parsed.options.json });
+      verifyResults.push({
+        command: cmd,
+        ok: res.ok,
+        status: res.status,
+        dirtyChanged: res.dirtyChanged,
+        durationMs: res.durationMs,
+        missingDependency: res.missingDependency,
+        cached: false,
+      });
+      if (!res.ok) allVerifyPassed = false;
+    }
+    if (allVerifyPassed && rFile) {
+      const stillClean = runGit(cwd, ['status', '--porcelain=v1', '--untracked-files=all']).stdout.trim() === '';
+      if (stillClean) {
+        try {
+          fs.writeFileSync(rFile, JSON.stringify({
+            tip,
+            contractDigest,
+            commands: provableCommands,
+            allVerifyPassed: true,
+            verifyResults,
+            at: Date.now(),
+          }));
+        } catch {}
+      }
+    }
   }
 }
 
@@ -250,6 +370,25 @@ const reviewBlocked = reviewSignoff?.verdict === 'BLOCKED';
 const reviewSatisfied = !risk.reviewRequired || ['PASS', 'HUMAN_ACCEPT'].includes(reviewSignoff?.verdict);
 const ok = prechecksOk && allVerifyPassed && !reviewBlocked;
 const verdict = !ok ? 'FAIL' : (reviewSatisfied ? 'PASS' : 'REVIEW_REQUIRED');
+const nextActions = [];
+if (verdict === 'REVIEW_REQUIRED') {
+  const shortTip = tip.slice(0, 7);
+  const briefCmd = `node "$PIPELINE_HOME"/pipeline-run.mjs brief tier2-review ${currentChangeName ? `--change ${currentChangeName} ` : ''}--base ${base} --repo ${ctx.root}`;
+  const recordCmd = `node "$PIPELINE_HOME"/pipeline-run.mjs record-review --mode tier2 --verdict PASS --reviewer <id> --sha ${shortTip}`;
+  nextActions.push({
+    kind: 'independent_review',
+    briefCmd,
+    dispatchHint: 'create_agent(provider: "anchasi")',
+    recordCmd,
+  });
+} else if (verdict === 'PASS' && (risk.advisoryHits || []).length > 0) {
+  nextActions.push({
+    kind: 'light_self_check',
+    classes: risk.advisoryClasses || [],
+    files: [...new Set((risk.advisoryHits || []).map((h) => h.file))],
+    note: 'Light domain touch (no hard risk hunk): complete self-check and report changed invariants cleanly.',
+  });
+}
 
 recordEvent('tier2_verify', {
   tier: '2',
@@ -276,6 +415,7 @@ const report = {
   base: risk.base,
   tip,
   contractChecked,
+  verifyCached,
   openSpecStrictExit,
   openSpecStrictError,
   specProblems,
@@ -294,6 +434,7 @@ const report = {
   verifyResults,
   reviewSignoff,
   risk,
+  nextActions,
 };
 
 if (parsed.options.json) {
@@ -321,16 +462,26 @@ if (parsed.options.json) {
   }
   for (const adv of advisories) console.log(`ADVISE: ${adv}`);
   if (uncheckedTasks.length) console.log(`WARN: unchecked tasks in tasks.md: ${uncheckedTasks.join(', ')}`);
-  for (const r of verifyResults) console.log(`${r.ok ? 'PASS' : 'FAIL'} verify (${r.durationMs}ms): ${r.command}`);
+  for (const r of verifyResults) console.log(`${r.ok ? 'PASS' : 'FAIL'} verify (${r.durationMs}ms${r.cached ? `, cached @ ${tip.slice(0, 7)}` : ''}): ${r.command}`);
   if (reviewBlocked) {
     console.error(`FAIL: Tier 2 review BLOCKED (${reviewSignoff.reviewer}@${tip.slice(0, 7)}${reviewSignoff.reason ? `: ${reviewSignoff.reason}` : ''})`);
+  }
+  if (!risk.reviewRequired && (risk.advisoryHits || []).length > 0) {
+    for (const adv of risk.advisoryHits) {
+      console.log(`ADVISE [risk-light] [${adv.class}] ${adv.file}: ${adv.reason}`);
+    }
   }
   if (risk.reviewRequired) {
     if (reviewSignoff) {
       console.log(`REVIEW_RECORDED: ${reviewSignoff.verdict} (${reviewSignoff.reviewer}@${tip.slice(0, 7)})`);
     }
     if (!reviewSatisfied) {
-      console.log(`REVIEW_REQUIRED: classes=[${risk.classes.join(', ')}] testMutations=${risk.testMutations.length} -> run 1+1 independent reviewer (\`pipeline-run.mjs brief tier2-review ${currentChangeName ? `--change ${currentChangeName} ` : ''}--base ${base} --repo .\`) and record with \`pipeline-run.mjs record-review --mode tier2\``);
+      const action = nextActions.find((a) => a.kind === 'independent_review');
+      console.log(`REVIEW_REQUIRED: classes=[${risk.classes.join(', ')}] testMutations=${risk.testMutations.length}`);
+      if (action) {
+        console.log(`NEXT: 1) ${action.briefCmd} -> dispatch ${action.dispatchHint}`);
+        console.log(`NEXT: 2) ${action.recordCmd}`);
+      }
     }
   }
   console.log(`RESULT tier2-verify: ${verdict}`);

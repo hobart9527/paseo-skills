@@ -21,7 +21,7 @@ Structural check, R0, FINAL, acceptance and approval are **pinned** to exact com
 
 ## Roles
 
-Resolve provider/model/modeId/thinking via `list_profiles` at dispatch (`lib/roles.mjs` is sole registry).
+Pass role token to `create_agent` (hook late-binds), or use `list_profiles` outside CC (`lib/roles.mjs`).
 
 | Profile | Scope |
 |---|---|
@@ -42,7 +42,7 @@ All under `$PIPELINE_HOME` (set by `install.sh`). Each prints usage on bad args.
 
 | Script | When |
 |---|---|
-| `profiles-check.mjs [--skill F] [--config F] [--json]` | Read-only lint: role mapping, notes fields, family pairs, antigravity `diff-check`. `--json`: `{ roles, findings, advisories, ok }`. |
+| `profiles-check.mjs [--skill F] [--config F] [--json]` | Read-only lint: role mapping, inferred family advisories, optional brief check. `--json`: `{ roles, findings, advisories, ok }`. |
 | `preflight.mjs <repo>` | Before authoring: read-only capability probe (test env, lockfiles). |
 | `namespace.mjs <change-dir>` | Author, before specs: SCEN prefixes and requirement headings in use. |
 | `pipeline-run.mjs prepare-author <change-dir>` | Stage 0 deterministic preflight, `--hydrate`, `namespace`, drift check, `baseline-facts.md` scaffold. |
@@ -54,7 +54,7 @@ All under `$PIPELINE_HOME` (set by `install.sh`). Each prints usage on bad args.
 | `pipeline-run.mjs worker-check <change-dir> <T-id>` | Worker before reporting: scope, trailers, `ceshi` Red immutability, Verify. |
 | `pipeline-run.mjs merge <change-dir> <T-id>` | From integration worktree after worker passes `worker-check`. |
 | `pipeline-run.mjs cp2-merge <change-dir>` | After CP-2: drift sync + Verify rerun + `--ff-only` merge onto default branch. |
-| `pipeline-run.mjs tier2-verify <base>` | Unified Tier 2 delivery gate (OpenSpec + Verify rerun + `risk-scan`). |
+| `pipeline-run.mjs tier2-verify\|tier2-merge` | Tier 2 gate (OpenSpec + Verify + `risk-scan`) and `--ff-only` merge. |
 | `pipeline-run.mjs install-hook <worktree>...` | Install author hook (or via `prepare-task`). |
 | `pipeline-run.mjs risk-scan <base> [<head>]` | Diff scan for risk classes, test-oracle mutations, and caveat removals. |
 | `pipeline-run.mjs cleanup <change-dir>` | After CP-2: lists worktrees/branches and commands; executes nothing. |

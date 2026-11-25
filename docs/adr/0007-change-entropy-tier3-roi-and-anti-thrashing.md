@@ -1,6 +1,6 @@
 # ADR-0007: Change Entropy Budget, Tier 3 ROI Routing & Anti-Thrashing Controls
 
-- **Status:** Accepted (refines [ADR-0002](0002-progressive-contract-and-recon-routing.md) and [ADR-0005](0005-harness-telemetry-and-self-pruning.md))
+- **Status:** Accepted (refines [ADR-0002](0002-progressive-contract-and-recon-routing.md) and [ADR-0005](0005-harness-telemetry-and-self-pruning.md); partially superseded by [ADR-0008](0008-tier0-cache-hygiene-and-role-late-binding.md): `hanlin` thinking cap lifted, read-stall guards scoped strictly to active contract authoring)
 - **Date:** 2026-11-21
 - **Scope:** `skills/paseo-pipeline/{freeze-check.mjs,lib/author-guard.mjs,lib/tier-gate.mjs,lib/telemetry.mjs,hooks/{tool-guard-hook,tier-write-hook,tier-session-hook}.mjs,templates/author.md,SKILL.md}`, `~/.paseo/config.json`, `~/.claude/CLAUDE.md`
 

@@ -326,3 +326,110 @@ test('skips path-only money/persistence/external-write for UI files and ignores 
   assert.equal(commentOnly.reviewRequired, false);
   assert.deepEqual(commentOnly.classes, []);
 });
+
+test('passive types/dto/web-hook paths skip path-only money/persistence while HUNK_RULES still catch real logic, and whitespace-only test reformats do not trigger testMutations', () => {
+  const passiveTypes = scanChanges({
+    entries: [
+      { status: 'M', file: 'src/types/invoice.ts' },
+      { status: 'M', file: 'packages/web/src/hooks/useInvoice.ts' },
+      { status: 'M', file: 'src/dto/payment.dto.ts' },
+    ],
+    diffText: [
+      'diff --git a/src/types/invoice.ts b/src/types/invoice.ts',
+      '--- a/src/types/invoice.ts',
+      '+++ b/src/types/invoice.ts',
+      '@@ -1 +1 @@',
+      '-export interface InvoiceView { id: string; }',
+      '+export interface InvoiceView { id: string; displayLabel?: string; }',
+      'diff --git a/packages/web/src/hooks/useInvoice.ts b/packages/web/src/hooks/useInvoice.ts',
+      '--- a/packages/web/src/hooks/useInvoice.ts',
+      '+++ b/packages/web/src/hooks/useInvoice.ts',
+      '@@ -1 +1 @@',
+      '-export const useInvoice = () => ({ ready: false });',
+      '+export const useInvoice = () => ({ ready: true });',
+    ].join('\n'),
+  });
+  assert.equal(passiveTypes.reviewRequired, false);
+  assert.deepEqual(passiveTypes.classes, []);
+
+  // Real SQL or money math inside a passive path still triggers HUNK_RULES.
+  const passiveWithMath = scanChanges({
+    entries: [{ status: 'M', file: 'src/dto/payment.dto.ts' }],
+    diffText: [
+      'diff --git a/src/dto/payment.dto.ts b/src/dto/payment.dto.ts',
+      '--- a/src/dto/payment.dto.ts',
+      '+++ b/src/dto/payment.dto.ts',
+      '@@ -1 +1 @@',
+      '-export const calc = () => 0;',
+      '+export const calc = () => invoiceAmount - taxAmount;',
+    ].join('\n'),
+  });
+  assert.equal(passiveWithMath.reviewRequired, true);
+  assert.deepEqual(passiveWithMath.classes, ['money']);
+
+  // Pure quote/whitespace/semicolon reformatting on an existing test is NOT a test mutation.
+  const reformatOnly = scanChanges({
+    entries: [{ status: 'M', file: 'test/app.test.js' }],
+    diffText: [
+      'diff --git a/test/app.test.js b/test/app.test.js',
+      '--- a/test/app.test.js',
+      '+++ b/test/app.test.js',
+      '@@ -1,2 +1,2 @@',
+      '-assert.equal(res.code, "OK");',
+      "+assert.equal( res.code, 'OK' )",
+    ].join('\n'),
+  });
+  assert.equal(reformatOnly.reviewRequired, false);
+  assert.equal(reformatOnly.testMutations.length, 0);
+});
+
+test('path-only invoice/repository domain touches emit light advisoryHits without blocking review, while money math or SQL writes escalate to hard reviewRequired', () => {
+  const lightOnly = scanChanges({
+    entries: [
+      { status: 'M', file: 'packages/server/src/invoices/invoiceList.ts' },
+      { status: 'M', file: 'packages/server/src/repositories/invoiceReadRepo.ts' },
+    ],
+    diffText: [
+      'diff --git a/packages/server/src/invoices/invoiceList.ts b/packages/server/src/invoices/invoiceList.ts',
+      '--- a/packages/server/src/invoices/invoiceList.ts',
+      '+++ b/packages/server/src/invoices/invoiceList.ts',
+      '@@ -1 +1 @@',
+      '-export const listFields = ["id"];',
+      '+export const listFields = ["id", "title"];',
+      'diff --git a/packages/server/src/repositories/invoiceReadRepo.ts b/packages/server/src/repositories/invoiceReadRepo.ts',
+      '--- a/packages/server/src/repositories/invoiceReadRepo.ts',
+      '+++ b/packages/server/src/repositories/invoiceReadRepo.ts',
+      '@@ -1 +1 @@',
+      '-return rows;',
+      '+return rows.slice(0, 50);',
+    ].join('\n'),
+  });
+  assert.equal(lightOnly.reviewRequired, false);
+  assert.deepEqual(lightOnly.hits, []);
+  assert.deepEqual(lightOnly.advisoryClasses, ['money', 'persistence']);
+  assert.equal(lightOnly.advisoryHits.length, 2);
+
+  const hardEscalation = scanChanges({
+    entries: [
+      { status: 'M', file: 'packages/server/src/invoices/invoiceList.ts' },
+      { status: 'M', file: 'packages/server/src/repositories/invoiceReadRepo.ts' },
+    ],
+    diffText: [
+      'diff --git a/packages/server/src/invoices/invoiceList.ts b/packages/server/src/invoices/invoiceList.ts',
+      '--- a/packages/server/src/invoices/invoiceList.ts',
+      '+++ b/packages/server/src/invoices/invoiceList.ts',
+      '@@ -1 +1 @@',
+      '-return 0;',
+      '+return invoiceAmount - taxAmount;',
+      'diff --git a/packages/server/src/repositories/invoiceReadRepo.ts b/packages/server/src/repositories/invoiceReadRepo.ts',
+      '--- a/packages/server/src/repositories/invoiceReadRepo.ts',
+      '+++ b/packages/server/src/repositories/invoiceReadRepo.ts',
+      '@@ -1 +1 @@',
+      '-// read',
+      '+db.exec("UPDATE invoices SET status = \'paid\'");',
+    ].join('\n'),
+  });
+  assert.equal(hardEscalation.reviewRequired, true);
+  assert.deepEqual(hardEscalation.classes, ['money', 'persistence']);
+  assert.equal(hardEscalation.advisoryHits.length, 0);
+});

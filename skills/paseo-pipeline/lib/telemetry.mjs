@@ -23,13 +23,10 @@ export const MONITORED_RULES = [
   'large_file',
   'test_blast',
   'churn',
-  'zero_write_stall',
   'risk_sentinel',
-  'author_thrash_warn',
-  'author_thrash_stop',
-  'author_compact_empty_specs',
+  'worktree_compact_heavy',
+  'worktree_missing_workspace_id',
   'builtin_agent_review',
-  'recon_stall',
 ];
 
 export function telemetryFile() {
@@ -107,7 +104,6 @@ export function summarizeTelemetry({ days = 7, file = null } = {}) {
     verify: { total: 0, pass: 0, fail: 0, reviewRequired: 0, unprovableRejections: 0 },
     workerCheck: { total: 0, pass: 0, fail: 0 },
     stopBlocks: { total: 0, byReason: {} },
-    authorGuard: { warn: 0, stop: 0, compactEmptySpecs: 0 },
     tierWrite: { ask: 0, deny: 0, byReason: {} },
     freezeCheck: { total: 0, pipeline: 0, handoff: 0, failed: 0 },
     mergeTask: { total: 0, pass: 0, fail: 0 },
@@ -165,11 +161,6 @@ export function summarizeTelemetry({ days = 7, file = null } = {}) {
       summary.stopBlocks.total += 1;
       const code = entry.reasonCode || 'unknown';
       summary.stopBlocks.byReason[code] = (summary.stopBlocks.byReason[code] || 0) + 1;
-    } else if (ev === 'author_guard') {
-      const code = entry.reasonCode || '';
-      if (code === 'author_thrash_warn') summary.authorGuard.warn += 1;
-      else if (code === 'author_thrash_stop') summary.authorGuard.stop += 1;
-      else if (code === 'author_compact_empty_specs') summary.authorGuard.compactEmptySpecs += 1;
     } else if (ev === 'tier_write') {
       if (entry.action === 'ask') summary.tierWrite.ask += 1;
       else if (entry.action === 'deny') summary.tierWrite.deny += 1;

@@ -55,6 +55,10 @@ if (parsed.options.json) {
     const tag = hit.untracked ? '(untracked) ' : '';
     console.log(`RISK [${hit.class}] ${tag}${hit.file}: ${hit.reason}`);
   }
+  for (const adv of report.advisoryHits || []) {
+    const tag = adv.untracked ? '(untracked) ' : '';
+    console.log(`ADVISE [risk-light] [${adv.class}] ${tag}${adv.file}: ${adv.reason}`);
+  }
   for (const mut of report.testMutations) console.log(`ORACLE ${mut.file}: ${mut.reason}`);
   for (const cav of report.caveatRemovals || []) console.log(`CAVEAT ${cav.file}: ${cav.reason}`);
   if (report.untrackedOnlyRisk) {

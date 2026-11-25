@@ -39,7 +39,7 @@ function formatSignoffLine(mode, verdict, reviewer, fullSha, reason) {
   return `${upper}: ${verdict.toLowerCase()}(${reviewer}@${fullSha})${cleanReason ? ` — ${cleanReason}` : ''}`;
 }
 
-export function recordReview({ cwd = process.cwd(), mode, verdict, reviewer = '', sha = 'HEAD', changeDir = null, reason = '' } = {}) {
+export function recordReview({ cwd = process.cwd(), mode, verdict, reviewer = '', sha = 'HEAD', changeDir = null, reason = '', writeReviewMd = false } = {}) {
   const normalizedMode = String(mode || '').trim().toLowerCase();
   const normalizedVerdict = String(verdict || '').trim().toUpperCase();
   if (!REVIEW_MODES.includes(normalizedMode)) {
@@ -65,11 +65,15 @@ export function recordReview({ cwd = process.cwd(), mode, verdict, reviewer = ''
   if ((normalizedMode === 'r0' || normalizedMode === 'final') && !resolvedChangeDir) {
     throw new Error(`--change-dir is required for mode ${normalizedMode}`);
   }
+  if (resolvedChangeDir && !fs.existsSync(resolvedChangeDir)) {
+    throw new Error(`missing change directory: ${resolvedChangeDir}`);
+  }
 
   const targets = [];
   const line = formatSignoffLine(normalizedMode, normalizedVerdict, cleanReviewer || 'human', fullSha, reason);
-  if (resolvedChangeDir) {
-    if (!fs.existsSync(resolvedChangeDir)) throw new Error(`missing change directory: ${resolvedChangeDir}`);
+  const shouldWriteReviewMd = Boolean(resolvedChangeDir)
+    && (normalizedMode === 'r0' || normalizedMode === 'final' || Boolean(writeReviewMd));
+  if (shouldWriteReviewMd) {
     const reviewFile = path.join(resolvedChangeDir, 'review.md');
     appendUniqueLine(reviewFile, line);
     targets.push(reviewFile);
@@ -131,7 +135,7 @@ function resolveCommitSha(root, value) {
   return res.status === 0 && res.stdout.trim() ? res.stdout.trim() : null;
 }
 
-function isSignoffOnlyDescendant(root, recordedSha, targetFullSha, changeName = null) {
+export function isSignoffOnlyDescendant(root, recordedSha, targetFullSha, changeName = null) {
   if (!recordedSha || !targetFullSha) return false;
   if (!/^[a-f0-9]{40,64}$/i.test(recordedSha) || !/^[a-f0-9]{40,64}$/i.test(targetFullSha)) return false;
   if (recordedSha.toLowerCase() === targetFullSha.toLowerCase()) return false;
