@@ -1,49 +1,74 @@
 #!/usr/bin/env node
 
-// UserPromptSubmit hook：用户消息带实施意图时，在本轮上下文末尾注入一段分级提醒。
-//
-// 为什么需要它：2026-10-31 两个会话都加载了全局分级表，但用户说「执行上面的优化」时，
-// 模型在思考与输出里一次都没提到 Tier，直接跑测试、改代码。规则只在会话开头出现一次，
-// 几十轮之后到了「该不该动手」的决策点，没有任何东西把它推回眼前。
-//
-// 与写入闸门分开：事件不同（UserPromptSubmit vs PreToolUse），失败语义也不同——
-// 这里出错就什么都不输出，没有任何副作用。
-//
-// 安装：~/.claude/settings.json → hooks.UserPromptSubmit 追加
-//   { "hooks": [{ "type": "command", "command": "node <本文件绝对路径>" }] }
-// 也可用 `--install-help` 打印现成片段。
-//
-// 设计取舍：
-//   - 系统通知（<paseo-system>）、linked worktree / 功能分支不提醒（cwd 判定，不看 PASEO_AGENT_ID）。
-//   - 每条非斜杠消息都提醒（不再做关键词筛选，见 REMINDER 上方的说明）。
-//   - 同时为 Stop 核对记录本轮基线（takeSnapshot）。
-//   - 任何异常一律不输出（exit 0），但写入 errors.log。
-//   - PIPELINE_TIER_REMINDER=off 整体关闭。
-//
-// 输出契约（Claude Code UserPromptSubmit）：
-//   hookSpecificOutput.additionalContext 会作为额外上下文加进本轮。
+// UserPromptSubmit hook：仅在需要动手改代码的新会话段首次提醒分级红线；
+// 纯问答/调研/排障提问与已提醒过的活跃会话段跳过上下文注入，仍保留 Stop 基线快照。
 import fs from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { TIER_RULES, takeSnapshot, skipInjection, logHookError } from '../lib/tier-gate.mjs';
+import {
+  TIER_RULES,
+  tierGateIdleMs,
+  readSessionMeta,
+  writeSessionMeta,
+  repoContext,
+  takeSnapshot,
+  skipInjection,
+  logHookError,
+} from '../lib/tier-gate.mjs';
 
-// 为什么不再做关键词筛选（2026-11-02）：长会话里用户多半只说「好的，按方案B来」「继续」「可以，做吧」，
-// 关键词筛选全漏，而那恰恰是模型最容易直接动手的时刻。改为每条非斜杠消息都注入一行短提醒，
-// 评估类消息多看一行，代价远小于漏掉一次。
 export const REMINDER = [
-  '[分级提醒] 先只读探查影响面再动手：',
+  '[分级提醒·仅代码改动适用]',
   TIER_RULES,
 ].join('\n');
 
+const WRITE_OR_ACTION_RE = /(?:修改|改动|改写|改一下|改掉|重构|实现|修复|修一下|写代码|写测试|补测试|加上|删掉|删了|删除|移除|执行|动手|按方案|按上面|开始做|去改|去修|建一个|写一个|\b(?:fix|edit|write|implement|refactor|patch|create|update|add|remove|delete|go ahead|ok go|proceed)\b)/i;
+const BARE_MUTATION_RE = /(?:提交|推送|部署|合并|\b(?:commit|push|deploy|merge)\b)/i;
+const QUESTION_OR_DIAG_RE = /(?:为什么|为何|怎么回事|什么原因|是不是|怎么看|你觉得|调研|分析|评估|诊断|排查|核对|检查一下|看看|解释|总结|对比|梳理|\b(?:why|how\s+(?:does|do|is|are|did|to)|what\s+(?:is|are|caused)|explain|analy[sz]e|research|investigate|diagnose|compare|summari[sz]e|inspect|audit)\b)/i;
+
 // Paseo 把子 agent 的通知当作 user 角色消息投递（<paseo-system ...> / <task-notification ...>），
-// UserPromptSubmit 会为每一条触发。它们不是用户的话：不提醒、不重置 churn 计数。
+// UserPromptSubmit 会为每一条触发。它们不是用户的话：不提醒、不记入用户轮次。
 export function isSystemNotification(prompt) {
   return typeof prompt === 'string' && /^\s*<(?:paseo-system|task-notification)\b/i.test(prompt);
+}
+
+export function isReadOnlyPrompt(prompt) {
+  if (typeof prompt !== 'string') return false;
+  const text = prompt.trim();
+  if (!text || WRITE_OR_ACTION_RE.test(text)) return false;
+  if (QUESTION_OR_DIAG_RE.test(text)) return true;
+  if (BARE_MUTATION_RE.test(text)) return false;
+  return /[？?]\s*$/.test(text);
 }
 
 export function shouldRemind(prompt) {
   if (typeof prompt !== 'string') return false;
   const text = prompt.trim();
-  return text !== '' && !text.startsWith('/') && !isSystemNotification(text);
+  return text !== '' && !text.startsWith('/') && !isSystemNotification(text) && !isReadOnlyPrompt(text);
+}
+
+function normalizedCwd(cwd, precomputedCtx = undefined) {
+  const target = typeof cwd === 'string' && cwd.trim() ? cwd : process.cwd();
+  const ctx = precomputedCtx === undefined ? repoContext(target) : precomputedCtx;
+  if (ctx?.root) return ctx.root;
+  try { return fs.realpathSync(target); } catch { return path.resolve(target); }
+}
+
+function markReminded(sessionId, cwdKey, now = Date.now()) {
+  if (typeof sessionId !== 'string' || !sessionId) return;
+  writeSessionMeta(sessionId, { remindedCwd: cwdKey, remindedAt: now });
+}
+
+function refreshIfActive(sessionId, cwdKey, now = Date.now()) {
+  if (typeof sessionId !== 'string' || !sessionId) return false;
+  const meta = readSessionMeta(sessionId);
+  const active = meta.remindedCwd === cwdKey
+    && typeof meta.remindedAt === 'number'
+    && (now - meta.remindedAt) < tierGateIdleMs();
+  if (active) {
+    markReminded(sessionId, cwdKey, now);
+    return true;
+  }
+  return false;
 }
 
 async function main() {
@@ -65,18 +90,26 @@ async function main() {
   } catch {
     return 0;
   }
-  // 每条用户消息都给 Stop 核对留一份基线（斜杠命令也要，它们同样可能改文件）。
+  const cwd = payload?.cwd ?? process.cwd();
+  const sessionId = payload?.session_id;
+  const ctx = typeof cwd === 'string' && cwd.trim() ? repoContext(cwd) : null;
+  // 每条用户消息都给 Stop 核对留一份基线（斜杠命令与问答同样可能意外写文件）。
   try {
     takeSnapshot({
-      cwd: payload?.cwd ?? process.cwd(),
-      sessionId: payload?.session_id,
+      cwd,
+      sessionId,
       isHumanTurn: !isSystemNotification(payload?.prompt),
+      ctx,
     });
   } catch (err) {
     logHookError('tier-reminder-hook/snapshot', err);
   }
   if (!shouldRemind(payload?.prompt)) return 0;
-  if (skipInjection(payload?.cwd)) return 0;
+  if (skipInjection(payload?.cwd, ctx)) return 0;
+  const cwdKey = normalizedCwd(cwd, ctx);
+  const now = Date.now();
+  if (refreshIfActive(sessionId, cwdKey, now)) return 0;
+  markReminded(sessionId, cwdKey, now);
   fs.writeSync(1, `${JSON.stringify({
     hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: REMINDER },
   })}\n`);

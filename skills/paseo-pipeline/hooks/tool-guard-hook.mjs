@@ -3,11 +3,6 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { logHookError, repoContext } from '../lib/tier-gate.mjs';
-import { paseoHome, loadProfiles, profilePair } from '../lib/paseo.mjs';
-import { runGit } from '../lib/git.mjs';
-import { recordEvent } from '../lib/telemetry.mjs';
-import { recordAuthorRead, recordPrimaryReconRead, recordWorktreeReadStall } from '../lib/author-guard.mjs';
 
 const LIMIT = 2 * 1024 * 1024;
 const TAIL_ANCHOR = 256;
@@ -28,7 +23,7 @@ const isPlaceholderServerId = (value) => {
 // A near-miss of this host's own id (one dropped or swapped character, seen 4 times in one session)
 // is a typo for "this host"; omitting serverId means exactly that. Distant srv_* ids may be real
 // remote hosts and are left to the server.
-function localServerId() {
+function localServerId(paseoHome) {
   try { return fs.readFileSync(path.join(paseoHome(), 'server-id'), 'utf8').trim(); } catch { return ''; }
 }
 function editDistance(a, b) {
@@ -68,10 +63,13 @@ function escapeRegExp(text) {
 }
 function profileMatchTokens(profile) {
   const tokens = new Set();
-  const idMatch = typeof profile?.id === 'string' ? profile.id.trim().match(/^agent_profile_([a-z][a-z0-9-]+)$/i) : null;
+  const id = typeof profile?.id === 'string' ? profile.id.trim() : '';
+  if (id) tokens.add(id.toLowerCase());
+  const idMatch = id.match(/^agent_profile_([a-z][a-z0-9-]+)$/i);
   if (idMatch) tokens.add(idMatch[1].toLowerCase());
   const name = typeof profile?.name === 'string' ? profile.name.trim() : '';
   if (name) {
+    tokens.add(name.toLowerCase());
     for (const m of name.matchAll(/[（(]([^）)]+)[）)]/g)) {
       const inner = m[1].trim();
       if (!inner || /[，,]/.test(inner)) continue;
@@ -95,12 +93,74 @@ function tokenMatchesText(text, token) {
   }
   return text.toLowerCase().includes(token.toLowerCase());
 }
+/** Pick a unique matching profile from title first, then the first two non-empty prompt lines. */
+function selectProfileByText(candidates, input) {
+  if (!candidates.length) return null;
+  const matchText = (text) => candidates.filter((p) => profileMatchTokens(p).some((tok) => tokenMatchesText(text, tok)));
+  const title = typeof input?.title === 'string' ? input.title.trim() : '';
+  if (title) {
+    const titleHits = matchText(title);
+    if (titleHits.length === 1) return titleHits[0];
+    if (titleHits.length > 1) return null;
+  }
+  const prompt = typeof input?.initialPrompt === 'string' ? input.initialPrompt : '';
+  const intro = prompt.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 2).join('\n');
+  if (intro) {
+    const introHits = matchText(intro);
+    if (introHits.length === 1) return introHits[0];
+  }
+  return null;
+}
+/** Resolve a role name, Chinese alias, or profile ID into its live provider/model and settings. */
+function resolvedRoleProvider(input, profiles, { profileIdOf, profilePair }) {
+  if (!isPlainObject(input)) return null;
+  const raw = typeof input.provider === 'string' ? input.provider.trim() : '';
+  if (!raw || raw.includes('/')) return null;
+  const key = raw.toLowerCase();
+  const mappedId = profileIdOf(key).toLowerCase();
+  const hits = profiles.filter((p) => {
+    if (!profilePair(p)) return false;
+    const pid = typeof p.id === 'string' ? p.id.trim().toLowerCase() : '';
+    const pname = typeof p.name === 'string' ? p.name.trim().toLowerCase() : '';
+    const lead = pname ? pname.split(/[\s（(]/)[0].trim() : '';
+    if (pid && (pid === key || pid === mappedId)) return true;
+    if (pname && (pname === key || lead === key)) return true;
+    return profileMatchTokens(p).some((tok) => tok.toLowerCase() === key);
+  });
+  if (hits.length !== 1) return null;
+  const hit = hits[0];
+  const next = { ...input, provider: profilePair(hit) };
+  delete next.model;
+  const nested = isPlainObject(input.settings) ? input.settings : null;
+  const nextSettings = nested ? { ...nested } : {};
+  if (!nested) {
+    for (const field of SETTINGS) {
+      if (field in input) {
+        nextSettings[field] = input[field];
+        delete next[field];
+      }
+    }
+  }
+  delete nextSettings.model;
+  if (typeof hit.modeId === 'string' && hit.modeId && isUnset('modeId', nextSettings.modeId)) {
+    nextSettings.modeId = hit.modeId;
+  }
+  if (typeof hit.thinkingOptionId === 'string' && hit.thinkingOptionId && nextSettings.thinkingOptionId === undefined) {
+    nextSettings.thinkingOptionId = hit.thinkingOptionId;
+  }
+  const hitFeatures = profileFeaturesOf(hit);
+  if (hitFeatures && nextSettings.features === undefined) {
+    nextSettings.features = hitFeatures;
+  }
+  if (Object.keys(nextSettings).length > 0) next.settings = nextSettings;
+  else delete next.settings;
+  return { updated: next, matchedProfile: hit };
+}
 /** Rewrite a bare provider only when model is explicit or one profile matches title/intro unambiguously. */
-function resolvedBareProvider(input) {
+function resolvedBareProvider(input, profiles, profilePair) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
   const provider = typeof input.provider === 'string' ? input.provider.trim() : '';
   if (!provider || provider.includes('/')) return null;
-  const profiles = loadProfiles();
   const nested = input.settings && typeof input.settings === 'object' && !Array.isArray(input.settings) ? input.settings : null;
   const topModel = typeof input.model === 'string' ? input.model.trim() : '';
   const nestedModel = typeof nested?.model === 'string' ? nested.model.trim() : '';
@@ -123,78 +183,143 @@ function resolvedBareProvider(input) {
   const candidates = profiles.filter(
     (p) => typeof p?.provider === 'string' && p.provider.trim().toLowerCase() === provider.toLowerCase() && profilePair(p),
   );
-  if (!candidates.length) return null;
-  const matchText = (text) => candidates.filter((p) => profileMatchTokens(p).some((tok) => tokenMatchesText(text, tok)));
-  const title = typeof input.title === 'string' ? input.title.trim() : '';
-  if (title) {
-    const titleHits = matchText(title);
-    if (titleHits.length === 1) return { ...input, provider: profilePair(titleHits[0]) };
-    if (titleHits.length > 1) return null;
-  }
-  const prompt = typeof input.initialPrompt === 'string' ? input.initialPrompt : '';
-  const intro = prompt.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 2).join('\n');
-  if (intro) {
-    const introHits = matchText(intro);
-    if (introHits.length === 1) return { ...input, provider: profilePair(introHits[0]) };
-  }
-  return null;
+  const hit = selectProfileByText(candidates, input);
+  return hit ? { ...input, provider: profilePair(hit) } : null;
 }
 /** A bare provider ("claude") is ambiguous across profiles, so it cannot be rewritten; name the valid pairs. */
-function bareProviderReason(input) {
+function bareProviderReason(input, profiles, profilePair) {
   const provider = typeof input?.provider === 'string' ? input.provider.trim() : '';
   if (!provider || provider.includes('/')) return null;
-  const pairs = loadProfiles().map((p) => profilePair(p) && `${String(p.name ?? p.id).split(/\s/)[0]}=${profilePair(p)}`).filter(Boolean);
-  return `create_agent provider must be "<profile.provider>/<profile.model>", not "${provider}". Join the two list_profiles fields with "/".`
+  const pairs = profiles.map((p) => profilePair(p) && `${String(p.name ?? p.id).split(/\s/)[0]}=${profilePair(p)}`).filter(Boolean);
+  return `create_agent provider must be a role name or "<profile.provider>/<profile.model>", not "${provider}".`
     + (pairs.length ? ` Current profiles: ${pairs.join(', ')}.` : '');
 }
 const SETTINGS = ['modeId', 'thinkingOptionId', 'features'];
-function filledModeId(input) {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
-  const provider = typeof input.provider === 'string' ? input.provider.trim() : '';
-  if (!provider.includes('/')) return null;
-  const nested = input.settings && typeof input.settings === 'object' && !Array.isArray(input.settings) ? input.settings : {};
-  const stated = 'modeId' in nested ? nested.modeId : input.modeId;
-  if (stated !== undefined && stated !== null) return null;
-  const modes = [...new Set(loadProfiles().filter((profile) => profilePair(profile) === provider)
-    .map((profile) => profile.modeId).filter((mode) => typeof mode === 'string' && mode))];
-  if (modes.length !== 1) return null;
-  return { ...input, settings: { ...nested, modeId: modes[0] } };
-}
-const canonical = (value) => JSON.stringify(value, (_, v) => v && typeof v === 'object' && !Array.isArray(v)
-  ? Object.fromEntries(Object.keys(v).sort().map((key) => [key, v[key]])) : v);
+const isPlainObject = (value) => Boolean(value && typeof value === 'object' && !Array.isArray(value));
+const canonical = (value) => JSON.stringify(value, (_, v) => (isPlainObject(v)
+  ? Object.fromEntries(Object.keys(v).sort().map((key) => [key, v[key]])) : v));
 const sameValue = (left, right) => canonical(left) === canonical(right);
 // Empty `features` map `{}` carries zero flag overrides, semantically identical to null/undefined.
 const isUnset = (field, value) => value === undefined || value === null
-  || (field === 'features' && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0);
-function settingsMismatchReason(input) {
-  const provider = typeof input?.provider === 'string' ? input.provider.trim() : '';
-  if (!provider.includes('/')) return null;
-  const matches = loadProfiles().filter((profile) => profilePair(profile) === provider);
-  if (!matches.length) return null;
-  const nested = input?.settings && typeof input.settings === 'object' && !Array.isArray(input.settings) ? input.settings : {};
-  const valueOf = (field) => (field in nested ? nested[field] : input?.[field]);
+  || (field === 'features' && isPlainObject(value) && Object.keys(value).length === 0);
+const profileFeaturesOf = (profile) => (!isUnset('features', profile?.featureValues)
+  ? profile.featureValues
+  : (!isUnset('features', profile?.features) ? profile.features : undefined));
+const profileFieldValue = (profile, field) => (field === 'features' ? profileFeaturesOf(profile) : profile?.[field]);
+
+/**
+ * Align create_agent settings with the target Paseo profile(s) automatically instead of denying
+ * stale or omitted fields. Only deny when multiple conflicting profiles share the pair, the title
+ * does not disambiguate them, and a caller-supplied value matches none of the candidates.
+ */
+function reconciledAgentSettings(input, profiles, pinnedProfile = null, profilePair = (p) => (p?.provider && p?.model ? `${p.provider}/${p.model}` : null)) {
+  if (!isPlainObject(input)) return { updated: null, denyReason: null };
+  const provider = typeof input.provider === 'string' ? input.provider.trim() : '';
+  if (!provider.includes('/')) return { updated: null, denyReason: null };
+  const matches = profiles.filter((profile) => profilePair(profile) === provider);
+  if (!matches.length) return { updated: null, denyReason: null };
+
+  const textHit = pinnedProfile || (matches.length > 1 ? selectProfileByText(matches, input) : null);
+  const targets = textHit ? [textHit] : matches;
+  const nested = isPlainObject(input.settings) ? input.settings : null;
+  const hasKey = (field) => (nested ? field in nested : field in input);
+  const valueOf = (field) => (nested ? nested[field] : input[field]);
+  const agreesValue = (profile, field, val) => {
+    const pVal = profileFieldValue(profile, field);
+    return isUnset(field, pVal) ? isUnset(field, val) : sameValue(pVal, val);
+  };
+  const agrees = (profile, field) => agreesValue(profile, field, valueOf(field));
+
+  // Distinct canonical definitions across `targets` for a given field.
+  const distinctDefs = (field) => {
+    const map = new Map();
+    for (const profile of targets) {
+      const pVal = profileFieldValue(profile, field);
+      if (isUnset(field, pVal)) map.set('__unset__', { set: false, value: undefined });
+      else map.set(canonical(pVal), { set: true, value: pVal });
+    }
+    return [...map.values()];
+  };
+
+  const modeDefs = distinctDefs('modeId');
+  const definedModes = modeDefs.filter((d) => d.set);
+  const needsModeFill = isUnset('modeId', valueOf('modeId')) && definedModes.length === 1;
   const stated = SETTINGS.filter((field) => valueOf(field) !== undefined);
-  if (!stated.length) return null;
-  const agrees = (profile, field) => (isUnset(field, profile[field])
-    ? isUnset(field, valueOf(field))
-    : sameValue(profile[field], valueOf(field)));
-  if (matches.some((profile) => stated.every((field) => agrees(profile, field)))) return null;
-  const role = (profile) => String(profile.name ?? profile.id ?? provider).split(/\s/)[0];
-  if (matches.length === 1) {
-    const [profile] = matches;
-    const field = stated.find((name) => !agrees(profile, name));
-    const expected = profile[field];
-    return `create_agent ${field} is ${JSON.stringify(valueOf(field))}, but profile ${role(profile)} (${provider}) sets ${isUnset(field, expected) ? 'none' : JSON.stringify(expected)}. Use the profile's value, or edit the profile in config.json if the setting really changed.`;
+  if (!needsModeFill && (!stated.length || targets.some((profile) => stated.every((field) => agrees(profile, field))))) {
+    return { updated: null, denyReason: null };
   }
-  const candidates = matches.map((profile) => `${role(profile)} (${provider}) sets ${stated.map((field) => `${field} ${isUnset(field, profile[field]) ? 'none' : JSON.stringify(profile[field])}`).join(', ')}`).join('; ');
-  return `create_agent ${stated.map((field) => `${field} ${JSON.stringify(valueOf(field))}`).join(', ')} matches no profile for ${provider}. Candidates: ${candidates}. Use one candidate's values, or edit the profile in config.json if the setting really changed.`;
+
+  const nextSettings = nested ? { ...nested } : {};
+  if (!nested) {
+    for (const field of SETTINGS) {
+      if (field in input) nextSettings[field] = input[field];
+    }
+  }
+  const next = { ...input };
+  let changed = false;
+  const role = (profile) => String(profile.name ?? profile.id ?? provider).split(/\s/)[0];
+  const formatSetting = (val) => (val === undefined ? 'none' : JSON.stringify(val));
+
+  for (const field of SETTINGS) {
+    const defs = distinctDefs(field);
+    const val = valueOf(field);
+    if (field === 'modeId' && definedModes.length === 1 && (isUnset(field, val) || !sameValue(val, definedModes[0].value))) {
+      nextSettings[field] = definedModes[0].value;
+      if (!nested) delete next[field];
+      changed = true;
+      continue;
+    }
+    if (defs.length === 1) {
+      const def = defs[0];
+      if (!def.set) {
+        // Profile leaves this setting unset: strip any non-unset override instead of denying.
+        if (hasKey(field) && !isUnset(field, val)) {
+          delete nextSettings[field];
+          if (!nested) delete next[field];
+          changed = true;
+        }
+      } else if (val !== undefined && !sameValue(val, def.value)) {
+        nextSettings[field] = def.value;
+        if (!nested) delete next[field];
+        changed = true;
+      }
+      continue;
+    }
+
+    // Multiple profiles disagree on this field: keep valid matches, deny only invalid overrides.
+    if (val === undefined || targets.some((profile) => agrees(profile, field))) continue;
+    const candidates = targets
+      .map((profile) => `${role(profile)} (${provider}) sets ${field} ${formatSetting(profileFieldValue(profile, field))}`)
+      .join('; ');
+    return {
+      updated: null,
+      denyReason: `create_agent ${field} ${JSON.stringify(val)} matches no profile for ${provider}. Candidates: ${candidates}.`,
+    };
+  }
+
+  // Prevent mixing values from incompatible conflicting profiles across caller-stated fields.
+  if (targets.length > 1 && stated.length > 1 && !targets.some((profile) => stated.every((field) => agreesValue(profile, field, nextSettings[field])))) {
+    const candidates = targets
+      .map((profile) => `${role(profile)} (${provider}): ${SETTINGS.map((f) => `${f}=${formatSetting(profileFieldValue(profile, f))}`).join(', ')}`)
+      .join('; ');
+    return {
+      updated: null,
+      denyReason: `create_agent settings combine values from incompatible profiles for ${provider}. Candidates: ${candidates}.`,
+    };
+  }
+
+  if (!changed) return { updated: null, denyReason: null };
+  if (Object.keys(nextSettings).length > 0) next.settings = nextSettings;
+  else delete next.settings;
+  return { updated: next, denyReason: null };
 }
+
 /** The planner and merge gate find pipeline agents by this label; an unlabelled one is invisible and gets re-dispatched. */
 const hasChangeLabel = (input) => {
   const change = input?.labels?.['pipeline.change'];
   return typeof change === 'string' && !!change.trim();
 };
-function liveChanges(cwd) {
+function liveChanges(cwd, repoContext) {
   const ctx = typeof cwd === 'string' && cwd ? repoContext(cwd) : null;
   if (!ctx) return [];
   try {
@@ -203,8 +328,8 @@ function liveChanges(cwd) {
   } catch { return []; }
 }
 /** Fill pipeline.change only when exactly one live change is named by the title (its last token, per DISPATCH) or, failing that, by `openspec/changes/<name>` paths in the prompt. */
-function inferredChange(input, cwd) {
-  const live = liveChanges(cwd);
+function inferredChange(input, cwd, repoContext) {
+  const live = liveChanges(cwd, repoContext);
   if (!live.length) return null;
   const tokens = new Set(String(input.title).trim().split(/\s+/));
   let hits = live.filter((name) => tokens.has(name));
@@ -213,10 +338,10 @@ function inferredChange(input, cwd) {
   }
   return hits.length === 1 ? hits[0] : null;
 }
-function withPipelineLabel(input, cwd) {
+function withPipelineLabel(input, cwd, repoContext) {
   const title = typeof input?.title === 'string' ? input.title.trim() : '';
   if (!title.startsWith('[Pipeline]') || hasChangeLabel(input)) return null;
-  const change = inferredChange({ ...input, title }, cwd);
+  const change = inferredChange({ ...input, title }, cwd, repoContext);
   if (!change) return null;
   const labels = input.labels && typeof input.labels === 'object' && !Array.isArray(input.labels) ? input.labels : {};
   return { ...input, labels: { ...labels, 'pipeline.change': change } };
@@ -226,8 +351,34 @@ function pipelineLabelReason(input) {
   if (!title.startsWith('[Pipeline]') || hasChangeLabel(input)) return null;
   return 'A "[Pipeline]" agent needs labels: { "pipeline.change": "<change>" } (the openspec change name); without it `pipeline-run.mjs plan` cannot see the agent and dispatches the task again. The hook could not infer one unambiguously. Copy title and labels from the plan\'s DISPATCH line.';
 }
+const STRICT_READ_ONLY_MODES = new Set(['plan', 'read-only']);
+const WRITE_MODES = new Set(['auto', 'accept-edits', 'acceptedits', 'bypasspermissions', 'full-access']);
+const READ_ONLY_TITLE_RE = /(?:^|\b)(?:review|tier2-review|r0|final|recon|audit)(?:\b|$)|审查|按察司|中书/i;
+const WRITE_TITLE_RE = /(?:^|\b)(?:handoff|implement|fix|refactor|migrate|feat|patch)(?:\b|$)|工部|刑部|兵部/i;
+/** True when create_agent dispatches a read-only observer rather than a workspace writer; ROLES overrides provider-specific modeId names. */
+function isReadOnlyAgentCall(input, pinnedProfile, profiles, { ROLES, profileIdOf, profilePair }) {
+  let prof = pinnedProfile;
+  if (!prof && typeof input?.provider === 'string' && Array.isArray(profiles)) {
+    const matches = profiles.filter((p) => profilePair(p) === input.provider);
+    if (matches.length === 1) prof = matches[0];
+    else if (matches.length > 1) prof = selectProfileByText(matches, input);
+  }
+  if (prof) {
+    const pid = typeof prof.id === 'string' ? prof.id.trim().toLowerCase() : '';
+    const wrIds = new Set(Object.entries(ROLES).filter(([, m]) => m.isWriter).map(([k]) => profileIdOf(k).toLowerCase()));
+    const roIds = new Set(Object.entries(ROLES).filter(([, m]) => !m.isWriter).map(([k]) => profileIdOf(k).toLowerCase()));
+    if (pid && wrIds.has(pid)) return false;
+    if (pid && roIds.has(pid)) return true;
+  }
+  const modeId = String(input?.settings?.modeId ?? input?.modeId ?? prof?.modeId ?? '').trim().toLowerCase();
+  if (STRICT_READ_ONLY_MODES.has(modeId)) return true;
+  if (WRITE_MODES.has(modeId)) return false;
+  const title = typeof input?.title === 'string' ? input.title : '';
+  if (READ_ONLY_TITLE_RE.test(title) && !WRITE_TITLE_RE.test(title)) return true;
+  return false;
+}
 const output = (fields) => console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', ...fields } }));
-const deny = (reason, reasonCode = 'denied') => {
+const deny = (reason, reasonCode = 'denied', recordEvent = () => {}) => {
   recordEvent('tool_guard', { action: 'deny', reasonCode });
   output({ permissionDecision: 'deny', permissionDecisionReason: reason });
 };
@@ -375,7 +526,7 @@ function inside(parent, child) {
   return rel === '' || (!rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel));
 }
 
-function primaryRootForWorktree(cwd) {
+function primaryRootForWorktree(cwd, repoContext, runGit) {
   if (typeof cwd !== 'string' || !cwd) return null;
   const ctx = repoContext(cwd);
   if (!ctx || ctx.isPrimary) return null;
@@ -406,11 +557,11 @@ function targetsPrimary(cwd, ctx, primaryRoot, command, regex, skipDash = false)
   return false;
 }
 
-function primaryCheckoutWarning(cwd, command) {
+function primaryCheckoutWarning(cwd, command, repoContext, runGit) {
   const hasCd = /\bcd\b/.test(command);
   const hasGitC = /\bgit\b[^;&|\n]*\s-C\s/.test(command);
   if (!hasCd && !hasGitC) return null;
-  const info = primaryRootForWorktree(cwd);
+  const info = primaryRootForWorktree(cwd, repoContext, runGit);
   if (!info) return null;
   const { ctx, primaryRoot } = info;
 
@@ -447,50 +598,52 @@ async function main() {
   const input = payload?.tool_input;
   if (name === 'Agent') {
     const reviewReason = builtinAgentReviewReason(input);
-    if (reviewReason) deny(reviewReason, 'builtin_agent_review');
-    return;
-  }
-  if (name === 'Read' && typeof input?.file_path === 'string') {
-    const readArgs = { cwd: payload?.cwd, sessionId: payload?.session_id, toolName: 'Read', target: input.file_path };
-    const authorGuard = recordAuthorRead(readArgs);
-    const msg = authorGuard?.message
-      || recordPrimaryReconRead(readArgs)?.message
-      || recordWorktreeReadStall(readArgs)?.message;
-    if (msg) output({ additionalContext: msg });
+    if (reviewReason) {
+      const { recordEvent } = await import('../lib/telemetry.mjs');
+      deny(reviewReason, 'builtin_agent_review', recordEvent);
+    }
     return;
   }
   if (name === 'Bash' && typeof input?.command === 'string') {
     const command = input.command;
+    const needsPaseoWait = /\bpaseo\s+(?:run|send)\b/.test(command) && !/(?:^|\s)--wait(?:\s|=|$)/.test(command) && !/\bpaseo\s+wait\b/.test(command);
+    const hasCdOrGitC = /\bcd\b/.test(command) || /\bgit\b[^;&|\n]*\s-C\s/.test(command);
+    if (!needsPaseoWait && !hasCdOrGitC) return;
+
     const contexts = [];
-    if (/\bpaseo\s+(?:run|send)\b/.test(command) && !/(?:^|\s)--wait(?:\s|=|$)/.test(command) && !/\bpaseo\s+wait\b/.test(command)) {
-      recordEvent('tool_guard', { action: 'advise', reasonCode: 'paseo_cli_wait' });
+    let recordEventFn = null;
+    if (needsPaseoWait) {
+      ({ recordEvent: recordEventFn } = await import('../lib/telemetry.mjs'));
+      recordEventFn('tool_guard', { action: 'advise', reasonCode: 'paseo_cli_wait' });
       contexts.push('CLI dispatch registers no completion callback; ending this turn will not wake the parent. Use MCP create_agent, or immediately start paseo wait <id> --timeout 540 in the background.');
     }
-    const cdWarn = primaryCheckoutWarning(payload?.cwd, command);
-    if (cdWarn) {
-      recordEvent('tool_guard', { action: 'advise', reasonCode: 'worktree_cd_primary' });
-      contexts.push(cdWarn);
-    }
-    const authorGuard = recordAuthorRead({ cwd: payload?.cwd, sessionId: payload?.session_id, command });
-    if (authorGuard?.message) {
-      contexts.push(authorGuard.message);
-    } else {
-      const reconGuard = recordPrimaryReconRead({ cwd: payload?.cwd, sessionId: payload?.session_id, command });
-      if (reconGuard?.message) {
-        contexts.push(reconGuard.message);
-      } else {
-        const worktreeGuard = recordWorktreeReadStall({ cwd: payload?.cwd, sessionId: payload?.session_id, command });
-        if (worktreeGuard?.message) contexts.push(worktreeGuard.message);
+    if (hasCdOrGitC) {
+      const [{ repoContext }, { runGit }] = await Promise.all([
+        import('../lib/tier-gate.mjs'),
+        import('../lib/git.mjs'),
+      ]);
+      const cdWarn = primaryCheckoutWarning(payload?.cwd, command, repoContext, runGit);
+      if (cdWarn) {
+        if (!recordEventFn) ({ recordEvent: recordEventFn } = await import('../lib/telemetry.mjs'));
+        recordEventFn('tool_guard', { action: 'advise', reasonCode: 'worktree_cd_primary' });
+        contexts.push(cdWarn);
       }
     }
     if (contexts.length) output({ additionalContext: contexts.join('\n') });
+    return;
   }
   if (typeof name !== 'string' || !name.startsWith('mcp__')) return;
+  const { recordEvent } = await import('../lib/telemetry.mjs');
   let updated = input;
   let changed = false;
   if (name.startsWith('mcp__paseo__')) {
-    const isObject = updated && typeof updated === 'object' && !Array.isArray(updated);
-    if (isObject && (isPlaceholderServerId(updated.serverId) || isTypoOfLocal(updated.serverId, localServerId()))) {
+    const [{ paseoHome, loadProfiles, profilePair }, { ROLES, profileIdOf }, { repoContext }] = await Promise.all([
+      import('../lib/paseo.mjs'),
+      import('../lib/roles.mjs'),
+      import('../lib/tier-gate.mjs'),
+    ]);
+    const isObject = isPlainObject(updated);
+    if (isObject && (isPlaceholderServerId(updated.serverId) || isTypoOfLocal(updated.serverId, localServerId(paseoHome)))) {
       updated = { ...updated };
       delete updated.serverId;
       changed = true;
@@ -500,35 +653,54 @@ async function main() {
       updated = sanitized;
       changed = true;
     }
-    const resolvedProvider = isObject && name === 'mcp__paseo__create_agent' ? resolvedBareProvider(updated) : null;
-    if (resolvedProvider) {
-      updated = resolvedProvider;
-      changed = true;
-    }
-    const bare = isObject && name === 'mcp__paseo__create_agent' ? bareProviderReason(updated) : null;
-    if (bare) { deny(bare, 'bare_provider'); return; }
-    const filled = isObject && name === 'mcp__paseo__create_agent' ? filledModeId(updated) : null;
-    if (filled) {
-      updated = filled;
-      changed = true;
-    }
-    const settingsMismatch = isObject && name === 'mcp__paseo__create_agent' ? settingsMismatchReason(updated) : null;
-    if (settingsMismatch) { deny(settingsMismatch, 'settings_mismatch'); return; }
-    const labelled = isObject && name === 'mcp__paseo__create_agent' ? withPipelineLabel(updated, payload?.cwd) : null;
-    if (labelled) {
-      updated = labelled;
-      changed = true;
-    }
-    const unlabelled = isObject && name === 'mcp__paseo__create_agent' ? pipelineLabelReason(updated) : null;
-    if (unlabelled) { deny(unlabelled, 'missing_pipeline_label'); return; }
-    const agent = isObject && name === 'mcp__paseo__create_agent' ? sanitizedCreateAgent(updated) : null;
-    if (agent) {
-      updated = agent;
-      changed = true;
+    if (isObject && name === 'mcp__paseo__create_agent') {
+      const profiles = loadProfiles();
+      let pinnedProfile = null;
+      const roleMatch = resolvedRoleProvider(updated, profiles, { profileIdOf, profilePair });
+      if (roleMatch) {
+        updated = roleMatch.updated;
+        pinnedProfile = roleMatch.matchedProfile;
+        changed = true;
+      }
+      const resolvedProvider = resolvedBareProvider(updated, profiles, profilePair);
+      if (resolvedProvider) {
+        updated = resolvedProvider;
+        changed = true;
+      }
+      const bare = bareProviderReason(updated, profiles, profilePair);
+      if (bare) { deny(bare, 'bare_provider', recordEvent); return; }
+      const { updated: reconciled, denyReason } = reconciledAgentSettings(updated, profiles, pinnedProfile, profilePair);
+      if (denyReason) { deny(denyReason, 'settings_mismatch', recordEvent); return; }
+      if (reconciled) {
+        updated = reconciled;
+        changed = true;
+      }
+      const labelled = withPipelineLabel(updated, payload?.cwd, repoContext);
+      if (labelled) {
+        updated = labelled;
+        changed = true;
+      }
+      const unlabelled = pipelineLabelReason(updated);
+      if (unlabelled) { deny(unlabelled, 'missing_pipeline_label', recordEvent); return; }
+      const agent = sanitizedCreateAgent(updated);
+      if (agent) {
+        updated = agent;
+        changed = true;
+      }
+      const cwdCtx = typeof payload?.cwd === 'string' && payload.cwd ? repoContext(payload.cwd) : null;
+      const hasWorkspaceId = typeof updated.workspaceId === 'string' && updated.workspaceId.trim().length > 0;
+      if (cwdCtx && !cwdCtx.isPrimary && !hasWorkspaceId && !isReadOnlyAgentCall(updated, pinnedProfile, profiles, { ROLES, profileIdOf, profilePair })) {
+        deny([
+          `You are running inside linked worktree (${cwdCtx.root}), but create_agent omitted a valid workspaceId.`,
+          'Without workspaceId, Paseo spawns the child agent in the caller primary checkout instead of this worktree.',
+          `Call mcp__paseo__create_workspace({ path: "${cwdCtx.root}", isolation: "local" }) (or find it via mcp__paseo__list_workspaces) first, then pass its workspaceId to create_agent.`,
+        ].join(' '), 'worktree_missing_workspace_id', recordEvent);
+        return;
+      }
     }
   }
   if (repeatedFailures(payload.transcript_path, name, input, changed ? updated : null)) {
-    deny(repeatedFailureReason(name), 'repeated_failure');
+    deny(repeatedFailureReason(name), 'repeated_failure', recordEvent);
     return;
   }
   if (changed) {
@@ -538,4 +710,7 @@ async function main() {
   }
 }
 
-try { await main(); } catch (err) { logHookError('tool-guard-hook', err); }
+try { await main(); } catch (err) {
+  const { logHookError } = await import('../lib/tier-gate.mjs');
+  logHookError('tool-guard-hook', err);
+}

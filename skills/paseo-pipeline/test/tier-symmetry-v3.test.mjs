@@ -6,7 +6,6 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { assessTierGate, assessStop, takeSnapshot } from '../lib/tier-gate.mjs';
-import { detectActiveAuthorChange, recordAuthorRead } from '../lib/author-guard.mjs';
 import { recordEvent, summarizeTelemetry, telemetryFile } from '../lib/telemetry.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -17,6 +16,7 @@ const FREEZE_CHECK = path.join(PIPELINE_DIR, 'freeze-check.mjs');
 const BRIEF = path.join(PIPELINE_DIR, 'brief.mjs');
 const TOOL_GUARD = path.join(PIPELINE_DIR, 'hooks', 'tool-guard-hook.mjs');
 const SESSION_HOOK = path.join(PIPELINE_DIR, 'hooks', 'tier-session-hook.mjs');
+const WRITE_HOOK = path.join(PIPELINE_DIR, 'hooks', 'tier-write-hook.mjs');
 
 const git = (cwd, ...args) =>
   execFileSync('git', args, {
@@ -276,11 +276,16 @@ test('P1 record-review, hydrate, and brief tier2 --task slice relay integrate cl
   assert.equal(hyd.status, 0, hyd.stderr + hyd.stdout);
   assert.equal(JSON.parse(hyd.stdout).skippedReason, 'no-lockfile');
 
-  // record-review --mode tier2 writes git-local ledger without dirtying worktree, and tier2-verify detects it
+  // record-review --mode tier2 defaults to git-local ledger even when --change-dir is passed (keeps worktree clean); --write-review-md writes review.md
   const telFile = path.join(path.dirname(root), 'metrics.jsonl');
-  const rec = runNode(PIPELINE_RUN, wt, ['record-review', '--mode', 'tier2', '--verdict', 'PASS', '--reviewer', 'anchasi-123', '--change-dir', chg, '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
-  // Wait: passing --change-dir writes review.md (which dirties wt if not committed), so test git-ledger mode WITHOUT --change-dir first!
-  assert.equal(rec.status, 0, rec.stderr + rec.stdout);
+  const recClean = runNode(PIPELINE_RUN, wt, ['record-review', '--mode', 'tier2', '--verdict', 'PASS', '--reviewer', 'anchasi-123', '--change-dir', chg, '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
+  assert.equal(recClean.status, 0, recClean.stderr + recClean.stdout);
+  assert.equal(git(wt, 'status', '--porcelain=v1'), '', 'default tier2 record-review --change-dir must keep worktree clean');
+  assert.equal(fs.existsSync(path.join(chg, 'review.md')), false, 'default tier2 record-review must not create review.md');
+
+  const recWriteMd = runNode(PIPELINE_RUN, wt, ['record-review', '--mode', 'tier2', '--verdict', 'PASS', '--reviewer', 'anchasi-123', '--change-dir', chg, '--write-review-md', '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
+  assert.equal(recWriteMd.status, 0, recWriteMd.stderr + recWriteMd.stdout);
+  assert.equal(fs.existsSync(path.join(chg, 'review.md')), true, '--write-review-md opts into review.md');
   git(wt, 'add', path.join(chg, 'review.md'));
   git(wt, 'commit', '-qm', 'record review');
 
@@ -297,68 +302,37 @@ test('P1 record-review, hydrate, and brief tier2 --task slice relay integrate cl
   assert.equal(vData.reviewSignoff?.sha, git(wt, 'rev-parse', 'HEAD'));
 });
 
-test('P1 author-guard detects paseo-tier2 without proposal.md and tier-session-hook emits worktree compact redline', (t) => {
+test('P1 tier-session-hook emits worktree compact redline without main-session tier reminder', (t) => {
   const root = makeRepo(t);
   const wt = `${root}-t2ag`;
   git(root, 'worktree', 'add', '-q', '-b', 'feat/t2-ag', wt);
   t.after(() => fs.rmSync(wt, { recursive: true, force: true }));
 
-  const chg = path.join(wt, 'openspec', 'changes', 't2-only');
-  fs.mkdirSync(chg, { recursive: true });
-  // NO proposal.md — only .openspec.yaml schema: paseo-tier2!
-  fs.writeFileSync(path.join(chg, '.openspec.yaml'), 'schema: paseo-tier2\ncreated: 2026-11-22\n');
-
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 't2-ag-state-'));
   t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
   const telFile = path.join(stateDir, 'metrics.jsonl');
-  const env = {
-    ...process.env,
-    PIPELINE_TIER_GATE_STATE: stateDir,
-    PIPELINE_TELEMETRY_FILE: telFile,
-    PIPELINE_AUTHOR_WARN_READS: '2',
-    PIPELINE_AUTHOR_STOP_READS: '3',
-  };
+  const env = { ...process.env, PIPELINE_TIER_GATE_STATE: stateDir, PIPELINE_TELEMETRY_FILE: telFile };
 
-  const r1 = spawnSync(process.execPath, [TOOL_GUARD], {
-    input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'rg val src/' }, cwd: wt, session_id: 's-t2-ag' }),
-    encoding: 'utf8',
-    env,
-  });
-  assert.equal(r1.status, 0);
-  assert.equal(r1.stdout.trim(), '');
-
-  const r2 = spawnSync(process.execPath, [TOOL_GUARD], {
-    input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'cat package.json' }, cwd: wt, session_id: 's-t2-ag' }),
-    encoding: 'utf8',
-    env,
-  });
-  assert.match(r2.stdout, /specs\/<cap>\/spec\.md/);
-
-  // Compact in linked worktree triggers BOTH author-guard empty-specs notice AND worktree compact redline
   const compact = spawnSync(process.execPath, [SESSION_HOOK], {
     input: JSON.stringify({ source: 'compact', cwd: wt, session_id: 's-t2-ag' }),
     encoding: 'utf8',
     env,
   });
   assert.equal(compact.status, 0);
-  assert.match(compact.stdout, /\[author-guard\] Context compacted/);
   assert.match(compact.stdout, /\[worktree-compact\]/);
   assert.match(compact.stdout, /git commit -m\/-F/);
   assert.match(compact.stdout, /2 次压缩/);
   assert.doesNotMatch(compact.stdout, /分级规则·会话级/);
 });
 
-test('P1 tier-gate blocks giant >=800-line files, >5 test blast files, and linked-worktree zero-write stalls', (t) => {
+test('P1 tier-gate blocks giant >=800-line files and >5 test blast files', (t) => {
   const root = makeRepo(t);
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-v3-state-'));
   t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
   const prevState = process.env.PIPELINE_TIER_GATE_STATE;
-  const prevZero = process.env.PIPELINE_TIER_GATE_ZERO_WRITE_TURNS;
   process.env.PIPELINE_TIER_GATE_STATE = stateDir;
-  process.env.PIPELINE_TIER_GATE_ZERO_WRITE_TURNS = '4';
   t.after(() => {
     if (prevState === undefined) delete process.env.PIPELINE_TIER_GATE_STATE; else process.env.PIPELINE_TIER_GATE_STATE = prevState;
-    if (prevZero === undefined) delete process.env.PIPELINE_TIER_GATE_ZERO_WRITE_TURNS; else process.env.PIPELINE_TIER_GATE_ZERO_WRITE_TURNS = prevZero;
   });
 
   // Giant existing file >= 800 lines -> ask (large_file)
@@ -377,22 +351,6 @@ test('P1 tier-gate blocks giant >=800-line files, >5 test blast files, and linke
   const vBlast = assessTierGate({ target: path.join(root, 'test', 'f6.test.mjs'), sessionId: 's-tests' });
   assert.equal(vBlast.verdict, 'ask');
   assert.equal(vBlast.reasonCode, 'test_blast');
-
-  // Linked worktree zero-write stall with active change: 3 zero-write turns ok, 4th blocks; write resets counter
-  const wt = `${root}-zw`;
-  git(root, 'worktree', 'add', '-q', '-b', 'feat/zw', wt);
-  t.after(() => fs.rmSync(wt, { recursive: true, force: true }));
-  const wtReal = fs.realpathSync(wt);
-  fs.mkdirSync(path.join(wtReal, 'openspec/changes/zw-chg'), { recursive: true });
-  for (let turn = 1; turn <= 3; turn += 1) {
-    takeSnapshot({ cwd: wtReal, sessionId: 's-zw' });
-    assert.equal(assessStop({ cwd: wtReal, sessionId: 's-zw' }).verdict, 'ok', `turn ${turn}`);
-  }
-  takeSnapshot({ cwd: wtReal, sessionId: 's-zw' });
-  const vStall = assessStop({ cwd: wtReal, sessionId: 's-zw' });
-  assert.equal(vStall.verdict, 'block');
-  assert.equal(vStall.reasonCode, 'zero_write_stall');
-  assert.match(vStall.reason, /handoff-progress\.md/);
 });
 
 test('P0 telemetry prevents default-file writes in test runner context and report summarizes cross-tier north-star metrics', (t) => {
@@ -523,8 +481,8 @@ test('P0-2 tier2-verify handles BLOCKED/INCOMPLETE/HUMAN_ACCEPT and signoffOnlyC
   assert.equal(blkRes.status, 1);
   assert.equal(JSON.parse(blkRes.stdout).verdict, 'FAIL');
 
-  // HUMAN_ACCEPT written to review.md + committed together with rulings.md / evidence/* still satisfies PASS via signoffOnlyCommit
-  assert.equal(runNode(PIPELINE_RUN, wt, ['record-review', '--mode', 'tier2', '--verdict', 'HUMAN_ACCEPT', '--reviewer', 'human', '--change-dir', chg, '--reason', 'accepted', '--json'], { PIPELINE_TELEMETRY_FILE: telFile }).status, 0);
+  // HUMAN_ACCEPT written to review.md + committed together with rulings.md / evidence/* still satisfies PASS via signoffOnlyCommit AND reuses SHA-1 Verify receipt
+  assert.equal(runNode(PIPELINE_RUN, wt, ['record-review', '--mode', 'tier2', '--verdict', 'HUMAN_ACCEPT', '--reviewer', 'human', '--change-dir', chg, '--write-review-md', '--reason', 'accepted', '--json'], { PIPELINE_TELEMETRY_FILE: telFile }).status, 0);
   fs.writeFileSync(path.join(chg, 'rulings.md'), '- accepted\n');
   fs.mkdirSync(path.join(chg, 'evidence'), { recursive: true });
   fs.writeFileSync(path.join(chg, 'evidence', 'note.txt'), 'ok\n');
@@ -535,39 +493,13 @@ test('P0-2 tier2-verify handles BLOCKED/INCOMPLETE/HUMAN_ACCEPT and signoffOnlyC
   assert.equal(okRes.status, 0, okRes.stderr + okRes.stdout);
   const okJson = JSON.parse(okRes.stdout);
   assert.equal(okJson.verdict, 'PASS');
+  assert.equal(okJson.verifyCached, true, 'signoff-only descendant commit should reuse SHA-1 Verify receipt');
   assert.equal(okJson.reviewSignoff?.verdict, 'HUMAN_ACCEPT');
 });
 
-test('P1-4 & P1-5 author-guard ignores unfilled scaffold tasks.md and cp2-merge enforces Done tasks and FINAL signoff', (t) => {
-  const root = makeRepo(t);
-  const wt = `${root}-ag`;
-  git(root, 'worktree', 'add', '-q', '-b', 'feat/ag-scaffold', wt);
-  t.after(() => fs.rmSync(wt, { recursive: true, force: true }));
-
-  const telFile = path.join(path.dirname(root), 'metrics-cp2.jsonl');
-  const chg = path.join(wt, 'openspec', 'changes', 'scaf-chg');
-  const prep = runNode(PIPELINE_RUN, wt, ['prepare-author', chg, '--schema', 'paseo-tier2', '--scaffold', '--capability', 'pay', '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
-  assert.equal(prep.status, 0, prep.stderr + prep.stdout);
-  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-scaf-state-'));
-  t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
-  const prevState = process.env.PIPELINE_TIER_GATE_STATE;
-  process.env.PIPELINE_TIER_GATE_STATE = stateDir;
-  try {
-    assert.equal(detectActiveAuthorChange(wt)?.change, 'scaf-chg');
-    const res = recordAuthorRead({ cwd: wt, sessionId: 'ag-scaf-1', command: 'rg val src/' });
-    assert.equal(res.readCount, 1, 'unfilled scaffold tasks.md should keep change in authoring mode');
-    const tasksFile = path.join(chg, 'tasks.md');
-    fs.writeFileSync(
-      tasksFile,
-      fs.readFileSync(tasksFile, 'utf8')
-        .replaceAll('path/to/file.mjs', 'src/a.mjs')
-        .replaceAll('<一句话目标>', 'Pay flow'),
-    );
-    assert.equal(detectActiveAuthorChange(wt), null, 'filled tasks.md closes authoring mode');
-  } finally {
-    if (prevState === undefined) delete process.env.PIPELINE_TIER_GATE_STATE;
-    else process.env.PIPELINE_TIER_GATE_STATE = prevState;
-  }
+test('P1-4 & P1-5 cp2-merge enforces Done tasks and FINAL signoff', (t) => {
+  const telFile = path.join(os.tmpdir(), `metrics-cp2-${process.pid}-${Date.now()}.jsonl`);
+  t.after(() => fs.rmSync(telFile, { force: true }));
 
   // cp2-merge gate checks Done tasks & FINAL signoff
   const cRoot = makeRepo(t);
@@ -639,4 +571,202 @@ test('cp2-merge from main works when change-dir exists only on integration/<chan
   const okCp2 = runNode(PIPELINE_RUN, root, ['cp2-merge', 'openspec/changes/branch-only', '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
   assert.equal(okCp2.status, 0, okCp2.stderr + okCp2.stdout);
   assert.equal(fs.existsSync(path.join(root, 'openspec/changes/branch-only/tasks.md')), true);
+});
+
+test('tier2-verify reuses SHA-bound verify receipt across record-review, invalidates on --no-cache or new commit, and fails fast on dirty tree without openspec', (t) => {
+  const root = makeRepo(t);
+  const wt = `${root}-cache`;
+  git(root, 'worktree', 'add', '-q', '-b', 'feat/verify-cache', wt);
+  t.after(() => fs.rmSync(wt, { recursive: true, force: true }));
+
+  const telFile = path.join(path.dirname(root), 'metrics-cache.jsonl');
+  const chg = path.join(wt, 'openspec/changes/cache-chg');
+  makeTier2Change(wt, chg, {
+    tasksMd: [
+      '# Tasks',
+      '',
+      '- [x] 1.1 T-01 verify counter test',
+      '  - Write scope: src/auth/gate.mjs',
+      '  - Entry: src/auth/gate.mjs#ok',
+      '  - Verify with: node --test test/a.test.mjs',
+      '  - Scenarios: SCEN-CORE-01',
+    ].join('\n'),
+  });
+  const countFile = path.join(wt, '.verify-counter.tmp');
+  fs.mkdirSync(path.join(wt, 'src/auth'), { recursive: true });
+  fs.writeFileSync(path.join(wt, 'src/auth/gate.mjs'), 'export const ok = () => true;\n');
+  fs.writeFileSync(
+    path.join(wt, 'test/a.test.mjs'),
+    `import test from 'node:test'; import assert from 'node:assert/strict'; import fs from 'node:fs'; test('inc', () => { const p = ${JSON.stringify(countFile)}; const n = fs.existsSync(p) ? Number(fs.readFileSync(p, 'utf8')) + 1 : 1; fs.writeFileSync(p, String(n)); assert.ok(n >= 1); });\n`,
+  );
+  // Ensure test/a.test.mjs ignores .verify-counter.tmp via .gitignore so receipt stays clean.
+  fs.writeFileSync(path.join(wt, '.gitignore'), '.verify-counter.tmp\n');
+  git(wt, 'add', '.');
+  git(wt, 'commit', '-qm', 'auth change + test');
+
+  // 1) First run: executes verify command once -> REVIEW_REQUIRED, writes receipt
+  const first = runNode(TIER2_VERIFY, wt, ['main', '--change-dir', chg, '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
+  assert.equal(first.status, 0, first.stderr + first.stdout);
+  const firstJson = JSON.parse(first.stdout);
+  assert.equal(firstJson.verdict, 'REVIEW_REQUIRED');
+  assert.equal(firstJson.verifyCached, false);
+  assert.equal(fs.readFileSync(countFile, 'utf8'), '1');
+
+  // Record review on same HEAD SHA -> 2nd run reuses receipt (counter stays 1) and returns PASS!
+  const rec = runNode(PIPELINE_RUN, wt, ['record-review', '--mode', 'tier2', '--verdict', 'PASS', '--reviewer', 'anchasi-cache', '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
+  assert.equal(rec.status, 0, rec.stderr);
+
+  const second = runNode(TIER2_VERIFY, wt, ['main', '--change-dir', chg, '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
+  assert.equal(second.status, 0, second.stderr + second.stdout);
+  const secondJson = JSON.parse(second.stdout);
+  assert.equal(secondJson.verdict, 'PASS');
+  assert.equal(secondJson.verifyCached, true);
+  assert.equal(secondJson.verifyResults[0].cached, true);
+  assert.equal(fs.readFileSync(countFile, 'utf8'), '1');
+
+  // 2) --no-cache forces re-execution
+  const forced = runNode(TIER2_VERIFY, wt, ['main', '--change-dir', chg, '--no-cache', '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
+  assert.equal(forced.status, 0, forced.stderr + forced.stdout);
+  assert.equal(JSON.parse(forced.stdout).verifyCached, false);
+  assert.equal(fs.readFileSync(countFile, 'utf8'), '2');
+
+  // 3) New commit invalidates SHA receipt and forces re-execution
+  fs.appendFileSync(path.join(wt, 'src/auth/gate.mjs'), 'export const extra = 1;\n');
+  git(wt, 'add', 'src/auth/gate.mjs');
+  git(wt, 'commit', '-qm', 'new tip');
+  const afterCommit = runNode(TIER2_VERIFY, wt, ['main', '--change-dir', chg, '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
+  assert.equal(afterCommit.status, 0, afterCommit.stderr + afterCommit.stdout);
+  assert.equal(JSON.parse(afterCommit.stdout).verifyCached, false);
+  assert.equal(fs.readFileSync(countFile, 'utf8'), '3');
+
+  // 4) Dirty worktree fails fast BEFORE openspec validate even when openspec is missing from PATH
+  fs.appendFileSync(path.join(wt, 'src/auth/gate.mjs'), '// dirty\n');
+  const nodeOnlyBin = fs.mkdtempSync(path.join(os.tmpdir(), 't2-no-os-'));
+  t.after(() => fs.rmSync(nodeOnlyBin, { recursive: true, force: true }));
+  fs.symlinkSync(process.execPath, path.join(nodeOnlyBin, 'node'));
+  const dirtyFast = runNode(TIER2_VERIFY, wt, ['main', '--change-dir', chg, '--json'], {
+    PATH: `${nodeOnlyBin}:/usr/bin:/bin`,
+    PIPELINE_TELEMETRY_FILE: telFile,
+  });
+  assert.equal(dirtyFast.status, 1);
+  const dirtyJson = JSON.parse(dirtyFast.stdout);
+  assert.equal(dirtyJson.verdict, 'FAIL');
+  assert.equal(dirtyJson.clean, false);
+  assert.equal(dirtyJson.contractChecked, false);
+  assert.equal(dirtyJson.openSpecStrictError, null);
+});
+
+test('tier2-verify surfaces light self-check advisories as PASS and provides structured nextActions on REVIEW_REQUIRED', (t) => {
+  const root = makeRepo(t);
+  const wt = `${root}-actions`;
+  git(root, 'worktree', 'add', '-q', '-b', 'feat/t2-actions', wt);
+  t.after(() => fs.rmSync(wt, { recursive: true, force: true }));
+  const telFile = path.join(path.dirname(root), 'metrics-actions.jsonl');
+
+  // Light path-only domain touch (invoices list without arithmetic) -> PASS + advisoryHits + light_self_check nextAction
+  fs.mkdirSync(path.join(wt, 'src/invoices'), { recursive: true });
+  fs.writeFileSync(path.join(wt, 'src/invoices/list.mjs'), 'export const title = "Invoices";\n');
+  git(wt, 'add', '.');
+  git(wt, 'commit', '-qm', 'light domain touch');
+
+  const lightRes = runNode(TIER2_VERIFY, wt, ['main', '--verify', 'node --test test/a.test.mjs', '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
+  assert.equal(lightRes.status, 0, lightRes.stderr + lightRes.stdout);
+  const lightJson = JSON.parse(lightRes.stdout);
+  assert.equal(lightJson.verdict, 'PASS');
+  assert.deepEqual(lightJson.risk.advisoryClasses, ['money']);
+  assert.equal(lightJson.nextActions[0]?.kind, 'light_self_check');
+
+  // Hard math touch -> REVIEW_REQUIRED with copy-pasteable briefCmd + recordCmd
+  fs.writeFileSync(path.join(wt, 'src/invoices/list.mjs'), 'export const calc = (invoiceAmount, taxAmount) => invoiceAmount + taxAmount;\n');
+  git(wt, 'add', 'src/invoices/list.mjs');
+  git(wt, 'commit', '-qm', 'money math touch');
+  const hardRes = runNode(TIER2_VERIFY, wt, ['main', '--verify', 'node --test test/a.test.mjs', '--json'], { PIPELINE_TELEMETRY_FILE: telFile });
+  assert.equal(hardRes.status, 0, hardRes.stderr + hardRes.stdout);
+  const hardJson = JSON.parse(hardRes.stdout);
+  assert.equal(hardJson.verdict, 'REVIEW_REQUIRED');
+  const revAction = hardJson.nextActions.find((a) => a.kind === 'independent_review');
+  assert.ok(revAction);
+  assert.match(revAction.briefCmd, /brief tier2-review/);
+  assert.match(revAction.dispatchHint, /anchasi/);
+  assert.match(revAction.recordCmd, /record-review --mode tier2/);
+});
+
+test('compactCount tracks worktree compactions, surfaces PIPELINE_HOME, and asks on heavy worktree source edits while exempting docs/openspec', (t) => {
+  const root = makeRepo(t);
+  const wt = `${root}-cmp`;
+  git(root, 'worktree', 'add', '-q', '-b', 'feat/cmp-heavy', wt);
+  t.after(() => fs.rmSync(wt, { recursive: true, force: true }));
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cmp-state-'));
+  t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
+  const telFile = path.join(stateDir, 'metrics.jsonl');
+  const env = { ...process.env, PIPELINE_TIER_GATE_STATE: stateDir, PIPELINE_TELEMETRY_FILE: telFile };
+  const sid = 'cmp-heavy-sid';
+  const srcFile = path.join(wt, 'src', 'app.js');
+  fs.mkdirSync(path.dirname(srcFile), { recursive: true });
+  fs.writeFileSync(srcFile, 'export const a = 1;\n');
+
+  const compact = () => spawnSync(process.execPath, [SESSION_HOOK], {
+    input: JSON.stringify({ source: 'compact', cwd: wt, session_id: sid }),
+    encoding: 'utf8',
+    env,
+  });
+  const writeProbe = (filePath) => spawnSync(process.execPath, [WRITE_HOOK], {
+    input: JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: filePath }, session_id: sid }),
+    encoding: 'utf8',
+    env,
+  });
+
+  // Compact #0: light worktree allows source edits immediately
+  assert.equal(writeProbe(srcFile).stdout.trim(), '');
+
+  // Compact #1: emits worktree-compact + PIPELINE_HOME, NOT worktree-compact-heavy; source edits still pass
+  const c1 = compact();
+  assert.equal(c1.status, 0);
+  assert.match(c1.stdout, /\[worktree-compact\]/);
+  assert.match(c1.stdout, /PIPELINE_HOME=/);
+  assert.doesNotMatch(c1.stdout, /\[worktree-compact-heavy\]/);
+  assert.equal(writeProbe(srcFile).stdout.trim(), '');
+
+  // Compact #2: emits [worktree-compact-heavy] with exact count 2 and arms heavy-worktree write ask
+  const c2 = compact();
+  assert.equal(c2.status, 0);
+  assert.match(c2.stdout, /\[worktree-compact-heavy\]/);
+  assert.match(c2.stdout, /累计压缩 2 次/);
+  assert.match(c2.stdout, /create_workspace/);
+
+  // Docs (*.md) & openspec/ remain exempt even at compact #2
+  assert.equal(writeProbe(path.join(wt, 'handoff-progress.md')).stdout.trim(), '');
+  assert.equal(writeProbe(path.join(wt, 'openspec', 'changes', 'chg', 'specs', 's', 'spec.md')).stdout.trim(), '');
+
+  // First source write at compact #2 triggers `ask` (worktree_compact_heavy); repeated attempt without disk change stays `ask`
+  const ask1 = JSON.parse(writeProbe(srcFile).stdout);
+  assert.equal(ask1.hookSpecificOutput.permissionDecision, 'ask');
+  assert.match(ask1.hookSpecificOutput.permissionDecisionReason, /累计压缩 2 次/);
+  const ask2 = JSON.parse(writeProbe(srcFile).stdout);
+  assert.equal(ask2.hookSpecificOutput.permissionDecision, 'ask');
+
+  // Once user approves and edit lands on disk, subsequent writes at compact #2 are promoted & allowed
+  fs.appendFileSync(srcFile, 'export const b = 2;\n');
+  assert.equal(writeProbe(srcFile).stdout.trim(), '');
+  assert.equal(writeProbe(path.join(wt, 'src', 'other.js')).stdout.trim(), '');
+
+  // Compact #3 in the SAME already-approved worktree does NOT re-nag
+  const c3 = compact();
+  assert.match(c3.stdout, /累计压缩 3 次/);
+  assert.equal(writeProbe(srcFile).stdout.trim(), '');
+
+  // Switching to a second unapproved worktree without handoff-progress.md asks once, then bypasses once handoff-progress.md exists
+  const wt2 = `${root}-cmp2`;
+  git(root, 'worktree', 'add', '-q', '-b', 'feat/cmp-heavy-2', wt2);
+  t.after(() => fs.rmSync(wt2, { recursive: true, force: true }));
+  const srcFile2 = path.join(wt2, 'src', 'app2.js');
+  fs.mkdirSync(path.dirname(srcFile2), { recursive: true });
+  fs.writeFileSync(srcFile2, 'export const c = 3;\n');
+
+  const ask3 = JSON.parse(writeProbe(srcFile2).stdout);
+  assert.equal(ask3.hookSpecificOutput.permissionDecision, 'ask');
+  assert.match(ask3.hookSpecificOutput.permissionDecisionReason, /累计压缩 3 次/);
+
+  fs.writeFileSync(path.join(wt2, 'handoff-progress.md'), '# Progress\n');
+  assert.equal(writeProbe(srcFile2).stdout.trim(), '');
 });

@@ -5,9 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { assessTierGate, assessStop, takeSnapshot, logHookError, scopeKey, TIER_RULES, DEFAULT_LIMIT } from '../lib/tier-gate.mjs';
+import { assessTierGate, assessStop, takeSnapshot, repoContext, logHookError, scopeKey, TIER_RULES, DEFAULT_LIMIT } from '../lib/tier-gate.mjs';
 import { recordReview } from '../lib/review-record.mjs';
-import { shouldRemind, isSystemNotification, REMINDER } from '../hooks/tier-reminder-hook.mjs';
+import { shouldRemind, isReadOnlyPrompt, isSystemNotification, REMINDER } from '../hooks/tier-reminder-hook.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const GUARD_HOOK = path.join(here, '..', 'hooks', 'tier-write-hook.mjs');
@@ -195,6 +195,50 @@ test('跨作用域不产生豁免：被拒绝后重试仍 ask，第三个包仍 
   assert.equal(at('packages/shared/c.ts').verdict, 'ask');
 }));
 
+test('段级单次确认：file_limit / scope_cross 实际放行落盘后，同段后续同类越界不再重复弹窗', () => withState((dir) => {
+  const root = makeRepo();
+  const touch = (rel, body = 'export const x = 1;\n') => {
+    const p = path.join(root, rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, body);
+    return p;
+  };
+  for (const n of ['src/a.js', 'src/b.js', 'src/c.js']) {
+    const p = touch(n);
+    assert.equal(assessTierGate({ target: p, sessionId: 'seg-limit' }).verdict, 'allow');
+  }
+  const dPath = path.join(root, 'src/d.js');
+  const dAsk = assessTierGate({ target: dPath, sessionId: 'seg-limit' });
+  assert.equal(dAsk.verdict, 'ask');
+  assert.equal(dAsk.reasonCode, 'file_limit');
+  // 拒绝落盘（未写入 d）时，第 5 个文件仍 ask
+  const eAsk = assessTierGate({ target: path.join(root, 'src/e.js'), sessionId: 'seg-limit' });
+  assert.equal(eAsk.verdict, 'ask');
+  assert.equal(eAsk.reasonCode, 'file_limit');
+  // 用户放行第 4 个文件并落盘后，第 5、6 个文件直接 allow
+  touch('src/d.js', 'export const d = 1;\n');
+  assert.equal(assessTierGate({ target: path.join(root, 'src/e.js'), sessionId: 'seg-limit' }).verdict, 'allow');
+  assert.equal(assessTierGate({ target: path.join(root, 'src/f.js'), sessionId: 'seg-limit' }).verdict, 'allow');
+
+  // scope_cross 同理：放行第 2 个包后，第 3 个包不再重复弹窗，直到空闲超时重置
+  const aPath = touch('packages/server/a.ts');
+  assert.equal(assessTierGate({ target: aPath, sessionId: 'seg-scope' }).verdict, 'allow');
+  const bAsk = assessTierGate({ target: path.join(root, 'packages/web/b.tsx'), sessionId: 'seg-scope' });
+  assert.equal(bAsk.verdict, 'ask');
+  assert.equal(bAsk.reasonCode, 'scope_cross');
+  touch('packages/web/b.tsx', 'export const b = 1;\n');
+  assert.equal(assessTierGate({ target: path.join(root, 'packages/shared/c.ts'), sessionId: 'seg-scope' }).verdict, 'allow');
+
+  // 空闲超过阈值重置任务段与 approvedRules
+  for (const f of fs.readdirSync(dir)) {
+    const st = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+    for (const k of Object.keys(st)) st[k].at = Date.now() - 31 * 60 * 1000;
+    fs.writeFileSync(path.join(dir, f), JSON.stringify(st));
+  }
+  assert.equal(assessTierGate({ target: path.join(root, 'packages/core/d.ts'), sessionId: 'seg-scope' }).verdict, 'allow');
+  assert.equal(assessTierGate({ target: path.join(root, 'packages/ui/e.ts'), sessionId: 'seg-scope' }).reasonCode, 'scope_cross');
+}));
+
 test('同包不同目录不算跨作用域（单目录仍按包根判定）', () => withState(() => {
   const root = makeRepo();
   const at = (p) => assessTierGate({ target: path.join(root, p), sessionId: 's1' });
@@ -214,15 +258,6 @@ test('根目录 Markdown 属于文档，不计数也不算第二个作用域', (
   assert.equal(write(root, 'a').verdict, 'allow'); // src/a
   assert.equal(assessTierGate({ target: path.join(root, 'README.md'), sessionId: 's1' }).verdict, 'allow');
   assert.equal(assessTierGate({ target: path.join(root, 'CLAUDE.md'), sessionId: 's1' }).verdict, 'allow');
-}));
-
-test('Tier 2 拒绝文案与测试/文档不计数一致', () => withState(() => {
-  const root = makeRepo();
-  const v = assessTierGate({ target: path.join(root, 'src', 'a.ts'), sessionId: 's1', declared: { tier: 2, files: ['src/a.ts'] } });
-  assert.equal(v.verdict, 'deny');
-  assert.doesNotMatch(v.reason, /同样算业务文件/);
-  assert.match(v.reason, /测试和文档不计数/);
-  assert.doesNotMatch(TIER_RULES, /含设计文档、spec/);
 }));
 
 test('scopeKey：工作区根取前两段，其余取顶层目录', () => {
@@ -301,40 +336,6 @@ test('tier-write-hook 进程：非写入工具与坏输入不干预', () => {
   assert.equal(bad.status, 0);
   assert.equal(bad.stdout.trim(), '');
 });
-
-// ---- 显式编程式 declared 参数兼容（仅限内部调用传参，不再由 transcript 解析）----
-
-test('开工前声明：计划超过 Tier 1 上限 → 首次写入就 deny', () => withState(() => {
-  const root = makeRepo();
-  const declared = { tier: 1, files: ['src/a', 'src/b', 'src/c', 'src/d'] };
-  const v = assessTierGate({ target: path.join(root, 'src', 'a'), sessionId: 's1', declared });
-  assert.equal(v.verdict, 'deny');
-  assert.match(v.reason, /4 个源文件/);
-  assert.match(v.reason, /\/paseo-handoff/);
-  // 拒绝的写入不占额度，也不会被记进账本。
-  assert.equal(assessTierGate({ target: path.join(root, 'src', 'a'), sessionId: 's1' }).verdict, 'allow');
-}));
-
-test('开工前声明：跨 2 个作用域 → 首次写入就 deny', () => withState(() => {
-  const root = makeRepo();
-  const declared = { tier: 1, files: ['packages/server/a.ts', 'packages/web/b.tsx'] };
-  const v = assessTierGate({ target: path.join(root, 'packages', 'server', 'a.ts'), sessionId: 's1', declared });
-  assert.equal(v.verdict, 'deny');
-  assert.match(v.reason, /2 个作用域/);
-  assert.match(v.reason, /packages\/server/);
-  assert.match(v.reason, /packages\/web/);
-}));
-
-test('开工前声明：Tier 2 在主 checkout 原地写 → deny，指向 handoff/worktree', () => withState(() => {
-  const root = makeRepo();
-  const declared = { tier: 2, files: ['src/a'] };
-  const v = assessTierGate({ target: path.join(root, 'src', 'a'), sessionId: 's1', declared });
-  assert.equal(v.verdict, 'deny');
-  assert.match(v.reason, /Tier 2/);
-  assert.match(v.reason, /worktree/);
-  assert.match(v.reason, /linked worktree/);
-  assert.match(v.reason, /主会话自己进去/);
-}));
 
 test('TIER_RULES：isolation is not delegation; risky operations and risky code are separate checkpoints', () => {
   assert.match(TIER_RULES, /先只读探查/);
@@ -950,6 +951,216 @@ test('P1-1 large_file asks once, promotes via askedSigs after disk change, prese
     recordReview({ cwd: riskRoot, mode: 'tier1', verdict: 'PASS', reviewer: 'anchasi-1', sha: 'HEAD' });
     // Note: takeSnapshot saw clean tree -> commit made head !== snap.head and clean -> signoff clears risk_sentinel
     assert.equal(assessStop({ cwd: riskRoot, sessionId: 't1sig' }).verdict, 'ok');
+  } finally {
+    if (prevTel === undefined) delete process.env.PIPELINE_TELEMETRY;
+    else process.env.PIPELINE_TELEMETRY = prevTel;
+  }
+}));
+
+test('TIER_RULES 与 REMINDER 限定仅代码改动适用，且只读诊断默认放开', () => {
+  assert.match(TIER_RULES, /仅代码改动/);
+  assert.match(TIER_RULES, /只读诊断默认放开/);
+  assert.match(REMINDER, /仅代码改动适用/);
+});
+
+test('tier-reminder-hook 进程：纯问答/调研跳过注入；同会话只注入一次；新会话或超空闲后可再注入', () => withState((dir) => {
+  const root = makeRepo();
+  const subdir = path.join(root, 'src');
+  fs.mkdirSync(subdir, { recursive: true });
+  const env = cleanEnv({ PIPELINE_TIER_GATE_STATE: dir, PIPELINE_TELEMETRY: 'off' });
+  const run = (payload, extraEnv = env) => spawnSync('node', [REMINDER_HOOK], { input: JSON.stringify(payload), encoding: 'utf8', env: extraEnv });
+
+  // Read-only / analytical questions skip context injection while still taking Stop snapshot.
+  for (const q of [
+    '分析一下为什么响应这么慢？',
+    '调研一下一键校验功能的可用性',
+    '为什么这里报错了？',
+    '你觉得呢？',
+    '为什么 merge 失败了？',
+    '为什么 build 报错？',
+    '帮我分析一下日志',
+    'Explain auth flow',
+  ]) {
+    assert.equal(isReadOnlyPrompt(q), true, q);
+    assert.equal(shouldRemind(q), false, q);
+    assert.equal(run({ prompt: q, cwd: root, session_id: 'qa-then-edit' }).stdout.trim(), '', q);
+  }
+
+  for (const w of [
+    '把这段删了，可以吗？',
+    '能不能把按钮改一下？',
+    '合并到 main',
+  ]) {
+    assert.equal(isReadOnlyPrompt(w), false, w);
+    assert.equal(shouldRemind(w), true, w);
+  }
+
+  // First actionable / implementation turn in that session gets reminded once.
+  assert.match(run({ prompt: '好的，按方案 B 修改吧', cwd: root, session_id: 'qa-then-edit' }).stdout, /分级提醒/);
+  // Subsequent turns in the same session + repo root (including a subdirectory) do not repeat the reminder.
+  assert.equal(run({ prompt: '继续', cwd: root, session_id: 'qa-then-edit' }).stdout.trim(), '');
+  assert.equal(run({ prompt: '把第2点也改了', cwd: subdir, session_id: 'qa-then-edit' }).stdout.trim(), '');
+  // A different session still gets its initial reminder; idle expiry resets and re-reminds.
+  assert.match(run({ prompt: '把这段删了，可以吗？', cwd: root, session_id: 'qa-other' }).stdout, /分级提醒/);
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+  const expiredEnv = cleanEnv({ PIPELINE_TIER_GATE_STATE: dir, PIPELINE_TIER_GATE_IDLE_MS: '0', PIPELINE_TELEMETRY: 'off' });
+  assert.match(run({ prompt: '能不能把按钮改一下？', cwd: root, session_id: 'qa-then-edit' }, expiredEnv).stdout, /分级提醒/);
+}));
+
+test('repoContext resolves unborn primary, committed primary, detached HEAD, and linked worktree', () => {
+  const unborn = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tier-gate-unborn-')));
+  const wt = path.join(os.tmpdir(), `tier-gate-wt-${process.pid}-${Date.now()}`);
+  try {
+    sh(unborn, 'init', '-q', '-b', 'main');
+    sh(unborn, 'config', 'user.email', 't@t');
+    sh(unborn, 'config', 'user.name', 't');
+    assert.deepEqual(repoContext(unborn), { root: unborn, isPrimary: true, isPrimaryOnProtected: true, branch: 'main' });
+
+    fs.writeFileSync(path.join(unborn, 'a.txt'), 'a\n');
+    sh(unborn, 'add', 'a.txt');
+    sh(unborn, 'commit', '-qm', 'init');
+    assert.deepEqual(repoContext(unborn), { root: unborn, isPrimary: true, isPrimaryOnProtected: true, branch: 'main' });
+
+    sh(unborn, 'worktree', 'add', '-q', '-b', 'feat/ctx', wt, 'main');
+    const wtReal = fs.realpathSync(wt);
+    assert.deepEqual(repoContext(wtReal), { root: wtReal, isPrimary: false, isPrimaryOnProtected: false, branch: 'feat/ctx' });
+
+    sh(unborn, 'checkout', '--detach', '-q', 'HEAD');
+    assert.deepEqual(repoContext(unborn), { root: unborn, isPrimary: true, isPrimaryOnProtected: false, branch: '' });
+  } finally {
+    fs.rmSync(wt, { recursive: true, force: true });
+    fs.rmSync(unborn, { recursive: true, force: true });
+  }
+});
+
+test('assessTierGate + assessStop: 3 轮依次改不同新文件不误报 churn；同文件连改 3 轮触发且 worktree 提示不误指回 worktree', () => withState(() => {
+  const root = makeRepo();
+  for (const name of ['f1.js', 'f2.js', 'f3.js', 'retry.js']) {
+    fs.writeFileSync(path.join(root, 'src', name), `export const v = '${name}';\n`);
+  }
+  sh(root, 'add', '.');
+  sh(root, 'commit', '-qm', 'add core files');
+
+  // Tier 1: normal progression across 3 new distinct files via assessTierGate + Edit + assessStop must NOT false-block churn.
+  for (const name of ['f1.js', 'f2.js', 'f3.js']) {
+    snap(root, 't1-distinct');
+    const target = path.join(root, 'src', name);
+    assert.equal(assessTierGate({ target, sessionId: 't1-distinct' }).verdict, 'allow', name);
+    fs.appendFileSync(target, '// edit 1\n');
+    assert.equal(assessTierGate({ target, sessionId: 't1-distinct' }).verdict, 'allow', `${name} second edit`);
+    fs.appendFileSync(target, '// edit 2\n');
+    assert.equal(stop(root, 't1-distinct').verdict, 'ok', `${name} stop should not false-block churn`);
+  }
+
+  // Genuine 3-turn same-file thrashing triggers churn block on round 3.
+  const retry = path.join(root, 'src', 'retry.js');
+  for (let round = 1; round <= 3; round += 1) {
+    snap(root, 't1-repeat');
+    assert.equal(assessTierGate({ target: retry, sessionId: 't1-repeat' }).verdict, 'allow');
+    fs.appendFileSync(retry, `// retry ${round}\n`);
+    const v = stop(root, 't1-repeat');
+    if (round < 3) assert.equal(v.verdict, 'ok', `round ${round}`);
+    else {
+      assert.equal(v.verdict, 'block');
+      assert.equal(v.reasonCode, 'churn');
+      assert.match(v.reason, /进 linked worktree/);
+    }
+  }
+
+  // Linked worktree: new files reset streak, genuine 3-turn revisit warns with handoff-progress.md instead of "enter linked worktree".
+  const wt = path.join(os.tmpdir(), `tier-gate-churn-wt-${process.pid}-${Date.now()}`);
+  sh(root, 'worktree', 'add', '-q', '-b', 'feat/churn-msg', wt, 'main');
+  try {
+    const wtReal = fs.realpathSync(wt);
+    for (const name of ['f1.js', 'f2.js']) {
+      snap(wtReal, 'wt-churn');
+      fs.appendFileSync(path.join(wtReal, 'src', name), '// wt new\n');
+      assert.equal(stop(wtReal, 'wt-churn').verdict, 'ok');
+    }
+    for (let round = 1; round <= 3; round += 1) {
+      snap(wtReal, 'wt-churn');
+      fs.appendFileSync(path.join(wtReal, 'src', 'f1.js'), `// wt revisit ${round}\n`);
+      const v = stop(wtReal, 'wt-churn');
+      if (round < 2) assert.equal(v.verdict, 'ok', `wt revisit round ${round}`);
+      else if (round === 2) {
+        // After fresh f2.js reset streak to 1, revisit rounds 1->2 hit turns 2->3 and block on round 2.
+        assert.equal(v.verdict, 'block');
+        assert.equal(v.reasonCode, 'churn');
+        assert.match(v.reason, /handoff-progress\.md/);
+        assert.doesNotMatch(v.reason, /进 linked worktree/);
+        break;
+      }
+    }
+  } finally {
+    fs.rmSync(wt, { recursive: true, force: true });
+  }
+}));
+
+test('Tier 1 risk_sentinel suppresses async-wait commit self-lock and cross-session claim honors snap.at and selfOwned', () => withState((dir) => {
+  const prevTel = process.env.PIPELINE_TELEMETRY;
+  process.env.PIPELINE_TELEMETRY = 'off';
+  try {
+    // 1) risk_sentinel async commit wait: Turn 1 edits risky file -> block; Turn 2 commits while waiting for async review -> ok; Turn 3 brand-new risky edit -> block again
+    const rRoot = makeRepo();
+    fs.mkdirSync(path.join(rRoot, 'src', 'auth'), { recursive: true });
+    fs.writeFileSync(path.join(rRoot, 'src', 'auth', 'session.js'), 'export const s = 1;\n');
+    sh(rRoot, 'add', '.');
+    sh(rRoot, 'commit', '-qm', 'seed auth');
+
+    snap(rRoot, 'async-risk');
+    fs.writeFileSync(path.join(rRoot, 'src', 'auth', 'session.js'), 'export const s = 2;\n');
+    const b1 = stop(rRoot, 'async-risk');
+    assert.equal(b1.verdict, 'block');
+    assert.equal(b1.reasonCode, 'risk_sentinel');
+
+    // Turn 2 human turn: agent commits already-reported dirty file while waiting for async anchasi
+    snap(rRoot, 'async-risk');
+    sh(rRoot, 'add', 'src/auth/session.js');
+    sh(rRoot, 'commit', '-qm', 'wip await review');
+    const b2 = stop(rRoot, 'async-risk');
+    assert.equal(b2.verdict, 'ok', 'committing already-reported risky file while awaiting async review must not self-lock');
+
+    // Turn 2 with an additional NEW unreviewed risky file must still block
+    fs.writeFileSync(path.join(rRoot, 'src', 'auth', 'other.js'), 'export const o = 1;\n');
+    const b3 = stop(rRoot, 'async-risk');
+    assert.equal(b3.verdict, 'block');
+    assert.equal(b3.reasonCode, 'risk_sentinel');
+
+    // 2) cross-session claims: stale session before snap.at does NOT exempt Bash edits; own files in seg.files are never exempted; concurrent edits after snap.at ARE exempted
+    const cRoot = makeRepo();
+    for (const n of ['a.js', 'b.js', 'c.js', 'stale.js', 'peer.js']) {
+      fs.writeFileSync(path.join(cRoot, 'src', n), `export const ${n.replace(/\W/g, '_')} = 1;\n`);
+    }
+    sh(cRoot, 'add', '.');
+    sh(cRoot, 'commit', '-qm', 'seed cross-session files');
+
+    // Write stale claim from session-other with timestamp well before session-cur's snapshot
+    const staleAt = Date.now() - 10_000;
+    fs.writeFileSync(path.join(dir, 'session-other.json'), JSON.stringify({
+      [cRoot]: { files: ['src/stale.js', 'src/a.js'], asked: [], at: staleAt },
+    }));
+
+    snap(cRoot, 'session-cur');
+    assert.equal(assessTierGate({ target: path.join(cRoot, 'src', 'a.js'), sessionId: 'session-cur' }).verdict, 'allow');
+    assert.equal(assessTierGate({ target: path.join(cRoot, 'src', 'b.js'), sessionId: 'session-cur' }).verdict, 'allow');
+    assert.equal(assessTierGate({ target: path.join(cRoot, 'src', 'c.js'), sessionId: 'session-cur' }).verdict, 'allow');
+
+    // Active concurrent session writes AFTER snap.at -> exempted from session-cur's Stop count
+    fs.writeFileSync(path.join(dir, 'session-other.json'), JSON.stringify({
+      [cRoot]: { files: ['src/peer.js', 'src/a.js'], asked: [], at: Date.now() + 50 },
+    }));
+    fs.appendFileSync(path.join(cRoot, 'src', 'peer.js'), '// edit by peer\n');
+    assert.equal(stop(cRoot, 'session-cur').verdict, 'ok', 'concurrent active claim after snap.at should be exempted');
+
+    // Reset session-other to stale timestamp before a new snap, then session-cur touches src/stale.js via Bash -> exceeds limit 3 (4th file) and MUST block!
+    fs.writeFileSync(path.join(dir, 'session-other.json'), JSON.stringify({
+      [cRoot]: { files: ['src/stale.js'], asked: [], at: Date.now() - 10_000 },
+    }));
+    snap(cRoot, 'session-cur');
+    fs.appendFileSync(path.join(cRoot, 'src', 'stale.js'), '// bash write by cur\n');
+    const cBlock = stop(cRoot, 'session-cur');
+    assert.equal(cBlock.verdict, 'block');
+    assert.equal(cBlock.reasonCode, 'file_limit');
   } finally {
     if (prevTel === undefined) delete process.env.PIPELINE_TELEMETRY;
     else process.env.PIPELINE_TELEMETRY = prevTel;

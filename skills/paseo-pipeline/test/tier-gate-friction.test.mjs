@@ -45,45 +45,11 @@ function withState(fn) {
 
 // ---- (2a)-(2d) scope normalization for src/ + test/ splits ----
 
-test('declared src/ + test/ files are one scope when a workspace layout exists', () => withState((dir) => {
+test('src/ + test/ are one source scope and docs do not count', () => withState(() => {
   const root = makeRepo();
-  fs.mkdirSync(path.join(root, 'packages'), { recursive: true });
-  fs.mkdirSync(path.join(root, 'skills'));
-  const transcript = path.join(dir, 'scope.jsonl');
-  const declared = { tier: 1, files: ['src/a.ts', 'test/y.ts'] };
-  const verdict = assessTierGate({ target: path.join(root, 'src/a.ts'), sessionId: 'scope', declared });
-  assert.equal(verdict.verdict, 'allow');
-  // A genuine cross-package split still denies.
-  const cross = assessTierGate({
-    target: path.join(root, 'packages/x/a.ts'),
-    sessionId: 'scope2',
-    declared: { tier: 1, files: ['packages/x/a.ts', 'packages/y/b.ts'] },
-  });
-  assert.equal(cross.verdict, 'deny');
-  assert.match(cross.reason, /2 个作用域/);
-  assert.ok(transcript);
-}));
-
-test('src/ + test/ are one scope even in a flat repository', () => withState(() => {
-  const root = makeRepo();
-  const verdict = assessTierGate({
-    target: path.join(root, 'src/a.ts'),
-    sessionId: 'flat',
-    declared: { tier: 1, files: ['src/a.ts', 'test/y.ts'] },
-  });
-  // A top-level src/test split is a naming artefact, not two packages; denying it taught
-  // agents to rewrite plans instead of work. Real package splits still deny (above).
-  assert.equal(verdict.verdict, 'allow');
-}));
-
-test('src/ + docs/ are one source scope because docs do not count', () => withState(() => {
-  const root = makeRepo();
-  const verdict = assessTierGate({
-    target: path.join(root, 'src/a.ts'),
-    sessionId: 'mixed',
-    declared: { tier: 1, files: ['src/a.ts', 'docs/guide.md'] },
-  });
-  assert.equal(verdict.verdict, 'allow');
+  assert.equal(assessTierGate({ target: path.join(root, 'src/a.ts'), sessionId: 'flat' }).verdict, 'allow');
+  assert.equal(assessTierGate({ target: path.join(root, 'test/y.ts'), sessionId: 'flat' }).verdict, 'allow');
+  assert.equal(assessTierGate({ target: path.join(root, 'docs/guide.md'), sessionId: 'flat' }).verdict, 'allow');
 }));
 
 test('scopeKey keeps genuine package separation', () => {
@@ -133,21 +99,6 @@ test('Stop churn still fires for repeated business-file edits', () => withState(
   }
 }));
 
-// ---- (2g) Tier 2 deny carries a handoff invocation sample ----
-
-test('the Tier 2 denial shows linked worktree, tier2-verify, and /paseo-handoff', () => withState(() => {
-  const root = makeRepo();
-  const verdict = assessTierGate({
-    target: path.join(root, 'src/a.ts'),
-    sessionId: 'tier2',
-    declared: { tier: 2, files: ['src/a.ts'] },
-  });
-  assert.equal(verdict.verdict, 'deny');
-  assert.match(verdict.reason, /\/paseo-handoff/);
-  assert.match(verdict.reason, /tier2-verify/);
-  assert.match(verdict.reason, /linked worktree/);
-}));
-
 test('tier-write-hook counts primary-checkout edits without transcript dependency and keeps churn guidance', () => withState((dir) => {
   const root = makeRepo();
   const call = (rel) => spawnSync('node', [GUARD_HOOK], {
@@ -156,5 +107,9 @@ test('tier-write-hook counts primary-checkout edits without transcript dependenc
     env: { ...process.env, PIPELINE_TIER_GATE_STATE: dir },
   }).stdout.trim();
   assert.equal(call('packages/x/a.ts'), '');
-  assert.equal(JSON.parse(call('packages/y/b.ts')).hookSpecificOutput.permissionDecision, 'ask');
+  const ask = JSON.parse(call('packages/y/b.ts')).hookSpecificOutput;
+  assert.equal(ask.permissionDecision, 'ask');
+  assert.match(ask.permissionDecisionReason, /\/paseo-handoff/);
+  assert.match(ask.permissionDecisionReason, /tier2-verify/);
+  assert.match(ask.permissionDecisionReason, /linked worktree/);
 }));

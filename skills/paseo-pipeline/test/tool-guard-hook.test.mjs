@@ -161,6 +161,95 @@ test('create_agent: bare provider auto-resolves only on explicit model or unambi
   assert.equal(badModel.permissionDecision, 'deny');
 });
 
+test('create_agent: role name, Chinese alias, or profile ID materializes live profile and settings', (t) => {
+  const PASEO_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'tool-guard-role-'));
+  t.after(() => fs.rmSync(PASEO_HOME, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(PASEO_HOME, 'config.json'), JSON.stringify({ daemon: { agentProfiles: [
+    { id: 'agent_profile_chanpin', name: '调研（中书）', provider: 'antigravity', model: 'gemini-4-hydrogen-high', modeId: 'full-access', notes: '只读调研' },
+    { id: 'agent_profile_gongbu', name: '开发（工部）', provider: 'claude', model: 'flash', modeId: 'auto', thinkingOptionId: 'medium', notes: '默认实现' },
+    { id: 'agent_profile_anchasi', name: '审查（按察司）', provider: 'codex', model: 'gpt', modeId: 'auto-review', thinkingOptionId: 'high', featureValues: { fast_mode: true }, notes: '独立审查' },
+  ] } }));
+
+  const byToken = guard({
+    tool_name: 'mcp__paseo__create_agent',
+    tool_input: { provider: 'chanpin', title: 'Recon auth', initialPrompt: 'Check auth', settings: { thinkingOptionId: 'high' } },
+  }, { PASEO_HOME });
+  assert.equal(byToken.permissionDecision, 'allow');
+  assert.equal(byToken.updatedInput.provider, 'antigravity/gemini-4-hydrogen-high');
+  assert.deepEqual(byToken.updatedInput.settings, { modeId: 'full-access' });
+
+  const byZh = guard({
+    tool_name: 'mcp__paseo__create_agent',
+    tool_input: { provider: '中书', title: 'Recon UI', initialPrompt: 'Check UI' },
+  }, { PASEO_HOME });
+  assert.equal(byZh.permissionDecision, 'allow');
+  assert.equal(byZh.updatedInput.provider, 'antigravity/gemini-4-hydrogen-high');
+  assert.deepEqual(byZh.updatedInput.settings, { modeId: 'full-access' });
+
+  const byGongbu = guard({
+    tool_name: 'mcp__paseo__create_agent',
+    tool_input: { provider: 'gongbu', title: 'Fix bug', initialPrompt: 'Fix it' },
+  }, { PASEO_HOME });
+  assert.equal(byGongbu.permissionDecision, 'allow');
+  assert.equal(byGongbu.updatedInput.provider, 'claude/flash');
+  assert.deepEqual(byGongbu.updatedInput.settings, { modeId: 'auto', thinkingOptionId: 'medium' });
+
+  const byProfileId = guard({
+    tool_name: 'mcp__paseo__create_agent',
+    tool_input: { provider: 'agent_profile_anchasi', title: 'Review PR', initialPrompt: 'Audit' },
+  }, { PASEO_HOME });
+  assert.equal(byProfileId.permissionDecision, 'allow');
+  assert.equal(byProfileId.updatedInput.provider, 'codex/gpt');
+  assert.deepEqual(byProfileId.updatedInput.settings, { modeId: 'auto-review', thinkingOptionId: 'high', features: { fast_mode: true } });
+
+  const unknown = guard({
+    tool_name: 'mcp__paseo__create_agent',
+    tool_input: { provider: 'unknown-role', title: 'Test', initialPrompt: 'p' },
+  }, { PASEO_HOME });
+  assert.equal(unknown.permissionDecision, 'deny');
+  assert.match(unknown.permissionDecisionReason, /role name or/);
+});
+
+test('create_agent: role late binding pins shared provider/model, resolves Chinese role aliases, and folds flat settings', (t) => {
+  const PASEO_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'tool-guard-role-pin-'));
+  t.after(() => fs.rmSync(PASEO_HOME, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(PASEO_HOME, 'config.json'), JSON.stringify({ daemon: { agentProfiles: [
+    { id: 'agent_profile_gongbu', name: '开发（工部）', provider: 'claude', model: 'flash', modeId: 'auto', thinkingOptionId: 'medium' },
+    { id: 'agent_profile_shangshu', name: '编排（尚书）', provider: 'claude', model: 'flash', modeId: 'auto', thinkingOptionId: 'high' },
+    { id: 'agent_profile_ceshi', name: '测试', provider: 'codex', model: 'glm', modeId: 'auto', thinkingOptionId: 'medium' },
+  ] } }));
+
+  // Even when shangshu shares claude/flash with high thinking, provider: 'gongbu' pins gongbu (medium).
+  for (const staleThinking of ['low', 'high']) {
+    const res = guard({
+      tool_name: 'mcp__paseo__create_agent',
+      tool_input: { provider: 'gongbu', title: 'T-1', settings: { modeId: 'auto', thinkingOptionId: staleThinking }, initialPrompt: 'p' },
+    }, { PASEO_HOME });
+    assert.equal(res.permissionDecision, 'allow');
+    assert.equal(res.updatedInput.provider, 'claude/flash');
+    assert.deepEqual(res.updatedInput.settings, { modeId: 'auto', thinkingOptionId: 'medium' });
+  }
+
+  const zhCeshi = guard({
+    tool_name: 'mcp__paseo__create_agent',
+    tool_input: { provider: '测试', title: 'T-2', initialPrompt: 'p' },
+  }, { PASEO_HOME });
+  assert.equal(zhCeshi.permissionDecision, 'allow');
+  assert.equal(zhCeshi.updatedInput.provider, 'codex/glm');
+  assert.deepEqual(zhCeshi.updatedInput.settings, { modeId: 'auto', thinkingOptionId: 'medium' });
+
+  // Flat top-level modeId/thinkingOptionId with role provider moves cleanly into nested settings.
+  const flat = guard({
+    tool_name: 'mcp__paseo__create_agent',
+    tool_input: { provider: 'gongbu', title: 'T-3', modeId: 'auto-review', thinkingOptionId: 'high', initialPrompt: 'p' },
+  }, { PASEO_HOME });
+  assert.equal(flat.permissionDecision, 'allow');
+  assert.equal(flat.updatedInput.provider, 'claude/flash');
+  assert.deepEqual(flat.updatedInput.settings, { modeId: 'auto', thinkingOptionId: 'medium' });
+  assert.equal('modeId' in flat.updatedInput, false);
+  assert.equal('thinkingOptionId' in flat.updatedInput, false);
+});
+
 test('create_agent: placeholder workspaceId dropped, missing title derived, long title clipped', (t) => {
   const PASEO_HOME = paseoHome(t);
   for (const workspaceId of ['', '\t', 'default', 'local', 'current']) {
@@ -261,89 +350,129 @@ test('create_agent: an omitted mode is filled from the matching profile', (t) =>
   assert.deepEqual(createAgent({ provider: 'codex/gpt', title: 't' }, conflict), {});
 });
 
-test('create_agent: a stale mode or thinking option is denied with both values named', (t) => {
+test('create_agent: stale or mismatched mode/thinking/features auto-align to the profile', (t) => {
   const PASEO_HOME = profileHome(t);
   const mode = createAgent({ provider: 'claude/flash', title: 't', settings: { modeId: 'auto-review', thinkingOptionId: 'high' } }, PASEO_HOME);
-  assert.equal(mode.permissionDecision, 'deny');
-  assert.match(mode.permissionDecisionReason, /modeId/);
-  assert.match(mode.permissionDecisionReason, /auto-review/);
-  assert.match(mode.permissionDecisionReason, /auto\b/);
-  assert.match(mode.permissionDecisionReason, /工部/);
+  assert.equal(mode.permissionDecision, 'allow');
+  assert.deepEqual(mode.updatedInput.settings, { modeId: 'auto', thinkingOptionId: 'high' });
+
   const thinking = createAgent({ provider: 'claude/flash', title: 't', settings: { modeId: 'auto', thinkingOptionId: 'low' } }, PASEO_HOME);
-  assert.equal(thinking.permissionDecision, 'deny');
-  assert.match(thinking.permissionDecisionReason, /thinkingOptionId/);
-  assert.match(thinking.permissionDecisionReason, /low/);
-  assert.match(thinking.permissionDecisionReason, /high/);
-  // A profile with no thinking option cannot supply one, so any stated value is a mismatch.
+  assert.equal(thinking.permissionDecision, 'allow');
+  assert.deepEqual(thinking.updatedInput.settings, { modeId: 'auto', thinkingOptionId: 'high' });
+
+  // A profile with no thinking option strips any extraneous thinkingOptionId instead of denying.
   const noOption = createAgent({ provider: 'antigravity/gemini', title: 't', settings: { modeId: 'full-access', thinkingOptionId: 'high' } }, PASEO_HOME);
-  assert.equal(noOption.permissionDecision, 'deny');
-  assert.match(noOption.permissionDecisionReason, /thinkingOptionId/);
+  assert.equal(noOption.permissionDecision, 'allow');
+  assert.deepEqual(noOption.updatedInput.settings, { modeId: 'full-access' });
+
   // Omitting it inherits, which is what the profile does.
   assert.deepEqual(createAgent({ provider: 'antigravity/gemini', title: 't', settings: { modeId: 'full-access' } }, PASEO_HOME), {});
 });
 
-// The live config shares `claude/flash` between 尚书 and 工部 with identical settings. The pair,
-// not the title, selects the profiles: a value matching one of them passes, a value matching none
-// is denied and names the candidates. Guessing a role from the title would let a stale mode through.
-test('create_agent: a shared provider/model pair is checked against every matching profile', (t) => {
-  const PASEO_HOME = profileHome(t);
+// When multiple profiles share a provider/model pair with conflicting values:
+// - agreed fields (like modeId) still auto-align;
+// - if title/prompt names a role, its specific settings auto-align;
+// - only truly ambiguous + invalid conflicting overrides are denied with candidates.
+test('create_agent: shared provider/model aligns agreed fields and denies only conflicting ambiguous overrides', (t) => {
+  const PASEO_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'paseo-home-conflict-'));
+  t.after(() => fs.rmSync(PASEO_HOME, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(PASEO_HOME, 'config.json'), JSON.stringify({ daemon: { agentProfiles: [
+    { id: 'agent_profile_gongbu', name: '工部 (核心实现)', provider: 'claude', model: 'flash', modeId: 'auto', thinkingOptionId: 'medium' },
+    { id: 'agent_profile_shangshu', name: '尚书 (总控编排)', provider: 'claude', model: 'flash', modeId: 'auto', thinkingOptionId: 'high' },
+  ] } }));
+
   assert.deepEqual(createAgent({ provider: 'claude/flash', title: '尚书 T-01', settings: { modeId: 'auto', thinkingOptionId: 'high' } }, PASEO_HOME), {});
-  const stale = createAgent({ provider: 'claude/flash', title: '工部 T-01', settings: { modeId: 'auto-review' } }, PASEO_HOME);
-  assert.equal(stale.permissionDecision, 'deny');
-  assert.match(stale.permissionDecisionReason, /modeId/);
-  assert.match(stale.permissionDecisionReason, /auto-review/);
-  assert.match(stale.permissionDecisionReason, /尚书/);
-  assert.match(stale.permissionDecisionReason, /工部/);
+
+  // Both profiles agree on modeId='auto', so a stale modeId aligns automatically.
+  const alignedMode = createAgent({ provider: 'claude/flash', title: 't', settings: { modeId: 'auto-review', thinkingOptionId: 'medium' } }, PASEO_HOME);
+  assert.equal(alignedMode.permissionDecision, 'allow');
+  assert.deepEqual(alignedMode.updatedInput.settings, { modeId: 'auto', thinkingOptionId: 'medium' });
+
+  // Title identifies 工部 -> conflicting thinkingOptionId aligns to medium.
+  const disambiguated = createAgent({ provider: 'claude/flash', title: '工部 T-01', settings: { modeId: 'auto', thinkingOptionId: 'low' } }, PASEO_HOME);
+  assert.equal(disambiguated.permissionDecision, 'allow');
+  assert.deepEqual(disambiguated.updatedInput.settings, { modeId: 'auto', thinkingOptionId: 'medium' });
+
+  // No role token + invalid conflicting thinkingOptionId -> denied with candidates.
+  const conflict = createAgent({ provider: 'claude/flash', title: 'Task T-01', settings: { modeId: 'auto', thinkingOptionId: 'low' } }, PASEO_HOME);
+  assert.equal(conflict.permissionDecision, 'deny');
+  assert.match(conflict.permissionDecisionReason, /thinkingOptionId/);
+  assert.match(conflict.permissionDecisionReason, /尚书/);
+  assert.match(conflict.permissionDecisionReason, /工部/);
 });
 
 // SCEN-GUARD-01: an explicit `null` is the same "inherit" an omitted field is, on a profile that
 // sets no value for it. Dispatchers copy `list_profiles` verbatim, and that list spells a missing
 // optional setting as `null`; comparing null against `undefined` denied every such launch.
-test('create_agent: an explicit null optional setting is allowed where the profile sets none', (t) => {
+test('create_agent: explicit null optional settings pass when unset and align when profile defines one', (t) => {
   const PASEO_HOME = profileHome(t);
   assert.deepEqual(createAgent({ provider: 'antigravity/gemini', title: 't', settings: { modeId: 'full-access', thinkingOptionId: null } }, PASEO_HOME), {});
   assert.deepEqual(createAgent({ provider: 'antigravity/gemini', title: 't', settings: { modeId: 'full-access', features: null } }, PASEO_HOME), {});
   // Empty `{}` feature map is semantically equivalent to unset when the profile sets none,
-  // while an empty object on a scalar field like modeId must still be denied.
+  // while an empty object on a scalar field like modeId aligns to the profile's modeId.
   assert.deepEqual(createAgent({ provider: 'codex/gpt', title: 't', settings: { modeId: 'auto-review', thinkingOptionId: 'high', features: {} } }, PASEO_HOME), {});
   const emptyScalar = createAgent({ provider: 'codex/gpt', title: 't', settings: { modeId: {} } }, PASEO_HOME);
-  assert.equal(emptyScalar.permissionDecision, 'deny');
-  // A real profile that does set features is matched against: null is inherit only where the
-  // profile has no value, so a profile that sets one still denies a null that contradicts it.
+  assert.equal(emptyScalar.permissionDecision, 'allow');
+  assert.deepEqual(emptyScalar.updatedInput.settings, { modeId: 'auto-review' });
+
+  // Profiles sharing claude/cc agree on features: { effort: 'max' }, so null/{}/stale features align automatically.
   const withFeatures = fs.mkdtempSync(path.join(os.tmpdir(), 'paseo-home-'));
   t.after(() => fs.rmSync(withFeatures, { recursive: true, force: true }));
   fs.writeFileSync(path.join(withFeatures, 'config.json'), JSON.stringify({ daemon: { agentProfiles: [
     { id: 'p5', name: '钦差 (验收)', provider: 'claude', model: 'cc', thinkingOptionId: 'high', features: { effort: 'max' } },
     { id: 'p6', name: '户部 (账目)', provider: 'claude', model: 'cc', modeId: 'auto', features: { effort: 'max' } },
   ] } }));
-  // The pair states one mode, so an omitted/`null` one is filled from the profile (cross-provider
-  // omission is rejected by the server). The null `thinkingOptionId` is still allowed.
   const inherited = createAgent({ provider: 'claude/cc', title: 't', settings: { thinkingOptionId: null, features: { effort: 'max' } } }, withFeatures);
   assert.equal(inherited.permissionDecision, 'allow');
   assert.equal(inherited.updatedInput.settings.modeId, 'auto');
-  // Null or `{}` inherits only where the profile sets nothing: a profile that does set the value
-  // still catches a null or `{}` that contradicts it.
-  const contradicted = createAgent({ provider: 'claude/cc', title: 't', settings: { thinkingOptionId: 'high', features: null } }, withFeatures);
-  assert.equal(contradicted.permissionDecision, 'deny');
-  assert.match(contradicted.permissionDecisionReason, /features/);
-  const emptyFeatures = createAgent({ provider: 'claude/cc', title: 't', settings: { thinkingOptionId: 'high', features: {} } }, withFeatures);
-  assert.equal(emptyFeatures.permissionDecision, 'deny');
-  assert.match(emptyFeatures.permissionDecisionReason, /features/);
-  const stale = createAgent({ provider: 'claude/cc', title: 't', settings: { thinkingOptionId: 'high', features: { effort: 'low' } } }, withFeatures);
-  assert.equal(stale.permissionDecision, 'deny');
-  assert.match(stale.permissionDecisionReason, /features/);
+
+  const alignedNull = createAgent({ provider: 'claude/cc', title: 't', settings: { thinkingOptionId: 'high', features: null } }, withFeatures);
+  assert.equal(alignedNull.permissionDecision, 'allow');
+  assert.deepEqual(alignedNull.updatedInput.settings, { modeId: 'auto', thinkingOptionId: 'high', features: { effort: 'max' } });
+
+  const alignedEmpty = createAgent({ provider: 'claude/cc', title: 't', settings: { thinkingOptionId: 'high', features: {} } }, withFeatures);
+  assert.equal(alignedEmpty.permissionDecision, 'allow');
+  assert.deepEqual(alignedEmpty.updatedInput.settings, { modeId: 'auto', thinkingOptionId: 'high', features: { effort: 'max' } });
+
+  const alignedStale = createAgent({ provider: 'claude/cc', title: 't', settings: { thinkingOptionId: 'high', features: { effort: 'low' } } }, withFeatures);
+  assert.equal(alignedStale.permissionDecision, 'allow');
+  assert.deepEqual(alignedStale.updatedInput.settings, { modeId: 'auto', thinkingOptionId: 'high', features: { effort: 'max' } });
+});
+
+test('create_agent: conflicting featureValues print real values and cross-profile mixing is denied', (t) => {
+  const PASEO_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'paseo-fv-'));
+  t.after(() => fs.rmSync(PASEO_HOME, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(PASEO_HOME, 'config.json'), JSON.stringify({ daemon: { agentProfiles: [
+    { id: 'pA', name: '甲 (A)', provider: 'claude', model: 'cc', modeId: 'auto', thinkingOptionId: 'high', featureValues: { effort: 'low' } },
+    { id: 'pB', name: '乙 (B)', provider: 'claude', model: 'cc', modeId: 'auto', thinkingOptionId: 'medium', featureValues: { effort: 'max' } },
+  ] } }));
+
+  const conflictFv = createAgent({ provider: 'claude/cc', title: 'Task', settings: { modeId: 'auto', features: { effort: 'invalid' } } }, PASEO_HOME);
+  assert.equal(conflictFv.permissionDecision, 'deny');
+  assert.match(conflictFv.permissionDecisionReason, /\{"effort":"low"\}/);
+  assert.match(conflictFv.permissionDecisionReason, /\{"effort":"max"\}/);
+  assert.doesNotMatch(conflictFv.permissionDecisionReason, /features=none/);
+
+  // Mixing Profile A's thinkingOptionId with Profile B's featureValues has no single matching profile.
+  const mixed = createAgent({ provider: 'claude/cc', title: 'Task', settings: { modeId: 'auto', thinkingOptionId: 'high', features: { effort: 'max' } } }, PASEO_HOME);
+  assert.equal(mixed.permissionDecision, 'deny');
+  assert.match(mixed.permissionDecisionReason, /甲/);
+  assert.match(mixed.permissionDecisionReason, /乙/);
 });
 
 // The flat shape is only a compatibility fallback; the call shape every dispatch uses is nested.
-test('create_agent: settings are read from the nested `settings` object, not only top level', (t) => {
+test('create_agent: settings are read from the nested `settings` object and flat fallbacks align cleanly', (t) => {
   const PASEO_HOME = profileHome(t);
   const stale = createAgent({ provider: 'claude/flash', title: 't', settings: { modeId: 'auto-review' } }, PASEO_HOME);
-  assert.equal(stale.permissionDecision, 'deny');
-  assert.match(stale.permissionDecisionReason, /modeId/);
-  // With `settings` present, a stale top-level value cannot mask or rescue the nested one.
+  assert.equal(stale.permissionDecision, 'allow');
+  assert.deepEqual(stale.updatedInput.settings, { modeId: 'auto' });
+  // With `settings` present, a stale top-level value cannot mask or override the nested one.
   assert.deepEqual(createAgent({ provider: 'claude/flash', title: 't', modeId: 'auto-review', settings: { modeId: 'auto' } }, PASEO_HOME), {});
-  // Same values flat still deny (compatibility fallback when no `settings` object is sent).
-  assert.equal(createAgent({ provider: 'claude/flash', title: 't', modeId: 'auto-review' }, PASEO_HOME).permissionDecision, 'deny');
+  // Flat shape without `settings` aligns into `settings` and removes the stale flat key.
+  const flat = createAgent({ provider: 'claude/flash', title: 't', modeId: 'auto-review' }, PASEO_HOME);
+  assert.equal(flat.permissionDecision, 'allow');
+  assert.deepEqual(flat.updatedInput.settings, { modeId: 'auto' });
+  assert.equal('modeId' in flat.updatedInput, false);
 });
 
 test('identical-call deny tells create_workspace exactly which fields to drop', (t) => {
@@ -422,7 +551,7 @@ test('Agent: denies built-in independent code review while allowing normal Explo
   assert.deepEqual(allowedExplore, {});
 });
 
-test('Bash: primary-checkout read-only recon stall advises once at threshold and resets after write', (t) => {
+test('Bash and Read: ordinary read-only exploration never injects mid-turn cache-busting advisories', (t) => {
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'recon-repo-')));
   const state = fs.mkdtempSync(path.join(os.tmpdir(), 'recon-state-'));
   t.after(() => {
@@ -442,38 +571,15 @@ test('Bash: primary-checkout read-only recon stall advises once at threshold and
   t.after(() => fs.rmSync(wt, { recursive: true, force: true }));
 
   const tel = path.join(state, 'metrics.jsonl');
-  const env = { PIPELINE_RECON_WARN_READS: '3', PIPELINE_TELEMETRY_FILE: tel, state };
-  const readCmd = (cwd, cmd, session_id = 'recon-1') => guard({
-    tool_name: 'Bash',
-    cwd,
-    session_id,
-    tool_input: { command: cmd },
-  }, env);
-
-  assert.deepEqual(readCmd(repo, 'rg a src/'), {});
-  assert.deepEqual(readCmd(repo, 'sed -n 1,5p src/a.js'), {});
-  const third = readCmd(repo, 'git status --short');
-  assert.match(third.additionalContext, /\[recon-budget\]/);
-  // Advisory fires once per segment.
-  assert.deepEqual(readCmd(repo, 'cat src/a.js'), {});
-
-  // Linked worktree never emits primary-checkout recon_stall.
-  for (const cmd of ['rg a src/', 'cat src/a.js', 'git status --short']) {
-    assert.deepEqual(readCmd(wt, cmd, 'recon-wt'), {});
+  const env = { PIPELINE_RECON_WARN_READS: '2', PIPELINE_WORKTREE_READ_WARN: '2', PIPELINE_TELEMETRY_FILE: tel, state };
+  for (const cmd of ['rg a src/', 'sed -n 1,5p src/a.js', 'git status --short', 'cat src/a.js']) {
+    assert.deepEqual(guard({ tool_name: 'Bash', cwd: repo, session_id: 'recon-1', tool_input: { command: cmd } }, env), {});
+    assert.deepEqual(guard({ tool_name: 'Bash', cwd: wt, session_id: 'recon-wt', tool_input: { command: cmd } }, env), {});
   }
-
-  // Write via tier-write-hook resets primary recon counter.
-  const writeHook = path.join(here, '..', 'hooks', 'tier-write-hook.mjs');
-  const writeRes = spawnSync('node', [writeHook], {
-    input: JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: path.join(repo, 'src/a.js') }, session_id: 'recon-1' }),
-    encoding: 'utf8',
-    env: { ...process.env, PIPELINE_TIER_GATE_STATE: state, PIPELINE_TELEMETRY_FILE: tel },
-  });
-  assert.equal(writeRes.status, 0);
-
-  assert.deepEqual(readCmd(repo, 'rg a src/'), {});
-  assert.deepEqual(readCmd(repo, 'sed -n 1,5p src/a.js'), {});
-  assert.match(readCmd(repo, 'cat src/a.js').additionalContext, /\[recon-budget\]/);
+  for (let i = 0; i < 4; i += 1) {
+    assert.deepEqual(guard({ tool_name: 'Read', cwd: repo, session_id: 'read-1', tool_input: { file_path: path.join(repo, 'src/a.js') } }, env), {});
+    assert.deepEqual(guard({ tool_name: 'Read', cwd: wt, session_id: 'read-wt', tool_input: { file_path: path.join(wt, 'src/a.js') } }, env), {});
+  }
 });
 
 test('tool guard checks repeated_failure before rewrite exit and expands ~ in targetsPrimary', (t) => {
@@ -525,13 +631,85 @@ test('tool guard checks repeated_failure before rewrite exit and expands ~ in ta
   }, { HOME: fakeHome, PIPELINE_TELEMETRY_FILE: tel, state });
   assert.match(gitCOut.additionalContext, /Avoid `git -C` mutating the primary checkout/);
 
-  // Read tool calls count toward primary recon_stall and worktree_read_stall without blocking
-  const readEnv = { PIPELINE_RECON_WARN_READS: '2', PIPELINE_WORKTREE_READ_WARN: '2', PIPELINE_TELEMETRY_FILE: tel, state };
-  assert.deepEqual(guard({ tool_name: 'Read', cwd: primary, session_id: 'read-hook-1', tool_input: { file_path: path.join(primary, 'src/a.js') } }, readEnv), {});
-  const priRead2 = guard({ tool_name: 'Read', cwd: primary, session_id: 'read-hook-1', tool_input: { file_path: path.join(primary, 'src/a.js') } }, readEnv);
-  assert.match(priRead2.additionalContext, /\[recon-budget\]/);
+  // create_agent inside a linked worktree must include a non-placeholder workspaceId
+  const wtNoWs = guard({
+    tool_name: 'mcp__paseo__create_agent',
+    cwd: wt,
+    tool_input: { provider: 'claude/flash', title: '[Handoff] T-01', initialPrompt: 'p' },
+  }, { HOME: fakeHome, PASEO_HOME: fakeHome, PIPELINE_TELEMETRY_FILE: tel, state });
+  assert.equal(wtNoWs.permissionDecision, 'deny');
+  assert.match(wtNoWs.permissionDecisionReason, /create_workspace/);
+  assert.match(wtNoWs.permissionDecisionReason, /wt-demo/);
 
-  assert.deepEqual(guard({ tool_name: 'Read', cwd: wt, session_id: 'read-hook-wt', tool_input: { file_path: path.join(wt, 'src/a.js') } }, readEnv), {});
-  const wtRead2 = guard({ tool_name: 'Read', cwd: wt, session_id: 'read-hook-wt', tool_input: { file_path: path.join(wt, 'src/a.js') } }, readEnv);
-  assert.match(wtRead2.additionalContext, /\[worktree-read-budget\]/);
+  const wtPlaceholderWs = guard({
+    tool_name: 'mcp__paseo__create_agent',
+    cwd: wt,
+    tool_input: { provider: 'claude/flash', title: '[Handoff] T-01', initialPrompt: 'p', workspaceId: 'local' },
+  }, { HOME: fakeHome, PASEO_HOME: fakeHome, PIPELINE_TELEMETRY_FILE: tel, state });
+  assert.equal(wtPlaceholderWs.permissionDecision, 'deny');
+  assert.match(wtPlaceholderWs.permissionDecisionReason, /create_workspace/);
+
+  const wtRealWs = guard({
+    tool_name: 'mcp__paseo__create_agent',
+    cwd: wt,
+    tool_input: { provider: 'claude/flash', title: '[Handoff] T-01', initialPrompt: 'p', workspaceId: 'wks_2d1d4293681d68a3' },
+  }, { HOME: fakeHome, PASEO_HOME: fakeHome, PIPELINE_TELEMETRY_FILE: tel, state });
+  assert.equal(wtRealWs.permissionDecision, undefined);
+
+  // Read-only observers (auto-review / plan) in a linked worktree do not require workspaceId
+  const wtReviewNoWs = guard({
+    tool_name: 'mcp__paseo__create_agent',
+    cwd: wt,
+    tool_input: { provider: 'codex/gpt', settings: { modeId: 'auto-review' }, title: '[Tier2 Review] check diff', initialPrompt: 'p' },
+  }, { HOME: fakeHome, PASEO_HOME: fakeHome, PIPELINE_TELEMETRY_FILE: tel, state });
+  assert.notEqual(wtReviewNoWs.permissionDecision, 'deny');
+
+  const wtPlanNoWs = guard({
+    tool_name: 'mcp__paseo__create_agent',
+    cwd: wt,
+    tool_input: { provider: 'claude/pro', settings: { modeId: 'plan' }, title: 'Design plan', initialPrompt: 'p' },
+  }, { HOME: fakeHome, PASEO_HOME: fakeHome, PIPELINE_TELEMETRY_FILE: tel, state });
+  assert.notEqual(wtPlanNoWs.permissionDecision, 'deny');
+
+  // Explicit write mode must still be denied without workspaceId even if title mentions review
+  const wtAutoWriteReviewTitle = guard({
+    tool_name: 'mcp__paseo__create_agent',
+    cwd: wt,
+    tool_input: { provider: 'claude/flash', settings: { modeId: 'auto' }, title: 'Review and fix', initialPrompt: 'p' },
+  }, { HOME: fakeHome, PASEO_HOME: fakeHome, PIPELINE_TELEMETRY_FILE: tel, state });
+  assert.equal(wtAutoWriteReviewTitle.permissionDecision, 'deny');
+
+  // ROLES overrides provider-specific modeId names (codex writers use auto-review; antigravity observers use full-access)
+  const rolesHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tool-guard-roles-ws-'));
+  t.after(() => fs.rmSync(rolesHome, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(rolesHome, 'config.json'), JSON.stringify({ daemon: { agentProfiles: [
+    { id: 'agent_profile_gaogong', name: '高级研发（高工）', provider: 'codex', model: 'glm', modeId: 'auto-review' },
+    { id: 'agent_profile_ceshi', name: '测试', provider: 'codex', model: 'codex', modeId: 'auto-review' },
+    { id: 'agent_profile_anchasi', name: '审查（按察司）', provider: 'codex', model: 'gpt', modeId: 'auto-review' },
+    { id: 'agent_profile_chanpin', name: '调研规划（中书）', provider: 'antigravity', model: 'gemini-4-hydrogen-high', modeId: 'full-access' },
+  ] } }));
+
+  for (const role of ['gaogong', 'ceshi']) {
+    const out = guard({
+      tool_name: 'mcp__paseo__create_agent',
+      cwd: wt,
+      tool_input: { provider: role, title: `Dispatch ${role}`, initialPrompt: 'p' },
+    }, { HOME: fakeHome, PASEO_HOME: rolesHome, PIPELINE_TELEMETRY_FILE: tel, state });
+    assert.equal(out.permissionDecision, 'deny', `${role} writer with auto-review must require workspaceId`);
+  }
+  for (const role of ['anchasi', 'chanpin']) {
+    const out = guard({
+      tool_name: 'mcp__paseo__create_agent',
+      cwd: wt,
+      tool_input: { provider: role, title: `Dispatch ${role}`, initialPrompt: 'p' },
+    }, { HOME: fakeHome, PASEO_HOME: rolesHome, PIPELINE_TELEMETRY_FILE: tel, state });
+    assert.notEqual(out.permissionDecision, 'deny', `${role} observer must not require workspaceId`);
+  }
+
+  const unmappedHandoffAutoReview = guard({
+    tool_name: 'mcp__paseo__create_agent',
+    cwd: wt,
+    tool_input: { provider: 'codex/glm', settings: { modeId: 'auto-review' }, title: '[Handoff] T-01', initialPrompt: 'p' },
+  }, { HOME: fakeHome, PASEO_HOME: fakeHome, PIPELINE_TELEMETRY_FILE: tel, state });
+  assert.equal(unmappedHandoffAutoReview.permissionDecision, 'deny');
 });

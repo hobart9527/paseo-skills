@@ -12,8 +12,6 @@ import { proveVerifyCommand } from '../lib/verify-policy.mjs';
 import { listWorktrees } from '../lib/git.mjs';
 import { recordEvent, summarizeTelemetry } from '../lib/telemetry.mjs';
 import * as paseo from '../lib/paseo.mjs';
-import * as paseoAgents from '../lib/paseo-agents.mjs';
-import * as paseoState from '../lib/paseo-state.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PIPELINE_DIR = path.resolve(here, '..');
@@ -278,17 +276,17 @@ test('lib/verify-policy + tier2-verify reject spoofed Verify commands without ex
   assert.equal(fs.existsSync(marker), false, 'unprovable Verify command must never execute');
 });
 
-test('lib/git listWorktrees handles spaces via -z and lib/paseo re-exports match', (t) => {
+test('lib/git listWorktrees handles spaces via -z and lib/paseo exports Paseo helpers', (t) => {
   const root = makeRepo(t);
   const spacedWt = path.join(path.dirname(root), 'wt spaced dir');
   git(root, 'worktree', 'add', '-q', '-b', 'feat/space', spacedWt);
   const trees = listWorktrees(root);
   assert.ok(trees.some((tree) => fs.realpathSync(tree.path) === fs.realpathSync(spacedWt) && tree.branch === 'feat/space'));
 
-  assert.equal(paseoAgents.listAgents, paseo.listAgents);
-  assert.equal(paseoAgents.inspectAgent, paseo.inspectAgent);
-  assert.equal(paseoState.listPaseoAgents, paseo.listPaseoAgents);
-  assert.equal(paseoState.inspectPaseoAgent, paseo.inspectPaseoAgent);
+  assert.equal(typeof paseo.listAgents, 'function');
+  assert.equal(typeof paseo.inspectAgent, 'function');
+  assert.equal(typeof paseo.listPaseoAgents, 'function');
+  assert.equal(typeof paseo.inspectPaseoAgent, 'function');
 });
 
 test('pipeline-run facade supports inspect, prepare-task --workspace-dir / --hydrate, and brief JIT compiles SCEN + diffstat safely', (t) => {
